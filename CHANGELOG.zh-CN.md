@@ -7,9 +7,9 @@
 
 ---
 
-## [0.0.15] - 2026-08-05
+## [0.0.15] - 2026-08-09
 
-范围：`v0.0.14` → `v0.0.15`（2026-07-31 → 2026-08-05）。
+范围：`v0.0.14` → `v0.0.15`（2026-07-31 → 2026-08-09）。
 
 ### 亮点
 
@@ -35,6 +35,17 @@
 
 - 整合 Grok Build `a422116`，同时保留已声明的 Pi-Grok 接缝。
 - 项目文档与验证命令统一改用带门禁的共享 Cargo wrapper。
+
+### 修复（2026-08-09）
+
+- Pi RPC 子进程改由独立 exit-coordinator 通道持有，`kill()` 不再因 `Child::wait()` 阻塞关停。
+- 每次 Pi bootstrap 都受 60 秒 deadline 约束，扩展启动卡死不再挂起 grok-pi；启动自愈已写入 `--help`。
+- CLI 工具解析支持 `--tools=/--exclude-tools=`，且仅在无显式工具覆盖时才注入 tools 扩展。
+- 恢复 review 弹窗的键/鼠标/粘贴路由（上游合并曾丢失 `handle_review_key`），Esc/q 关闭与点击聚焦恢复可用。
+
+### 变更（2026-08-09）
+
+- 默认关闭增量编译，共享 Cargo target 硬上限 64 GiB（`CARGO_TARGET_MAX_GIB`）；maintenance 先清遗留 incremental 缓存，超限再回退 `cargo clean`。磁盘门禁实时执行上限，单次 Cargo 调用无法撑爆共享 target。
 
 ## [0.0.14] - 2026-07-31
 
