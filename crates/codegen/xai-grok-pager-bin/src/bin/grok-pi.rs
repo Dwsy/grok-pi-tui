@@ -65,6 +65,7 @@ mod workflow_extension;
 use anyhow::{Context, Result};
 use clap::Parser;
 use pi_grok_adapter::{PiAgent, PiBootstrap, PiRpc, SpawnConfig};
+use std::future::Future;
 use std::rc::Rc;
 use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
@@ -97,7 +98,7 @@ use session_paths::pi_session_dir;
 use shortcut_manager_extension::write_shortcut_manager_extension;
 use subagent_extension::write_subagent_extension;
 use tools_extension::{
-    configured_builtin_tools, excluded_tools, has_explicit_tools_arg, has_no_tools_arg,
+    cli_tool_exclusions, configured_builtin_tools, has_no_tools_arg, should_inject_tools_extension,
     write_tools_extension,
 };
 use tree_bridge::write_navigate_tree_extension;
@@ -566,9 +567,8 @@ async fn run(mut args: Args) -> Result<()> {
     // Skip the tools extension entirely when CLI disables all tools or all
     // builtins; for --exclude-tools, inject but pass the exclusion list so the
     // extension filters them out.
-    let cli_exclusions = excluded_tools(&pi_args).unwrap_or_default();
-    let skip_tools_ext = has_explicit_tools_arg(&pi_args) || has_no_tools_arg(&pi_args);
-    let tools_extension = (bridge_extensions_enabled && !skip_tools_ext)
+    let cli_exclusions = cli_tool_exclusions(&pi_args);
+    let tools_extension = (bridge_extensions_enabled && should_inject_tools_extension(&pi_args))
         .then(|| write_tools_extension())
         .transpose()
         .context("failed to create Pi tools extension")?;
@@ -949,7 +949,7 @@ async fn run(mut args: Args) -> Result<()> {
     // ── Extension self-heal: spawn Pi, and if an extension crashes the RPC
     // child during bootstrap, binary-search the culprit (VSCode-style),
     // print a diagnostic, and relaunch without it. ──────────────────────────
-    let (process, bootstrap, pi_args) =
+    let (process, bootstrap, _pi_args) =
         spawn_with_extension_self_heal(&args, &cwd, pi_args, &env).await?;
 
     if btw_extension.is_some() {
@@ -1154,6 +1154,20 @@ fn env_flag_default_off(name: &str) -> bool {
 //
 // The user can run `grok-pi -ne --no-bridge-extensions` to skip all extensions.
 
+const PI_BOOTSTRAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+async fn bootstrap_with_deadline<T>(
+    future: impl Future<Output = anyhow::Result<T>>,
+    deadline: std::time::Duration,
+) -> anyhow::Result<T> {
+    tokio::time::timeout(deadline, future).await.map_err(|_| {
+        anyhow::anyhow!(
+            "Pi RPC bootstrap timed out after {} ms",
+            deadline.as_millis()
+        )
+    })?
+}
+
 /// Spawn Pi with the full extension set. If bootstrap fails, run the
 /// self-heal bisection and return a working process.
 async fn spawn_with_extension_self_heal(
@@ -1171,7 +1185,7 @@ async fn spawn_with_extension_self_heal(
     };
 
     let process = PiRpc::spawn(config).await?;
-    match PiBootstrap::load(&process.rpc).await {
+    match bootstrap_with_deadline(PiBootstrap::load(&process.rpc), PI_BOOTSTRAP_TIMEOUT).await {
         Ok(bootstrap) => return Ok((process, bootstrap, pi_args)),
         Err(error) => {
             process.rpc.kill().await;
@@ -1199,7 +1213,7 @@ async fn spawn_with_extension_self_heal(
         env: env.to_vec(),
     };
     let probe = PiRpc::spawn(probe_config).await?;
-    match PiBootstrap::load(&probe.rpc).await {
+    match bootstrap_with_deadline(PiBootstrap::load(&probe.rpc), PI_BOOTSTRAP_TIMEOUT).await {
         Ok(_) => {
             probe.rpc.kill().await;
         }
@@ -1255,9 +1269,10 @@ async fn spawn_with_extension_self_heal(
                 env: env.to_vec(),
             };
             let process = PiRpc::spawn(heal_config).await?;
-            let bootstrap = PiBootstrap::load(&process.rpc)
-                .await
-                .context("self-heal relaunch still failed")?;
+            let bootstrap =
+                bootstrap_with_deadline(PiBootstrap::load(&process.rpc), PI_BOOTSTRAP_TIMEOUT)
+                    .await
+                    .context("self-heal relaunch still failed")?;
             Ok((process, bootstrap, healed_args))
         }
         None => {
@@ -1281,9 +1296,10 @@ async fn spawn_with_extension_self_heal(
                 env: env.to_vec(),
             })
             .await?;
-            let bootstrap = PiBootstrap::load(&process.rpc)
-                .await
-                .context("fallback no-extension launch failed")?;
+            let bootstrap =
+                bootstrap_with_deadline(PiBootstrap::load(&process.rpc), PI_BOOTSTRAP_TIMEOUT)
+                    .await
+                    .context("fallback no-extension launch failed")?;
             Ok((process, bootstrap, no_ext_args))
         }
     }
@@ -1678,7 +1694,9 @@ async fn probe_extensions_ok(
     let Ok(process) = PiRpc::spawn(config).await else {
         return false;
     };
-    let ok = PiBootstrap::load(&process.rpc).await.is_ok();
+    let ok = bootstrap_with_deadline(PiBootstrap::load(&process.rpc), PI_BOOTSTRAP_TIMEOUT)
+        .await
+        .is_ok();
     process.rpc.kill().await;
     ok
 }
@@ -1686,10 +1704,23 @@ async fn probe_extensions_ok(
 #[cfg(test)]
 mod env_flag_tests {
     use super::{
-        Args, PI_GROK_NATIVE_COMMANDS, disable_all_extensions, env_flag_default_off,
-        env_flag_default_on, herdr_enabled_from_config, subagents_enabled_from_config,
+        Args, PI_GROK_NATIVE_COMMANDS, bootstrap_with_deadline, disable_all_extensions,
+        env_flag_default_off, env_flag_default_on, herdr_enabled_from_config,
+        subagents_enabled_from_config,
     };
     use clap::Parser;
+
+    #[tokio::test]
+    async fn bootstrap_deadline_bounds_a_stuck_extension_startup() {
+        let error = bootstrap_with_deadline(
+            std::future::pending::<anyhow::Result<()>>(),
+            std::time::Duration::from_millis(10),
+        )
+        .await
+        .expect_err("pending bootstrap must time out");
+
+        assert!(error.to_string().contains("Pi RPC bootstrap timed out"));
+    }
 
     #[test]
     fn herdr_integration_defaults_off_and_honors_explicit_true() {

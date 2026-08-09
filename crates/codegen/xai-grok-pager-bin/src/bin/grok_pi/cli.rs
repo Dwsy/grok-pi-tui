@@ -40,6 +40,23 @@ Notes:
   Stock Grok `--resume` is not exposed: use Welcome, /resume, or `--session <uuid>`.
   On quit, prints: To resume this session: grok-pi --session <uuid>
 
+Extension startup recovery:
+  If Pi RPC bootstrap fails, grok-pi retries with zero extensions. If that works,
+  it automatically binary-searches the loaded extension list for a crashing extension.
+  This is automatic recovery, not a separate CLI mode or flag.
+  Single culprit: prints `Extension crash detected`, names the extension/path, and
+  relaunches without that extension.
+  Combination conflict: prints `Extension conflict detected` and relaunches with
+  all extensions disabled.
+  Scope: bootstrap-time extension failures only; crashes after bootstrap are not bisected.
+  `-ne` / `--no-extensions` disables discovery only; explicit `-e` paths and
+  grok-pi host bridge extensions still load.
+  True zero-extension diagnostic: grok-pi -ne --no-bridge-extensions
+  Permanent block: add `[pi.resources] block = [\"...\"]` to ~/.grok-pi/config.toml
+  or the project .grok-pi/pi-resources.toml sidecar.
+  Crash-report prompt sends extension name/package identity and crash kind only;
+  it does not send absolute paths, stack traces, or session data.
+
 Update (GitHub releases only):
   grok-pi update            Install latest from Dwsy/grok-pi
   grok-pi update --check    Print current vs latest
@@ -356,7 +373,19 @@ pub(super) fn pi_args_with_startup_flags(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
     use std::ffi::OsString;
+
+    #[test]
+    fn help_documents_extension_startup_recovery() {
+        let help = Args::command().render_long_help().to_string();
+
+        assert!(help.contains("Extension startup recovery:"));
+        assert!(help.contains("automatically binary-searches"));
+        assert!(help.contains("bootstrap-time extension failures only"));
+        assert!(help.contains("grok-pi -ne --no-bridge-extensions"));
+        assert!(help.contains("does not send absolute paths, stack traces, or session data"));
+    }
 
     #[test]
     fn continue_flag_is_forwarded_to_pi() {

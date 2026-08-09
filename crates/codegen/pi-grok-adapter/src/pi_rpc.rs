@@ -35,14 +35,18 @@ pub struct PiRpc {
     writer: mpsc::UnboundedSender<Value>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>,
     next_id: Arc<AtomicU64>,
-    /// Shared handle to the child process so callers can kill probe processes
-    /// (e.g. during extension bisection) without leaking the OS process.
-    child: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>,
+    /// Control channel for the exit coordinator, which is the sole owner of
+    /// the child process. This avoids holding a mutex across `Child::wait()`.
+    child_control: mpsc::UnboundedSender<ChildControl>,
 }
 
 pub struct PiProcess {
     pub rpc: PiRpc,
     pub events: mpsc::UnboundedReceiver<Value>,
+}
+
+enum ChildControl {
+    Kill(oneshot::Sender<()>),
 }
 
 impl PiRpc {
@@ -190,21 +194,11 @@ impl PiRpc {
 
         // Exit coordinator: the single owner of fail_pending. Waits for the
         // child to exit and stderr to drain, then assembles the diagnostic.
-        let child_handle = Arc::new(tokio::sync::Mutex::new(Some(child)));
-        let child_for_exit = child_handle.clone();
+        let (child_control_tx, child_control_rx) = mpsc::unbounded_channel();
         let pending_exit = pending.clone();
         let stderr_ring_for_exit = stderr_ring.clone();
         tokio::spawn(async move {
-            let base = {
-                let mut guard = child_for_exit.lock().await;
-                match guard.as_mut() {
-                    Some(child) => match child.wait().await {
-                        Ok(status) => format!("Pi RPC process exited with {status}"),
-                        Err(error) => format!("failed waiting for Pi RPC process: {error}"),
-                    },
-                    None => "Pi RPC process already reaped".to_string(),
-                }
-            };
+            let base = wait_for_child_exit(child, child_control_rx).await;
             // Wait for the stderr reader to finish (bounded so we never hang).
             let _ = tokio::time::timeout(Duration::from_secs(2), stderr_done_rx).await;
             let stderr_context = stderr_ring_for_exit
@@ -231,7 +225,7 @@ impl PiRpc {
                 writer: writer_tx,
                 pending,
                 next_id: Arc::new(AtomicU64::new(1)),
-                child: child_handle,
+                child_control: child_control_tx,
             },
             events: event_rx,
         })
@@ -301,10 +295,47 @@ impl PiRpc {
     /// Kill the Pi child process. Used during extension bisection probes so
     /// each probe tears down cleanly instead of leaking an OS process.
     pub async fn kill(&self) {
-        let mut guard = self.child.lock().await;
-        if let Some(child) = guard.as_mut() {
-            let _ = child.kill().await;
+        let (done_tx, done_rx) = oneshot::channel();
+        if self.child_control.send(ChildControl::Kill(done_tx)).is_ok() {
+            let _ = done_rx.await;
         }
+    }
+}
+
+async fn wait_for_child_exit(
+    mut child: tokio::process::Child,
+    mut control: mpsc::UnboundedReceiver<ChildControl>,
+) -> String {
+    loop {
+        tokio::select! {
+            command = control.recv() => match command {
+                Some(ChildControl::Kill(done)) => {
+                    let _ = child.start_kill();
+                    let result = child.wait().await;
+                    let _ = done.send(());
+                    return describe_child_exit(result);
+                }
+                None => return describe_child_exit(child.wait().await),
+            },
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        return format!("Pi RPC process exited with {status}");
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        return format!("failed waiting for Pi RPC process: {error}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn describe_child_exit(result: std::io::Result<std::process::ExitStatus>) -> String {
+    match result {
+        Ok(status) => format!("Pi RPC process exited with {status}"),
+        Err(error) => format!("failed waiting for Pi RPC process: {error}"),
     }
 }
 
@@ -523,6 +554,32 @@ mod tests {
         assert_eq!(request_timeout("bash"), None);
         assert_eq!(request_timeout("compact"), None);
         assert_eq!(request_timeout("get_state"), Some(Duration::from_secs(300)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_does_not_block_behind_exit_wait() {
+        let mut command = Command::new("sleep");
+        command.arg("30").kill_on_drop(true);
+        let child = command.spawn().expect("spawn sleeping child");
+        let (child_control, child_control_rx) = mpsc::unbounded_channel();
+        let (writer, _writer_rx) = mpsc::unbounded_channel();
+        let rpc = PiRpc {
+            writer,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            next_id: Arc::new(AtomicU64::new(1)),
+            child_control,
+        };
+
+        let waiter = tokio::spawn(wait_for_child_exit(child, child_control_rx));
+
+        let result = tokio::time::timeout(Duration::from_millis(100), rpc.kill()).await;
+        assert!(result.is_ok(), "kill blocked behind the exit wait mutex");
+        let exit = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("killed child should be reaped promptly")
+            .expect("exit coordinator task");
+        assert!(exit.starts_with("Pi RPC process exited with"));
     }
 
     #[test]

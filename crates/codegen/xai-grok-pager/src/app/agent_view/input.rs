@@ -818,6 +818,29 @@ impl AgentView {
                 _ => InputOutcome::Changed,
             };
         }
+        if self.review_state.is_some() {
+            return match ev {
+                Event::Key(key) if key.kind != KeyEventKind::Release => {
+                    // Only leave global Quit (Ctrl-Q) to the outer registry.
+                    if registry.lookup(key, When::Always) == Some(ActionId::Quit) {
+                        return InputOutcome::Unchanged;
+                    }
+                    self.handle_review_key(key)
+                }
+                Event::Mouse(mouse) => self.handle_review_mouse(mouse),
+                Event::Paste(text) => {
+                    if let Some(state) = self.review_state.as_mut()
+                        && state.focus == crate::views::review::ReviewFocus::Preview
+                        && let Some(viewer) = state.viewer.as_mut()
+                    {
+                        viewer.handle_paste(&text);
+                        return InputOutcome::Changed;
+                    }
+                    InputOutcome::Changed
+                }
+                _ => InputOutcome::Changed,
+            };
+        }
         if self.active_modal.is_some() {
             return match ev {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
@@ -2562,5 +2585,92 @@ mod rich_textarea_paste_routing_tests {
             Some("a中\nlineb")
         );
         assert_eq!(agent.prompt.text(), "hidden prompt");
+    }
+}
+
+#[cfg(test)]
+mod review_dispatch_tests {
+    use super::test_fixtures::make_agent;
+    use crate::actions::ActionRegistry;
+    use crate::app::actions::Action;
+    use crate::app::app_view::InputOutcome;
+    use crate::scrollback::entry::EntryId;
+    use crate::views::review::{ReviewFileItem, ReviewFileKind, ReviewKindFilter, ReviewState};
+    use crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+    use ratatui::layout::Rect;
+
+    /// Open a /review-session modal as if `dispatch_review_show_session` had
+    /// run, with render hit-areas populated as a post-draw frame would.
+    fn open_review(agent: &mut crate::app::agent_view::AgentView) {
+        let mut review = ReviewState::new(
+            "Session review · 1 file(s)",
+            vec![ReviewFileItem {
+                path: "a.rs".into(),
+                kind: ReviewFileKind::Edit,
+                entry_id: EntryId::new(1),
+                additions: 1,
+                deletions: 0,
+                is_error: false,
+                op_count: 1,
+                plain_fallback: "+line\n".into(),
+            }],
+            ReviewKindFilter::Changes,
+        );
+        review.popup_area = Rect::new(0, 0, 80, 20);
+        review.list_area = Rect::new(0, 0, 20, 18);
+        review.preview_area = Rect::new(20, 0, 60, 18);
+        review.ask_area = Rect::new(0, 19, 80, 1);
+        agent.review_state = Some(review);
+    }
+
+    /// Regression: the review modal's keyboard handler was dropped by an
+    /// upstream merge, so Esc/q could not dismiss the modal and focus bled
+    /// into the underlying prompt/scrollback. Key presses must route through
+    /// `handle_review_key` while the modal is open.
+    #[test]
+    fn esc_dismisses_review_via_review_handler() {
+        let mut agent = make_agent();
+        open_review(&mut agent);
+        let outcome = agent.handle_input(
+            &Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            &ActionRegistry::defaults(),
+        );
+        assert!(
+            matches!(outcome, InputOutcome::Action(Action::ReviewDismiss)),
+            "Esc with review open must dismiss via ReviewDismiss, got {outcome:?}"
+        );
+    }
+
+    /// Regression: mouse events were forwarded to the underlying agent pane
+    /// (prompt/scrollback) instead of the review handler, so a click could
+    /// not focus/select a review pane. Left-click inside the modal must be
+    /// consumed by the review handler.
+    #[test]
+    fn left_click_inside_review_is_consumed_by_review_handler() {
+        let mut agent = make_agent();
+        open_review(&mut agent);
+        // Click on the preview pane (row 2, col 30) — not the list, not the ask bar.
+        let outcome = agent.handle_input(
+            &Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 30,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &ActionRegistry::defaults(),
+        );
+        // The review handler consumes the click (Changed) and does not touch
+        // the underlying prompt.
+        assert!(
+            matches!(outcome, InputOutcome::Changed),
+            "Left-click inside the review modal must be consumed by the review handler, got {outcome:?}"
+        );
+        assert_eq!(
+            agent.review_state.as_ref().map(|s| s.focus),
+            Some(crate::views::review::ReviewFocus::Preview),
+            "clicking the preview pane must focus the preview"
+        );
     }
 }

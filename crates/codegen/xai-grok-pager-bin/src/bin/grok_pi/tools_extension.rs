@@ -50,7 +50,8 @@ pub(super) fn configured_builtin_tools() -> String {
 /// When present, F2 preferences are skipped entirely — the allowlist is
 /// authoritative and already excludes unlisted tools.
 pub(super) fn has_explicit_tools_arg(args: &[String]) -> bool {
-    args.iter().any(|arg| arg == "--tools" || arg == "-t")
+    args.iter()
+        .any(|arg| arg == "--tools" || arg == "-t" || arg.starts_with("--tools="))
 }
 
 /// Whether the user passed `--no-tools` / `-nt` or `--no-builtin-tools` /
@@ -69,11 +70,15 @@ pub(super) fn has_no_tools_arg(args: &[String]) -> bool {
 /// Extract the comma-separated tool names from `--exclude-tools` / `-xt`.
 /// Returns `None` when the flag is absent.
 pub(super) fn excluded_tools(args: &[String]) -> Option<String> {
-    args.iter()
-        .position(|arg| arg == "--exclude-tools" || arg == "-xt")
-        .and_then(|idx| args.get(idx + 1))
-        .filter(|v| !v.is_empty())
-        .cloned()
+    for (idx, arg) in args.iter().enumerate() {
+        if let Some(value) = arg.strip_prefix("--exclude-tools=") {
+            return (!value.is_empty()).then(|| value.to_string());
+        }
+        if arg == "--exclude-tools" || arg == "-xt" {
+            return args.get(idx + 1).filter(|v| !v.is_empty()).cloned();
+        }
+    }
+    None
 }
 
 /// Whether the F2 tools extension should be injected at all.
@@ -115,6 +120,7 @@ mod tests {
             "read,grep".into()
         ]));
         assert!(has_explicit_tools_arg(&["-t".into(), "read,grep".into()]));
+        assert!(has_explicit_tools_arg(&["--tools=read,grep".into()]));
         assert!(!has_explicit_tools_arg(&[
             "--exclude-tools".into(),
             "bash".into()
@@ -144,6 +150,25 @@ mod tests {
             excluded_tools(&["-xt".into(), "grep".into()]),
             Some("grep".into())
         );
+        assert_eq!(
+            excluded_tools(&["--exclude-tools=bash,write".into()]),
+            Some("bash,write".into())
+        );
+        assert_eq!(excluded_tools(&["--exclude-tools=".into()]), None);
         assert_eq!(excluded_tools(&["--tools".into(), "read".into()]), None);
+    }
+
+    #[test]
+    fn injection_policy_respects_cli_tool_overrides() {
+        assert!(should_inject_tools_extension(&[]));
+        assert!(should_inject_tools_extension(&[
+            "--exclude-tools=bash".into()
+        ]));
+        assert!(!should_inject_tools_extension(&["--tools=read".into()]));
+        assert!(!should_inject_tools_extension(&["--no-tools".into()]));
+        assert_eq!(
+            cli_tool_exclusions(&["--exclude-tools=bash,write".into()]),
+            "bash,write"
+        );
     }
 }
