@@ -149,10 +149,12 @@ grok-pi -- --model openai/gpt-4o
 # 或: PI_BIN=pi ./run-local.sh
 ```
 
-项目内 Cargo 命令应使用 `./scripts/cargo-shared.sh`：保留增量编译，
-每 6 小时最多清理 8 个过期增量缓存，并在剩余空间低于 20 GiB 前停止。
-只有明确确认风险时才覆盖 `CARGO_MIN_FREE_GIB`；单次命令可用
-`CARGO_MAINTENANCE=0` 禁用清理。
+项目内 Cargo 命令应使用 `./scripts/cargo-shared.sh`：默认关闭增量编译，
+生成的 target 默认硬上限为 64 GiB，并在剩余空间低于 20 GiB 前停止。
+可用 `CARGO_TARGET_MAX_GIB` 覆盖容量上限；maintenance 会先清理遗留的
+incremental 缓存，若已超限的 target 仍过大则执行 `cargo clean`。只有明确确认
+风险时才覆盖 `CARGO_MIN_FREE_GIB`；单次命令可用 `CARGO_MAINTENANCE=0`
+跳过命令前 maintenance，但运行中的 disk guard 仍会执行两项上限保护。
 
 运行验证：
 

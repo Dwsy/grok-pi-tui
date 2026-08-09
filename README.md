@@ -152,10 +152,13 @@ Requirements: Rust **1.92.0**, Node.js **22.19.0 or newer**, npm, and a system P
 # or: PI_BIN=pi ./run-local.sh
 ```
 
-Project Cargo commands should go through `./scripts/cargo-shared.sh`: it keeps
-incremental compilation enabled, prunes at most 8 incremental caches every 6 hours,
-and stops before free space falls below 20 GiB. Override `CARGO_MIN_FREE_GIB` only
-deliberately; set `CARGO_MAINTENANCE=0` to disable pruning for one command.
+Project Cargo commands should go through `./scripts/cargo-shared.sh`: incremental
+compilation is disabled by default, the generated target is capped at 64 GiB, and
+Cargo stops before free space falls below 20 GiB. Override the target cap with
+`CARGO_TARGET_MAX_GIB`; maintenance clears legacy incremental caches first and runs
+`cargo clean` if an already-over-cap target remains too large. Override
+`CARGO_MIN_FREE_GIB` only deliberately; set `CARGO_MAINTENANCE=0` to skip one
+pre-command maintenance pass (the running disk guard still enforces both limits).
 
 Run verification with:
 
