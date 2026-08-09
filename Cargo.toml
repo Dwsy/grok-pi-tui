@@ -344,7 +344,7 @@ zip = "3"
 zstd = "0.13"
 
 [profile.release]
-incremental = true
+incremental = false
 panic = "abort"
 
 # Hardened release profile for shipping to end users (alpha + stable).
@@ -387,7 +387,7 @@ inherits = "release-dist"
 
 [profile.dev]
 panic = "abort"
-incremental = true
+incremental = false
 split-debuginfo = "unpacked"
 codegen-units = 128
 debug = "line-tables-only"
@@ -396,7 +396,7 @@ lto = false
 
 [profile.bench]
 debug = false
-incremental = true
+incremental = false
 
 [workspace.lints.clippy]
 # prost 0.14 renders proto doc-comment bullet lists in a way that trips this

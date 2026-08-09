@@ -1,9 +1,9 @@
 # Keep local Cargo runs bounded: fewer compiler workers reduce temporary disk
-# pressure. Incremental compilation stays enabled; scripts/cargo-shared.sh
-# periodically prunes only stale incremental cache directories.
+# pressure. Incremental compilation is disabled because this workspace can retain
+# tens of GiB of object/debug generations across repeated local builds.
 [build]
 jobs = 2
-incremental = true
+incremental = false
 
 [net]
 retry = 1

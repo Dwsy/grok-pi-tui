@@ -71,8 +71,17 @@ fi
 
 if [[ -L "$LOCAL_TARGET" ]]; then
   if [[ ! -d "$LOCAL_TARGET" ]]; then
-    echo "error: broken Cargo target symlink: $LOCAL_TARGET" >&2
-    exit 1
+    LINK_TARGET="$(readlink "$LOCAL_TARGET")"
+    if [[ "$LINK_TARGET" != /* ]]; then
+      LINK_TARGET="$(dirname "$LOCAL_TARGET")/$LINK_TARGET"
+    fi
+    if [[ "$LINK_TARGET" != "$SHARED_TARGET" ]]; then
+      echo "error: broken Cargo target symlink points outside the repository shared cache" >&2
+      echo "expected: $SHARED_TARGET" >&2
+      echo "actual:   $LINK_TARGET" >&2
+      exit 1
+    fi
+    mkdir -p "$SHARED_TARGET"
   fi
   LOCAL_REAL="$(cd "$LOCAL_TARGET" && pwd -P)"
   SHARED_REAL="$(cd "$SHARED_TARGET" 2>/dev/null && pwd -P || true)"
