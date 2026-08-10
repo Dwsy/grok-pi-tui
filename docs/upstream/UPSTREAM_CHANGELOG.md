@@ -35,7 +35,7 @@ Each entry records:
 
 ## [75e73f3] — 2026-08-10
 
-> **Status:** Pending — not yet merged into grok-pi.
+> **Status:** Merged — integrated on `sync/upstream-75e73f3` as merge commit `dc690ac2139cd62bf7c44400da704e3dc5ff52b9`; validation was static-only (no Cargo).
 
 - **Sync range:** `a5589e9..75e73f3` (`a5589e958437d79e13db026eedcb1720bffd4063` → `75e73f3d6ac0350d211f12ae7d57c2c0aad72576`)
 - **Upstream commits:** 4 (`Synced from monorepo`)
