@@ -637,19 +637,11 @@ impl AcpUpdateTracker {
                 // without this arm the first segment never pre-creates.
                 .unwrap_or(!meta.is_replay);
             if stream_boundary {
-                let thinking_has_content = self
-                    .current_thinking
-                    .and_then(|id| scrollback.get_by_id(id))
-                    .is_some_and(|e| {
-                        if let RenderBlock::Thinking(t) = &e.block {
-                            !t.text().is_empty()
-                        } else {
-                            false
-                        }
-                    });
-                if thinking_has_content {
-                    self.finish_thinking(scrollback);
-                }
+                // Always release the previous stream's thinking entry. Empty
+                // pre-created blocks are removed by `finish_thinking`; keeping
+                // one here makes `current_thinking` leak across model/stream
+                // switches and falsely reports `TurnActivity::Thinking`.
+                self.finish_thinking(scrollback);
                 if let Some(agent_id) = self.current_agent_msg.take() {
                     scrollback.finish_running(agent_id);
                 }
@@ -4691,6 +4683,58 @@ mod tests {
         );
         crate::appearance::cache::set_show_thinking_blocks(true);
     }
+    /// A new stream boundary must discard an empty pre-created thinking block.
+    ///
+    /// Model switching can start a fresh stream before the previous stream emits
+    /// its first thinking token. The old empty block must not remain registered
+    /// as the active thinking entry across that boundary.
+    #[test]
+    fn stream_start_replaces_empty_precreated_thinking() {
+        crate::appearance::cache::set_show_thinking_blocks(true);
+        let mut sb = ScrollbackState::new();
+        let mut tracker = AcpUpdateTracker::new();
+
+        tracker.handle_update(
+            acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
+                acp::SessionModeId::new("default"),
+            )),
+            &meta_stream(1_000),
+            &mut sb,
+        );
+        let first_id = tracker
+            .current_thinking
+            .expect("first stream should pre-create thinking");
+        assert_eq!(sb.len(), 1);
+
+        tracker.handle_update(
+            acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
+                acp::SessionModeId::new("default"),
+            )),
+            &meta_stream(2_000),
+            &mut sb,
+        );
+
+        let second_id = tracker
+            .current_thinking
+            .expect("new stream should pre-create a fresh thinking block");
+        assert_ne!(
+            first_id, second_id,
+            "empty thinking entry from the previous stream must not survive the boundary"
+        );
+        assert!(
+            sb.get_by_id(first_id).is_none(),
+            "old empty thinking entry should be removed"
+        );
+        assert!(
+            sb.get_by_id(second_id).is_some_and(
+                |e| matches!(&e.block, RenderBlock::Thinking(t) if t.text().is_empty())
+            ),
+            "replacement thinking entry should be the new empty pre-create"
+        );
+        assert_eq!(sb.len(), 1, "only the fresh pre-created block should remain");
+        crate::appearance::cache::set_show_thinking_blocks(true);
+    }
+
     /// Replay must not pre-create empty thinking on first streamStartMs alone.
     #[test]
     fn first_replay_stream_start_does_not_pre_create_thinking() {

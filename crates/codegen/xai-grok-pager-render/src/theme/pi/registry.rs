@@ -11,11 +11,119 @@ use crate::theme::Theme;
 /// Canonical id prefix for Pi themes in Grok config / slash UI.
 pub const PI_THEME_PREFIX: &str = "pi:";
 
-const BUILTIN_DARK: &str = include_str!("../../../assets/pi-themes/dark.json");
-const BUILTIN_LIGHT: &str = include_str!("../../../assets/pi-themes/light.json");
-const BUILTIN_TRANSPARENT: &str = include_str!("../../../assets/pi-themes/transparent.json");
-const BUILTIN_TRANSPARENT_LIGHT: &str =
-    include_str!("../../../assets/pi-themes/transparent-light.json");
+macro_rules! builtin_theme {
+    ($file:literal) => {
+        include_str!(concat!("../../../assets/pi-themes/", $file))
+    };
+}
+
+/// Pi themes embedded into the binary. Keep this manifest in filename order so
+/// additions are reviewable and deterministic; registry presentation still
+/// sorts by the JSON `name` field.
+const BUILTIN_THEMES: &[&str] = &[
+    builtin_theme!("alabaster.json"),
+    builtin_theme!("amethyst.json"),
+    builtin_theme!("anthracite.json"),
+    builtin_theme!("basalt.json"),
+    builtin_theme!("birch.json"),
+    builtin_theme!("dark-abyss.json"),
+    builtin_theme!("dark-arctic.json"),
+    builtin_theme!("dark-aurora.json"),
+    builtin_theme!("dark-catppuccin.json"),
+    builtin_theme!("dark-cavern.json"),
+    builtin_theme!("dark-copper.json"),
+    builtin_theme!("dark-cosmos.json"),
+    builtin_theme!("dark-cyberpunk.json"),
+    builtin_theme!("dark-dracula.json"),
+    builtin_theme!("dark-eclipse.json"),
+    builtin_theme!("dark-ember.json"),
+    builtin_theme!("dark-equinox.json"),
+    builtin_theme!("dark-forest.json"),
+    builtin_theme!("dark-github.json"),
+    builtin_theme!("dark-gruvbox.json"),
+    builtin_theme!("dark-lavender.json"),
+    builtin_theme!("dark-lunar.json"),
+    builtin_theme!("dark-midnight.json"),
+    builtin_theme!("dark-monochrome.json"),
+    builtin_theme!("dark-monokai.json"),
+    builtin_theme!("dark-nebula.json"),
+    builtin_theme!("dark-nord.json"),
+    builtin_theme!("dark-ocean.json"),
+    builtin_theme!("dark-one.json"),
+    builtin_theme!("dark-poimandres.json"),
+    builtin_theme!("dark-rainforest.json"),
+    builtin_theme!("dark-reef.json"),
+    builtin_theme!("dark-retro.json"),
+    builtin_theme!("dark-rose-pine.json"),
+    builtin_theme!("dark-sakura.json"),
+    builtin_theme!("dark-slate.json"),
+    builtin_theme!("dark-solarized.json"),
+    builtin_theme!("dark-solstice.json"),
+    builtin_theme!("dark-starfall.json"),
+    builtin_theme!("dark-sunset.json"),
+    builtin_theme!("dark-swamp.json"),
+    builtin_theme!("dark-synthwave.json"),
+    builtin_theme!("dark-taiga.json"),
+    builtin_theme!("dark-terminal.json"),
+    builtin_theme!("dark-tokyo-night.json"),
+    builtin_theme!("dark-tundra.json"),
+    builtin_theme!("dark-twilight.json"),
+    builtin_theme!("dark-volcanic.json"),
+    builtin_theme!("dark.json"),
+    builtin_theme!("graphite.json"),
+    builtin_theme!("light-arctic.json"),
+    builtin_theme!("light-aurora-day.json"),
+    builtin_theme!("light-canyon.json"),
+    builtin_theme!("light-catppuccin.json"),
+    builtin_theme!("light-cirrus.json"),
+    builtin_theme!("light-coral.json"),
+    builtin_theme!("light-cyberpunk.json"),
+    builtin_theme!("light-dawn.json"),
+    builtin_theme!("light-dunes.json"),
+    builtin_theme!("light-eucalyptus.json"),
+    builtin_theme!("light-forest.json"),
+    builtin_theme!("light-frost.json"),
+    builtin_theme!("light-github.json"),
+    builtin_theme!("light-glacier.json"),
+    builtin_theme!("light-gruvbox.json"),
+    builtin_theme!("light-haze.json"),
+    builtin_theme!("light-honeycomb.json"),
+    builtin_theme!("light-lagoon.json"),
+    builtin_theme!("light-lavender.json"),
+    builtin_theme!("light-meadow.json"),
+    builtin_theme!("light-mint.json"),
+    builtin_theme!("light-monochrome.json"),
+    builtin_theme!("light-ocean.json"),
+    builtin_theme!("light-one.json"),
+    builtin_theme!("light-opal.json"),
+    builtin_theme!("light-orchard.json"),
+    builtin_theme!("light-paper.json"),
+    builtin_theme!("light-poimandres.json"),
+    builtin_theme!("light-prism.json"),
+    builtin_theme!("light-retro.json"),
+    builtin_theme!("light-sand.json"),
+    builtin_theme!("light-savanna.json"),
+    builtin_theme!("light-solarized.json"),
+    builtin_theme!("light-soleil.json"),
+    builtin_theme!("light-sunset.json"),
+    builtin_theme!("light-synthwave.json"),
+    builtin_theme!("light-tokyo-night.json"),
+    builtin_theme!("light-wetland.json"),
+    builtin_theme!("light-zenith.json"),
+    builtin_theme!("light.json"),
+    builtin_theme!("limestone.json"),
+    builtin_theme!("mahogany.json"),
+    builtin_theme!("marble.json"),
+    builtin_theme!("obsidian.json"),
+    builtin_theme!("onyx.json"),
+    builtin_theme!("pearl.json"),
+    builtin_theme!("porcelain.json"),
+    builtin_theme!("quartz.json"),
+    builtin_theme!("sandstone.json"),
+    builtin_theme!("titanium.json"),
+    builtin_theme!("transparent-light.json"),
+    builtin_theme!("transparent.json"),
+];
 
 /// Metadata for a registered Pi theme (palette may be loaded lazily).
 #[derive(Debug, Clone)]
@@ -87,10 +195,9 @@ pub fn ensure_builtins() {
     if guard.initialized {
         return;
     }
-    register_builtin(&mut guard, BUILTIN_DARK);
-    register_builtin(&mut guard, BUILTIN_LIGHT);
-    register_builtin(&mut guard, BUILTIN_TRANSPARENT);
-    register_builtin(&mut guard, BUILTIN_TRANSPARENT_LIGHT);
+    for json in BUILTIN_THEMES {
+        register_builtin(&mut guard, json);
+    }
     guard.initialized = true;
 }
 
@@ -115,7 +222,7 @@ fn register_builtin(state: &mut RegistryState, json: &str) {
 /// Discover Pi themes from standard locations (Pi-aligned).
 ///
 /// Order (first wins on name collision):
-/// 1. Embedded builtins (`dark`, `light`)
+/// 1. Embedded builtins from `assets/pi-themes/*.json`
 /// 2. `~/.pi/agent/themes/*.json`
 /// 3. `<cwd>/.pi/themes/*.json`
 /// 4. Paths from `PI_THEME_PATHS` (os path separator list)
@@ -370,10 +477,13 @@ mod tests {
         ensure_builtins();
         let list = list_themes();
         let names: Vec<_> = list.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(list.len(), BUILTIN_THEMES.len());
         assert!(names.contains(&"dark"));
         assert!(names.contains(&"light"));
         assert!(names.contains(&"transparent"));
         assert!(names.contains(&"transparent-light"));
+        assert!(names.contains(&"dark-tokyo-night"));
+        assert!(names.contains(&"alabaster"));
         let (id, theme) = load_palette("pi:dark").unwrap();
         assert_eq!(id, "pi:dark");
         assert!(theme.is_dark());

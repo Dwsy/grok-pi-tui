@@ -4,9 +4,9 @@ All notable changes to **grok-pi** (Pi agent core in Grok Build's production TUI
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.0.15] - 2026-08-05
+## [0.0.15] - 2026-08-09
 
-Range: `v0.0.14` → `v0.0.15` (2026-07-31 → 2026-08-05).
+Range: `v0.0.14` → `v0.0.15` (2026-07-31 → 2026-08-09).
 
 > **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
 
@@ -34,6 +34,17 @@ Range: `v0.0.14` → `v0.0.15` (2026-07-31 → 2026-08-05).
 
 - Integrated Grok Build `a422116` while preserving the documented Pi-Grok seams.
 - Project documentation and verification commands now consistently use the guarded shared-Cargo wrapper.
+
+### Fixed (2026-08-09)
+
+- Pi RPC child is now owned by a dedicated exit-coordinator channel, so `kill()` never blocks behind `Child::wait()` (previously a mutex could stall shutdown).
+- Every Pi bootstrap is bounded by a 60 s deadline, so a stuck extension startup no longer hangs grok-pi; startup recovery is documented in `--help`.
+- CLI tool parsing accepts `--tools=/--exclude-tools=`, and the tools extension is only injected when no explicit tool override is present.
+- Review modal key/mouse/paste routing is restored (an upstream merge dropped `handle_review_key`), so Esc/q dismiss and click-to-focus work again.
+
+### Changed (2026-08-09)
+
+- Incremental compilation is disabled by default and the shared Cargo target is hard-capped at 64 GiB (`CARGO_TARGET_MAX_GIB`); maintenance clears legacy incremental caches first, then falls back to `cargo clean`. The disk guard enforces the cap live so a single Cargo call cannot overflow the shared target.
 
 ## [0.0.14] - 2026-07-31
 

@@ -262,13 +262,14 @@ mod tests {
             let items = cmd.suggest_args(&ctx, "").expect("should return items");
             assert_eq!(items[0].insert_text, "auto");
             assert!(items[0].description.contains("follow system"));
-            // auto + Grok available + Pi builtins (dark, light)
+            // auto + Grok available + every embedded/discovered Pi theme
             assert_eq!(
                 items.len(),
                 ThemeKind::available().len() + 1 + pi_theme::list_themes().len()
             );
             assert!(items.iter().any(|i| i.insert_text == "pi:dark"));
             assert!(items.iter().any(|i| i.insert_text == "pi:light"));
+            assert!(items.iter().any(|i| i.insert_text == "pi:dark-tokyo-night"));
         });
     }
 

@@ -7,7 +7,6 @@
 		"green": "#588458",
 		"red": "#aa5555",
 		"yellow": "#9a7326",
-		"text": "#1f2328",
 		"mediumGray": "#6c6c6c",
 		"dimGray": "#767676",
 		"lightGray": "#b0b0b0",
@@ -28,21 +27,19 @@
 		"warning": "yellow",
 		"muted": "mediumGray",
 		"dim": "dimGray",
-		"text": "text",
+		"text": "",
 		"thinkingText": "mediumGray",
-
 		"selectedBg": "selectedBg",
 		"userMessageBg": "userMsgBg",
-		"userMessageText": "text",
+		"userMessageText": "",
 		"customMessageBg": "customMsgBg",
-		"customMessageText": "text",
+		"customMessageText": "",
 		"customMessageLabel": "#7e57c2",
 		"toolPendingBg": "toolPendingBg",
 		"toolSuccessBg": "toolSuccessBg",
 		"toolErrorBg": "toolErrorBg",
-		"toolTitle": "text",
+		"toolTitle": "",
 		"toolOutput": "mediumGray",
-
 		"mdHeading": "yellow",
 		"mdLink": "blue",
 		"mdLinkUrl": "dimGray",
@@ -53,11 +50,9 @@
 		"mdQuoteBorder": "mediumGray",
 		"mdHr": "mediumGray",
 		"mdListBullet": "green",
-
 		"toolDiffAdded": "green",
 		"toolDiffRemoved": "red",
 		"toolDiffContext": "mediumGray",
-
 		"syntaxComment": "#008000",
 		"syntaxKeyword": "#0000FF",
 		"syntaxFunction": "#795E26",
@@ -67,15 +62,12 @@
 		"syntaxType": "#267F99",
 		"syntaxOperator": "#000000",
 		"syntaxPunctuation": "#000000",
-
 		"thinkingOff": "lightGray",
 		"thinkingMinimal": "#767676",
 		"thinkingLow": "blue",
 		"thinkingMedium": "teal",
 		"thinkingHigh": "#875f87",
 		"thinkingXhigh": "#8b008b",
-		"thinkingMax": "#af005f",
-
 		"bashMode": "green"
 	},
 	"export": {
