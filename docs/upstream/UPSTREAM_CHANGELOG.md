@@ -33,6 +33,113 @@ Each entry records:
 
 <!-- entries below this line -->
 
+## [75e73f3] — 2026-08-10
+
+> **Status:** Pending — not yet merged into grok-pi.
+
+- **Sync range:** `a5589e9..75e73f3` (`a5589e958437d79e13db026eedcb1720bffd4063` → `75e73f3d6ac0350d211f12ae7d57c2c0aad72576`)
+- **Upstream commits:** 4 (`Synced from monorepo`)
+- **SOURCE_REV (monorepo SHA):** `a61c32b12a2b400f212221cd8762e05f9b36828d` (was `4d6d11372ab8f73026a78c45a7b7e7b1310eb39f`)
+- **Diff size:** 406 files changed, +36871 / -12418
+
+### Summary
+
+Pager/Shell lifecycle, rewind, usage UI, memory trace, worktree, MCP and task/subagent safety dominate this range. It overlaps 89 locally changed files and predicts 18 content conflicts, so integration stays isolated and preserves Pi-owned agent/session/queue semantics.
+
+### Areas touched
+
+| Area | Files | +/- | Added / Deleted |
+|---|---:|---:|---:|
+| Pager (TUI) | 167 | +14563/-3497 | 19/0 |
+| Shell (agent runtime) | 117 | +11275/-7652 | 13/3 |
+| Workspace / Permission | 29 | +4149/-564 | 5/0 |
+| Tools | 45 | +2950/-215 | 7/0 |
+| Telemetry / Mixpanel | 10 | +1690/-41 | 2/0 |
+| Root / meta | 9 | +1318/-187 | 0/0 |
+| Worktree / GC | 4 | +347/-134 | 0/0 |
+| Other crates | 7 | +287/-24 | 0/0 |
+| Update / Version | 4 | +167/-26 | 0/0 |
+| Sandbox | 4 | +29/-29 | 0/0 |
+| Textarea / Inline | 2 | +30/-18 | 0/0 |
+| Agent lifecycle | 3 | +37/-3 | 0/0 |
+| Models / Sampling | 1 | +16/-18 | 0/0 |
+| Token estimation | 1 | +3/-5 | 0/0 |
+| Config | 1 | +7/-0 | 0/0 |
+| Chat state | 1 | +2/-4 | 0/0 |
+| Markdown / Mermaid | 1 | +1/-1 | 0/0 |
+| **Total** | **406** | **+36871/-12418** | **46/3** |
+
+### Added
+
+- Show what ~/.grok uses on disk with grok du
+- Name the startup phase a slow launch is stuck in
+- Export whether a tool only reads
+- Conversation-only /rewind with confirm before rewind
+- Show leader version mismatch in scrollback
+- Expose Auto decision telemetry
+- Typed Voice/Finance ToolUsageCard variants with client render support
+- Report box in the /feedback card
+- Bundle memory traces in the session trace export
+- Tabbed usage/session-info modal for /usage, /session-info, and /context
+- Detect standalone grok worktrees for branch display
+- Suggest registered skill paths on failed reads
+- Diagnose scroll anchor jolts
+- Protect the tools server from the OOM killer and attribute OOM kills
+
+### Changed
+
+- Bound and measure how many subagents a session runs at once
+- Prefill dashboard Ctrl+R rename with existing session title
+- Warn and skip NotebookEdit/NotebookRead (like EnterWorktree)
+- Full-jitter the reconnect backoff and gate the attempt reset on stability
+- Tell WebLogin users to run grok update before re-authenticating
+- Drop the Beta label from the product
+- Speed up empty TUI exit
+- Bump plugin CTA debounce to 500ms
+- Name latest Windows download Grok Setup.exe
+- Allow Send Now throughout goal mode
+- Make non-blocking startup structural
+- Speed up local /resume on large session transcripts
+- include untracked files in HEAD→working git diff stats
+
+### Fixed
+
+- Launching many shell instances no longer locks the shared session search index
+- Keep colliding skills invocable beside builtins
+- Bound post-kill reaps so D-state children cannot wedge the turn
+- Goal checker uses session model without eval timeout
+- Keep the composer’s mode when the /feedback pane opens
+- Wrap /btw overlay errors instead of truncating to one line
+- Fix PROMPT_COMPLETE_DEPRECATION.md path in deprecation TODOs
+- Esc and the [stop] button suppress task wakes like Ctrl+C
+- Forward queue hold_edit/release_edit in leader mode
+- Guard in-process git status/diff from client spam
+- Make session recaps follow the session language instead of always English
+- Honor startupHints on session request metadata; fix headless MCP connecting reminder
+- Make memory trace wait signal-safe
+- Keep standalone worktree flag across cwd switch and resume
+- A requested quit always exits the process
+- Answer HITL ExtMethods on -p
+- Bound .envrc evaluation so a blocked read can't freeze session load
+- Drain subagents before session delete
+- Honest system.notify acks for synchronous pre-forward drops
+- fix(textarea): Home/End jump to logical line when prompt is wrapped
+- fix(sandbox): gate Linux-only hook write-deny code off macOS
+- fix(pager): do not clobber worktree badge when opening the dashboard
+
+### Removed / Deprecated
+
+- Remove stale extracted platform skills that shadow bundled skills
+- Remove legacy managed MCP configs client from shell and pager
+
+### Merge risk for grok-pi
+
+- Static preflight reports 18 content conflicts in Pager ACP/dispatch/event-loop/app/modals/context/scrollback/slash/views and Shell workflow host/manager.
+- 89 upstream-touched files also changed locally since `a5589e9`; auto-merged files still require seam review.
+- Preserve Pager-only TUI, Pi-owned agent/session/queue, headless adapter, and no Pi-source RPC extensions.
+- Verification is static-only by user instruction; no Cargo build/test/check commands may run.
+
+
 ## [a5589e9] — 2026-08-07
 
 > **Status:** Integrated and verified; delivered to local `main` via `sync/upstream-a5589e9` after explicit user authorization; not pushed.
