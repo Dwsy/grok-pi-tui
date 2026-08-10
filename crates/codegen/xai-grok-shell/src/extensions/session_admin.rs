@@ -274,12 +274,10 @@ async fn handle_session_delete(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtR
     let needs_remote =
         agent.is_writeback_storage() && agent.current_auth().is_some_and(|a| !a.is_zdr_team());
 
-    // Tear down any live actor first (cancel turn/subagents/bg tasks,
-    // process-scope kill, flush). Then wipe history so shutdown cannot
-    // rewrite the session directory after delete.
-    if agent.is_resident(&session_id) {
-        agent.teardown_live_session_before_delete(&session_id).await;
-    }
+    // Always drain: even a non-resident session can still have coordinator
+    // children finishing after an earlier fire-and-forget TeardownSession
+    // (e.g. idle unload). hard_stop / kill_all no-op when not resident.
+    agent.teardown_live_session_before_delete(&session_id).await;
 
     // Shared delete: remote-first, then local disk + FTS eviction.
     // Mirrored by the `grok sessions delete <id>` CLI path.
@@ -351,16 +349,12 @@ async fn handle_update_mcp_servers(agent: &MvpAgent, args: &acp::ExtRequest) -> 
         (h, cwd)
     };
 
-    // Await managed first, then one compat snapshot for admit + merge so a
-    // settings reapply mid-await cannot make the seed and spawned set disagree.
-    let managed = agent.get_managed_mcp_configs().await;
     let compat = agent.cfg.borrow().compat_resolved;
     let admitted =
         crate::session::managed_mcp::admit_client_mcp_servers(params.mcp_servers, &cwd, &compat);
     let merged = crate::session::managed_mcp::merge_managed_mcp_servers(
         admitted.clone(),
         &cwd,
-        &managed,
         agent.plugin_registry_handle().snapshot().as_deref(),
         &compat,
     );
@@ -457,7 +451,6 @@ async fn handle_reload_all_mcp_servers(agent: &MvpAgent) -> ExtResult {
             .map_err(|e| acp::Error::internal_error().data(e.to_string()));
     }
 
-    let managed = agent.get_managed_mcp_configs().await;
     let mut updated = 0u32;
     for session_id in &session_ids {
         let Some(handle) = agent.resident_handle(session_id) else {
@@ -466,18 +459,16 @@ async fn handle_reload_all_mcp_servers(agent: &MvpAgent) -> ExtResult {
         let cwd = std::path::PathBuf::from(&handle.info.cwd);
         let compat = agent.cfg.borrow().compat_resolved;
         // Re-seed the merge with the session's original client-provided MCP
-        // servers (e.g. a managed connector injected at `session/new` by a
-        // client session binding). `merge_managed_mcp_servers` already
-        // re-reads every disk source (config.toml, plugins, ~/.claude.json,
-        // ~/.cursor/mcp.json, .mcp.json) internally, so passing
-        // `load_mcp_servers()` output here was redundant — and silently
-        // dropped client servers that exist in no on-disk config, tearing
-        // them down on every config hot-reload.
+        // servers (e.g. a client session binding injected at `session/new`).
+        // `merge_managed_mcp_servers` already re-reads every disk source
+        // (config.toml, plugins, ~/.claude.json, ~/.cursor/mcp.json, .mcp.json)
+        // internally, so passing `load_mcp_servers()` output here was redundant
+        // — and silently dropped client servers that exist in no on-disk config,
+        // tearing them down on every config hot-reload.
         if crate::session::managed_mcp::merge_and_send_managed_mcp_update(
             &handle.cmd_tx,
             &cwd,
             handle.initial_client_mcp_servers.clone(),
-            &managed,
             agent.plugin_registry_handle().snapshot().as_deref(),
             &compat,
         ) {
@@ -530,7 +521,6 @@ async fn handle_reload_project_mcp_servers(agent: &MvpAgent, args: &acp::ExtRequ
             .map_err(|e| acp::Error::internal_error().data(e.to_string()));
     }
 
-    let managed = agent.get_managed_mcp_configs().await;
     let mut updated = 0u32;
     for (session_id, cwd) in &session_ids {
         let Some(handle) = agent.resident_handle(session_id) else {
@@ -543,7 +533,6 @@ async fn handle_reload_project_mcp_servers(agent: &MvpAgent, args: &acp::ExtRequ
         let merged = crate::session::managed_mcp::merge_managed_mcp_servers(
             handle.initial_client_mcp_servers.clone(),
             cwd,
-            &managed,
             agent.plugin_registry_handle().snapshot().as_deref(),
             &agent.cfg.borrow().compat_resolved,
         );

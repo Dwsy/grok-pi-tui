@@ -6,7 +6,6 @@ use git2::{DiffOptions, Repository, StatusOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use url::Url;
@@ -56,9 +55,6 @@ pub struct DiffSizeExceededFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit_lines: Option<u64>,
 }
-/// Cache for git status results to avoid redundant expensive computations.
-/// Cache is invalidated after TTL or when commit hash changes.
-pub const GIT_STATUS_CACHE_TTL: Duration = Duration::from_secs(2);
 /// Run a git CLI command and return stdout on success, or error with stderr.
 ///
 /// All invocations use `--no-optional-locks` to prevent background stat-cache
@@ -105,6 +101,14 @@ pub async fn git_cli(cwd: &Path, args: &[&str]) -> Result<String> {
             }
         ))
     }
+}
+/// Mutating [`git_cli`]: bump the gate epoch after the attempt. Failed
+/// commands can still change the repo (`pull --rebase` conflicts, partial
+/// checkout); skipping invalidate would keep pre-mutation snapshots.
+async fn git_cli_mut(cwd: &Path, args: &[&str]) -> Result<String> {
+    let result = git_cli(cwd, args).await;
+    super::git_gate::invalidate(cwd);
+    result
 }
 /// Run a jj CLI command and return stdout on success, or error with stderr.
 ///
@@ -409,6 +413,7 @@ pub fn change_type_from_git2_delta(delta: git2::Delta) -> ChangeType {
         git2::Delta::Renamed => ChangeType::Rename,
         git2::Delta::Copied => ChangeType::Copy,
         git2::Delta::Typechange => ChangeType::Typechange,
+        git2::Delta::Untracked => ChangeType::Untracked,
         other => {
             tracing::warn!(?other, "unexpected git delta type, treating as Edit");
             ChangeType::Edit
@@ -485,28 +490,67 @@ pub async fn get_branch(cwd: &Path) -> Option<String> {
         .ok()
         .filter(|b| !b.is_empty())
 }
-/// Returns (is_worktree, main_repo_display_name) if this is a worktree.
-/// The display name is the main repo path, preferably relative to $HOME as ~...
+/// Path-component tilde collapse (`~/src/repo`). String prefix matching would
+/// treat `HOME=/Users/u` as a prefix of `/Users/user/xai`.
+fn collapse_home_path(path: &Path, home: Option<&Path>) -> String {
+    let Some(home) = home else {
+        return path.display().to_string();
+    };
+    let home = PathBuf::from(
+        home.as_os_str()
+            .to_string_lossy()
+            .trim_end_matches(['/', '\\']),
+    );
+    path.strip_prefix(&home)
+        .map(|rest| format!("~/{}", rest.display()))
+        .unwrap_or_else(|_| path.display().to_string())
+}
+/// Returns (is_worktree, main_repo_display_name) if this is a git checkout.
+/// `None` when `cwd` is not inside a repo. The display name is the main repo
+/// path, preferably relative to $HOME as ~...
 pub async fn get_worktree_info(cwd: &Path) -> Option<(bool, Option<String>)> {
     let cwd = cwd.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let repo = Repository::discover(&cwd).ok()?;
-        let git_dir = repo.path().to_path_buf();
-        let common_dir = repo.commondir();
-        let is_worktree = git_dir != common_dir;
-        if !is_worktree {
-            return Some((false, None));
-        }
-        let main_root = common_dir.parent().map(|p| p.to_path_buf())?;
-        let display = if let Ok(home) = std::env::var("HOME") {
-            main_root
-                .strip_prefix(&home)
-                .map(|s| format!("~{}", s.display()))
-                .unwrap_or_else(|_| main_root.display().to_string())
-        } else {
-            main_root.display().to_string()
+        let display = |path: &Path| -> String {
+            collapse_home_path(path, std::env::var("HOME").ok().as_deref().map(Path::new))
         };
-        Some((true, Some(display)))
+        let mut marker_main = None;
+        for ancestor in cwd.ancestors() {
+            let git = ancestor.join(".git");
+            if let Ok(contents) = std::fs::read_to_string(git.join("grok-worktree-source"))
+                && let trimmed = contents.trim()
+                && !trimmed.is_empty()
+            {
+                marker_main = Some(display(Path::new(trimmed)));
+                break;
+            }
+            if git.exists() {
+                break;
+            }
+        }
+        let mut db_main = None;
+        let mut db_label = None;
+        if let Ok(db) = crate::worktree::open_db() {
+            for ancestor in cwd.ancestors() {
+                if let Ok(Some(record)) = db.get(&ancestor.to_string_lossy()) {
+                    db_label = record.label().map(str::to_owned).filter(|s| !s.is_empty());
+                    if !record.source_repo.as_os_str().is_empty() {
+                        db_main = Some(display(&record.source_repo));
+                    }
+                    break;
+                }
+                if ancestor.join(".git").exists() {
+                    break;
+                }
+            }
+        }
+        let linked_main = (repo.path() != repo.commondir())
+            .then(|| repo.commondir().parent().map(display))
+            .flatten();
+        let main_repo = marker_main.or(db_main).or(linked_main);
+        let is_worktree = main_repo.is_some() || db_label.is_some();
+        Some((is_worktree, main_repo))
     })
     .await
     .ok()
@@ -534,9 +578,9 @@ pub async fn checkout_branch(git_root: &Path, branch: &str, create: bool) -> Res
         );
     }
     if create {
-        git_cli(git_root, &["checkout", "-b", branch]).await?;
+        git_cli_mut(git_root, &["checkout", "-b", branch]).await?;
     } else {
-        git_cli(git_root, &["checkout", branch]).await?;
+        git_cli_mut(git_root, &["checkout", branch]).await?;
     }
     Ok(())
 }
@@ -724,15 +768,20 @@ fn collect_diff_stats(
     pathspecs: Option<&[String]>,
     include_patch: bool,
 ) -> DiffStatsResult {
+    let base_ref = GitRef::parse(from);
+    let head_ref = GitRef::parse(to);
     let mut opts = DiffOptions::new();
     opts.ignore_submodules(true);
+    if matches!(head_ref, GitRef::Workdir) {
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .show_untracked_content(true);
+    }
     if let Some(specs) = pathspecs {
         for spec in specs {
             opts.pathspec(spec);
         }
     }
-    let base_ref = GitRef::parse(from);
-    let head_ref = GitRef::parse(to);
     let diff = match create_diff(repo, &base_ref, &head_ref, false, &mut opts) {
         Some(d) => d,
         None => {
@@ -1254,6 +1303,39 @@ pub async fn status(
     ignore_submodules: bool,
     include_patches: bool,
 ) -> Result<GitStatusData> {
+    let git_root_buf = git_root.to_path_buf();
+    super::git_gate::shared()
+        .run(
+            git_root,
+            super::git_gate::FlightOp::Status {
+                include_untracked,
+                include_stats,
+                ignore_submodules,
+                include_patches,
+            },
+            move || {
+                let git_root = git_root_buf.clone();
+                async move {
+                    status_ungated(
+                        &git_root,
+                        include_untracked,
+                        include_stats,
+                        ignore_submodules,
+                        include_patches,
+                    )
+                    .await
+                }
+            },
+        )
+        .await
+}
+async fn status_ungated(
+    git_root: &Path,
+    include_untracked: bool,
+    include_stats: bool,
+    ignore_submodules: bool,
+    include_patches: bool,
+) -> Result<GitStatusData> {
     let start = std::time::Instant::now();
     let cwd = git_root.to_path_buf();
     let (branch, upstream, remote_url) =
@@ -1490,6 +1572,53 @@ pub async fn diffs(
     include_content: bool,
     merge_base: bool,
 ) -> Result<GitDiffsData> {
+    let git_root_buf = git_root.to_path_buf();
+    let paths_buf = paths.map(|p| p.to_vec());
+    let from_owned = from.to_string();
+    let to_owned = to.to_string();
+    let mut key_paths = paths_buf.clone().unwrap_or_default();
+    key_paths.sort();
+    super::git_gate::shared()
+        .run(
+            git_root,
+            super::git_gate::FlightOp::Diff {
+                from: from_owned.clone(),
+                to: to_owned.clone(),
+                merge_base,
+                include_patch,
+                include_content,
+                paths: key_paths,
+            },
+            move || {
+                let git_root = git_root_buf.clone();
+                let paths = paths_buf.clone();
+                let from = from_owned.clone();
+                let to = to_owned.clone();
+                async move {
+                    diffs_ungated(
+                        &git_root,
+                        paths.as_deref(),
+                        &from,
+                        &to,
+                        include_patch,
+                        include_content,
+                        merge_base,
+                    )
+                    .await
+                }
+            },
+        )
+        .await
+}
+async fn diffs_ungated(
+    git_root: &Path,
+    paths: Option<&[String]>,
+    from: &str,
+    to: &str,
+    include_patch: bool,
+    include_content: bool,
+    merge_base: bool,
+) -> Result<GitDiffsData> {
     let start = std::time::Instant::now();
     let cwd = git_root.to_path_buf();
     let paths = paths.map(|p| p.to_vec());
@@ -1641,11 +1770,11 @@ pub async fn stage(git_root: &Path, paths: Option<Vec<String>>) -> Result<StageD
     let start = std::time::Instant::now();
     let paths_to_stage = paths.unwrap_or_default();
     let result = if paths_to_stage.is_empty() {
-        git_cli(git_root, &["add", "-A"]).await
+        git_cli_mut(git_root, &["add", "-A"]).await
     } else {
         let mut args = vec!["add", "--"];
         args.extend(paths_to_stage.iter().map(String::as_str));
-        git_cli(git_root, &args).await
+        git_cli_mut(git_root, &args).await
     };
     tracing::debug!(paths = paths_to_stage.len(), elapsed = ?start.elapsed(), "git.stage");
     result.map(|_| StageData {
@@ -1658,9 +1787,9 @@ pub async fn unstage(git_root: &Path, paths: Option<Vec<String>>) -> Result<()> 
         Some(p) if !p.is_empty() => {
             let mut args = vec!["reset", "HEAD", "--"];
             args.extend(p.iter().map(String::as_str));
-            git_cli(git_root, &args).await
+            git_cli_mut(git_root, &args).await
         }
-        _ => git_cli(git_root, &["reset", "HEAD"]).await,
+        _ => git_cli_mut(git_root, &["reset", "HEAD"]).await,
     };
     tracing::debug!(
         paths = paths.as_ref().map(|v| v.len()).unwrap_or(0),
@@ -1688,7 +1817,7 @@ pub async fn discard(
             args.push("--");
             args.extend(&path_refs);
         }
-        git_cli(git_root, &args).await?;
+        git_cli_mut(git_root, &args).await?;
     }
     if matches!(scope, DiscardScope::Working | DiscardScope::Both) {
         let mut args = vec!["checkout"];
@@ -1698,7 +1827,7 @@ pub async fn discard(
             args.push("--");
             args.extend(&path_refs);
         }
-        let result = git_cli(git_root, &args).await;
+        let result = git_cli_mut(git_root, &args).await;
         if !include_untracked {
             result?;
         }
@@ -1709,7 +1838,7 @@ pub async fn discard(
             args.push("--");
             args.extend(&path_refs);
         }
-        git_cli(git_root, &args).await?;
+        git_cli_mut(git_root, &args).await?;
     }
     tracing::debug!(paths = path_refs.len(), elapsed = ?start.elapsed(), "git.discard");
     Ok(())
@@ -1720,7 +1849,7 @@ pub async fn stash(git_root: &Path, include_untracked: bool) -> Result<()> {
     if include_untracked {
         args.push("--include-untracked");
     }
-    git_cli(git_root, &args).await?;
+    git_cli_mut(git_root, &args).await?;
     tracing::debug!(include_untracked, elapsed = ?start.elapsed(), "git.stash");
     Ok(())
 }
@@ -1831,7 +1960,7 @@ pub async fn stash_before_destructive_op(
         session_id,
         chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
     );
-    if let Err(e) = git_cli(
+    if let Err(e) = git_cli_mut(
         git_root,
         &["stash", "push", "--include-untracked", "-m", &message],
     )
@@ -1919,7 +2048,10 @@ pub async fn checkout_session_commit(
         stash_ref,
         stash_skipped_reason,
     };
-    if git_cli(git_root, &["checkout", target_sha]).await.is_ok() {
+    if git_cli_mut(git_root, &["checkout", target_sha])
+        .await
+        .is_ok()
+    {
         tracing::info!(
             path = %git_root.display(),
             commit = %target_sha,
@@ -1980,7 +2112,10 @@ pub async fn checkout_session_commit(
             return outcome;
         }
     }
-    if git_cli(git_root, &["checkout", target_sha]).await.is_ok() {
+    if git_cli_mut(git_root, &["checkout", target_sha])
+        .await
+        .is_ok()
+    {
         tracing::info!(
             path = %git_root.display(),
             commit = %target_sha,
@@ -2059,7 +2194,7 @@ pub(crate) async fn checkout_commit_with_fetch(
             && !output.trim().is_empty()
         {
             let msg = format!("auto-stash before checkout {head_commit}");
-            if git_cli(git_root, &["stash", "push", "-m", &msg])
+            if git_cli_mut(git_root, &["stash", "push", "-m", &msg])
                 .await
                 .is_ok()
             {
@@ -2067,7 +2202,10 @@ pub(crate) async fn checkout_commit_with_fetch(
             }
         }
     }
-    if git_cli(git_root, &["checkout", head_commit]).await.is_ok() {
+    if git_cli_mut(git_root, &["checkout", head_commit])
+        .await
+        .is_ok()
+    {
         return CheckoutCommitResponse {
             checked_out: true,
             stashed,
@@ -2125,7 +2263,7 @@ pub(crate) async fn checkout_commit_with_fetch(
             .await;
         }
     };
-    match git_cli(git_root, &["checkout", head_commit]).await {
+    match git_cli_mut(git_root, &["checkout", head_commit]).await {
         Ok(_) => CheckoutCommitResponse {
             checked_out: true,
             stashed,
@@ -2144,7 +2282,7 @@ async fn pop_checkout_auto_stash(
     error: String,
 ) -> CheckoutCommitResponse {
     if stashed {
-        let _ = git_cli(git_root, &["stash", "pop"]).await;
+        let _ = git_cli_mut(git_root, &["stash", "pop"]).await;
     }
     CheckoutCommitResponse {
         checked_out: false,
@@ -2386,7 +2524,7 @@ pub async fn soft_restore_git_state(
             };
         }
     };
-    if let Err(e) = git_cli(&git_root, &["reset", "--soft", &git_ref.head]).await {
+    if let Err(e) = git_cli_mut(&git_root, &["reset", "--soft", &git_ref.head]).await {
         tracing::warn!(
             path = %git_root.display(),
             session_id,
@@ -2395,7 +2533,7 @@ pub async fn soft_restore_git_state(
             "soft_restore_git_state: reset --soft failed"
         );
         let stash_ref = match stash_ref {
-            Some(stash) => match git_cli(&git_root, &["stash", "pop"]).await {
+            Some(stash) => match git_cli_mut(&git_root, &["stash", "pop"]).await {
                 Ok(_) => None,
                 Err(pop_err) => {
                     tracing::warn!(
@@ -2418,7 +2556,7 @@ pub async fn soft_restore_git_state(
             stash_ref,
         };
     }
-    let index_reset = match git_cli(&git_root, &["reset", "--quiet", "--", "."]).await {
+    let index_reset = match git_cli_mut(&git_root, &["reset", "--quiet", "--", "."]).await {
         Ok(_) => true,
         Err(e) => {
             tracing::warn!(
@@ -2471,7 +2609,7 @@ pub async fn restage_git_paths(cwd: &Path, git_ref: &GitStateRef, session_id: &s
     let mut batch_args: Vec<&str> = Vec::with_capacity(path_strs.len() + 2);
     batch_args.extend(["add", "--"]);
     batch_args.extend(path_strs.iter().map(String::as_str));
-    if git_cli(&git_root, &batch_args).await.is_ok() {
+    if git_cli_mut(&git_root, &batch_args).await.is_ok() {
         return true;
     }
     tracing::debug!(
@@ -2483,7 +2621,7 @@ pub async fn restage_git_paths(cwd: &Path, git_ref: &GitStateRef, session_id: &s
     let mut failed_adds = 0usize;
     for path in &git_ref.staged {
         let path_str = path.to_string_lossy();
-        if git_cli(&git_root, &["add", "--", path_str.as_ref()])
+        if git_cli_mut(&git_root, &["add", "--", path_str.as_ref()])
             .await
             .is_err()
         {
@@ -2527,6 +2665,13 @@ async fn git_cli_raw(cwd: &Path, args: &[&str]) -> Result<(bool, String)> {
         combined.push_str(&stderr);
     }
     Ok((output.status.success(), combined))
+}
+async fn git_cli_raw_mut(cwd: &Path, args: &[&str]) -> Result<(bool, String)> {
+    let result = git_cli_raw(cwd, args).await;
+    if result.is_ok() {
+        super::git_gate::invalidate(cwd);
+    }
+    result
 }
 /// Marker line guarding the default-exclude seed. Environments may pre-seed
 /// the same block at provision time under this marker; whichever side seeds
@@ -2596,7 +2741,7 @@ async fn seed_default_excludes(git_root: &Path) -> Result<()> {
 /// Push HEAD to origin, classifying the failure mode. Never forces. Returns
 /// the combined output alongside the [`PushStatus`].
 async fn push_classified(git_root: &Path) -> Result<(PushStatus, String)> {
-    let (ok, out) = git_cli_raw(git_root, &["push", "-u", "origin", "HEAD"]).await?;
+    let (ok, out) = git_cli_raw_mut(git_root, &["push", "-u", "origin", "HEAD"]).await?;
     if ok {
         return Ok((PushStatus::Ok, out));
     }
@@ -2628,7 +2773,7 @@ pub async fn commit(git_root: &Path, req: &GitCommitReq) -> Result<CommitResult>
         seed_default_excludes(git_root).await?;
     }
     if req.stage_all {
-        git_cli(git_root, &["add", "-A"]).await?;
+        git_cli_mut(git_root, &["add", "-A"]).await?;
     }
     let clean = req.stage_all
         && !req.amend
@@ -2646,7 +2791,7 @@ pub async fn commit(git_root: &Path, req: &GitCommitReq) -> Result<CommitResult>
         if req.signoff {
             args.push("--signoff");
         }
-        git_cli(git_root, &args).await?;
+        git_cli_mut(git_root, &args).await?;
         combined_output = String::new();
     }
     let mut commit_hash = git_cli(git_root, &["rev-parse", "HEAD"]).await.ok();
@@ -2660,7 +2805,7 @@ pub async fn commit(git_root: &Path, req: &GitCommitReq) -> Result<CommitResult>
     let mut warning = None;
     let mut push_status = PushStatus::NotRequested;
     if req.sync {
-        match git_cli(git_root, &["pull", "--rebase"]).await {
+        match git_cli_mut(git_root, &["pull", "--rebase"]).await {
             Ok(pull_out) => {
                 combined_output.push_str("\n--- Pull ---\n");
                 combined_output.push_str(&pull_out);
@@ -2727,7 +2872,7 @@ pub async fn sync_base(
         )
     }
     if abort {
-        let (_ok, out) = git_cli_raw(git_root, &["merge", "--abort"]).await?;
+        let (_ok, out) = git_cli_raw_mut(git_root, &["merge", "--abort"]).await?;
         anyhow::ensure!(
             !merge_in_progress(git_root).await?,
             "merge --abort failed: {out}"
@@ -2747,7 +2892,7 @@ pub async fn sync_base(
         "working tree is not clean; commit or discard changes before syncing the base"
     );
     let base = base_ref.unwrap_or("HEAD");
-    let (fetched, fetch_out) = git_cli_raw(git_root, &["fetch", "origin", base]).await?;
+    let (fetched, fetch_out) = git_cli_raw_mut(git_root, &["fetch", "origin", base]).await?;
     anyhow::ensure!(fetched, "fetch of base ref '{base}' failed: {fetch_out}");
     if git_cli_raw(
         git_root,
@@ -2760,7 +2905,8 @@ pub async fn sync_base(
             outcome: GitSyncBaseOutcome::UpToDate,
         });
     }
-    let (merged, merge_out) = git_cli_raw(git_root, &["merge", "--no-edit", "FETCH_HEAD"]).await?;
+    let (merged, merge_out) =
+        git_cli_raw_mut(git_root, &["merge", "--no-edit", "FETCH_HEAD"]).await?;
     if merged {
         let sha = git_cli(git_root, &["rev-parse", "HEAD"]).await?;
         return Ok(GitSyncBaseResult {
@@ -2780,10 +2926,11 @@ pub async fn sync_base(
     anyhow::bail!("merge of base ref '{base}' failed: {merge_out}")
 }
 pub async fn stage_content(git_root: &Path, path: &str, content: &str) -> Result<()> {
-    let git_root = git_root.to_path_buf();
+    let git_root_buf = git_root.to_path_buf();
     let path = path.to_string();
     let content = content.to_string();
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let git_root = git_root_buf;
         let repo = Repository::open(&git_root)?;
         let work_dir = repo
             .workdir()
@@ -2827,7 +2974,9 @@ pub async fn stage_content(git_root: &Path, path: &str, content: &str) -> Result
         index.write()?;
         Ok(())
     })
-    .await?
+    .await??;
+    super::git_gate::invalidate(git_root);
+    Ok(())
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3142,6 +3291,248 @@ mod tests {
             vec!["https://github.com/xai-org/example.git".to_string()],
         );
     }
+    fn init_repo_on_branch(path: &Path, branch: &str) {
+        std::fs::create_dir_all(path).unwrap();
+        let repo = git2::Repository::init(path).unwrap();
+        std::fs::write(path.join("README"), "test\n").unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        let tree_id = {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README")).unwrap();
+            index.write().unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree_id).unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let commit = repo.find_commit(oid).unwrap();
+        let current = repo
+            .head()
+            .ok()
+            .and_then(|h| h.shorthand().map(str::to_string));
+        if current.as_deref() != Some(branch) {
+            repo.branch(branch, &commit, true).unwrap();
+            repo.set_head(&format!("refs/heads/{branch}")).unwrap();
+            repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+                .unwrap();
+        }
+    }
+    fn copy_dir_all(src: &Path, dst: &Path) {
+        std::fs::create_dir_all(dst).unwrap();
+        for entry in std::fs::read_dir(src).unwrap() {
+            let entry = entry.unwrap();
+            let to = dst.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir_all(&entry.path(), &to);
+            } else {
+                std::fs::copy(entry.path(), to).unwrap();
+            }
+        }
+    }
+    fn checkout_named_branch(repo_path: &Path, branch: &str) {
+        let repo = git2::Repository::open(repo_path).unwrap();
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
+        if repo.find_branch(branch, git2::BranchType::Local).is_err() {
+            repo.branch(branch, &commit, false).unwrap();
+        }
+        repo.set_head(&format!("refs/heads/{branch}")).unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+    }
+    fn collapse_home_for_test(path: &Path) -> String {
+        collapse_home_path(path, std::env::var("HOME").ok().as_deref().map(Path::new))
+    }
+    #[test]
+    fn collapse_home_path_requires_whole_component() {
+        let home = Path::new("/Users/u");
+        assert_eq!(
+            collapse_home_path(Path::new("/Users/user/xai"), Some(home)),
+            "/Users/user/xai"
+        );
+        assert_eq!(
+            collapse_home_path(Path::new("/Users/u/src/repo"), Some(home)),
+            "~/src/repo"
+        );
+    }
+    #[tokio::test]
+    async fn get_worktree_info_standalone_grok_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        let clone = tmp.path().join("clone");
+        init_repo_on_branch(&main, "main-only");
+        copy_dir_all(&main, &clone);
+        checkout_named_branch(&clone, "wt-branch");
+        std::fs::write(
+            clone.join(".git").join("grok-worktree-source"),
+            main.display().to_string(),
+        )
+        .unwrap();
+        assert!(clone.join(".git").is_dir());
+        assert!(clone.join(".git").join("grok-worktree-source").is_file());
+        let (is_wt, main_repo) = get_worktree_info(&clone).await.expect("clone is a repo");
+        assert!(is_wt);
+        assert_eq!(
+            main_repo.as_deref(),
+            Some(collapse_home_for_test(&main).as_str())
+        );
+        assert_eq!(get_branch(&clone).await.as_deref(), Some("wt-branch"));
+        let nested = clone.join("sub").join("dir");
+        std::fs::create_dir_all(&nested).unwrap();
+        let (nested_wt, nested_main) = get_worktree_info(&nested)
+            .await
+            .expect("nested path is in the clone");
+        assert!(nested_wt);
+        assert_eq!(
+            nested_main.as_deref(),
+            Some(collapse_home_for_test(&main).as_str())
+        );
+    }
+    #[tokio::test]
+    async fn get_worktree_info_nested_plain_repo_does_not_inherit_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        let clone = tmp.path().join("clone");
+        init_repo_on_branch(&main, "main-only");
+        copy_dir_all(&main, &clone);
+        checkout_named_branch(&clone, "wt-branch");
+        std::fs::write(
+            clone.join(".git").join("grok-worktree-source"),
+            main.display().to_string(),
+        )
+        .unwrap();
+        let nested = clone.join("vendor").join("dep");
+        init_repo_on_branch(&nested, "dep-branch");
+        let (is_wt, main_repo) = get_worktree_info(&nested)
+            .await
+            .expect("nested init is a repo");
+        assert!(!is_wt);
+        assert!(main_repo.is_none());
+        assert_eq!(get_branch(&nested).await.as_deref(), Some("dep-branch"));
+    }
+    #[tokio::test]
+    async fn get_worktree_info_tilde_collapses_home_prefix() {
+        let Some(home) = std::env::var("HOME").ok().filter(|h| !h.is_empty()) else {
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let clone = tmp.path().join("clone");
+        init_repo_on_branch(&clone, "wt-branch");
+        let fake_main = PathBuf::from(&home).join("xai-fake-main-repo-for-wt-display");
+        std::fs::write(
+            clone.join(".git").join("grok-worktree-source"),
+            fake_main.display().to_string(),
+        )
+        .unwrap();
+        let (is_wt, main_repo) = get_worktree_info(&clone).await.expect("clone is a repo");
+        assert!(is_wt);
+        assert_eq!(
+            main_repo.as_deref(),
+            Some("~/xai-fake-main-repo-for-wt-display")
+        );
+    }
+    #[tokio::test]
+    async fn get_worktree_info_plain_repo_is_not_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo_on_branch(tmp.path(), "main");
+        assert_eq!(get_worktree_info(tmp.path()).await, Some((false, None)));
+    }
+    fn block_on_worktree_info(cwd: &Path) -> Option<(bool, Option<String>)> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime")
+            .block_on(get_worktree_info(cwd))
+    }
+    fn register_db_worktree(home: &Path, wt: &Path, source: &Path, label: &str) {
+        let db = xai_fast_worktree::db::WorktreeDb::open(home).unwrap();
+        db.register(&xai_fast_worktree::db::WorktreeRecord {
+            id: "db-wt".into(),
+            path: dunce::canonicalize(wt).unwrap_or_else(|_| wt.to_path_buf()),
+            source_repo: source.to_path_buf(),
+            repo_name: "main-repo".into(),
+            kind: xai_fast_worktree::db::WorktreeKind::Session,
+            creation_mode: "standalone".into(),
+            git_ref: None,
+            head_commit: None,
+            session_id: None,
+            creator_pid: None,
+            created_at: 1,
+            last_accessed_at: None,
+            status: xai_fast_worktree::db::WorktreeStatus::Alive,
+            metadata: Some(serde_json::json!({ "label": label })),
+        })
+        .unwrap();
+    }
+    #[test]
+    fn get_worktree_info_db_record_without_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = dunce::canonicalize(tmp.path()).unwrap().join("grok-home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _env = crate::LockedTestEnv::lock().set("GROK_HOME", &home);
+        let wt = tmp.path().join("clone");
+        init_repo_on_branch(&wt, "wt-branch");
+        let source = PathBuf::from("/src/main-repo");
+        register_db_worktree(&home, &wt, &source, "db-label");
+        let (is_wt, main_repo) = block_on_worktree_info(&wt).expect("clone is a repo");
+        assert!(is_wt);
+        assert_eq!(
+            main_repo.as_deref(),
+            Some(collapse_home_for_test(&source).as_str())
+        );
+    }
+    #[test]
+    fn get_worktree_info_nested_repo_does_not_inherit_db_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = dunce::canonicalize(tmp.path()).unwrap().join("grok-home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _env = crate::LockedTestEnv::lock().set("GROK_HOME", &home);
+        let wt = tmp.path().join("clone");
+        init_repo_on_branch(&wt, "wt-branch");
+        register_db_worktree(&home, &wt, Path::new("/src/main-repo"), "db-label");
+        let nested = wt.join("vendor").join("dep");
+        init_repo_on_branch(&nested, "dep-branch");
+        let (is_wt, main_repo) = block_on_worktree_info(&nested).expect("nested init is a repo");
+        assert!(!is_wt);
+        assert!(main_repo.is_none());
+    }
+    #[tokio::test]
+    async fn get_worktree_info_linked_git_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        init_repo_on_branch(&main, "main-only");
+        let repo = git2::Repository::open(&main).unwrap();
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("wt-branch", &head_commit, false).unwrap();
+        let wt_path = tmp.path().join("my-worktree");
+        repo.worktree(
+            "my-worktree",
+            &wt_path,
+            Some(
+                git2::WorktreeAddOptions::new().reference(Some(
+                    &repo
+                        .find_branch("wt-branch", git2::BranchType::Local)
+                        .unwrap()
+                        .into_reference(),
+                )),
+            ),
+        )
+        .unwrap();
+        assert!(wt_path.join(".git").is_file());
+        let (is_wt, main_repo) = get_worktree_info(&wt_path)
+            .await
+            .expect("linked worktree is a repo");
+        assert!(is_wt);
+        let main_repo = main_repo.expect("linked worktree has main_repo");
+        let expected = collapse_home_for_test(&main);
+        let expected_canon = dunce::canonicalize(&main)
+            .map(|p| collapse_home_for_test(&p))
+            .unwrap_or_else(|_| expected.clone());
+        assert!(
+            main_repo == expected || main_repo == expected_canon,
+            "main_repo={main_repo}, expected {expected} or {expected_canon}"
+        );
+    }
     #[test]
     fn test_strip_prefix_canonicalized_basic() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3391,6 +3782,31 @@ mod tests {
     fn test_parse_numstat_empty() {
         let stats = parse_numstat("");
         assert!(stats.is_empty());
+    }
+    #[tokio::test]
+    async fn diffs_head_to_working_reports_untracked_file_additions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(tmp.path()).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        std::fs::write(tmp.path().join("README.md"), "hello\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("README.md")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        std::fs::write(tmp.path().join("new.txt"), "line1\nline2\nline3\n").unwrap();
+        let data = diffs(tmp.path(), None, "HEAD", "working", false, false, false)
+            .await
+            .unwrap();
+        let file = data
+            .files
+            .iter()
+            .find(|f| f.path == "new.txt")
+            .expect("untracked file missing from HEAD→working diff");
+        assert_eq!(file.additions, 3);
+        assert_eq!(file.deletions, 0);
+        assert!(matches!(file.change_type, ChangeType::Untracked));
     }
     #[test]
     fn test_parse_porcelain_v2_ordinary() {

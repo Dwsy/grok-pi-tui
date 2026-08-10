@@ -12,11 +12,23 @@ use crate::app::agent_view::{AgentView, PromptMode};
 use crate::app::app_view::{ActiveView, AppView};
 use crate::scrollback::EntryId;
 use crate::scrollback::block::RenderBlock;
+use crate::scrollback::state::ScrollbackState;
 use agent_client_protocol as acp;
 use std::time::Instant;
 
 fn page_flip_on_send() -> bool {
     crate::appearance::cache::load_page_flip_on_send()
+}
+
+/// Slash output skips the prompt drain; pin it at the top when page-flip is on.
+pub(super) fn push_and_page_flip(scrollback: &mut ScrollbackState, block: RenderBlock) {
+    scrollback.push_block(block);
+    if !page_flip_on_send() {
+        return;
+    }
+    let idx = scrollback.len() - 1;
+    scrollback.scroll_to_entry_top(idx);
+    scrollback.enable_follow_with_preserve();
 }
 
 fn combine_queued_prompts_enabled() -> bool {
@@ -472,6 +484,8 @@ pub(super) fn maybe_drain_queue(agent: &mut AgentView) -> QueueDrain {
         QueueEntryKind::Command => {
             // Currently only `/compact` — future slash commands will branch here.
             agent.session.start_command(AgentCommand::Compact);
+            // Compact owns the pane; a leftover wake marker must not shadow stop.
+            agent.running_wake_turn = None;
             agent.turn_started_at = Some(Instant::now());
 
             let custom_instructions = queued
@@ -730,30 +744,46 @@ pub(super) fn push_send_now_user_block(
         .insert(prompt_id.to_string(), (entry_id, edited));
 }
 
-/// Arm the send-now cancel expectation for a just-dispatched plain prompt and
-/// paint its user block (the arm hides the queue echo, so the pair is
-/// inseparable). No-op unless the shell will actually cancel-and-send.
+/// Whether a Send Now row should paint an optimistic block. Returns `false`
+/// unless the client expects a Send Now cancel, or the row belongs to an active
+/// goal on a committed, running turn. Arms the cancel expectation only on the
+/// expects-cancel path; an active goal paints WITHOUT arming so its interjection
+/// notification can claim the block. Bash rows and idle sessions do neither.
+fn paint_send_now_and_maybe_arm(agent: &mut AgentView, id: &str) -> bool {
+    let expects_cancel = agent.expects_send_now_cancel();
+    let goal_active = agent
+        .goal_state
+        .as_ref()
+        .is_some_and(|goal| matches!(goal.status, crate::app::agent::GoalDisplayStatus::Active));
+    if !(expects_cancel
+        || (goal_active && agent.session.state.is_turn_running() && agent.front_message_committed))
+    {
+        return false;
+    }
+    if expects_cancel {
+        agent.arm_send_now_expectation(id.to_string());
+    }
+    true
+}
+
+/// Active goals paint without arming cancellation so their authoritative
+/// interjection notification can claim the block.
 pub(super) fn arm_send_now_and_paint_dispatched(
     agent: &mut AgentView,
     prompt_id: &str,
     text: &str,
 ) {
-    if !agent.expects_send_now_cancel() {
+    if !paint_send_now_and_maybe_arm(agent, prompt_id) {
         return;
     }
-    agent.arm_send_now_expectation(prompt_id.to_string());
     push_send_now_user_block(agent, prompt_id, "prompt", text, /* edited */ false);
 }
 
-/// Arm the send-now cancel expectation for queue row `id` and paint its user
-/// block — the arm hides the row, so the paint must accompany it. No-op when
-/// the shell won't cancel-and-send (idle / goal / uncommitted front); no paint
-/// for kinds the adoption renders no block for (bash). `new_text` = edit-interject override.
+/// Active-goal rows paint without arming cancellation; bash rows remain queued.
 pub(crate) fn arm_send_now_and_paint(agent: &mut AgentView, id: &str, new_text: Option<&str>) {
-    if !agent.expects_send_now_cancel() {
+    if !paint_send_now_and_maybe_arm(agent, id) {
         return;
     }
-    agent.arm_send_now_expectation(id.to_string());
     let row = agent
         .shared_queue
         .iter()
@@ -1048,6 +1078,7 @@ pub(super) fn dispatch_queue_interject_shared(
                 if let Some(text) = &new_text {
                     record_interject_prompt_history(agent, text);
                 }
+                agent.note_self_originated_prompt(&id);
                 arm_send_now_and_paint(agent, &id, new_text.as_deref());
             });
             vec![Effect::QueueInterject {

@@ -239,8 +239,6 @@ impl Theme {
 
             accent_verify: q(self.accent_verify),
 
-            accent_feedback: q(self.accent_feedback),
-
             accent_remember: q(self.accent_remember),
 
             selection_border: q(self.selection_border),
@@ -677,12 +675,8 @@ impl Theme {
             accent_system: blue,
             accent_skill: blue,
             fuzzy_accent: blue,
-            // Cyan family — feedback mode, model name, and the legacy
-            // `running` indicator (distinct from the magenta
-            // `accent_running` used for subagents). ANSI16 has no
-            // separate teal slot, so the truecolor teal accents
-            // (feedback, model) fold onto cyan here.
-            accent_feedback: cyan,
+            // Cyan family: model name and the legacy `running` indicator (distinct from the magenta `accent_running` used for subagents).
+            // ANSI16 has no separate teal slot, so the truecolor teal model accent folds onto cyan here.
             accent_model: cyan,
             running: cyan,
             // Yellow family — warning text, plan-mode gold, shell
@@ -1021,13 +1015,10 @@ mod tests {
 
     #[test]
     fn ansi16_overrides_cyan_family_absorbs_teal() {
-        // ANSI16 has no teal slot — feedback / model teal both fold
-        // onto cyan. The `running` indicator (legacy cyan, distinct
-        // from the magenta `accent_running` used for subagents) also
-        // lives here.
+        // ANSI16 has no teal slot; the model teal folds onto cyan.
+        // The `running` indicator (legacy cyan, distinct from the magenta `accent_running` used for subagents) also lives here.
         use ratatui::style::Color;
         let t = Theme::groknight().ansi16_chrome_overrides(true);
-        assert_eq!(t.accent_feedback, Color::LightCyan);
         assert_eq!(t.accent_model, Color::LightCyan);
         assert_eq!(t.running, Color::LightCyan);
     }

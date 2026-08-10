@@ -314,6 +314,58 @@ fn session_loaded_without_adoption_finishes_replayed_running_entries() {
         "replayed running entries must be finished when no turn is adopted"
     );
 }
+/// Resume into a cwd with `.git/grok-worktree-source` sets `session.is_worktree`.
+#[test]
+fn load_session_marks_standalone_worktree_cwd() {
+    let mut app = test_app();
+    let main = crate::test_util::TempGitRepo::init("main-only");
+    let clone = main.standalone_clone("wt-branch");
+    dispatch(
+        Action::LoadSession("sess-wt".into(), Some(clone.path.clone()), false),
+        &mut app,
+    );
+    assert!(
+        app.agents[&AgentId(0)].session.is_worktree,
+        "resume into a standalone grok worktree must set session.is_worktree"
+    );
+    assert_eq!(app.agents[&AgentId(0)].session.cwd, clone.path);
+}
+#[test]
+fn load_session_plain_repo_is_not_worktree() {
+    let mut app = test_app();
+    let repo = crate::test_util::TempGitRepo::init("main");
+    dispatch(
+        Action::LoadSession("sess-plain-git".into(), Some(repo.path.clone()), false),
+        &mut app,
+    );
+    assert!(!app.agents[&AgentId(0)].session.is_worktree);
+}
+#[test]
+fn remote_restore_marks_standalone_worktree_cwd() {
+    let mut app = test_app();
+    let main = crate::test_util::TempGitRepo::init("main-only");
+    let clone = main.standalone_clone("wt-branch");
+    app.cwd = clone.path.clone();
+    let _ = dispatch_load_session_with_restore(
+        &mut app,
+        "remote-wt".into(),
+        clone.path.display().to_string(),
+    );
+    assert!(app.agents[&AgentId(0)].session.is_worktree);
+    assert_eq!(app.agents[&AgentId(0)].session.cwd, clone.path);
+}
+#[test]
+fn remote_restore_plain_repo_is_not_worktree() {
+    let mut app = test_app();
+    let repo = crate::test_util::TempGitRepo::init("main");
+    app.cwd = repo.path.clone();
+    let _ = dispatch_load_session_with_restore(
+        &mut app,
+        "remote-plain".into(),
+        repo.path.display().to_string(),
+    );
+    assert!(!app.agents[&AgentId(0)].session.is_worktree);
+}
 /// Cross-cwd resume anchors the agent cwd to the resolved origin cwd.
 #[test]
 fn load_session_anchors_agent_cwd_to_resolved_session_cwd() {

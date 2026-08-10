@@ -439,6 +439,11 @@ pub enum ActiveModal {
     PiModels {
         state: Box<crate::views::pi_models::PiModelsModalState>,
     },
+    /// Tabbed usage / session-info modal (`/usage`, `/session-info`,
+    /// `/context`, context-bar click). Boxed — holds fetched snapshots.
+    UsageInfo {
+        state: Box<crate::views::usage_modal::UsageInfoModalState>,
+    },
     /// Reset-settings confirmation, stacked above Settings.
     ///
     /// The underlying `SettingsModalState` is moved in/out so cancel
@@ -809,6 +814,7 @@ impl ActiveModal {
             | ActiveModal::Settings { .. }
             | ActiveModal::PiConfig { .. }
             | ActiveModal::PiModels { .. }
+            | ActiveModal::UsageInfo { .. }
             | ActiveModal::RememberNoteReview { .. } => vec![],
         }
     }
@@ -846,6 +852,7 @@ impl ActiveModal {
             ActiveModal::PiModels { .. } => "Pi models",
             ActiveModal::ResetSettingsConfirm { .. } => "Reset setting?",
             ActiveModal::RememberNoteReview { .. } => "Memory Note",
+            ActiveModal::UsageInfo { .. } => "Usage",
         }
     }
 }

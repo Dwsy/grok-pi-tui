@@ -62,16 +62,25 @@ pub(super) fn confirm_context_used(view: &mut AgentView, used: u64) {
 /// recorded on the open reload window instead (see
 /// [`AgentView::mark_reload_replay_seen`]). One `warn!` per incident; the rest
 /// of the burst (one line per replayed event) logs at `debug!`.
-pub(super) fn drop_unexpected_replay(
+///
+/// After `SessionLoaded` the barrier may release on an Unrelated ACP timeout
+/// while remaining `isReplay` still sits behind a foreign head. `late_replay_until`
+/// keeps accepting that tail until the first this-session live update or the
+/// grace expires.
+pub(crate) fn drop_unexpected_replay(
     agent: &mut AgentView,
     meta: &NotificationMeta,
     session_id: &str,
     source: &'static str,
 ) -> bool {
     if !meta.is_replay {
+        agent.late_replay_until = None;
         return false;
     }
-    if agent.session.loading_replay {
+    let within_late_grace = agent
+        .late_replay_until
+        .is_some_and(|deadline| std::time::Instant::now() < deadline);
+    if agent.session.loading_replay || within_late_grace {
         agent.mark_reload_replay_seen();
         return false;
     }
@@ -222,6 +231,14 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 agent.replayed_terminal_prompts.insert(prompt_id);
                 false
             } else if is_wake_prompt(&prompt_id) {
+                if agent
+                    .running_wake_turn
+                    .as_ref()
+                    .is_some_and(|wake| wake.prompt_id == prompt_id)
+                {
+                    agent.running_wake_turn = None;
+                }
+                agent.finished_wake_prompts.insert(prompt_id.to_string());
                 if agent.session.state.is_busy() {
                     if agent.session.state.command_in_flight().is_some() {
                         agent.session.tracker.snapshot_output_epoch();
@@ -465,9 +482,19 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 .restricted_commands();
             child_view.set_restricted_commands(&restricted);
             agent.insert_subagent_view(child_session_id.clone(), Box::new(child_view));
-            if !agent.session.loading_replay {
+            if !agent.session.loading_replay && !meta.is_replay {
+                let parent_cwd = agent.session.cwd.clone();
+                let child_cwd = agent
+                    .subagent_sessions
+                    .get(&child_session_id)
+                    .and_then(|info| info.child_cwd.clone());
                 if let Some(child_view) = agent.subagent_views.get_mut(&child_session_id) {
-                    crate::app::subagent::replay_inherited_updates(child_view, &child_session_id);
+                    crate::app::subagent::replay_inherited_updates(
+                        child_view,
+                        &child_session_id,
+                        &parent_cwd,
+                        child_cwd.as_deref().map(std::path::Path::new),
+                    );
                 }
                 if let Some(info) = agent.subagent_sessions.get_mut(&child_session_id) {
                     info.child_updates_replayed = true;

@@ -72,7 +72,6 @@ impl Theme {
 
             accent_plan: Color::Yellow,
             accent_verify: Color::Magenta,
-            accent_feedback: Color::Cyan,
             accent_remember: Color::Green,
 
             selection_border: MUTED,
@@ -154,7 +153,6 @@ mod tests {
             ("fuzzy_accent", theme.fuzzy_accent),
             ("accent_plan", theme.accent_plan),
             ("accent_verify", theme.accent_verify),
-            ("accent_feedback", theme.accent_feedback),
             ("accent_remember", theme.accent_remember),
             ("selection_border", theme.selection_border),
             ("hover_border", theme.hover_border),

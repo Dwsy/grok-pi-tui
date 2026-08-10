@@ -1,6 +1,6 @@
 [package]
 name = "xai-grok-pager"
-version = "0.2.120"
+version = "1.0.0"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["xAI"]
@@ -112,6 +112,7 @@ xai-grok-agent = { workspace = true }
 xai-grok-plugin-marketplace = { path = "../xai-grok-plugin-marketplace" }
 xai-hooks-plugins-types = { path = "../xai-hooks-plugins-types" }
 wait-timeout = { workspace = true }
+walkdir = { workspace = true }
 xai-grok-sandbox = { path = "../xai-grok-sandbox", default-features = false }
 
 # Base64 encoding for image data

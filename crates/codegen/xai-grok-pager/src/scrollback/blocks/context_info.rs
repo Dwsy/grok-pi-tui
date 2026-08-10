@@ -272,6 +272,13 @@ impl ContextInfoBlock {
         self
     }
 
+    /// Build the styled lines for an arbitrary content width. Reused by the
+    /// usage modal's "Context usage" tab so the modal and scrollback share the
+    /// same native graphical breakdown.
+    pub(crate) fn lines_for_width(&self, theme: &Theme, width: u16) -> Vec<Line<'static>> {
+        self.build_lines(theme, BarLayout::for_width(width))
+    }
+
     /// Build the styled lines using the supplied theme and bar layout.
     ///
     /// Called from `output()` on every redraw so theme switches take effect

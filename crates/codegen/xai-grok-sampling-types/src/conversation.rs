@@ -1549,26 +1549,24 @@ pub fn upgrade_legacy_reasoning(
                 rs::OutputItem::Reasoning(r) => {
                     siblings.push(ConversationItem::Reasoning(r));
                 }
-                rs::OutputItem::WebSearchCall(ws) => {
-                    if sibling_btc_ids_seen.insert(ws.id.clone()) {
-                        siblings.push(ConversationItem::BackendToolCall(BackendToolCallItem {
-                            kind: BackendToolKind::WebSearch(ws),
-                        }));
-                    }
+                rs::OutputItem::WebSearchCall(ws) if sibling_btc_ids_seen.insert(ws.id.clone()) => {
+                    siblings.push(ConversationItem::BackendToolCall(BackendToolCallItem {
+                        kind: BackendToolKind::WebSearch(ws),
+                    }));
                 }
-                rs::OutputItem::CustomToolCall(ct) => {
-                    if sibling_btc_ids_seen.insert(ct.id.clone()) {
-                        siblings.push(ConversationItem::BackendToolCall(BackendToolCallItem {
-                            kind: BackendToolKind::XSearch(ct),
-                        }));
-                    }
+                rs::OutputItem::CustomToolCall(ct)
+                    if sibling_btc_ids_seen.insert(ct.id.clone()) =>
+                {
+                    siblings.push(ConversationItem::BackendToolCall(BackendToolCallItem {
+                        kind: BackendToolKind::XSearch(ct),
+                    }));
                 }
-                rs::OutputItem::CodeInterpreterCall(ci) => {
-                    if sibling_btc_ids_seen.insert(ci.id.clone()) {
-                        siblings.push(ConversationItem::BackendToolCall(BackendToolCallItem {
-                            kind: BackendToolKind::CodeInterpreter(ci),
-                        }));
-                    }
+                rs::OutputItem::CodeInterpreterCall(ci)
+                    if sibling_btc_ids_seen.insert(ci.id.clone()) =>
+                {
+                    siblings.push(ConversationItem::BackendToolCall(BackendToolCallItem {
+                        kind: BackendToolKind::CodeInterpreter(ci),
+                    }));
                 }
                 _ => {}
             }
