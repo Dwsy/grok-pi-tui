@@ -431,6 +431,10 @@ pub enum ActiveModal {
     Settings {
         state: Box<crate::views::settings_modal::SettingsModalState>,
     },
+    /// grok-pi settings panel (F2). Boxed — large state.
+    PiSettings {
+        state: Box<crate::views::pi_settings::PiSettingsState>,
+    },
     /// Pi resource configuration, opened from the F2 settings modal.
     PiConfig {
         state: Box<crate::views::pi_config::PiConfigModalState>,
@@ -807,6 +811,7 @@ impl ActiveModal {
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
             | ActiveModal::Settings { .. }
+            | ActiveModal::PiSettings { .. }
             | ActiveModal::PiConfig { .. }
             | ActiveModal::PiModels { .. }
             | ActiveModal::RememberNoteReview { .. } => vec![],
@@ -842,6 +847,7 @@ impl ActiveModal {
             ActiveModal::ShortcutsHelp { .. } => "Keyboard Shortcuts",
             ActiveModal::MemoryBrowser { .. } => "Memory",
             ActiveModal::Settings { .. } => crate::views::settings_modal::MODAL_TITLE,
+            ActiveModal::PiSettings { .. } => crate::views::pi_settings::MODAL_TITLE,
             ActiveModal::PiConfig { .. } => "Pi resources",
             ActiveModal::PiModels { .. } => "Pi models",
             ActiveModal::ResetSettingsConfirm { .. } => "Reset setting?",

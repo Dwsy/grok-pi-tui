@@ -1997,6 +1997,28 @@ pub(super) fn apply_settings_outcome(
         SettingsKeyOutcome::Unchanged => InputOutcome::Unchanged,
     }
 }
+
+/// Fold a grok-pi settings panel outcome into the agent's input outcome.
+pub(super) fn apply_pi_settings_outcome(
+    agent: &mut AgentView,
+    outcome: crate::views::pi_settings::Outcome,
+) -> InputOutcome {
+    use crate::views::pi_settings::Outcome;
+    match outcome {
+        Outcome::Close => {
+            agent.active_modal = None;
+            InputOutcome::Changed
+        }
+        Outcome::Action(a) => InputOutcome::Action(a),
+        Outcome::ActionPair(a, b) => InputOutcome::ActionPair(a, b),
+        Outcome::ActionThenClose(a) => {
+            agent.active_modal = None;
+            InputOutcome::Action(a)
+        }
+        Outcome::Changed => InputOutcome::Changed,
+        Outcome::Unchanged => InputOutcome::Unchanged,
+    }
+}
 /// Whether this key event represents `#` (hash).
 ///
 /// Most terminals report `KeyCode::Char('#')` directly. Under the Kitty

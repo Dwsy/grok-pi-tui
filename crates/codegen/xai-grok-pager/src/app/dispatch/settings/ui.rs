@@ -38,6 +38,9 @@ pub(in crate::app::dispatch) fn save_success_toast(label: &str, on: bool) -> Str
 /// snapshots by value; without this, toggles would appear stuck.
 pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
     use crate::views::modal::ActiveModal;
+    // The grok-pi panel is a separate surface with the same freshness
+    // contract; keep both in step from this one entry point.
+    refresh_open_pi_settings(app);
     // Early exit when no settings modal is open (common case).
     if !app.agents.values().any(|a| {
         matches!(
@@ -430,6 +433,96 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
     }
     agent.active_modal = Some(ActiveModal::Settings { state });
     effects
+}
+
+/// Open the grok-pi settings panel — the tabbed F2 surface.
+///
+/// Deliberately separate from [`dispatch_open_settings`]: upstream's modal and
+/// its `Action::OpenSettings` stay exactly as they are, so upstream merges
+/// never collide here. Same snapshot contract, same single-instance rule.
+pub(in crate::app::dispatch) fn dispatch_open_pi_settings(
+    app: &mut AppView,
+    focus_key: Option<&'static str>,
+) -> Vec<Effect> {
+    use crate::views::modal::ActiveModal;
+    use crate::views::pi_settings::PiSettingsState;
+
+    let mut effects = vec![];
+    let id = match app.active_view {
+        ActiveView::Agent(id) => id,
+        _ => {
+            if let Some(existing) = app.agents.keys().next().copied() {
+                crate::app::dispatch::ctx::switch_to_agent(
+                    app,
+                    existing,
+                    crate::app::dispatch::ctx::SwitchCause::Picker,
+                );
+                existing
+            } else {
+                let (new_id, create_effects) =
+                    crate::app::dispatch::session::lifecycle::dispatch_new_session_inner_with_id(
+                        app, None,
+                    );
+                effects.extend(create_effects);
+                new_id
+            }
+        }
+    };
+    let registry = app.settings_registry.clone();
+    let ui_snapshot = app.current_ui.clone();
+    let pager_snapshot = build_pager_snapshot(app);
+
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return effects;
+    };
+    if matches!(&agent.active_modal, Some(ActiveModal::PiSettings { .. })) {
+        if focus_key.is_none() {
+            debug_assert!(
+                false,
+                "OpenPiSettings dispatched while the panel is already open — input routing bug"
+            );
+            agent.active_modal = None;
+            return effects;
+        }
+        agent.active_modal = None;
+    }
+
+    tracing::info!(target: "settings", "opened pi settings panel");
+    let mut state = Box::new(PiSettingsState::new(registry, ui_snapshot, pager_snapshot));
+    if let Some(key) = focus_key
+        && state.focus_key(key)
+    {
+        // A locked row stays in Browse — `open_chooser` refuses when locked.
+        if state.open_chooser() {
+            state.close_on_picker_exit = true;
+        }
+    }
+    agent.active_modal = Some(ActiveModal::PiSettings { state });
+    effects
+}
+
+/// Re-read live values into every open grok-pi settings panel, so a mutation
+/// dispatched from the panel (or from anywhere else) repaints with the new
+/// value instead of the snapshot taken at open time.
+pub(crate) fn refresh_open_pi_settings(app: &mut AppView) {
+    use crate::views::modal::ActiveModal;
+    if !app
+        .agents
+        .values()
+        .any(|a| matches!(a.active_modal, Some(ActiveModal::PiSettings { .. })))
+    {
+        return;
+    }
+    let ui_snapshot = app.current_ui.clone();
+    let pager_snapshot = build_pager_snapshot(app);
+    for agent in app.agents.values_mut() {
+        let Some(ActiveModal::PiSettings { state }) = agent.active_modal.as_mut() else {
+            continue;
+        };
+        state.rebuild_rows();
+        state.ui_snapshot = ui_snapshot.clone();
+        state.pager_snapshot = pager_snapshot.clone();
+    }
 }
 
 /// Open the native Pi resource configuration modal. Pi source remains

@@ -12,7 +12,9 @@ use ratatui::text::Line;
 use ratatui::widgets::Widget;
 
 use super::actions::Action;
-use super::agent_view::{AgentView, active_contexts_for_pane, apply_settings_outcome};
+use super::agent_view::{
+    AgentView, active_contexts_for_pane, apply_pi_settings_outcome, apply_settings_outcome,
+};
 use super::app_view::InputOutcome;
 
 use crate::theme::Theme;
@@ -553,6 +555,37 @@ impl AgentView {
             }
         }
 
+        // grok-pi settings panel: the chrome owns close and tab switching,
+        // then the panel handles the rest. Sub-panes own their own Esc, so
+        // they bypass the chrome entirely.
+        if let ActiveModal::PiSettings { state } = modal {
+            use crate::views::pi_settings;
+            // Search, section focus, and sub-panes give Esc a local meaning,
+            // so they bypass the chrome's Esc-closes-the-modal rule.
+            if state.owns_escape() {
+                let out = pi_settings::handle_key(state, key);
+                return apply_pi_settings_outcome(self, out);
+            }
+            let chrome_cfg = mw::ModalWindowConfig {
+                title: "",
+                tabs: None,
+                shortcuts: &[],
+                sizing: mw::ModalSizing::default(),
+                fold_info: None,
+            };
+            return match mw::handle_modal_key(&mut state.window, key, &chrome_cfg) {
+                ModalWindowOutcome::CloseRequested => {
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                ModalWindowOutcome::Unhandled => {
+                    let out = pi_settings::handle_key(state, key);
+                    apply_pi_settings_outcome(self, out)
+                }
+                _ => InputOutcome::Changed,
+            };
+        }
+
         if let ActiveModal::PiConfig { state } = modal {
             return match crate::views::pi_config::PiConfigModalState::handle_key(state, key) {
                 crate::views::pi_config::PiConfigOutcome::Close => {
@@ -648,6 +681,7 @@ impl AgentView {
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
             | ActiveModal::Settings { .. }
+            | ActiveModal::PiSettings { .. }
             | ActiveModal::PiConfig { .. }
             | ActiveModal::PiModels { .. }
             | ActiveModal::ResetSettingsConfirm { .. }
@@ -691,6 +725,15 @@ impl AgentView {
         if let Some(ActiveModal::PiModels { state }) = self.active_modal.as_mut() {
             state.handle_paste(text);
             return InputOutcome::Changed;
+        }
+        let pi_settings_outcome = match self.active_modal.as_mut() {
+            Some(ActiveModal::PiSettings { state }) => {
+                Some(crate::views::pi_settings::handle_paste(state, text))
+            }
+            _ => None,
+        };
+        if let Some(outcome) = pi_settings_outcome {
+            return apply_pi_settings_outcome(self, outcome);
         }
         let settings_outcome = match self.active_modal.as_mut() {
             Some(ActiveModal::Settings { state }) => Some(
@@ -1122,7 +1165,7 @@ impl AgentView {
                             }
                             PaletteCommand::OpenSettings => {
                                 self.active_modal = None;
-                                InputOutcome::Action(Action::OpenSettings)
+                                InputOutcome::Action(Action::OpenPiSettings)
                             }
                             PaletteCommand::OpenAgentsModal => {
                                 self.active_modal = None;
@@ -2301,6 +2344,39 @@ impl AgentView {
                     }
                     crate::views::pi_config::PiConfigOutcome::Changed => InputOutcome::Changed,
                 },
+                _ => InputOutcome::Changed,
+            };
+        }
+
+        // grok-pi settings panel: the chrome owns close and tab clicks, the
+        // panel owns sidebar, row, and chooser hit testing.
+        if let Some(ActiveModal::PiSettings { state }) = &mut self.active_modal {
+            let outcome =
+                mw::handle_modal_mouse(&mut state.window, mouse.kind, mouse.column, mouse.row);
+            return match outcome {
+                ModalWindowOutcome::CloseRequested => {
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                ModalWindowOutcome::TabChanged(index) => {
+                    state.set_active_tab(index);
+                    InputOutcome::Changed
+                }
+                ModalWindowOutcome::Handled => {
+                    if matches!(mouse.kind, MouseEventKind::Moved) {
+                        state.hover = None;
+                    }
+                    InputOutcome::Changed
+                }
+                ModalWindowOutcome::Unhandled => {
+                    let out = crate::views::pi_settings::handle_mouse(
+                        state,
+                        mouse.kind,
+                        mouse.column,
+                        mouse.row,
+                    );
+                    apply_pi_settings_outcome(self, out)
+                }
                 _ => InputOutcome::Changed,
             };
         }
@@ -3623,6 +3699,8 @@ impl AgentView {
                 }
             } else if let modal::ActiveModal::MemoryBrowser { state: mem_state } = active_modal {
                 crate::views::memory_modal::render_memory_modal(buf, area, mem_state, compact);
+            } else if let modal::ActiveModal::PiSettings { state } = active_modal {
+                crate::views::pi_settings::render_pi_settings(buf, area, state, compact);
             } else if let modal::ActiveModal::PiConfig { state } = active_modal {
                 crate::views::pi_config::render_pi_config_modal(buf, area, state, compact);
             } else if let modal::ActiveModal::PiModels { state } = active_modal {

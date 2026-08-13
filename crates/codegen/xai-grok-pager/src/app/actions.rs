@@ -805,6 +805,13 @@ pub enum Action {
     /// Open the settings modal (F2, `/settings`, command palette).
     /// If already open, closes it instead of stacking.
     OpenSettings,
+    /// Open the grok-pi settings panel (F2, `/settings`, command palette).
+    /// If already open, closes it instead of stacking.
+    OpenPiSettings,
+    /// Open the grok-pi settings panel focused on a registry key.
+    OpenPiSettingsFocus {
+        key: &'static str,
+    },
     /// Open the native Pi resource-configuration modal from F2 settings.
     OpenPiConfig,
     /// Open the native Pi provider/model management center.

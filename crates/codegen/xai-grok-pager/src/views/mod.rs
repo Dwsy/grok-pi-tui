@@ -31,6 +31,7 @@ pub mod permission_view;
 pub mod persona_detail;
 pub mod pi_config;
 pub mod pi_models;
+pub mod pi_settings;
 pub mod picker;
 pub mod plan_approval_view;
 pub mod privacy_banner;

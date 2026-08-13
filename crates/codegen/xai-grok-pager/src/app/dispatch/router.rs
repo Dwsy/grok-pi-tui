@@ -107,8 +107,9 @@ use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
     dispatch_open_model_picker, dispatch_open_pi_config, dispatch_open_pi_models,
     dispatch_open_pi_shortcut_manager, dispatch_open_recap_model_picker,
-    dispatch_open_reset_confirm, dispatch_open_scoped_models_picker, dispatch_open_settings,
-    dispatch_open_shortcuts_help, dispatch_toggle_compact_mode, dispatch_toggle_mouse_capture,
+    dispatch_open_pi_settings, dispatch_open_reset_confirm, dispatch_open_scoped_models_picker,
+    dispatch_open_settings, dispatch_open_shortcuts_help, dispatch_toggle_compact_mode,
+    dispatch_toggle_mouse_capture,
     dispatch_toggle_multiline, dispatch_toggle_timestamps, dispatch_toggle_vim_mode,
 };
 use super::status::{
@@ -1275,6 +1276,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PreviewAutoLightTheme(v) => preview_auto_light_theme(app, v),
         Action::OpenSettings => dispatch_open_settings(app, None),
         Action::OpenSettingsFocus { key } => dispatch_open_settings(app, Some(key)),
+        Action::OpenPiSettings => dispatch_open_pi_settings(app, None),
+        Action::OpenPiSettingsFocus { key } => dispatch_open_pi_settings(app, Some(key)),
         Action::PrivacyBannerOptIn => dispatch_privacy_banner_opt_in(app),
         Action::PrivacyBannerOptOut => dispatch_privacy_banner_opt_out(app),
         Action::OpenPiConfig => dispatch_open_pi_config(app),

@@ -1459,7 +1459,9 @@ impl AgentView {
                 });
                 InputOutcome::Changed
             }
-            ActionId::OpenSettings => InputOutcome::Action(Action::OpenSettings),
+            // F2 opens the grok-pi panel; upstream's modal stays reachable via
+            // `Action::OpenSettings` for stock Grok code paths and its tests.
+            ActionId::OpenSettings => InputOutcome::Action(Action::OpenPiSettings),
             ActionId::ToggleMouseCapture => {
                 crate::unified_log::info(
                     "mouse_reporting_toggle.handle_agent_action",
