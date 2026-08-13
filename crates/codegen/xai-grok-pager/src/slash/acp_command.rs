@@ -539,6 +539,7 @@ mod tests {
             usage_command_visible: true,
             workflows_available: false,
             screen_mode: crate::app::ScreenMode::Fullscreen,
+            current_title: None,
         };
         let all = acp_cmd.suggest_args(&ctx, "").expect("items");
         assert_eq!(all.len(), 3);

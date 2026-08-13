@@ -4323,8 +4323,8 @@ fn render_footer_section_selected_with_prompt_shows_dispatch_chips() {
         "section + typed prompt footer must hint send / send+open, got: {content:?}",
     );
     assert!(
-        content.contains(":mode"),
-        "section + typed prompt footer must hint Shift+Tab:mode, got: {content:?}",
+        content.contains("Ctrl+Shift+T:mode"),
+        "section + typed prompt footer must hint Ctrl+Shift+T:mode, got: {content:?}",
     );
     assert!(
         !content.contains(":collapse") && !content.contains(":expand"),

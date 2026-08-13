@@ -762,6 +762,7 @@ impl AcpUpdateTracker {
             self.pending_edit_hl.push(id);
         }
         scrollback.finish_running(id);
+        self.try_coalesce_edit(id, scrollback, is_replay);
         id
     }
     /// The Edit block of `entry` if it qualifies for coalescing with an
@@ -1375,6 +1376,7 @@ impl AcpUpdateTracker {
                     self.queue_edit_hl_if_needed(entry_id, &entry.block, is_replay);
                 }
                 scrollback.finish_running(entry_id);
+                self.try_coalesce_edit(entry_id, scrollback, is_replay);
             } else {
                 self.finish_completed_tool(block, scrollback, is_replay);
             }

@@ -1298,6 +1298,38 @@ fn test_search_tool_call_flow() {
         );
     }
 }
+#[test]
+fn pi_find_and_ls_select_native_render_blocks() {
+    let find = acp::ToolCall::new(acp::ToolCallId::new("find-1"), "find")
+        .kind(acp::ToolKind::Search)
+        .status(acp::ToolCallStatus::Completed)
+        .raw_input(Some(serde_json::json!({
+            "pattern": "*.rs",
+            "glob_pattern": "*.rs",
+            "output_mode": "files_with_matches"
+        })));
+    let find_block = tool_call_to_block(&find, None);
+    let RenderBlock::ToolCall(ToolCallBlock::Search(search)) = find_block else {
+        panic!("Pi find must use the native Search block");
+    };
+    assert_eq!(search.pattern, ".");
+    assert_eq!(search.meta.glob.as_deref(), Some("*.rs"));
+
+    let ls = acp::ToolCall::new(acp::ToolCallId::new("ls-1"), "ls")
+        .kind(acp::ToolKind::Other)
+        .status(acp::ToolCallStatus::Completed)
+        .raw_input(Some(serde_json::json!({ "path": "src" })))
+        .content(vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
+            acp::TextContent::new("main.rs"),
+        ))]);
+    let ls_block = tool_call_to_block(&ls, None);
+    let RenderBlock::ToolCall(ToolCallBlock::ListDir(list_dir)) = ls_block else {
+        panic!("Pi ls must use the native ListDir block");
+    };
+    assert_eq!(list_dir.path, "src");
+    assert_eq!(list_dir.output, "main.rs");
+}
+
 /// ScrollbackState with an explicit `expanded_by_default` shape override
 /// (flag-independent: the `Some` beats the `collapsed_edit_blocks` cache).
 fn edit_config_scrollback(expanded_by_default: bool) -> ScrollbackState {
@@ -1971,6 +2003,109 @@ fn meta_stream(stream_start: i64) -> NotificationMeta {
         agent_timestamp_ms: Some(stream_start + 100),
         ..Default::default()
     }
+}
+/// First live streamStartMs of a turn must pre-create empty Thinking…
+/// (external agents stamp meta from the first update, not a prior sentinel).
+#[test]
+fn first_stream_start_pre_creates_thinking() {
+    crate::appearance::cache::set_show_thinking_blocks(true);
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    assert!(tracker.last_stream_start_ms.is_none());
+    // Mode update is a no-op body, but stream meta still runs the boundary.
+    tracker.handle_update(
+        acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
+            acp::SessionModeId::new("default"),
+        )),
+        &meta_stream(1_000),
+        &mut sb,
+    );
+    assert!(
+        tracker.current_thinking.is_some(),
+        "first live streamStartMs must pre-create Thinking…"
+    );
+    assert_eq!(tracker.last_stream_start_ms, Some(1_000));
+    assert!(
+        sb.get(0).is_some_and(
+            |e| matches!(&e.block, RenderBlock::Thinking(t) if t.text().is_empty())
+        ),
+        "pre-create should be an empty streaming Thinking block"
+    );
+    crate::appearance::cache::set_show_thinking_blocks(true);
+}
+/// A new stream boundary must discard an empty pre-created thinking block.
+///
+/// Model switching can start a fresh stream before the previous stream emits
+/// its first thinking token. The old empty block must not remain registered
+/// as the active thinking entry across that boundary.
+#[test]
+fn stream_start_replaces_empty_precreated_thinking() {
+    crate::appearance::cache::set_show_thinking_blocks(true);
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+
+    tracker.handle_update(
+        acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
+            acp::SessionModeId::new("default"),
+        )),
+        &meta_stream(1_000),
+        &mut sb,
+    );
+    let first_id = tracker
+        .current_thinking
+        .expect("first stream should pre-create thinking");
+    assert_eq!(sb.len(), 1);
+
+    tracker.handle_update(
+        acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
+            acp::SessionModeId::new("default"),
+        )),
+        &meta_stream(2_000),
+        &mut sb,
+    );
+
+    let second_id = tracker
+        .current_thinking
+        .expect("new stream should pre-create a fresh thinking block");
+    assert_ne!(
+        first_id, second_id,
+        "empty thinking entry from the previous stream must not survive the boundary"
+    );
+    assert!(
+        sb.get_by_id(first_id).is_none(),
+        "old empty thinking entry should be removed"
+    );
+    assert!(
+        sb.get_by_id(second_id).is_some_and(
+            |e| matches!(&e.block, RenderBlock::Thinking(t) if t.text().is_empty())
+        ),
+        "replacement thinking entry should be the new empty pre-create"
+    );
+    assert_eq!(sb.len(), 1, "only the fresh pre-created block should remain");
+    crate::appearance::cache::set_show_thinking_blocks(true);
+}
+
+/// Replay must not pre-create empty thinking on first streamStartMs alone.
+#[test]
+fn first_replay_stream_start_does_not_pre_create_thinking() {
+    crate::appearance::cache::set_show_thinking_blocks(true);
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    let mut m = meta_stream(1_000);
+    m.is_replay = true;
+    tracker.handle_update(
+        acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
+            acp::SessionModeId::new("default"),
+        )),
+        &m,
+        &mut sb,
+    );
+    assert!(
+        tracker.current_thinking.is_none(),
+        "replay must not invent empty Thinking… on first streamStartMs"
+    );
+    assert_eq!(sb.len(), 0);
+    crate::appearance::cache::set_show_thinking_blocks(true);
 }
 /// Regression test: agent message (stream A) → thinking (stream B) → agent message (stream B).
 ///
@@ -4224,6 +4359,7 @@ fn cursor_todo_write_suppressed_by_title() {
     assert!(is_todo_tool(&initial_tool_call("tc1", "TodoWrite")));
     assert!(is_todo_tool(&initial_tool_call("tc2", "Updating plan")));
     assert!(is_todo_tool(&initial_tool_call("tc3", "todo_write")));
+    assert!(is_todo_tool(&initial_tool_call("tc4", "todo")));
 }
 #[test]
 fn todo_write_suppressed_by_variant() {
@@ -4355,141 +4491,4 @@ fn tier_restricted_media_shows_upsell_text_not_error() {
         "upsell text must be shown in the card body, got: {:?}",
         block.output
     );
-}
-
-#[test]
-fn pi_find_and_ls_select_native_render_blocks() {
-    let find = acp::ToolCall::new(acp::ToolCallId::new("find-1"), "find")
-        .kind(acp::ToolKind::Search)
-        .status(acp::ToolCallStatus::Completed)
-        .raw_input(Some(serde_json::json!({
-            "pattern": "*.rs",
-            "glob_pattern": "*.rs",
-            "output_mode": "files_with_matches"
-        })));
-    let find_block = tool_call_to_block(&find, None);
-    let RenderBlock::ToolCall(ToolCallBlock::Search(search)) = find_block else {
-        panic!("Pi find must use the native Search block");
-    };
-    assert_eq!(search.pattern, ".");
-    assert_eq!(search.meta.glob.as_deref(), Some("*.rs"));
-
-    let ls = acp::ToolCall::new(acp::ToolCallId::new("ls-1"), "ls")
-        .kind(acp::ToolKind::Other)
-        .status(acp::ToolCallStatus::Completed)
-        .raw_input(Some(serde_json::json!({ "path": "src" })))
-        .content(vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
-            acp::TextContent::new("main.rs"),
-        ))]);
-    let ls_block = tool_call_to_block(&ls, None);
-    let RenderBlock::ToolCall(ToolCallBlock::ListDir(list_dir)) = ls_block else {
-        panic!("Pi ls must use the native ListDir block");
-    };
-    assert_eq!(list_dir.path, "src");
-    assert_eq!(list_dir.output, "main.rs");
-}
-
-/// First live streamStartMs of a turn must pre-create empty Thinking…
-/// (external agents stamp meta from the first update, not a prior sentinel).
-#[test]
-fn first_stream_start_pre_creates_thinking() {
-    crate::appearance::cache::set_show_thinking_blocks(true);
-    let mut sb = ScrollbackState::new();
-    let mut tracker = AcpUpdateTracker::new();
-    assert!(tracker.last_stream_start_ms.is_none());
-    // Mode update is a no-op body, but stream meta still runs the boundary.
-    tracker.handle_update(
-        acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
-            acp::SessionModeId::new("default"),
-        )),
-        &meta_stream(1_000),
-        &mut sb,
-    );
-    assert!(
-        tracker.current_thinking.is_some(),
-        "first live streamStartMs must pre-create Thinking…"
-    );
-    assert_eq!(tracker.last_stream_start_ms, Some(1_000));
-    assert!(
-        sb.get(0).is_some_and(
-            |e| matches!(&e.block, RenderBlock::Thinking(t) if t.text().is_empty())
-        ),
-        "pre-create should be an empty streaming Thinking block"
-    );
-    crate::appearance::cache::set_show_thinking_blocks(true);
-}
-
-/// A new stream boundary must discard an empty pre-created thinking block.
-///
-/// Model switching can start a fresh stream before the previous stream emits
-/// its first thinking token. The old empty block must not remain registered
-/// as the active thinking entry across that boundary.
-#[test]
-fn stream_start_replaces_empty_precreated_thinking() {
-    crate::appearance::cache::set_show_thinking_blocks(true);
-    let mut sb = ScrollbackState::new();
-    let mut tracker = AcpUpdateTracker::new();
-
-    tracker.handle_update(
-        acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
-            acp::SessionModeId::new("default"),
-        )),
-        &meta_stream(1_000),
-        &mut sb,
-    );
-    let first_id = tracker
-        .current_thinking
-        .expect("first stream should pre-create thinking");
-    assert_eq!(sb.len(), 1);
-
-    tracker.handle_update(
-        acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
-            acp::SessionModeId::new("default"),
-        )),
-        &meta_stream(2_000),
-        &mut sb,
-    );
-
-    let second_id = tracker
-        .current_thinking
-        .expect("new stream should pre-create a fresh thinking block");
-    assert_ne!(
-        first_id, second_id,
-        "empty thinking entry from the previous stream must not survive the boundary"
-    );
-    assert!(
-        sb.get_by_id(first_id).is_none(),
-        "old empty thinking entry should be removed"
-    );
-    assert!(
-        sb.get_by_id(second_id).is_some_and(
-            |e| matches!(&e.block, RenderBlock::Thinking(t) if t.text().is_empty())
-        ),
-        "replacement thinking entry should be the new empty pre-create"
-    );
-    assert_eq!(sb.len(), 1, "only the fresh pre-created block should remain");
-    crate::appearance::cache::set_show_thinking_blocks(true);
-}
-
-/// Replay must not pre-create empty thinking on first streamStartMs alone.
-#[test]
-fn first_replay_stream_start_does_not_pre_create_thinking() {
-    crate::appearance::cache::set_show_thinking_blocks(true);
-    let mut sb = ScrollbackState::new();
-    let mut tracker = AcpUpdateTracker::new();
-    let mut m = meta_stream(1_000);
-    m.is_replay = true;
-    tracker.handle_update(
-        acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
-            acp::SessionModeId::new("default"),
-        )),
-        &m,
-        &mut sb,
-    );
-    assert!(
-        tracker.current_thinking.is_none(),
-        "replay must not invent empty Thinking… on first streamStartMs"
-    );
-    assert_eq!(sb.len(), 0);
-    crate::appearance::cache::set_show_thinking_blocks(true);
 }

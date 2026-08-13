@@ -128,7 +128,6 @@ pub(crate) fn test_app() -> AppView {
         auto_mode_gate: true,
         yolo_policy_block: None,
         yolo_launch_block_notice: None,
-        screen_mode_switch_hint: None,
         require_plan_approval: false,
         plan_mode: false,
         subagents: false,
@@ -305,6 +304,9 @@ pub(crate) fn test_app() -> AppView {
         voice_auth: None,
         voice_cmd_tx: None,
         voice_state: VoiceState::Idle,
+        external_ui: ExternalUiState::default(),
+        external_agent: false,
+        welcome_prewarm_agent: None,
     }
 }
 pub(crate) fn test_app_with_agent() -> AppView {
@@ -358,6 +360,290 @@ pub(crate) fn test_app_with_agent() -> AppView {
     );
     app
 }
+#[test]
+fn external_notifications_are_drained_in_arrival_order() {
+    let mut app = test_app_with_agent();
+    let id = super::super::agent::AgentId(0);
+    app.show_external_notification("first", None);
+    app.show_external_notification("second", Some("warning"));
+
+    assert!(app.tick());
+    assert_eq!(
+        app.agents[&id]
+            .toast
+            .as_ref()
+            .map(|(message, _)| message.as_str()),
+        Some("first")
+    );
+    app.agents.get_mut(&id).unwrap().toast = None;
+
+    assert!(app.tick());
+    assert_eq!(
+        app.agents[&id]
+            .toast
+            .as_ref()
+            .map(|(message, _)| message.as_str()),
+        Some("Warning: second")
+    );
+}
+
+#[test]
+fn short_info_notification_is_scrollback_only() {
+    let mut app = test_app_with_agent();
+    let id = super::super::agent::AgentId(0);
+
+    app.show_external_notification("Ponytail: current full • default full", Some("info"));
+
+    assert_eq!(app.agents[&id].scrollback.len(), 1);
+    assert!(app.external_ui.pending_toasts.is_empty());
+}
+
+#[test]
+fn multiline_info_notification_is_scrollback_only() {
+    let mut app = test_app_with_agent();
+    let id = super::super::agent::AgentId(0);
+
+    app.show_external_notification("line-a\nline-b", Some("info"));
+
+    assert_eq!(app.agents[&id].scrollback.len(), 1);
+    assert!(app.external_ui.pending_toasts.is_empty());
+}
+
+#[test]
+fn remote_tui_key_sequence_maps_arrows_enter_esc() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(
+        AppView::remote_tui_key_sequence(&up).as_deref(),
+        Some("\u{1b}[A")
+    );
+    assert_eq!(
+        AppView::remote_tui_key_sequence(&enter).as_deref(),
+        Some("\r")
+    );
+    assert_eq!(
+        AppView::remote_tui_key_sequence(&esc).as_deref(),
+        Some("\u{1b}")
+    );
+}
+
+#[test]
+fn remote_tui_key_sequence_preserves_key_release_for_pi_tui() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    let mut release = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
+    release.kind = KeyEventKind::Release;
+    assert_eq!(
+        AppView::remote_tui_key_sequence(&release).as_deref(),
+        Some("\u{1b}[119;1:3u")
+    );
+}
+
+#[test]
+fn remote_tui_forwards_key_release_to_component() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    assert!(app.apply_remote_tui(
+        "open",
+        Some("sess-1".into()),
+        Some(vec!["root".into()]),
+        None,
+    ));
+    let mut release = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
+    release.kind = KeyEventKind::Release;
+
+    assert!(matches!(
+        app.handle_input(&Event::Key(release)),
+        InputOutcome::Changed
+    ));
+    assert!(app.pending_effects.iter().any(|effect| matches!(
+        effect,
+        crate::app::actions::Effect::RemoteTuiInput { id, data }
+            if id == "sess-1" && data == "\u{1b}[119;1:3u"
+    )));
+}
+
+#[test]
+fn remote_tui_frame_preserves_multiline_and_closes() {
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    assert!(app.apply_remote_tui("open", Some("sess-1".into()), None, Some("Probe".into()),));
+    assert_eq!(app.external_ui.remote_tui_id.as_deref(), Some("sess-1"));
+    assert!(app.apply_remote_tui(
+        "frame",
+        Some("sess-1".into()),
+        Some(vec!["line-a".into(), "line-b".into()]),
+        None,
+    ));
+    let widget = app.external_ui.widgets.get("remote_tui").expect("widget");
+    assert!(widget.lines.iter().any(|line| line == "line-a"));
+    assert!(widget.lines.iter().any(|line| line == "line-b"));
+    // multiline remote frames must not be joined into one status row
+    let id = super::super::agent::AgentId(0);
+    let agent = &app.agents[&id];
+    assert!(
+        agent
+            .external_widgets_above_editor
+            .iter()
+            .any(|l| l == "line-a")
+    );
+    assert!(
+        agent
+            .external_widgets_above_editor
+            .iter()
+            .any(|l| l == "line-b")
+    );
+    assert!(app.apply_remote_tui("close", Some("sess-1".into()), None, None));
+    assert!(app.external_ui.remote_tui_id.is_none());
+    assert!(!app.external_ui.widgets.contains_key("remote_tui"));
+}
+
+#[test]
+fn remote_tui_forwards_paste_as_bracketed_sequence_not_local_prompt() {
+    let mut app = test_app_with_agent();
+    let id = super::super::agent::AgentId(0);
+    app.agents.get_mut(&id).unwrap().active_pane = crate::views::agent::ActivePane::Prompt;
+    app.external_agent = true;
+    assert!(app.apply_remote_tui("open", Some("sess-1".into()), None, None));
+
+    let outcome = app.handle_input(&Event::Paste("hello\nworld".to_owned()));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    assert!(
+        app.pending_effects.iter().any(|effect| matches!(
+            effect,
+            crate::app::actions::Effect::RemoteTuiInput { id, data }
+                if id == "sess-1" && data == "\u{1b}[200~hello\nworld\u{1b}[201~"
+        )),
+        "paste must be forwarded to the remote host as a Pi-TUI paste sequence"
+    );
+    assert!(
+        app.agents[&id].prompt.text().is_empty(),
+        "paste must not land in the local prompt while remote TUI is open"
+    );
+
+    // After the remote session closes, paste targets the local prompt again.
+    assert!(app.apply_remote_tui("close", Some("sess-1".into()), None, None));
+    app.pending_effects.clear();
+    let _ = app.handle_input(&Event::Paste("local".to_owned()));
+    assert!(
+        app.pending_effects.iter().all(|effect| !matches!(
+            effect,
+            crate::app::actions::Effect::RemoteTuiInput { .. }
+        )),
+        "no remote forwarding after the session closes"
+    );
+    assert_eq!(app.agents[&id].prompt.text(), "local");
+}
+
+#[test]
+fn external_statuses_and_widgets_use_distinct_native_surfaces() {
+    let mut app = test_app_with_agent();
+    let id = super::super::agent::AgentId(0);
+    app.external_agent = true;
+    app.set_external_status("sync".to_string(), Some("Synchronizing".to_string()));
+    app.set_external_widget(
+        "top".to_string(),
+        Some(vec!["Top widget".to_string()]),
+        ExternalWidgetPlacement::AboveEditor,
+    );
+    app.set_external_widget(
+        "bottom".to_string(),
+        Some(vec!["Bottom widget".to_string()]),
+        ExternalWidgetPlacement::BelowEditor,
+    );
+
+    let agent = &app.agents[&id];
+    assert_eq!(agent.external_statuses, ["Synchronizing"]);
+    // Pi setWidget projects raw lines; no key prefix / join.
+    assert_eq!(agent.external_widgets_above_editor, ["Top widget"]);
+    assert_eq!(agent.external_widgets_below_editor, ["Bottom widget"]);
+    assert!(agent.sticky_toast.is_none());
+}
+
+#[test]
+fn external_widgets_preserve_multiline_and_ansi() {
+    let mut app = test_app_with_agent();
+    let id = super::super::agent::AgentId(0);
+    app.external_agent = true;
+    app.set_external_widget(
+        "remote_tui_demo_footer".to_string(),
+        Some(vec![
+            "\x1b[2m────\x1b[0m".to_string(),
+            "Footer widget · 2 capability(s)".to_string(),
+        ]),
+        ExternalWidgetPlacement::BelowEditor,
+    );
+
+    let agent = &app.agents[&id];
+    assert_eq!(
+        agent.external_widgets_below_editor,
+        ["\x1b[2m────\x1b[0m", "Footer widget · 2 capability(s)"]
+    );
+}
+
+#[test]
+fn reload_reset_discards_projected_extension_ui_and_keeps_session_title() {
+    let mut app = test_app_with_agent();
+    let id = super::super::agent::AgentId(0);
+    app.external_agent = true;
+    app.set_external_session_title("Pi session");
+    app.set_external_status("old-status".to_string(), Some("stale".to_string()));
+    app.set_external_widget(
+        "old-widget".to_string(),
+        Some(vec!["stale widget".to_string()]),
+        ExternalWidgetPlacement::BelowEditor,
+    );
+    app.apply_remote_tui(
+        "open",
+        Some("old-remote".to_string()),
+        Some(vec!["old frame".to_string()]),
+        None,
+    );
+    app.external_ui.extension_shortcuts.set_shortcuts(vec![
+        crate::app::extension_shortcuts::ExtensionShortcut {
+            key: "alt+r".to_string(),
+            description: "stale shortcut".to_string(),
+            extension: "old-extension".to_string(),
+            enabled: true,
+            remapped_to: None,
+        },
+    ]);
+    let shortcut_modal = crate::views::shortcut_manager::ShortcutManagerModal::new(
+        &app.external_ui.extension_shortcuts,
+    );
+    app.agents.get_mut(&id).unwrap().pi_shortcut_manager = Some(shortcut_modal);
+    app.pending_effects
+        .push(crate::app::actions::Effect::RemoteTuiInput {
+            id: "old-remote".to_string(),
+            data: "x".to_string(),
+        });
+
+    assert_eq!(
+        app.reset_external_extension_ui().as_deref(),
+        Some("Pi session")
+    );
+    assert!(app.external_ui.statuses.is_empty());
+    assert!(app.external_ui.widgets.is_empty());
+    assert!(app.external_ui.remote_tui_id.is_none());
+    assert!(app.external_ui.remote_tui_overlays.is_empty());
+    assert!(app.external_ui.extension_shortcuts.all().is_empty());
+    assert!(
+        app.pending_effects.iter().all(|effect| !matches!(
+            effect,
+            crate::app::actions::Effect::RemoteTuiInput { .. }
+        ))
+    );
+
+    let agent = &app.agents[&id];
+    assert_eq!(agent.display_name.as_deref(), Some("Pi session"));
+    assert!(agent.external_statuses.is_empty());
+    assert!(agent.external_widgets_above_editor.is_empty());
+    assert!(agent.external_widgets_below_editor.is_empty());
+    assert!(agent.pi_shortcut_manager.is_none());
+}
+
 #[test]
 fn dashboard_x11_primary_provenance_bypasses_unrelated_clipboard_image() {
     const PRIMARY: &str = "PRIMARY selection text";
@@ -744,6 +1030,10 @@ fn tick_demand_fast_while_modal_session_picker_loads() {
             entries_query: None,
             source_filter: crate::views::session_picker::SourceFilter::default(),
             pending_delete: None,
+            preview_scroll: 0,
+            search_mode: false,
+            preview_mode: false,
+            preview_messages: None,
         });
     assert_eq!(
         app.tick_demand(),
@@ -753,6 +1043,11 @@ fn tick_demand_fast_while_modal_session_picker_loads() {
     let foreign_entry = SessionPickerEntry {
         id: "claude-1".into(),
         summary: "claude".into(),
+        name: None,
+        first_message: None,
+        session_path: None,
+        total_tokens: None,
+        total_cost: None,
         updated_at: chrono::Utc::now(),
         created_at: chrono::Utc::now(),
         cwd: String::new(),
@@ -764,6 +1059,7 @@ fn tick_demand_fast_while_modal_session_picker_loads() {
         branch: None,
         repo_name: "r".into(),
         worktree_label: None,
+        parent_session_path: None,
         last_turn_summary: None,
         card_detail: None,
     };
@@ -2005,6 +2301,87 @@ fn minimal_ctrl_o_transcript_predicate_tracks_interject_binding() {
 /// interject owns the chord AND would consume the press — see the
 /// predicate test above).
 #[test]
+fn external_ctrl_o_defaults_to_write_edit() {
+    let mut app = test_app_with_agent();
+    let id = super::super::agent::AgentId(0);
+    app.external_agent = true;
+    let agent = app.agents.get_mut(&id).unwrap();
+    let edit_id = agent
+        .scrollback
+        .push_block(crate::scrollback::RenderBlock::edit_with_hunks(
+            "x.rs",
+            vec![],
+        ));
+    let execute_id =
+        agent
+            .scrollback
+            .push_block(crate::scrollback::RenderBlock::execute_with_output(
+                "echo tool",
+                "tool output",
+                None::<String>,
+            ));
+
+    let out = app.handle_input(&key_event(KeyCode::Char('o'), KeyModifiers::CONTROL));
+
+    assert!(matches!(out, InputOutcome::Changed));
+    let scrollback = &app.agents[&id].scrollback;
+    assert_eq!(
+        scrollback.get_by_id(edit_id).unwrap().display_mode,
+        crate::scrollback::DisplayMode::Collapsed
+    );
+    assert_eq!(
+        scrollback.get_by_id(execute_id).unwrap().display_mode,
+        crate::scrollback::DisplayMode::Expanded
+    );
+}
+
+#[test]
+fn external_ctrl_o_all_tools_expands_every_tool() {
+    let mut app = test_app_with_agent();
+    let id = super::super::agent::AgentId(0);
+    app.external_agent = true;
+    app.current_ui.ctrl_o_tool_expansion = Some("all_tools".to_string());
+    let agent = app.agents.get_mut(&id).unwrap();
+    let edit_id = agent
+        .scrollback
+        .push_block(crate::scrollback::RenderBlock::edit_with_hunks(
+            "x.rs",
+            vec![],
+        ));
+    let execute_id =
+        agent
+            .scrollback
+            .push_block(crate::scrollback::RenderBlock::execute_with_output(
+                "echo tool",
+                "tool output",
+                None::<String>,
+            ));
+    agent
+        .scrollback
+        .get_by_id_mut(edit_id)
+        .unwrap()
+        .set_display_mode(crate::scrollback::DisplayMode::Collapsed);
+    agent
+        .scrollback
+        .get_by_id_mut(execute_id)
+        .unwrap()
+        .set_display_mode(crate::scrollback::DisplayMode::Collapsed);
+
+    let out = app.handle_input(&key_event(KeyCode::Char('o'), KeyModifiers::CONTROL));
+
+    assert!(matches!(out, InputOutcome::Changed));
+    let scrollback = &app.agents[&id].scrollback;
+    assert_eq!(
+        scrollback.get_by_id(edit_id).unwrap().display_mode,
+        crate::scrollback::DisplayMode::Expanded
+    );
+    assert_eq!(
+        scrollback.get_by_id(execute_id).unwrap().display_mode,
+        crate::scrollback::DisplayMode::Expanded
+    );
+}
+
+#[test]
 fn minimal_ctrl_o_opens_transcript_pager() {
     let mut app = test_app_with_agent();
     app.screen_mode = ScreenMode::Minimal;
@@ -2125,6 +2502,11 @@ fn welcome_session_entry(id: &str) -> SessionPickerEntry {
     SessionPickerEntry {
         id: id.into(),
         summary: id.into(),
+        name: None,
+        first_message: None,
+        session_path: None,
+        total_tokens: None,
+        total_cost: None,
         updated_at: chrono::Utc::now(),
         created_at: chrono::Utc::now(),
         cwd: "/tmp/repo".into(),
@@ -2136,6 +2518,7 @@ fn welcome_session_entry(id: &str) -> SessionPickerEntry {
         branch: None,
         repo_name: "tmp-repo".into(),
         worktree_label: None,
+        parent_session_path: None,
         last_turn_summary: None,
         card_detail: None,
     }
@@ -2272,15 +2655,15 @@ fn welcome_ctrl_d_requires_confirmation() {
 #[test]
 fn menu_action_indices_without_changelog() {
     assert!(matches!(
-        dispatch_menu_action(0, false, false, None),
+        dispatch_menu_action(0, false, false, None, false),
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
     ));
     assert!(matches!(
-        dispatch_menu_action(1, false, false, None),
+        dispatch_menu_action(1, false, false, None, false),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, false, false, None),
+        dispatch_menu_action(2, false, false, None, false),
         InputOutcome::Action(Action::Quit)
     ));
 }
@@ -2288,22 +2671,22 @@ fn menu_action_indices_without_changelog() {
 fn menu_action_changelog_sits_above_quit() {
     let md = Some("# notes");
     assert!(matches!(
-        dispatch_menu_action(1, false, true, md),
+        dispatch_menu_action(1, false, true, md, false),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, false, true, md),
+        dispatch_menu_action(2, false, true, md, false),
         InputOutcome::Action(Action::ShowReleaseNotes { .. })
     ));
     assert!(matches!(
-        dispatch_menu_action(3, false, true, md),
+        dispatch_menu_action(3, false, true, md, false),
         InputOutcome::Action(Action::Quit)
     ));
 }
 #[test]
 fn menu_action_changelog_before_fetch_is_noop() {
     assert!(matches!(
-        dispatch_menu_action(2, false, true, None),
+        dispatch_menu_action(2, false, true, None, false),
         InputOutcome::Unchanged
     ));
 }
@@ -2311,24 +2694,31 @@ fn menu_action_changelog_before_fetch_is_noop() {
 fn menu_action_indices_with_import_and_changelog() {
     let md = Some("# notes");
     assert!(matches!(
-        dispatch_menu_action(0, true, true, md),
+        dispatch_menu_action(0, true, true, md, false),
         InputOutcome::Action(Action::ImportClaudeSettings)
     ));
     assert!(matches!(
-        dispatch_menu_action(1, true, true, md),
+        dispatch_menu_action(1, true, true, md, false),
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, true, true, md),
+        dispatch_menu_action(2, true, true, md, false),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(3, true, true, md),
+        dispatch_menu_action(3, true, true, md, false),
         InputOutcome::Action(Action::ShowReleaseNotes { .. })
     ));
     assert!(matches!(
-        dispatch_menu_action(4, true, true, md),
+        dispatch_menu_action(4, true, true, md, false),
         InputOutcome::Action(Action::Quit)
+    ));
+}
+#[test]
+fn menu_action_external_resume_uses_show_session_picker() {
+    assert!(matches!(
+        dispatch_menu_action(1, false, false, None, true),
+        InputOutcome::Action(Action::ShowSessionPicker)
     ));
 }
 #[test]
@@ -3090,6 +3480,62 @@ fn idle_empty_with_messages_double_esc_opens_rewind_silent() {
     assert!(matches!(
         outcome,
         InputOutcome::Action(Action::RewindShowPicker)
+    ));
+    assert!(app.pending_action.is_none());
+}
+#[test]
+fn external_idle_empty_double_esc_opens_session_tree() {
+    let mut app = test_app_with_agent();
+    let id = super::super::agent::AgentId(0);
+    app.external_agent = true;
+    let agent = app.agents.get_mut(&id).unwrap();
+    agent.active_pane = crate::views::agent::ActivePane::Prompt;
+    agent
+        .scrollback
+        .push_block(crate::scrollback::block::RenderBlock::user_prompt(
+            "earlier",
+        ));
+
+    let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    let pending = app.pending_action.as_ref().expect("arm session tree");
+    assert_eq!(
+        pending.label,
+        Some("tree"),
+        "Pi double-Esc must show tree hint"
+    );
+    assert!(matches!(pending.action, Action::ShowSessionTree));
+
+    let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(matches!(
+        outcome,
+        InputOutcome::Action(Action::ShowSessionTree)
+    ));
+    assert!(app.pending_action.is_none());
+}
+#[test]
+fn external_idle_empty_without_messages_double_esc_opens_session_tree() {
+    let mut app = test_app_with_agent();
+    let id = super::super::agent::AgentId(0);
+    app.external_agent = true;
+    let agent = app.agents.get_mut(&id).unwrap();
+    agent.active_pane = crate::views::agent::ActivePane::Prompt;
+    assert!(agent.scrollback.is_empty());
+
+    let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    assert!(matches!(
+        app.pending_action
+            .as_ref()
+            .expect("arm session tree")
+            .action,
+        Action::ShowSessionTree
+    ));
+
+    let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(matches!(
+        outcome,
+        InputOutcome::Action(Action::ShowSessionTree)
     ));
     assert!(app.pending_action.is_none());
 }
@@ -6253,6 +6699,11 @@ fn welcome_picker_f_cycle_disabled_under_chat_mode() {
     let conversation_entry = SessionPickerEntry {
         id: "conv-welcome-f".into(),
         summary: "chat".into(),
+        name: None,
+        first_message: None,
+        session_path: None,
+        total_tokens: None,
+        total_cost: None,
         updated_at: chrono::Utc::now(),
         created_at: chrono::Utc::now(),
         cwd: String::new(),
@@ -6264,6 +6715,7 @@ fn welcome_picker_f_cycle_disabled_under_chat_mode() {
         branch: None,
         repo_name: "r".into(),
         worktree_label: None,
+        parent_session_path: None,
         last_turn_summary: None,
         card_detail: None,
     };
@@ -6469,438 +6921,4 @@ fn welcome_ctrl_e_ignored_when_zdr_blocked() {
         WelcomeWorkspaceMode::Sandbox,
         "Ctrl+E must not cycle mode on ZDR-blocked welcome"
     );
-}
-
-#[test]
-fn external_notifications_are_drained_in_arrival_order() {
-    let mut app = test_app_with_agent();
-    let id = super::super::agent::AgentId(0);
-    app.show_external_notification("first", None);
-    app.show_external_notification("second", Some("warning"));
-
-    assert!(app.tick());
-    assert_eq!(
-        app.agents[&id]
-            .toast
-            .as_ref()
-            .map(|(message, _)| message.as_str()),
-        Some("first")
-    );
-    app.agents.get_mut(&id).unwrap().toast = None;
-
-    assert!(app.tick());
-    assert_eq!(
-        app.agents[&id]
-            .toast
-            .as_ref()
-            .map(|(message, _)| message.as_str()),
-        Some("Warning: second")
-    );
-}
-
-#[test]
-fn short_info_notification_is_scrollback_only() {
-    let mut app = test_app_with_agent();
-    let id = super::super::agent::AgentId(0);
-
-    app.show_external_notification("Ponytail: current full • default full", Some("info"));
-
-    assert_eq!(app.agents[&id].scrollback.len(), 1);
-    assert!(app.external_ui.pending_toasts.is_empty());
-}
-
-#[test]
-fn multiline_info_notification_is_scrollback_only() {
-    let mut app = test_app_with_agent();
-    let id = super::super::agent::AgentId(0);
-
-    app.show_external_notification("line-a\nline-b", Some("info"));
-
-    assert_eq!(app.agents[&id].scrollback.len(), 1);
-    assert!(app.external_ui.pending_toasts.is_empty());
-}
-
-#[test]
-fn remote_tui_key_sequence_maps_arrows_enter_esc() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-    assert_eq!(
-        AppView::remote_tui_key_sequence(&up).as_deref(),
-        Some("\u{1b}[A")
-    );
-    assert_eq!(
-        AppView::remote_tui_key_sequence(&enter).as_deref(),
-        Some("\r")
-    );
-    assert_eq!(
-        AppView::remote_tui_key_sequence(&esc).as_deref(),
-        Some("\u{1b}")
-    );
-}
-
-#[test]
-fn remote_tui_key_sequence_preserves_key_release_for_pi_tui() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-    let mut release = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
-    release.kind = KeyEventKind::Release;
-    assert_eq!(
-        AppView::remote_tui_key_sequence(&release).as_deref(),
-        Some("\u{1b}[119;1:3u")
-    );
-}
-
-#[test]
-fn remote_tui_forwards_key_release_to_component() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-    let mut app = test_app_with_agent();
-    app.external_agent = true;
-    assert!(app.apply_remote_tui(
-        "open",
-        Some("sess-1".into()),
-        Some(vec!["root".into()]),
-        None,
-    ));
-    let mut release = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
-    release.kind = KeyEventKind::Release;
-
-    assert!(matches!(
-        app.handle_input(&Event::Key(release)),
-        InputOutcome::Changed
-    ));
-    assert!(app.pending_effects.iter().any(|effect| matches!(
-        effect,
-        crate::app::actions::Effect::RemoteTuiInput { id, data }
-            if id == "sess-1" && data == "\u{1b}[119;1:3u"
-    )));
-}
-
-#[test]
-fn remote_tui_frame_preserves_multiline_and_closes() {
-    let mut app = test_app_with_agent();
-    app.external_agent = true;
-    assert!(app.apply_remote_tui("open", Some("sess-1".into()), None, Some("Probe".into()),));
-    assert_eq!(app.external_ui.remote_tui_id.as_deref(), Some("sess-1"));
-    assert!(app.apply_remote_tui(
-        "frame",
-        Some("sess-1".into()),
-        Some(vec!["line-a".into(), "line-b".into()]),
-        None,
-    ));
-    let widget = app.external_ui.widgets.get("remote_tui").expect("widget");
-    assert!(widget.lines.iter().any(|line| line == "line-a"));
-    assert!(widget.lines.iter().any(|line| line == "line-b"));
-    // multiline remote frames must not be joined into one status row
-    let id = super::super::agent::AgentId(0);
-    let agent = &app.agents[&id];
-    assert!(
-        agent
-            .external_widgets_above_editor
-            .iter()
-            .any(|l| l == "line-a")
-    );
-    assert!(
-        agent
-            .external_widgets_above_editor
-            .iter()
-            .any(|l| l == "line-b")
-    );
-    assert!(app.apply_remote_tui("close", Some("sess-1".into()), None, None));
-    assert!(app.external_ui.remote_tui_id.is_none());
-    assert!(!app.external_ui.widgets.contains_key("remote_tui"));
-}
-
-#[test]
-fn remote_tui_forwards_paste_as_bracketed_sequence_not_local_prompt() {
-    let mut app = test_app_with_agent();
-    let id = super::super::agent::AgentId(0);
-    app.agents.get_mut(&id).unwrap().active_pane = crate::views::agent::ActivePane::Prompt;
-    app.external_agent = true;
-    assert!(app.apply_remote_tui("open", Some("sess-1".into()), None, None));
-
-    let outcome = app.handle_input(&Event::Paste("hello\nworld".to_owned()));
-    assert!(matches!(outcome, InputOutcome::Changed));
-    assert!(
-        app.pending_effects.iter().any(|effect| matches!(
-            effect,
-            crate::app::actions::Effect::RemoteTuiInput { id, data }
-                if id == "sess-1" && data == "\u{1b}[200~hello\nworld\u{1b}[201~"
-        )),
-        "paste must be forwarded to the remote host as a Pi-TUI paste sequence"
-    );
-    assert!(
-        app.agents[&id].prompt.text().is_empty(),
-        "paste must not land in the local prompt while remote TUI is open"
-    );
-
-    // After the remote session closes, paste targets the local prompt again.
-    assert!(app.apply_remote_tui("close", Some("sess-1".into()), None, None));
-    app.pending_effects.clear();
-    let _ = app.handle_input(&Event::Paste("local".to_owned()));
-    assert!(
-        app.pending_effects.iter().all(|effect| !matches!(
-            effect,
-            crate::app::actions::Effect::RemoteTuiInput { .. }
-        )),
-        "no remote forwarding after the session closes"
-    );
-    assert_eq!(app.agents[&id].prompt.text(), "local");
-}
-
-#[test]
-fn external_statuses_and_widgets_use_distinct_native_surfaces() {
-    let mut app = test_app_with_agent();
-    let id = super::super::agent::AgentId(0);
-    app.external_agent = true;
-    app.set_external_status("sync".to_string(), Some("Synchronizing".to_string()));
-    app.set_external_widget(
-        "top".to_string(),
-        Some(vec!["Top widget".to_string()]),
-        ExternalWidgetPlacement::AboveEditor,
-    );
-    app.set_external_widget(
-        "bottom".to_string(),
-        Some(vec!["Bottom widget".to_string()]),
-        ExternalWidgetPlacement::BelowEditor,
-    );
-
-    let agent = &app.agents[&id];
-    assert_eq!(agent.external_statuses, ["Synchronizing"]);
-    // Pi setWidget projects raw lines; no key prefix / join.
-    assert_eq!(agent.external_widgets_above_editor, ["Top widget"]);
-    assert_eq!(agent.external_widgets_below_editor, ["Bottom widget"]);
-    assert!(agent.sticky_toast.is_none());
-}
-
-#[test]
-fn external_widgets_preserve_multiline_and_ansi() {
-    let mut app = test_app_with_agent();
-    let id = super::super::agent::AgentId(0);
-    app.external_agent = true;
-    app.set_external_widget(
-        "remote_tui_demo_footer".to_string(),
-        Some(vec![
-            "\x1b[2m────\x1b[0m".to_string(),
-            "Footer widget · 2 capability(s)".to_string(),
-        ]),
-        ExternalWidgetPlacement::BelowEditor,
-    );
-
-    let agent = &app.agents[&id];
-    assert_eq!(
-        agent.external_widgets_below_editor,
-        ["\x1b[2m────\x1b[0m", "Footer widget · 2 capability(s)"]
-    );
-}
-
-#[test]
-fn reload_reset_discards_projected_extension_ui_and_keeps_session_title() {
-    let mut app = test_app_with_agent();
-    let id = super::super::agent::AgentId(0);
-    app.external_agent = true;
-    app.set_external_session_title("Pi session");
-    app.set_external_status("old-status".to_string(), Some("stale".to_string()));
-    app.set_external_widget(
-        "old-widget".to_string(),
-        Some(vec!["stale widget".to_string()]),
-        ExternalWidgetPlacement::BelowEditor,
-    );
-    app.apply_remote_tui(
-        "open",
-        Some("old-remote".to_string()),
-        Some(vec!["old frame".to_string()]),
-        None,
-    );
-    app.external_ui.extension_shortcuts.set_shortcuts(vec![
-        crate::app::extension_shortcuts::ExtensionShortcut {
-            key: "alt+r".to_string(),
-            description: "stale shortcut".to_string(),
-            extension: "old-extension".to_string(),
-            enabled: true,
-            remapped_to: None,
-        },
-    ]);
-    let shortcut_modal = crate::views::shortcut_manager::ShortcutManagerModal::new(
-        &app.external_ui.extension_shortcuts,
-    );
-    app.agents.get_mut(&id).unwrap().pi_shortcut_manager = Some(shortcut_modal);
-    app.pending_effects
-        .push(crate::app::actions::Effect::RemoteTuiInput {
-            id: "old-remote".to_string(),
-            data: "x".to_string(),
-        });
-
-    assert_eq!(
-        app.reset_external_extension_ui().as_deref(),
-        Some("Pi session")
-    );
-    assert!(app.external_ui.statuses.is_empty());
-    assert!(app.external_ui.widgets.is_empty());
-    assert!(app.external_ui.remote_tui_id.is_none());
-    assert!(app.external_ui.remote_tui_overlays.is_empty());
-    assert!(app.external_ui.extension_shortcuts.all().is_empty());
-    assert!(
-        app.pending_effects.iter().all(|effect| !matches!(
-            effect,
-            crate::app::actions::Effect::RemoteTuiInput { .. }
-        ))
-    );
-
-    let agent = &app.agents[&id];
-    assert_eq!(agent.display_name.as_deref(), Some("Pi session"));
-    assert!(agent.external_statuses.is_empty());
-    assert!(agent.external_widgets_above_editor.is_empty());
-    assert!(agent.external_widgets_below_editor.is_empty());
-    assert!(agent.pi_shortcut_manager.is_none());
-}
-
-/// In minimal mode Ctrl+O routes to `Action::OpenTranscriptPager` (unless
-/// interject owns the chord AND would consume the press — see the
-/// predicate test above).
-#[test]
-fn external_ctrl_o_defaults_to_write_edit() {
-    let mut app = test_app_with_agent();
-    let id = super::super::agent::AgentId(0);
-    app.external_agent = true;
-    let agent = app.agents.get_mut(&id).unwrap();
-    let edit_id = agent
-        .scrollback
-        .push_block(crate::scrollback::RenderBlock::edit_with_hunks(
-            "x.rs",
-            vec![],
-        ));
-    let execute_id =
-        agent
-            .scrollback
-            .push_block(crate::scrollback::RenderBlock::execute_with_output(
-                "echo tool",
-                "tool output",
-                None::<String>,
-            ));
-
-    let out = app.handle_input(&key_event(KeyCode::Char('o'), KeyModifiers::CONTROL));
-
-    assert!(matches!(out, InputOutcome::Changed));
-    let scrollback = &app.agents[&id].scrollback;
-    assert_eq!(
-        scrollback.get_by_id(edit_id).unwrap().display_mode,
-        crate::scrollback::DisplayMode::Collapsed
-    );
-    assert_eq!(
-        scrollback.get_by_id(execute_id).unwrap().display_mode,
-        crate::scrollback::DisplayMode::Expanded
-    );
-}
-
-#[test]
-fn external_ctrl_o_all_tools_expands_every_tool() {
-    let mut app = test_app_with_agent();
-    let id = super::super::agent::AgentId(0);
-    app.external_agent = true;
-    app.current_ui.ctrl_o_tool_expansion = Some("all_tools".to_string());
-    let agent = app.agents.get_mut(&id).unwrap();
-    let edit_id = agent
-        .scrollback
-        .push_block(crate::scrollback::RenderBlock::edit_with_hunks(
-            "x.rs",
-            vec![],
-        ));
-    let execute_id =
-        agent
-            .scrollback
-            .push_block(crate::scrollback::RenderBlock::execute_with_output(
-                "echo tool",
-                "tool output",
-                None::<String>,
-            ));
-    agent
-        .scrollback
-        .get_by_id_mut(edit_id)
-        .unwrap()
-        .set_display_mode(crate::scrollback::DisplayMode::Collapsed);
-    agent
-        .scrollback
-        .get_by_id_mut(execute_id)
-        .unwrap()
-        .set_display_mode(crate::scrollback::DisplayMode::Collapsed);
-
-    let out = app.handle_input(&key_event(KeyCode::Char('o'), KeyModifiers::CONTROL));
-
-    assert!(matches!(out, InputOutcome::Changed));
-    let scrollback = &app.agents[&id].scrollback;
-    assert_eq!(
-        scrollback.get_by_id(edit_id).unwrap().display_mode,
-        crate::scrollback::DisplayMode::Expanded
-    );
-    assert_eq!(
-        scrollback.get_by_id(execute_id).unwrap().display_mode,
-        crate::scrollback::DisplayMode::Expanded
-    );
-}
-
-#[test]
-fn menu_action_external_resume_uses_show_session_picker() {
-    assert!(matches!(
-        dispatch_menu_action(1, false, false, None, true),
-        InputOutcome::Action(Action::ShowSessionPicker)
-    ));
-}
-
-#[test]
-fn external_idle_empty_double_esc_opens_session_tree() {
-    let mut app = test_app_with_agent();
-    let id = super::super::agent::AgentId(0);
-    app.external_agent = true;
-    let agent = app.agents.get_mut(&id).unwrap();
-    agent.active_pane = crate::views::agent::ActivePane::Prompt;
-    agent
-        .scrollback
-        .push_block(crate::scrollback::block::RenderBlock::user_prompt(
-            "earlier",
-        ));
-
-    let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(matches!(outcome, InputOutcome::Changed));
-    let pending = app.pending_action.as_ref().expect("arm session tree");
-    assert_eq!(
-        pending.label,
-        Some("tree"),
-        "Pi double-Esc must show tree hint"
-    );
-    assert!(matches!(pending.action, Action::ShowSessionTree));
-
-    let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(matches!(
-        outcome,
-        InputOutcome::Action(Action::ShowSessionTree)
-    ));
-    assert!(app.pending_action.is_none());
-}
-
-#[test]
-fn external_idle_empty_without_messages_double_esc_opens_session_tree() {
-    let mut app = test_app_with_agent();
-    let id = super::super::agent::AgentId(0);
-    app.external_agent = true;
-    let agent = app.agents.get_mut(&id).unwrap();
-    agent.active_pane = crate::views::agent::ActivePane::Prompt;
-    assert!(agent.scrollback.is_empty());
-
-    let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(matches!(outcome, InputOutcome::Changed));
-    assert!(matches!(
-        app.pending_action
-            .as_ref()
-            .expect("arm session tree")
-            .action,
-        Action::ShowSessionTree
-    ));
-
-    let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(matches!(
-        outcome,
-        InputOutcome::Action(Action::ShowSessionTree)
-    ));
-    assert!(app.pending_action.is_none());
 }

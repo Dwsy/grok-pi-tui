@@ -61,12 +61,74 @@ fn hint_with_action(
     }
 }
 
-/// `DashboardCycleMode` carries Shift+Tab three times (the terminal
-/// encoding variants `BackTab` / `BackTab`+SHIFT / `Tab`+SHIFT).
-/// The cheatsheet must collapse identically-rendered keys instead
-/// of showing "Shift+Tab / Shift+Tab / Shift+Tab".
 #[test]
-fn build_entries_dedupes_identically_rendered_alt_keys() {
+fn extension_shortcuts_are_prepended_and_use_effective_keys() {
+    let registry = crate::actions::ActionRegistry::defaults();
+    let shortcuts = vec![
+        ExtensionShortcut {
+            key: "alt+t".to_string(),
+            description: "Translate".to_string(),
+            extension: "pi-language-tutor".to_string(),
+            enabled: true,
+            remapped_to: Some("alt+shift+t".to_string()),
+        },
+        ExtensionShortcut {
+            key: "ctrl+k".to_string(),
+            description: "Disabled action".to_string(),
+            extension: "pi-disabled".to_string(),
+            enabled: false,
+            remapped_to: None,
+        },
+    ];
+    let entries = build_entries_with_extension_shortcuts(
+        &[When::PromptFocused],
+        &registry,
+        false,
+        &shortcuts,
+    );
+
+    assert!(matches!(
+        entries.first(),
+        Some(ShortcutsHelpEntry::SectionHeader {
+            label: "Pi Extension Shortcuts",
+            entry_count: 2,
+            ..
+        })
+    ));
+    match &entries[1] {
+        ShortcutsHelpEntry::Hint { item, dimmed, .. } => {
+            assert!(!dimmed);
+            assert_eq!(
+                item.keys,
+                vec![KeyShortcut::new(
+                    KeyCode::Char('t'),
+                    KeyModifiers::ALT | KeyModifiers::SHIFT
+                )]
+            );
+            assert_eq!(
+                item.description.as_deref(),
+                Some("Translate (pi-language-tutor)")
+            );
+        }
+        _ => panic!("first Pi shortcut must be a hint"),
+    }
+    assert!(matches!(
+        entries.get(2),
+        Some(ShortcutsHelpEntry::Hint { dimmed: true, .. })
+    ));
+    assert!(entries.iter().skip(3).any(|entry| matches!(
+        entry,
+        ShortcutsHelpEntry::SectionHeader {
+            label: "Essentials",
+            ..
+        }
+    )));
+}
+
+/// Dashboard mode switching must advertise Ctrl+Shift+T; Shift+Tab is the
+/// thinking-level shortcut on the agent surface.
+#[test]
+fn build_entries_shows_dashboard_mode_shortcut() {
     let registry = crate::actions::ActionRegistry::defaults();
     let entries = build_entries(&[When::DashboardFocused], &registry, false);
     let item = entries
@@ -80,11 +142,7 @@ fn build_entries_dedupes_identically_rendered_alt_keys() {
             _ => None,
         })
         .expect("DashboardCycleMode must be listed");
-    assert_eq!(
-        hint_key_pretty(item),
-        "Shift+Tab",
-        "encoding-variant alt keys must collapse to one display",
-    );
+    assert_eq!(hint_key_pretty(item), "Ctrl+Shift+T");
 }
 
 #[test]
@@ -2311,88 +2369,4 @@ fn inline_expand_with_no_help_renders_no_description_line() {
         row.description_lines.is_empty(),
         "empty help must render no description line even when expanded"
     );
-}
-
-#[test]
-fn extension_shortcuts_are_prepended_and_use_effective_keys() {
-    let registry = crate::actions::ActionRegistry::defaults();
-    let shortcuts = vec![
-        ExtensionShortcut {
-            key: "alt+t".to_string(),
-            description: "Translate".to_string(),
-            extension: "pi-language-tutor".to_string(),
-            enabled: true,
-            remapped_to: Some("alt+shift+t".to_string()),
-        },
-        ExtensionShortcut {
-            key: "ctrl+k".to_string(),
-            description: "Disabled action".to_string(),
-            extension: "pi-disabled".to_string(),
-            enabled: false,
-            remapped_to: None,
-        },
-    ];
-    let entries = build_entries_with_extension_shortcuts(
-        &[When::PromptFocused],
-        &registry,
-        false,
-        &shortcuts,
-    );
-
-    assert!(matches!(
-        entries.first(),
-        Some(ShortcutsHelpEntry::SectionHeader {
-            label: "Pi Extension Shortcuts",
-            entry_count: 2,
-            ..
-        })
-    ));
-    match &entries[1] {
-        ShortcutsHelpEntry::Hint { item, dimmed, .. } => {
-            assert!(!dimmed);
-            assert_eq!(
-                item.keys,
-                vec![KeyShortcut::new(
-                    KeyCode::Char('t'),
-                    KeyModifiers::ALT | KeyModifiers::SHIFT
-                )]
-            );
-            assert_eq!(
-                item.description.as_deref(),
-                Some("Translate (pi-language-tutor)")
-            );
-        }
-        _ => panic!("first Pi shortcut must be a hint"),
-    }
-    assert!(matches!(
-        entries.get(2),
-        Some(ShortcutsHelpEntry::Hint { dimmed: true, .. })
-    ));
-    assert!(entries.iter().skip(3).any(|entry| matches!(
-        entry,
-        ShortcutsHelpEntry::SectionHeader {
-            label: "Essentials",
-            ..
-        }
-    )));
-}
-
-/// Dashboard mode switching must advertise Ctrl+Shift+T; Shift+Tab is the
-/// thinking-level shortcut on the agent surface.
-#[test]
-fn build_entries_shows_dashboard_mode_shortcut() {
-    let registry = crate::actions::ActionRegistry::defaults();
-    let entries = build_entries(&[When::DashboardFocused], &registry, false);
-    let item = entries
-        .iter()
-        .find_map(|e| match e {
-            ShortcutsHelpEntry::Hint { item, .. }
-                if item.description.as_deref() == Some("Cycle dispatch mode") =>
-            {
-                Some(item)
-            }
-            _ => None,
-        })
-        .expect("DashboardCycleMode must be listed");
-    assert_eq!(hint_key_pretty(item), "Ctrl+Shift+T");
 }
