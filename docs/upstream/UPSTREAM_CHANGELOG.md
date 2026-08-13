@@ -35,7 +35,7 @@ Each entry records:
 
 ## [e5fd481] — 2026-08-13
 
-> **Status:** Pending — not yet merged into grok-pi.
+> **Status:** Merged — integrated on `sync/upstream-e5fd481` as merge commit `300a6539`, on top of the delivered `75e73f3` sync. Cargo-verified this time: `./build.sh`, `pi-grok-adapter` (160 passed), and `grok-pi` bin tests (75 passed) are green. `xai-grok-pager --lib` compiles for the first time since `a5589e9` (pre-sync `main` failed to build that target at all) and reports 8722 passed / 52 failed; those 52 have no pre-sync baseline and are still to be triaged.
 
 - **Sync range:** `75e73f3..e5fd481` (`75e73f3d6ac0350d211f12ae7d57c2c0aad72576` → `e5fd4816d43260c15ba785f103990c1ed6cea230`)
 - **Upstream commits:** 3 (`Synced from monorepo`)
