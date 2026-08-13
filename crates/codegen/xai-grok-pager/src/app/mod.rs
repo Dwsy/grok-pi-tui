@@ -709,9 +709,11 @@ pub async fn run_external(config: ExternalRunConfig) -> anyhow::Result<()> {
         Some(rx)
     };
     let cancel = connection.cancel.clone();
+    let pending_startup = xai_grok_telemetry::startup::PendingStartup::new();
     let result = event_loop::run(
         &mut terminal,
         connection,
+        pending_startup,
         &mut config_watcher,
         &effective_args,
         session_cwd,

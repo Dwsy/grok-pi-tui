@@ -33,6 +33,159 @@ Each entry records:
 
 <!-- entries below this line -->
 
+## [e5fd481] — 2026-08-13
+
+> **Status:** Pending — not yet merged into grok-pi.
+
+- **Sync range:** `75e73f3..e5fd481` (`75e73f3d6ac0350d211f12ae7d57c2c0aad72576` → `e5fd4816d43260c15ba785f103990c1ed6cea230`)
+- **Upstream commits:** 3 (`Synced from monorepo`)
+- **SOURCE_REV (monorepo SHA):** `ea094a8c369475f97c85540d01730baec0dce5d6` (was `a61c32b12a2b400f212221cd8762e05f9b36828d`)
+- **Diff size:** 643 files changed, +148800 / −110648
+
+### Summary
+
+Three monorepo syncs land a live presence protocol, a `/rename` overhaul, and a
+large round of subagent, permission, image, and cancellation hardening. Shell
+and Pager together account for the bulk of the diff, with Workspace/Permission
+third; the biggest new surfaces are workspace bindings (`EnsureBinding`,
+`MergeToMain`, `Push`), `GROK_SESSION_ID` propagation into tool commands and MCP
+servers, and MCP protocol version `2025-11-25`. For grok-pi the sensitive part
+is not the feature list but the location: subagent stop/cancel, queue promote,
+composer paste/type-ahead, and dashboard shortcuts all sit on Pi-owned seams.
+
+This entry starts at `75e73f3` rather than `a5589e9` because the earlier
+`a5589e9..75e73f3` range was already recorded and integrated on
+`sync/upstream-75e73f3`, which is being delivered as the base of this sync.
+
+### Areas touched
+
+| Area | Files | +/− | Added / Deleted | Notes |
+|------|------:|----:|-----------------|-------|
+| Shell (agent runtime) | 205 | +48473/−35942 | 53/0 | presence protocol, subagent lifecycle, auth straddle, image budgets, doom-loop defaults |
+| Pager (TUI) | 178 | +43178/−35189 | 15/0 | `/rename`, `/session-info` copy, composer paste, subagent overlay stop, selection fixes |
+| Workspace / Permission | 58 | +19486/−13516 | 11/0 | `EnsureBinding`/`MergeToMain`/`Push`, provisioned-mount walk, auto-mode grant handling |
+| Other crates | 72 | +10359/−6958 | 22/0 | foreign sessions, session search, tty utils, fsnotify and supporting infrastructure |
+| Textarea / Inline | 4 | +6360/−6244 | 1/0 | soft-wrap word selection and composer editing |
+| Chat state | 14 | +3805/−3356 | 2/0 | chat-kind plumbing behind `/rename` |
+| MCP | 3 | +3319/−3282 | 1/0 | protocol version `2025-11-25` |
+| Computer Hub | 5 | +2981/−2962 | 1/0 | hub-side supporting changes |
+| Update / Version | 8 | +2994/−2498 | 1/0 | native arm64 install, alpha-channel failure guidance, install telemetry |
+| Tools | 24 | +2022/−185 | 0/0 | stale live children, ripgrep reaping, `GROK_SESSION_ID` |
+| Worktree / GC | 6 | +1715/−14 | 2/0 | narrowed standalone origin fetch, no inconsistent shallow clones |
+| Models / Sampling | 17 | +1477/−89 | 0/0 | catalog refresh keeps the displayed session model |
+| Hooks / Plugins | 6 | +708/−91 | 0/0 | first stderr line on hook failure |
+| ACP / Protocol | 7 | +403/−49 | 0/0 | protocol plumbing for the above |
+| Agent lifecycle | 12 | +302/−120 | 1/0 | child-process wait replacement |
+| Telemetry / Mixpanel | 10 | +359/−57 | 0/0 | CLI update install telemetry |
+| Sandbox | 6 | +382/−13 | 2/0 | allow-path `/**` normalization |
+| Root / meta | 3 | +228/−64 | 0/0 | lockfile and upstream revision metadata |
+| Config | 3 | +164/−9 | 0/0 | supporting configuration changes |
+| Prod / release assets | 2 | +85/−10 | 0/0 | release asset naming |
+| **Total** | **643** | **+148800/−110648** | **112/0** | |
+
+### Added
+
+- Presence protocol end to end: live presence updates flow through the gateway into client presence tiers.
+- Workspace: `EnsureBinding`, `MergeToMain`, and `Push` operations, plus start-from-bindings.
+- Workspace: report the workspace server version in `workspace.info`.
+- Tools: set `GROK_SESSION_ID` for tool commands and MCP servers.
+- `/rename`: title cap, ghost prefill, and cross-host manual titles.
+- Pager: copyable `/session-info` with per-row click-to-copy and copy-all.
+- Pager: paste and drag images into the composer while the prompt is unfocused.
+- Pager: accept the legacy Ctrl+4 shortcut for opening the dashboard.
+- Pager: show an interjection note on send-now turns.
+- Pager: typed Automations tool-usage card variant with client render support.
+- Prompt: add a communication section to the system prompt.
+- Prompt: render the browser verification policy in the prompt template.
+- Plan: add UI verification and project rules to `grok-build-plan`.
+- Telemetry: emit CLI update telemetry for install attempts.
+- Voice: preset voices for `reference_to_video` via grok-imagine-video-1.5.
+
+### Changed
+
+- Prompt: remind the model to finish previous work on a mid-turn send.
+- Prompt: rename the system prompt `<output_efficiency>` section to `<response_guidelines>`.
+- Prompt: strengthen agent work discipline.
+- `/rename --auto` unpins a manual title.
+- Runtime: cap and pre-warm the tokio blocking pools to stop EAGAIN aborts.
+- Shell: replace signal-based child process waits.
+- Shell: default the doom-loop `max_threshold` to 32.
+- Shell: default `prompt_cache_key` to the conversation id on the Responses backend.
+- Shell: skip the sessions-root scan on live subagent spawn.
+- Shell: share image byte budgets with compaction.
+- Shell: capture and persist bound image capabilities.
+- Shell: preserve Auto-mode user intent context.
+- Shell: hide zero-score first-turn memory.
+- Shell: surface the first stderr line on hook failures.
+- Shell: disable inline citations for backend search.
+- Worktree: narrow the standalone origin fetch and drop inconsistent shallow clones.
+- Pager: group hooked read-only tool calls.
+- Pager: show tool-call writing activity instead of waiting for the response.
+- Pager: name the subagent in the wait spinner and count parallel prompt writes.
+- Pager: `[stop]` in a subagent overlay cancels the child turn, and subagent-view `[stop]`/Ctrl+C kills the focused subagent.
+- Pager: frame a post-cancel follow-up like an interjection.
+- Pager: enable display-refresh auto-cadence by default.
+- Pager: spawn the history-search matcher thread lazily instead of per prompt.
+- Pager: explain the startup timeout.
+- MCP: advertise protocol version `2025-11-25`.
+- Video tools: explain the ZDR restriction instead of dropping the tools.
+- Update: point alpha update failures at a `GROK_CHANNEL` reinstall.
+
+### Fixed
+
+- Security: restrict session directories to owner-only permissions.
+- Security: auth straddle hardening with a consumed-token sentinel and failure poisoning.
+- Permission: honor explicit user grants and narrow allow rules in auto permission mode.
+- Sandbox: strip a trailing `/**` on allow paths.
+- Update: install native arm64 on Apple Silicon, including from Rosetta shells and x86_64 updaters.
+- Models: retain the displayed session model when the model catalog refreshes.
+- Images: recognize invalid-image rejections by the server's error code, and heal sessions poisoned by invalid images by persisting the strip.
+- `/rename`: remote revert, chat-kind plumbing, and doc fixes.
+- Tools: finalize stale live children and return wait when already terminal.
+- Tools: wake the model when a UI kill never delivered a tool result.
+- Tools: kill and reap ripgrep children when tool calls are cancelled.
+- Workspace: walk every provisioned mount for prompt, graph, and fs-notify.
+- Workspace: make boundary commits dirty trees for real.
+- Pager: paste Flameshot image-only screenshots.
+- Pager: Apple Terminal Cmd+click opens the first autolink across messages.
+- Pager: finish drag selection when the mouse release is lost, and select wrapped words across soft-wrap rows.
+- Pager: Esc on the cancel-subagents panel keeps the turn running.
+- Pager: fire the permission-prompt notification only on a real UI wait.
+- Pager: preserve startup type-ahead into the composer.
+- Pager: block queue promote while the front row is under edit.
+- Pager: resolve relative markdown links to existing cwd files.
+- Fix `PromptMetadata` construction under feature unification.
+
+### Removed / Deprecated
+
+- Retire the grok-code Direct Mode documentation.
+
+### Merge risk for grok-pi
+
+Static three-way preview (`git merge-tree --write-tree`) against the delivery
+base predicts **22 conflicted files** — 21 content conflicts plus one
+modify/delete (`tests/pty_e2e_shell_tools.rs`, deleted locally, modified
+upstream). Hotspots, in seam order:
+
+- **Pager app root and dispatch:** `app/actions.rs`, `app/app_view.rs`,
+  `app/event_loop.rs`, `app/effects/mod.rs`, `app/dispatch/router.rs`,
+  `app/dispatch/session/modal.rs`, `app/agent_view/input.rs`. These carry the
+  freshly added `Action::OpenPiSettings` seam, so resolution must keep both the
+  upstream action surface and the grok-pi settings entry point.
+- **ACP mirror:** `acp/model_state.rs`, `acp/tracker.rs` — upstream's
+  catalog-refresh model retention meets the adapter-driven model state.
+- **Views:** `views/dashboard/{render,state}.rs`, `views/block_viewer.rs`,
+  `views/shortcuts_help.rs` — Ctrl+4, subagent stop, and shortcut listings.
+- **Selection/scrollback:** `scrollback/state/selection.rs`,
+  `scrollback/blocks/tool/edit.rs` — soft-wrap word selection.
+- **Shell/workspace:** `shell-base/util/grok_home.rs` (product state isolation
+  — must keep `$GROK_HOME` → `~/.grok-pi`), `session/acp_session_impl/laziness_classifier.rs`,
+  `workspace-types/src/rpc/workspace.rs` (new binding operations).
+
+Upstream's `views/settings_modal` is untouched by grok-pi, so the new
+`views/pi_settings` panel adds no conflict there; the risk is concentrated in
+the action/router/modal wiring instead.
+
 ## [75e73f3] — 2026-08-10
 
 > **Status:** Merged — integrated on `sync/upstream-75e73f3` as merge commit `dc690ac2139cd62bf7c44400da704e3dc5ff52b9`; validation was static-only (no Cargo).

@@ -718,6 +718,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             },
             restart_required: false,
             hidden_in_minimal: false,
+            external_only: false,
         },
         SettingMeta {
             // Persisted key stays `simple_mode`; the user-facing label

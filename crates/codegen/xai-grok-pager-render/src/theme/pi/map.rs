@@ -149,7 +149,6 @@ pub fn map_pi_theme(doc: &PiThemeJson) -> Result<Theme, MapError> {
 
         accent_plan: warning,
         accent_verify: custom_message_label,
-        accent_feedback: success,
         accent_remember: blend(success, accent, 0.4),
 
         selection_border: border_accent,

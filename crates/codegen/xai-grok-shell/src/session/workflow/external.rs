@@ -52,6 +52,7 @@ impl ExternalWorkflowRuntime {
             Arc::new(|_, _, _| {}),
             config.session_cmd_tx,
             config.templates,
+            super::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
         )));
         Self {
             manager,
