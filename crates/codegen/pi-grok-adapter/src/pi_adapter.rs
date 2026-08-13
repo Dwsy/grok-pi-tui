@@ -1,7 +1,9 @@
 use crate::{
     background_bash_bridge::{
-        background_bash_notification, background_bash_output_update, parse_background_bash_message,
-        parse_background_bash_tool_result,
+        BackgroundBashProjection, BackgroundBashTask, background_bash_notification,
+        background_bash_output_update, drain_running_background_bash,
+        parse_background_bash_message, parse_background_bash_status,
+        parse_background_bash_tool_result, record_background_bash,
     },
     btw_bridge::parse_btw_message,
     context_projection::{
@@ -58,6 +60,7 @@ mod agent;
 mod events;
 mod notifications;
 mod queue_runtime;
+mod recovery;
 mod replay;
 mod session;
 mod tools;
@@ -135,6 +138,10 @@ struct PromptCompletion {
 }
 
 const EXTENSION_QUEUE_STATUS_KEY: &str = "__pi_grok_queue_enqueue__";
+/// Out-of-band terminal state for Pi-owned background Bash tasks. The private
+/// Bash extension publishes here because `setStatus` is fire-and-forget in Pi's
+/// RPC mode, while its bridge message shares the agent's queue lifetime.
+const EXTENSION_BASH_TASK_STATUS_KEY: &str = "__pi_grok_bash_task__";
 
 fn stop_reason_wire(reason: &acp::StopReason) -> &'static str {
     match reason {
@@ -238,6 +245,10 @@ struct AdapterState {
     /// `BashOutput.output_delta` on `tool_execution_update` so Execute cards
     /// stream instead of only jumping at tool end.
     bash_stream_output: HashMap<String, Vec<u8>>,
+    /// Lifecycle mirror for Pi-owned background Bash tasks, keyed by task id.
+    /// Terminal state arrives on two independent channels, and the shells die
+    /// silently with the Pi child — this resolves both into one final state.
+    background_bash_tasks: HashMap<String, BackgroundBashTask>,
     /// Local timing only; Pi owns compaction itself and reports its token result.
     compaction_started_at: Option<Instant>,
     /// Pi steering / follow-up queue mirrored as Grok `x.ai/queue/changed`.
@@ -266,6 +277,8 @@ struct AdapterState {
     /// It is deliberately not session persistence; the adapter rewrites it
     /// from its authoritative tracker after every transition.
     plan_mode_control: Option<PathBuf>,
+    /// Storm guard for automatic Pi RPC crash recovery.
+    rpc_recovery: recovery::RpcRecoveryTracker,
 }
 
 #[derive(Clone)]
@@ -335,6 +348,7 @@ impl PiAgent {
                 stream_start_ms: None,
                 live_prompt_id: None,
                 bash_stream_output: HashMap::new(),
+                background_bash_tasks: HashMap::new(),
                 compaction_started_at: None,
                 queue_mirror: QueueMirror::default(),
                 subagent_bridge_sequences: HashMap::new(),
@@ -344,11 +358,13 @@ impl PiAgent {
                 reload_in_flight: false,
                 plan_mode,
                 plan_mode_control,
+                rpc_recovery: recovery::RpcRecoveryTracker::default(),
             })),
         })
     }
 
     pub async fn run_events(self: Rc<Self>, mut events: mpsc::UnboundedReceiver<Value>) {
+        self.clone().spawn_rpc_watchdog();
         if let Some(mut bridge_rx) = self.workflow_bridge_rx.borrow_mut().take() {
             let agent = self.clone();
             tokio::task::spawn_local(async move {

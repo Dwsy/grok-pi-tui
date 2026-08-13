@@ -72,8 +72,12 @@ mod tests {
         assert!(source.contains("pi-grok-background-bash/v1"));
         assert!(source.contains("Background Bash task failed:"));
         assert!(source.contains(
-            "failed ? { triggerTurn: true, deliverAs: \"followUp\" } : { triggerTurn: false }"
+            "shouldWake ? { triggerTurn: true, deliverAs: \"followUp\" } : { triggerTurn: false }"
         ));
+        // Terminal state must reach the adapter out of band: the bridge message
+        // above shares the agent's queue lifetime and is dropped on abort.
+        assert!(source.contains("__pi_grok_bash_task__"));
+        assert!(source.contains("publishTerminalState(task)"));
         assert_eq!(
             extension
                 .source_path()

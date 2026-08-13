@@ -28,10 +28,24 @@ import {
 	createBashToolDefinition,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 const BRIDGE_TYPE = "pi-grok-background-bash/v1";
+/**
+ * Out-of-band terminal-state channel. `ui.setStatus` is a synchronous
+ * fire-and-forget `extension_ui_request` in RPC mode, so it reaches the adapter
+ * regardless of streaming state, aborts, or a cleared follow-up queue —
+ * unlike `pi.sendMessage`, which the agent may queue or drop entirely.
+ */
+const TASK_STATUS_KEY = "__pi_grok_bash_task__";
+/**
+ * Pager's marker for a task that died with a previous session lifetime. It
+ * settles the row quietly instead of pushing a red "Task failed" block for a
+ * teardown the user already knows about.
+ */
+const ORPHANED_SIGNAL = "session_restart";
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_TASK_IDS = 20;
 const MAX_TIMEOUT_SECONDS = 2_147_483.647;
@@ -69,7 +83,15 @@ type BackgroundTask = {
 	foregroundSettler?: (outcome: "completed" | "backgrounded") => void;
 	promote?: () => void;
 	stateChanged?: () => void;
+	/**
+	 * UI context captured at launch. The context object itself is held (not the
+	 * surrounding `ctx`) so publishing after a session replacement cannot hit
+	 * the stale-instance `assertActive()` guard.
+	 */
+	ui?: TaskStatusChannel;
 };
+
+type TaskStatusChannel = Pick<ExtensionUIContext, "setStatus">;
 
 type BashControl = {
 	sync: () => void;
@@ -564,6 +586,32 @@ function emitCompleted(pi: ExtensionAPI, task: BackgroundTask) {
 	);
 }
 
+/**
+ * Publish the task's terminal state on the private status channel.
+ *
+ * This is what the native task UI converges on. It is deliberately independent
+ * of `emitCompleted`: the bridge message is a conversation message and shares
+ * the agent's queue lifetime, so it can be delayed for a whole turn or dropped
+ * outright when the user aborts.
+ */
+function publishTerminalState(task: BackgroundTask) {
+	try {
+		task.ui?.setStatus(
+			TASK_STATUS_KEY,
+			JSON.stringify({
+				version: 1,
+				event: "completed",
+				taskId: task.taskId,
+				toolCallId: task.toolCallId,
+				taskSnapshot: taskSnapshot(task),
+			}),
+		);
+	} catch {
+		// A detached UI channel only costs this one projection; the caller
+		// still delivers the result to the model.
+	}
+}
+
 function finishTask(pi: ExtensionAPI, task: BackgroundTask, code: number | null, signal: NodeJS.Signals | null) {
 	if (task.completed) return;
 	task.completed = true;
@@ -572,7 +620,16 @@ function finishTask(pi: ExtensionAPI, task: BackgroundTask, code: number | null,
 	task.signal ??= signal ?? undefined;
 	if (task.timeoutHandle) clearTimeout(task.timeoutHandle);
 	task.log.end(() => {
-		if (task.backgrounded) emitCompleted(pi, task);
+		if (task.backgrounded) {
+			publishTerminalState(task);
+			try {
+				emitCompleted(pi, task);
+			} catch {
+				// `pi.sendMessage` throws on a stale extension instance (session
+				// replacement / reload). Waking the model is best effort; the
+				// bookkeeping below must still run or the task never settles.
+			}
+		}
 		const settleForeground = task.foregroundSettler;
 		task.foregroundSettler = undefined;
 		settleForeground?.("completed");
@@ -612,6 +669,7 @@ async function startTask(
 		env: NodeJS.ProcessEnv;
 		onData?: (chunk: Buffer) => void;
 		stateChanged?: () => void;
+		ui?: TaskStatusChannel;
 	},
 ): Promise<BackgroundTask> {
 	validateTimeout(params.timeout);
@@ -635,6 +693,7 @@ async function startTask(
 		timedOut: false,
 		waiters: new Set(),
 		stateChanged: params.stateChanged,
+		ui: params.ui,
 	};
 	const recordOutput = (chunk: Buffer) => {
 		appendOutput(task, chunk);
@@ -885,6 +944,7 @@ export default function (pi: ExtensionAPI) {
 					backgrounded: true,
 					env: process.env,
 					stateChanged: control.sync,
+					ui: ctx.ui,
 				});
 				tasks.set(task.toolCallId, task);
 				control.sync();
@@ -915,6 +975,7 @@ export default function (pi: ExtensionAPI) {
 							env: options.env ?? process.env,
 							onData: options.onData,
 							stateChanged: control.sync,
+							ui: ctx.ui,
 						});
 						tasks.set(toolCallId, task);
 						const activeTask = task;
@@ -1055,7 +1116,7 @@ export default function (pi: ExtensionAPI) {
 		for (const task of tasks.values()) {
 			if (task.completed) continue;
 			task.explicitlyKilled = true;
-			task.signal = "session_shutdown";
+			task.signal = ORPHANED_SIGNAL;
 			killProcessTree(task);
 		}
 	});

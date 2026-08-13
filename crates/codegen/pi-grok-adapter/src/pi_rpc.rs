@@ -30,14 +30,60 @@ pub struct SpawnConfig {
     pub env: Vec<(String, String)>,
 }
 
+/// Pending request entry: response channel plus the child generation the
+/// request was written to. A crashed child's exit coordinator only fails
+/// entries of its own generation, so requests already issued to a respawned
+/// child survive the (asynchronous) old-child teardown.
+struct PendingRequest {
+    sender: oneshot::Sender<Result<Value, String>>,
+    generation: u64,
+}
+
+type PendingMap = Arc<Mutex<HashMap<String, PendingRequest>>>;
+
+/// Error type for an RPC request that hit its deadline. Exposed as a typed
+/// error so callers (the hang watchdog) can distinguish "process is slow or
+/// stuck" from "process is gone" without string matching.
+#[derive(Debug)]
+pub struct PiRpcTimeout {
+    pub id: String,
+    pub after: Duration,
+}
+
+impl std::fmt::Display for PiRpcTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Pi RPC request timed out after {} seconds: {}",
+            self.after.as_secs(),
+            self.id
+        )
+    }
+}
+
+impl std::error::Error for PiRpcTimeout {}
+
 #[derive(Clone)]
 pub struct PiRpc {
-    writer: mpsc::UnboundedSender<Value>,
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>,
-    next_id: Arc<AtomicU64>,
+    shared: Arc<RpcShared>,
+}
+
+/// Connection state shared by all `PiRpc` clones. The writer and child
+/// control senders are swappable so `respawn` can attach a replacement child
+/// process without invalidating existing clones or the events receiver.
+struct RpcShared {
+    config: SpawnConfig,
+    writer: Mutex<mpsc::UnboundedSender<Value>>,
     /// Control channel for the exit coordinator, which is the sole owner of
     /// the child process. This avoids holding a mutex across `Child::wait()`.
-    child_control: mpsc::UnboundedSender<ChildControl>,
+    child_control: Mutex<mpsc::UnboundedSender<ChildControl>>,
+    pending: PendingMap,
+    next_id: AtomicU64,
+    /// Event sink shared across child generations; `PiProcess::events` keeps
+    /// receiving after a respawn.
+    event_tx: mpsc::UnboundedSender<Value>,
+    /// Monotonic child generation; bumped by every attach.
+    generation: AtomicU64,
 }
 
 pub struct PiProcess {
@@ -46,209 +92,111 @@ pub struct PiProcess {
 }
 
 enum ChildControl {
-    Kill(oneshot::Sender<()>),
+    Kill {
+        done: oneshot::Sender<()>,
+        /// Marks the resulting `adapter_process_exit` event as a deliberate
+        /// teardown so the adapter does not start crash recovery for it.
+        intentional: bool,
+    },
+}
+
+/// Per-child channel endpoints produced by [`attach_child`].
+struct ChildEndpoints {
+    writer: mpsc::UnboundedSender<Value>,
+    child_control: mpsc::UnboundedSender<ChildControl>,
 }
 
 impl PiRpc {
     pub async fn spawn(config: SpawnConfig) -> Result<PiProcess> {
-        let rpc_entry = rpc_entry_for_cli(&config.program, &config.prefix_args);
-        let program = rpc_entry
-            .as_deref()
-            .unwrap_or_else(|| Path::new(&config.program));
-
-        // Windows: CreateProcess cannot launch .cmd/.bat as the image; route via cmd.exe.
-        // Node CLIs (.js/.mjs/.cjs) need an explicit node host (shebang is not honored).
-        let mut command = spawn_command_for_program(program);
-        if looks_like_js_cli(program) {
-            command.arg(program);
-        }
-        command.args(&config.prefix_args);
-        if rpc_entry.is_none() {
-            tracing::debug!(program = %config.program, "Pi RPC entrypoint unavailable; passing --mode rpc to CLI");
-            command.arg("--mode").arg("rpc");
-        }
-        command
-            .args(&config.pi_args)
-            .current_dir(&config.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        for (key, value) in &config.env {
-            command.env(key, value);
-        }
-
-        let mut child = command.spawn().with_context(|| {
-            format!(
-                "failed to start Pi RPC process: {} {:?}",
-                config.program, config.prefix_args
-            )
-        })?;
-        let mut stdin = child.stdin.take().context("Pi RPC stdin is unavailable")?;
-        let stdout = child
-            .stdout
-            .take()
-            .context("Pi RPC stdout is unavailable")?;
-        let stderr = child
-            .stderr
-            .take()
-            .context("Pi RPC stderr is unavailable")?;
-
-        let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<Value>();
         let (event_tx, event_rx) = mpsc::unbounded_channel::<Value>();
-        let pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let stderr_ring: Arc<Mutex<StderrRingBuffer>> =
-            Arc::new(Mutex::new(StderrRingBuffer::new(32)));
-
-        tokio::spawn(async move {
-            while let Some(value) = writer_rx.recv().await {
-                let line = match serde_json::to_vec(&value) {
-                    Ok(line) => line,
-                    Err(error) => {
-                        tracing::error!(%error, "failed to serialize Pi RPC command");
-                        continue;
-                    }
-                };
-                if stdin.write_all(&line).await.is_err()
-                    || stdin.write_all(b"\n").await.is_err()
-                    || stdin.flush().await.is_err()
-                {
-                    break;
-                }
-            }
-        });
-
-        // Stdout reader: dispatches responses and events. On EOF it does NOT
-        // fail pending requests — that is the exit task's job, so the error
-        // message always includes the exit code and fully-drained stderr.
-        let pending_stdout = pending.clone();
-        let event_stdout = event_tx.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => match parse_pi_rpc_json(&line) {
-                        Ok(value) => {
-                            let response_id = value
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned);
-                            let is_response =
-                                value.get("type").and_then(Value::as_str) == Some("response");
-                            if is_response
-                                && let Some(id) = response_id
-                                && let Some(sender) = pending_stdout
-                                    .lock()
-                                    .expect("Pi pending map poisoned")
-                                    .remove(&id)
-                            {
-                                let _ = sender.send(Ok(value));
-                                continue;
-                            }
-                            let _ = event_stdout.send(value);
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, bytes = line.len(), "invalid JSON on Pi RPC stdout");
-                            let _ = event_stdout.send(serde_json::json!({
-                                "type": "adapter_diagnostic",
-                                "message": format!(
-                                    "Invalid Pi RPC JSON ({} bytes): {error}",
-                                    line.len()
-                                ),
-                            }));
-                        }
-                    },
-                    Ok(None) => break,
-                    Err(error) => {
-                        tracing::warn!(%error, "failed reading Pi RPC stdout");
-                        break;
-                    }
-                }
-            }
-            // stdout closed — do NOT fail_pending here. The exit task owns
-            // that so the error includes exit code + drained stderr.
-        });
-
-        // Stderr reader: buffers lines and signals completion.
-        let stderr_ring_for_reader = stderr_ring.clone();
-        let (stderr_done_tx, stderr_done_rx) = oneshot::channel::<()>();
-        let mut stderr_log = open_pi_stderr_log();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                stderr_ring_for_reader
-                    .lock()
-                    .expect("stderr ring poisoned")
-                    .push(line.clone());
-                if let Some(log) = stderr_log.as_mut()
-                    && let Err(error) = writeln!(log, "{line}")
-                {
-                    tracing::warn!(%error, "failed writing Pi stderr log");
-                    stderr_log = None;
-                }
-                tracing::warn!(target: "pi_rpc", "{line}");
-            }
-            let _ = stderr_done_tx.send(());
-        });
-
-        // Exit coordinator: the single owner of fail_pending. Waits for the
-        // child to exit and stderr to drain, then assembles the diagnostic.
-        let (child_control_tx, child_control_rx) = mpsc::unbounded_channel();
-        let pending_exit = pending.clone();
-        let stderr_ring_for_exit = stderr_ring.clone();
-        tokio::spawn(async move {
-            let base = wait_for_child_exit(child, child_control_rx).await;
-            // Wait for the stderr reader to finish (bounded so we never hang).
-            let _ = tokio::time::timeout(Duration::from_secs(2), stderr_done_rx).await;
-            let stderr_context = stderr_ring_for_exit
-                .lock()
-                .expect("stderr ring poisoned")
-                .snapshot();
-            let message = if stderr_context.is_empty() {
-                base
-            } else {
-                format!(
-                    "{base}\n\nPi stderr (last {} lines):\n{stderr_context}",
-                    stderr_context.lines().count()
-                )
-            };
-            fail_pending(&pending_exit, &message);
-            let _ = event_tx.send(serde_json::json!({
-                "type": "adapter_process_exit",
-                "message": message,
-            }));
-        });
-
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let endpoints = attach_child(&config, &pending, &event_tx, 1)?;
         Ok(PiProcess {
             rpc: PiRpc {
-                writer: writer_tx,
-                pending,
-                next_id: Arc::new(AtomicU64::new(1)),
-                child_control: child_control_tx,
+                shared: Arc::new(RpcShared {
+                    config,
+                    writer: Mutex::new(endpoints.writer),
+                    child_control: Mutex::new(endpoints.child_control),
+                    pending,
+                    next_id: AtomicU64::new(1),
+                    event_tx,
+                    generation: AtomicU64::new(1),
+                }),
             },
             events: event_rx,
         })
     }
 
-    pub async fn request(&self, mut command: Value) -> Result<Value> {
+    /// Replace a dead (or wedged) Pi child with a fresh one spawned from the
+    /// original config. The pending map and event channel are reused, so all
+    /// `PiRpc` clones and the `PiProcess::events` receiver keep working.
+    pub async fn respawn(&self) -> Result<()> {
+        // Defensive teardown so two Pi children can never coexist. Marked
+        // intentional: if the old child was somehow still alive, its exit
+        // event must not trigger another round of crash recovery.
+        self.kill().await;
+        let generation = self.shared.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let endpoints = attach_child(
+            &self.shared.config,
+            &self.shared.pending,
+            &self.shared.event_tx,
+            generation,
+        )?;
+        *self.shared.writer.lock().expect("Pi writer poisoned") = endpoints.writer;
+        *self
+            .shared
+            .child_control
+            .lock()
+            .expect("Pi child control poisoned") = endpoints.child_control;
+        Ok(())
+    }
+
+    pub async fn request(&self, command: Value) -> Result<Value> {
         let command_type = command
             .get("type")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("Pi RPC command is missing its type"))?;
         let timeout = request_timeout(command_type);
+        self.request_inner(command, timeout).await
+    }
+
+    /// Like [`Self::request`], but with a caller-provided deadline instead of
+    /// the per-command default. Timeouts surface as [`PiRpcTimeout`].
+    pub async fn request_with_deadline(&self, command: Value, deadline: Duration) -> Result<Value> {
+        self.request_inner(command, Some(deadline)).await
+    }
+
+    async fn request_inner(&self, mut command: Value, timeout: Option<Duration>) -> Result<Value> {
         let object = command
             .as_object_mut()
             .ok_or_else(|| anyhow!("Pi RPC command must be a JSON object"))?;
-        let id = format!("pi-grok-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        let id = format!(
+            "pi-grok-{}",
+            self.shared.next_id.fetch_add(1, Ordering::Relaxed)
+        );
         object.insert("id".to_string(), Value::String(id.clone()));
         let (response_tx, response_rx) = oneshot::channel();
-        self.pending
+        self.shared
+            .pending
             .lock()
             .expect("Pi pending map poisoned")
-            .insert(id.clone(), response_tx);
-        if self.writer.send(command).is_err() {
-            self.pending
+            .insert(
+                id.clone(),
+                PendingRequest {
+                    sender: response_tx,
+                    generation: self.shared.generation.load(Ordering::SeqCst),
+                },
+            );
+        let sent = self
+            .shared
+            .writer
+            .lock()
+            .expect("Pi writer poisoned")
+            .send(command)
+            .is_ok();
+        if !sent {
+            self.shared
+                .pending
                 .lock()
                 .expect("Pi pending map poisoned")
                 .remove(&id);
@@ -260,14 +208,12 @@ impl PiRpc {
                     .map_err(|_| anyhow!("Pi RPC response channel closed for {id}"))?
                     .map_err(anyhow::Error::msg)?,
                 Err(_) => {
-                    self.pending
+                    self.shared
+                        .pending
                         .lock()
                         .expect("Pi pending map poisoned")
                         .remove(&id);
-                    bail!(
-                        "Pi RPC request timed out after {} seconds: {id}",
-                        timeout.as_secs()
-                    );
+                    return Err(anyhow::Error::new(PiRpcTimeout { id, after: timeout }));
                 }
             }
         } else {
@@ -287,44 +233,273 @@ impl PiRpc {
     }
 
     pub fn notify(&self, command: Value) -> Result<()> {
-        self.writer
+        self.shared
+            .writer
+            .lock()
+            .expect("Pi writer poisoned")
             .send(command)
             .map_err(|_| anyhow!("Pi RPC writer is closed"))
     }
 
-    /// Kill the Pi child process. Used during extension bisection probes so
-    /// each probe tears down cleanly instead of leaking an OS process.
+    /// Kill the Pi child process deliberately (extension bisection probes,
+    /// respawn teardown). The exit event is marked intentional so the adapter
+    /// does not treat it as a crash.
     pub async fn kill(&self) {
+        self.kill_child(true).await;
+    }
+
+    /// Kill a Pi child that stopped answering RPC requests. The exit event is
+    /// NOT marked intentional, so the adapter's crash recovery respawns it.
+    pub async fn kill_unresponsive(&self) {
+        self.kill_child(false).await;
+    }
+
+    async fn kill_child(&self, intentional: bool) {
+        let control = self
+            .shared
+            .child_control
+            .lock()
+            .expect("Pi child control poisoned")
+            .clone();
         let (done_tx, done_rx) = oneshot::channel();
-        if self.child_control.send(ChildControl::Kill(done_tx)).is_ok() {
+        if control
+            .send(ChildControl::Kill {
+                done: done_tx,
+                intentional,
+            })
+            .is_ok()
+        {
             let _ = done_rx.await;
         }
     }
 }
 
+/// Spawn a Pi child process and wire its stdio to the shared pending map and
+/// event channel. Used for both the initial spawn and every respawn; each
+/// attach owns a distinct `generation` so a stale exit coordinator can never
+/// fail requests issued to a newer child.
+fn attach_child(
+    config: &SpawnConfig,
+    pending: &PendingMap,
+    event_tx: &mpsc::UnboundedSender<Value>,
+    generation: u64,
+) -> Result<ChildEndpoints> {
+    let rpc_entry = rpc_entry_for_cli(&config.program, &config.prefix_args);
+    let program = rpc_entry
+        .as_deref()
+        .unwrap_or_else(|| Path::new(&config.program));
+
+    // Windows: CreateProcess cannot launch .cmd/.bat as the image; route via cmd.exe.
+    // Node CLIs (.js/.mjs/.cjs) need an explicit node host (shebang is not honored).
+    let mut command = spawn_command_for_program(program);
+    if looks_like_js_cli(program) {
+        command.arg(program);
+    }
+    command.args(&config.prefix_args);
+    if rpc_entry.is_none() {
+        tracing::debug!(program = %config.program, "Pi RPC entrypoint unavailable; passing --mode rpc to CLI");
+        command.arg("--mode").arg("rpc");
+    }
+    command
+        .args(&config.pi_args)
+        .current_dir(&config.cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    for (key, value) in &config.env {
+        command.env(key, value);
+    }
+
+    let mut child = command.spawn().with_context(|| {
+        format!(
+            "failed to start Pi RPC process: {} {:?}",
+            config.program, config.prefix_args
+        )
+    })?;
+    let mut stdin = child.stdin.take().context("Pi RPC stdin is unavailable")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("Pi RPC stdout is unavailable")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("Pi RPC stderr is unavailable")?;
+
+    let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<Value>();
+    let stderr_ring: Arc<Mutex<StderrRingBuffer>> =
+        Arc::new(Mutex::new(StderrRingBuffer::new(32)));
+
+    tokio::spawn(async move {
+        while let Some(value) = writer_rx.recv().await {
+            let line = match serde_json::to_vec(&value) {
+                Ok(line) => line,
+                Err(error) => {
+                    tracing::error!(%error, "failed to serialize Pi RPC command");
+                    continue;
+                }
+            };
+            if stdin.write_all(&line).await.is_err()
+                || stdin.write_all(b"\n").await.is_err()
+                || stdin.flush().await.is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    // Stdout reader: dispatches responses and events. On EOF it does NOT
+    // fail pending requests — that is the exit task's job, so the error
+    // message always includes the exit code and fully-drained stderr.
+    let pending_stdout = pending.clone();
+    let event_stdout = event_tx.clone();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => match parse_pi_rpc_json(&line) {
+                    Ok(value) => {
+                        let response_id = value
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned);
+                        let is_response =
+                            value.get("type").and_then(Value::as_str) == Some("response");
+                        if is_response
+                            && let Some(id) = response_id
+                            && let Some(request) = pending_stdout
+                                .lock()
+                                .expect("Pi pending map poisoned")
+                                .remove(&id)
+                        {
+                            let _ = request.sender.send(Ok(value));
+                            continue;
+                        }
+                        let _ = event_stdout.send(value);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, bytes = line.len(), "invalid JSON on Pi RPC stdout");
+                        let _ = event_stdout.send(serde_json::json!({
+                            "type": "adapter_diagnostic",
+                            "message": format!(
+                                "Invalid Pi RPC JSON ({} bytes): {error}",
+                                line.len()
+                            ),
+                        }));
+                    }
+                },
+                Ok(None) => break,
+                Err(error) => {
+                    tracing::warn!(%error, "failed reading Pi RPC stdout");
+                    break;
+                }
+            }
+        }
+        // stdout closed — do NOT fail_pending here. The exit task owns
+        // that so the error includes exit code + drained stderr.
+    });
+
+    // Stderr reader: buffers lines and signals completion.
+    let stderr_ring_for_reader = stderr_ring.clone();
+    let (stderr_done_tx, stderr_done_rx) = oneshot::channel::<()>();
+    let mut stderr_log = open_pi_stderr_log();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            stderr_ring_for_reader
+                .lock()
+                .expect("stderr ring poisoned")
+                .push(line.clone());
+            if let Some(log) = stderr_log.as_mut()
+                && let Err(error) = writeln!(log, "{line}")
+            {
+                tracing::warn!(%error, "failed writing Pi stderr log");
+                stderr_log = None;
+            }
+            tracing::warn!(target: "pi_rpc", "{line}");
+        }
+        let _ = stderr_done_tx.send(());
+    });
+
+    // Exit coordinator: the single owner of fail_pending. Waits for the
+    // child to exit and stderr to drain, then assembles the diagnostic.
+    let (child_control_tx, child_control_rx) = mpsc::unbounded_channel();
+    let pending_exit = pending.clone();
+    let event_exit = event_tx.clone();
+    let stderr_ring_for_exit = stderr_ring.clone();
+    tokio::spawn(async move {
+        let exit = wait_for_child_exit(child, child_control_rx).await;
+        // Wait for the stderr reader to finish (bounded so we never hang).
+        let _ = tokio::time::timeout(Duration::from_secs(2), stderr_done_rx).await;
+        let stderr_context = stderr_ring_for_exit
+            .lock()
+            .expect("stderr ring poisoned")
+            .snapshot();
+        let message = if stderr_context.is_empty() {
+            exit.message
+        } else {
+            format!(
+                "{}\n\nPi stderr (last {} lines):\n{stderr_context}",
+                exit.message,
+                stderr_context.lines().count()
+            )
+        };
+        fail_pending(&pending_exit, generation, &message);
+        let _ = event_exit.send(serde_json::json!({
+            "type": "adapter_process_exit",
+            "message": message,
+            "intentional": exit.intentional,
+        }));
+    });
+
+    Ok(ChildEndpoints {
+        writer: writer_tx,
+        child_control: child_control_tx,
+    })
+}
+
+struct ChildExit {
+    message: String,
+    /// True when the exit came from a deliberate `ChildControl::Kill`.
+    intentional: bool,
+}
+
 async fn wait_for_child_exit(
     mut child: tokio::process::Child,
     mut control: mpsc::UnboundedReceiver<ChildControl>,
-) -> String {
+) -> ChildExit {
     loop {
         tokio::select! {
             command = control.recv() => match command {
-                Some(ChildControl::Kill(done)) => {
+                Some(ChildControl::Kill { done, intentional }) => {
                     let _ = child.start_kill();
                     let result = child.wait().await;
                     let _ = done.send(());
-                    return describe_child_exit(result);
+                    return ChildExit {
+                        message: describe_child_exit(result),
+                        intentional,
+                    };
                 }
-                None => return describe_child_exit(child.wait().await),
+                None => return ChildExit {
+                    message: describe_child_exit(child.wait().await),
+                    intentional: false,
+                },
             },
             _ = tokio::time::sleep(Duration::from_millis(25)) => {
                 match child.try_wait() {
                     Ok(Some(status)) => {
-                        return format!("Pi RPC process exited with {status}");
+                        return ChildExit {
+                            message: format!("Pi RPC process exited with {status}"),
+                            intentional: false,
+                        };
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        return format!("failed waiting for Pi RPC process: {error}");
+                        return ChildExit {
+                            message: format!("failed waiting for Pi RPC process: {error}"),
+                            intentional: false,
+                        };
                     }
                 }
             }
@@ -516,18 +691,23 @@ fn canonical_cli_path(program: &str) -> Option<PathBuf> {
         .and_then(|candidate| std::fs::canonicalize(candidate).ok())
 }
 
-fn fail_pending(
-    pending: &Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>,
-    message: &str,
-) {
-    let drained: Vec<_> = pending
-        .lock()
-        .expect("Pi pending map poisoned")
-        .drain()
-        .map(|(_, sender)| sender)
+/// Fail every pending request that was issued to child `generation` (or an
+/// older one). Requests already stamped with a newer generation belong to a
+/// respawned child and must survive this teardown.
+fn fail_pending(pending: &PendingMap, generation: u64, message: &str) {
+    let mut map = pending.lock().expect("Pi pending map poisoned");
+    let stale: Vec<String> = map
+        .iter()
+        .filter(|(_, request)| request.generation <= generation)
+        .map(|(id, _)| id.clone())
         .collect();
-    for sender in drained {
-        let _ = sender.send(Err(message.to_string()));
+    let drained: Vec<_> = stale
+        .into_iter()
+        .filter_map(|id| map.remove(&id))
+        .collect();
+    drop(map);
+    for request in drained {
+        let _ = request.sender.send(Err(message.to_string()));
     }
 }
 
@@ -557,6 +737,33 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn shell_config(script: &str) -> SpawnConfig {
+        SpawnConfig {
+            program: "sh".to_string(),
+            prefix_args: vec!["-c".to_string(), script.to_string()],
+            cwd: std::env::temp_dir(),
+            pi_args: Vec::new(),
+            env: Vec::new(),
+        }
+    }
+
+    #[cfg(unix)]
+    async fn next_event_of_type(
+        events: &mut mpsc::UnboundedReceiver<Value>,
+        wanted: &str,
+    ) -> Value {
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+                .await
+                .expect("timed out waiting for Pi RPC event")
+                .expect("event channel closed");
+            if event.get("type").and_then(Value::as_str) == Some(wanted) {
+                return event;
+            }
+        }
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn kill_does_not_block_behind_exit_wait() {
         let mut command = Command::new("sleep");
@@ -564,11 +771,17 @@ mod tests {
         let child = command.spawn().expect("spawn sleeping child");
         let (child_control, child_control_rx) = mpsc::unbounded_channel();
         let (writer, _writer_rx) = mpsc::unbounded_channel();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
         let rpc = PiRpc {
-            writer,
-            pending: Arc::new(Mutex::new(HashMap::new())),
-            next_id: Arc::new(AtomicU64::new(1)),
-            child_control,
+            shared: Arc::new(RpcShared {
+                config: shell_config("true"),
+                writer: Mutex::new(writer),
+                child_control: Mutex::new(child_control),
+                pending: Arc::new(Mutex::new(HashMap::new())),
+                next_id: AtomicU64::new(1),
+                event_tx,
+                generation: AtomicU64::new(1),
+            }),
         };
 
         let waiter = tokio::spawn(wait_for_child_exit(child, child_control_rx));
@@ -579,7 +792,96 @@ mod tests {
             .await
             .expect("killed child should be reaped promptly")
             .expect("exit coordinator task");
-        assert!(exit.starts_with("Pi RPC process exited with"));
+        assert!(exit.message.starts_with("Pi RPC process exited with"));
+        assert!(exit.intentional, "kill() must mark the exit intentional");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn natural_exit_is_reported_as_unintentional() {
+        let process = PiRpc::spawn(shell_config("exit 3"))
+            .await
+            .expect("spawn short-lived child");
+        let mut events = process.events;
+        let exit = next_event_of_type(&mut events, "adapter_process_exit").await;
+        assert_eq!(exit["intentional"], Value::Bool(false));
+        assert!(
+            exit["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("exited"),
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn respawn_reuses_the_event_channel_across_children() {
+        // Each child announces itself on stdout, then stays alive on cat.
+        let process = PiRpc::spawn(shell_config(
+            r#"echo '{"type":"hello"}'; exec cat > /dev/null"#,
+        ))
+        .await
+        .expect("spawn echoing child");
+        let rpc = process.rpc;
+        let mut events = process.events;
+        next_event_of_type(&mut events, "hello").await;
+
+        rpc.kill().await;
+        let exit = next_event_of_type(&mut events, "adapter_process_exit").await;
+        assert_eq!(exit["intentional"], Value::Bool(true));
+
+        rpc.respawn().await.expect("respawn replacement child");
+        next_event_of_type(&mut events, "hello").await;
+
+        // The replacement child's writer must accept notifications again.
+        rpc.notify(serde_json::json!({ "type": "noop" }))
+            .expect("notify respawned child");
+        rpc.kill().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unresponsive_kill_is_reported_as_a_crash() {
+        let process = PiRpc::spawn(shell_config("exec cat > /dev/null"))
+            .await
+            .expect("spawn silent child");
+        let mut events = process.events;
+        process.rpc.kill_unresponsive().await;
+        let exit = next_event_of_type(&mut events, "adapter_process_exit").await;
+        assert_eq!(exit["intentional"], Value::Bool(false));
+    }
+
+    #[test]
+    fn stale_generation_teardown_spares_newer_requests() {
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let (old_tx, mut old_rx) = oneshot::channel();
+        let (new_tx, mut new_rx) = oneshot::channel();
+        pending.lock().unwrap().insert(
+            "old".into(),
+            PendingRequest {
+                sender: old_tx,
+                generation: 1,
+            },
+        );
+        pending.lock().unwrap().insert(
+            "new".into(),
+            PendingRequest {
+                sender: new_tx,
+                generation: 2,
+            },
+        );
+
+        fail_pending(&pending, 1, "child 1 crashed");
+
+        assert_eq!(
+            old_rx.try_recv().expect("old request must be failed"),
+            Err("child 1 crashed".to_string())
+        );
+        assert!(
+            new_rx.try_recv().is_err(),
+            "request to the respawned child must stay pending"
+        );
+        assert!(pending.lock().unwrap().contains_key("new"));
     }
 
     #[test]

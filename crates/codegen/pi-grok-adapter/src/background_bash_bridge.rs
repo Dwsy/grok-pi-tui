@@ -1,8 +1,13 @@
 //! Project Pi background-Bash custom messages into existing Grok task updates.
 
 use serde_json::{Value, json};
+use std::{collections::HashMap, time::SystemTime};
 
 const BRIDGE_TYPE: &str = "pi-grok-background-bash/v1";
+
+/// Pager's marker for a task that died with a previous process lifetime. It
+/// finalizes the row without pushing a fresh failure block into scrollback.
+const ORPHANED_SIGNAL: &str = "session_restart";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BackgroundBashProjection {
@@ -20,6 +25,36 @@ pub(crate) enum BackgroundBashProjection {
     },
 }
 
+/// Adapter-side mirror of what Pager has been told about a Pi-owned background
+/// task. Pi's extension owns the child process; this only exists so a terminal
+/// state is projected exactly once, and so tasks orphaned by a Pi restart can
+/// still be settled.
+#[derive(Debug)]
+pub(crate) struct BackgroundBashTask {
+    pub(crate) tool_call_id: String,
+    pub(crate) command: String,
+    pub(crate) cwd: String,
+    pub(crate) output_file: String,
+    pub(crate) started_at: SystemTime,
+    pub(crate) completed: bool,
+}
+
+impl BackgroundBashTask {
+    /// A task whose terminal state landed before its start was ever projected —
+    /// a shell short enough to beat its own `tool_execution_end`. Recorded so a
+    /// duplicate terminal state on the other channel is still dropped.
+    pub(crate) fn completed_from_snapshot(tool_call_id: &str, task_snapshot: &Value) -> Self {
+        Self {
+            tool_call_id: tool_call_id.to_string(),
+            command: optional_string(task_snapshot, "command").unwrap_or_default(),
+            cwd: optional_string(task_snapshot, "cwd").unwrap_or_default(),
+            output_file: optional_string(task_snapshot, "output_file").unwrap_or_default(),
+            started_at: SystemTime::now(),
+            completed: true,
+        }
+    }
+}
+
 /// Parse a Pi `message_end` custom message emitted by the private grok-pi Bash
 /// extension. Unknown custom messages intentionally return `None` so they keep
 /// their normal Pi message handling.
@@ -30,7 +65,20 @@ pub(crate) fn parse_background_bash_message(event: &Value) -> Option<BackgroundB
     {
         return None;
     }
-    let details = message.get("details").unwrap_or(message);
+    parse_background_bash_details(message.get("details").unwrap_or(message))
+}
+
+/// Parse the private `__pi_grok_bash_task__` status payload.
+///
+/// The extension publishes terminal state on this channel *in addition* to the
+/// bridge message: `ui.setStatus` is fire-and-forget in Pi's RPC mode, so it
+/// survives streaming, aborts and a cleared follow-up queue — none of which the
+/// conversation message does.
+pub(crate) fn parse_background_bash_status(payload: &Value) -> Option<BackgroundBashProjection> {
+    parse_background_bash_details(payload)
+}
+
+fn parse_background_bash_details(details: &Value) -> Option<BackgroundBashProjection> {
     match field_str(details, "event")? {
         "started" => Some(BackgroundBashProjection::Started {
             task_id: required_string(details, "taskId")?,
@@ -56,6 +104,118 @@ pub(crate) fn parse_background_bash_message(event: &Value) -> Option<BackgroundB
         }
         _ => None,
     }
+}
+
+/// Record a lifecycle transition in the adapter mirror and report whether it
+/// should be projected to Pager.
+///
+/// Terminal state arrives on two independent channels — the private status
+/// channel and the bridge message — so only the first one may be forwarded.
+/// Pager would otherwise render two completion blocks for a single task.
+pub(crate) fn record_background_bash(
+    tasks: &mut HashMap<String, BackgroundBashTask>,
+    projection: &BackgroundBashProjection,
+) -> bool {
+    match projection {
+        BackgroundBashProjection::Started {
+            task_id,
+            tool_call_id,
+            command,
+            cwd,
+            output_file,
+            ..
+        } => {
+            tasks
+                .entry(task_id.clone())
+                .or_insert_with(|| BackgroundBashTask {
+                    tool_call_id: tool_call_id.clone(),
+                    command: command.clone(),
+                    cwd: cwd.clone(),
+                    output_file: output_file.clone(),
+                    started_at: SystemTime::now(),
+                    completed: false,
+                });
+            true
+        }
+        BackgroundBashProjection::Completed {
+            tool_call_id,
+            task_snapshot,
+        } => {
+            let Some(task_id) = task_snapshot.get("task_id").and_then(Value::as_str) else {
+                return false;
+            };
+            if tasks.get(task_id).is_some_and(|task| task.completed) {
+                return false;
+            }
+            tasks
+                .entry(task_id.to_string())
+                .and_modify(|task| task.completed = true)
+                // A shell short enough to beat its own `tool_execution_end`
+                // settles before it was ever registered; Pager renders that as
+                // a tombstone.
+                .or_insert_with(|| {
+                    BackgroundBashTask::completed_from_snapshot(tool_call_id, task_snapshot)
+                });
+            true
+        }
+    }
+}
+
+/// Settle every task still mirrored as running and hand back their terminal
+/// projections. Used when the Pi process that owned the shells is gone.
+pub(crate) fn drain_running_background_bash(
+    tasks: &mut HashMap<String, BackgroundBashTask>,
+) -> Vec<BackgroundBashProjection> {
+    tasks
+        .iter_mut()
+        .filter(|(_, task)| !task.completed)
+        .map(|(task_id, task)| {
+            task.completed = true;
+            orphaned_background_bash_completion(task_id, task)
+        })
+        .collect()
+}
+
+/// Terminal projection for a task whose owning Pi process is gone.
+///
+/// The shells are children of that process, so they died with it. Reporting
+/// them as `session_restart` keeps the resumed transcript clean: Pager stops
+/// the row's running animation without claiming the task failed *now*.
+fn orphaned_background_bash_completion(
+    task_id: &str,
+    task: &BackgroundBashTask,
+) -> BackgroundBashProjection {
+    BackgroundBashProjection::Completed {
+        tool_call_id: task.tool_call_id.clone(),
+        task_snapshot: json!({
+            "task_id": task_id,
+            "command": task.command,
+            "cwd": task.cwd,
+            "start_time": system_time_wire(task.started_at),
+            "end_time": system_time_wire(SystemTime::now()),
+            "output": "",
+            "output_file": task.output_file,
+            "truncated": false,
+            "exit_code": Value::Null,
+            "signal": ORPHANED_SIGNAL,
+            "completed": true,
+            "kind": "bash",
+            "block_waited": false,
+            "explicitly_killed": false,
+        }),
+    }
+}
+
+/// serde's wire shape for `std::time::SystemTime`, matching what the extension
+/// emits for its own snapshots.
+fn system_time_wire(time: SystemTime) -> Value {
+    let since_epoch = time
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    json!({
+        "secs_since_epoch": since_epoch.as_secs(),
+        "nanos_since_epoch": since_epoch.subsec_nanos(),
+    })
 }
 
 /// Extract the immediate background-task registration from the private Bash
@@ -150,6 +310,9 @@ fn optional_string(value: &Value, key: &str) -> Option<String> {
 
 /// Build the cumulative Bash output update consumed by Pager's existing
 /// background-task stdout router before the terminal completion notification.
+///
+/// An empty buffer carries nothing: Pager refuses to overwrite stdout with it,
+/// and emitting one would only put a stray in-progress tool update on the wire.
 pub(crate) fn background_bash_output_update(
     projection: &BackgroundBashProjection,
 ) -> Option<Value> {
@@ -160,11 +323,15 @@ pub(crate) fn background_bash_output_update(
     else {
         return None;
     };
+    let output = task_snapshot
+        .get("output")
+        .and_then(Value::as_str)
+        .filter(|output| !output.is_empty())?;
     Some(json!({
         "toolCallId": tool_call_id,
         "rawOutput": {
             "type": "Bash",
-            "output_for_prompt": task_snapshot.get("output").and_then(Value::as_str).unwrap_or(""),
+            "output_for_prompt": output,
             "truncated": task_snapshot.get("truncated").and_then(Value::as_bool).unwrap_or(false),
         }
     }))
@@ -323,5 +490,140 @@ mod tests {
         assert_eq!(update["rawOutput"]["type"], "Bash");
         assert_eq!(update["rawOutput"]["output_for_prompt"], "test output\n");
         assert_eq!(update["rawOutput"]["truncated"], true);
+    }
+
+    #[test]
+    fn skips_output_update_when_the_task_produced_nothing() {
+        assert!(
+            background_bash_output_update(&BackgroundBashProjection::Completed {
+                tool_call_id: "call-1".into(),
+                task_snapshot: json!({ "task_id": "bash-1", "output": "" }),
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn parses_the_out_of_band_status_payload() {
+        let payload = json!({
+            "version": 1,
+            "event": "completed",
+            "taskId": "bash-1",
+            "toolCallId": "call-1",
+            "taskSnapshot": { "task_id": "bash-1", "completed": true, "exit_code": 0 },
+        });
+        assert_eq!(
+            parse_background_bash_status(&payload),
+            Some(BackgroundBashProjection::Completed {
+                tool_call_id: "call-1".into(),
+                task_snapshot: json!({ "task_id": "bash-1", "completed": true, "exit_code": 0 }),
+            })
+        );
+        assert!(parse_background_bash_status(&json!({ "event": "unknown" })).is_none());
+    }
+
+    fn started(task_id: &str) -> BackgroundBashProjection {
+        BackgroundBashProjection::Started {
+            task_id: task_id.into(),
+            tool_call_id: "call-1".into(),
+            command: "just desktop-test".into(),
+            cwd: "/repo".into(),
+            output_file: "/tmp/task.log".into(),
+            description: Some("运行完整桌面回归".into()),
+        }
+    }
+
+    fn completed(task_id: &str) -> BackgroundBashProjection {
+        BackgroundBashProjection::Completed {
+            tool_call_id: "call-1".into(),
+            task_snapshot: json!({ "task_id": task_id, "completed": true, "exit_code": 0 }),
+        }
+    }
+
+    #[test]
+    fn terminal_state_is_projected_once_across_both_channels() {
+        let mut tasks = HashMap::new();
+        assert!(record_background_bash(&mut tasks, &started("bash-1")));
+        // Pi re-announces the same start on tool_execution_end and the bridge
+        // message; the row must not be recreated as running.
+        assert!(record_background_bash(&mut tasks, &started("bash-1")));
+        assert!(!tasks["bash-1"].completed);
+
+        assert!(record_background_bash(&mut tasks, &completed("bash-1")));
+        assert!(tasks["bash-1"].completed);
+        assert!(!record_background_bash(&mut tasks, &completed("bash-1")));
+    }
+
+    #[test]
+    fn a_completion_without_a_start_is_still_deduplicated() {
+        let mut tasks = HashMap::new();
+        assert!(record_background_bash(&mut tasks, &completed("bash-1")));
+        assert!(!record_background_bash(&mut tasks, &completed("bash-1")));
+        // A start arriving late must not resurrect the running state.
+        assert!(record_background_bash(&mut tasks, &started("bash-1")));
+        assert!(tasks["bash-1"].completed);
+    }
+
+    #[test]
+    fn draining_settles_only_the_still_running_tasks() {
+        let mut tasks = HashMap::new();
+        record_background_bash(&mut tasks, &started("bash-1"));
+        record_background_bash(&mut tasks, &started("bash-2"));
+        record_background_bash(&mut tasks, &completed("bash-2"));
+
+        let orphans = drain_running_background_bash(&mut tasks);
+        assert_eq!(orphans.len(), 1);
+        let BackgroundBashProjection::Completed { task_snapshot, .. } = &orphans[0] else {
+            panic!("orphan projection must be a completion");
+        };
+        assert_eq!(task_snapshot["task_id"], "bash-1");
+        assert_eq!(task_snapshot["signal"], ORPHANED_SIGNAL);
+        assert!(drain_running_background_bash(&mut tasks).is_empty());
+    }
+
+    #[test]
+    fn orphan_completion_carries_every_required_snapshot_field() {
+        let task = BackgroundBashTask {
+            tool_call_id: "call-1".into(),
+            command: "just desktop-test".into(),
+            cwd: "/repo".into(),
+            output_file: "/tmp/task.log".into(),
+            started_at: SystemTime::now(),
+            completed: false,
+        };
+        let BackgroundBashProjection::Completed {
+            tool_call_id,
+            task_snapshot,
+        } = orphaned_background_bash_completion("bash-1", &task)
+        else {
+            panic!("orphan projection must be a completion");
+        };
+        assert_eq!(tool_call_id, "call-1");
+        assert_eq!(task_snapshot["task_id"], "bash-1");
+        assert_eq!(task_snapshot["command"], "just desktop-test");
+        assert_eq!(task_snapshot["signal"], ORPHANED_SIGNAL);
+        assert_eq!(task_snapshot["exit_code"], Value::Null);
+        assert_eq!(task_snapshot["completed"], true);
+        // `TaskSnapshot` has no serde defaults for these, so Pager's decode
+        // fails outright if the synthetic snapshot drops one.
+        for field in [
+            "task_id",
+            "command",
+            "cwd",
+            "start_time",
+            "end_time",
+            "output",
+            "output_file",
+            "truncated",
+            "exit_code",
+            "signal",
+            "completed",
+        ] {
+            assert!(
+                task_snapshot.get(field).is_some(),
+                "orphan snapshot must carry {field}"
+            );
+        }
+        assert!(task_snapshot["start_time"]["secs_since_epoch"].is_u64());
     }
 }

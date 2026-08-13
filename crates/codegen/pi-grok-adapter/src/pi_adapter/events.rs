@@ -218,10 +218,18 @@ impl PiAgent {
             }
             "adapter_process_exit" => {
                 let message = string(&event, &["message"]).unwrap_or("Pi RPC process exited");
+                let intentional = event
+                    .get("intentional")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let (queued, running) = {
                     let mut state = self.state.borrow_mut();
                     state.agent_running = false;
                     state.cancelling = false;
+                    // An interrupted session transition cannot complete against
+                    // a dead child; clear it so post-recovery reattach can
+                    // begin a fresh one.
+                    state.pending_subagent_bridge = PendingSubagentBridge::default();
                     let queued = state.queue_mirror.clear_local();
                     let running = state.queue_mirror.clear_running();
                     state.queue_mirror.clear();
@@ -236,7 +244,16 @@ impl PiAgent {
                         .await;
                 }
                 self.publish_queue_snapshot().await;
-                self.send_ui_notification(message, Some("error")).await;
+                // Background shells are children of the Pi process, so they died
+                // with it. This holds for a deliberate teardown too — only the
+                // toast and recovery round below are crash-specific.
+                self.settle_orphaned_background_bash().await;
+                // Deliberate teardown (respawn, probes) is not a crash: no
+                // toast, no recovery round.
+                if !intentional {
+                    self.send_ui_notification(message, Some("error")).await;
+                    self.recover_rpc_connection().await;
+                }
             }
             _ => {}
         }

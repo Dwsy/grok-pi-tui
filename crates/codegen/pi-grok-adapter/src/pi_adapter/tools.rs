@@ -464,20 +464,7 @@ impl PiAgent {
         let Some(projection) = parse_background_bash_message(event) else {
             return Ok(false);
         };
-        if let Some(output) = background_bash_output_update(&projection) {
-            self.send_update(acp::SessionUpdate::ToolCallUpdate(
-                acp::ToolCallUpdate::new(
-                    acp::ToolCallId::new(output["toolCallId"].as_str().unwrap_or_default()),
-                    acp::ToolCallUpdateFields::new()
-                        .status(Some(acp::ToolCallStatus::InProgress))
-                        .raw_output(Some(output["rawOutput"].clone())),
-                ),
-            ))
-            .await;
-        }
-        let session_id = self.session_id().0.to_string();
-        let (method, notification) = background_bash_notification(&session_id, &projection);
-        self.send_ext_notification(method, notification).await;
+        self.project_background_bash(projection).await;
         Ok(true)
     }
 
@@ -493,8 +480,68 @@ impl PiAgent {
         else {
             return;
         };
+        self.project_background_bash(projection).await;
+    }
+
+    /// Consume the private `__pi_grok_bash_task__` status payload.
+    ///
+    /// This is the channel the task UI actually converges on: unlike the bridge
+    /// message, it is not queued behind streaming and is not discarded when the
+    /// user aborts the turn.
+    pub(super) async fn handle_background_bash_status(&self, payload: &Value) {
+        let Some(projection) = parse_background_bash_status(payload) else {
+            tracing::warn!("ignored malformed background Bash status payload");
+            return;
+        };
+        self.project_background_bash(projection).await;
+    }
+
+    /// Settle every background task the adapter still mirrors as running.
+    ///
+    /// The shells are children of the Pi process, so its exit ended them too.
+    /// Without this, the rows animate forever: the extension instance that owned
+    /// them is gone and can never report their terminal state.
+    pub(super) async fn settle_orphaned_background_bash(&self) {
+        let orphans =
+            drain_running_background_bash(&mut self.state.borrow_mut().background_bash_tasks);
+        if orphans.is_empty() {
+            return;
+        }
+        tracing::info!(
+            count = orphans.len(),
+            "settling background Bash tasks orphaned by the Pi process exit"
+        );
+        for projection in orphans {
+            self.emit_background_bash(&projection).await;
+        }
+    }
+
+    /// Single projection choke point for Pi-owned background Bash tasks: the
+    /// mirror decides whether this transition still has news for Pager.
+    async fn project_background_bash(&self, projection: BackgroundBashProjection) {
+        let forward = record_background_bash(
+            &mut self.state.borrow_mut().background_bash_tasks,
+            &projection,
+        );
+        if forward {
+            self.emit_background_bash(&projection).await;
+        }
+    }
+
+    async fn emit_background_bash(&self, projection: &BackgroundBashProjection) {
+        if let Some(output) = background_bash_output_update(projection) {
+            self.send_update(acp::SessionUpdate::ToolCallUpdate(
+                acp::ToolCallUpdate::new(
+                    acp::ToolCallId::new(output["toolCallId"].as_str().unwrap_or_default()),
+                    acp::ToolCallUpdateFields::new()
+                        .status(Some(acp::ToolCallStatus::InProgress))
+                        .raw_output(Some(output["rawOutput"].clone())),
+                ),
+            ))
+            .await;
+        }
         let session_id = self.session_id().0.to_string();
-        let (method, notification) = background_bash_notification(&session_id, &projection);
+        let (method, notification) = background_bash_notification(&session_id, projection);
         self.send_ext_notification(method, notification).await;
     }
 
@@ -511,23 +558,32 @@ impl PiAgent {
             "setstatus" => {
                 let key = string(&event, &["statusKey", "key"]).unwrap_or("extension");
                 let text = string(&event, &["statusText", "text"]);
-                if key == EXTENSION_QUEUE_STATUS_KEY {
-                    if let Some(payload) =
-                        text.and_then(|text| serde_json::from_str::<Value>(text).ok())
-                    {
-                        let message = string(&payload, &["text"]).unwrap_or_default().to_string();
-                        let images = payload
-                            .get("images")
-                            .and_then(Value::as_array)
-                            .cloned()
-                            .unwrap_or_default();
-                        let behavior = string(&payload, &["streamingBehavior", "deliverAs"]);
-                        self.enqueue_extension_message(message, images, behavior)
+                // A few private keys carry a JSON control payload instead of
+                // status-bar text; everything else is a real status line.
+                match key {
+                    EXTENSION_QUEUE_STATUS_KEY => {
+                        if let Some(payload) = control_status_payload(text) {
+                            let message =
+                                string(&payload, &["text"]).unwrap_or_default().to_string();
+                            let images = payload
+                                .get("images")
+                                .and_then(Value::as_array)
+                                .cloned()
+                                .unwrap_or_default();
+                            let behavior = string(&payload, &["streamingBehavior", "deliverAs"]);
+                            self.enqueue_extension_message(message, images, behavior)
+                                .await;
+                        }
+                    }
+                    EXTENSION_BASH_TASK_STATUS_KEY => {
+                        if let Some(payload) = control_status_payload(text) {
+                            self.handle_background_bash_status(&payload).await;
+                        }
+                    }
+                    _ => {
+                        self.send_status(key, text.filter(|text| !text.is_empty()))
                             .await;
                     }
-                } else {
-                    self.send_status(key, text.filter(|text| !text.is_empty()))
-                        .await;
                 }
             }
             "setwidget" => {
@@ -752,4 +808,10 @@ impl PiAgent {
         self.rpc.notify(response)?;
         Ok(())
     }
+}
+
+/// Decode the JSON body of a private control status. Only the namespaced keys
+/// go through here, so an ordinary status line never pays for a parse.
+fn control_status_payload(text: Option<&str>) -> Option<Value> {
+    serde_json::from_str(text?).ok()
 }
