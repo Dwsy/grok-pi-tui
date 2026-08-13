@@ -183,7 +183,8 @@ impl AgentView {
                             .find(|e| e.id == server_id)
                             .map(|e| e.version)
                             .unwrap_or(0);
-                        self.exit_editing_mode();
+                        // Keep the hold until remove lands — release would re-kick promote of the row we are deleting.
+                        self.exit_editing_mode_keeping_hold();
                         self.set_active_pane(pending_target, true);
                         return InputOutcome::Action(Action::QueueRemoveShared {
                             id: server_id,
@@ -440,22 +441,26 @@ impl AgentView {
                     self.show_toast("Images can't be attached when editing a shared queued prompt");
                 }
                 // new_text carries the edit — without it the agent would
-                // interject the original server-side text. Release is safe
-                // here: interject removes the row from the queue (no
-                // combine-on-stale-text window for a still-queued hold).
+                // interject the original server-side text.
                 let expected_version = self.queue.row_ref(id).map(|r| r.version);
-                self.exit_editing_mode();
                 match expected_version {
-                    Some(expected_version) => InputOutcome::Action(Action::QueueInterjectShared {
-                        id: server_id,
-                        expected_version,
-                        new_text: Some(text),
-                    }),
+                    Some(expected_version) => {
+                        // Hold until interject clears it — release would re-kick promote of original text.
+                        self.exit_editing_mode_keeping_hold();
+                        InputOutcome::Action(Action::QueueInterjectShared {
+                            id: server_id,
+                            expected_version,
+                            new_text: Some(text),
+                        })
+                    }
                     // Row vanished from the mirror — just interject the text.
-                    None => InputOutcome::Action(Action::Interject {
-                        text,
-                        images: vec![],
-                    }),
+                    None => {
+                        self.exit_editing_mode();
+                        InputOutcome::Action(Action::Interject {
+                            text,
+                            images: vec![],
+                        })
+                    }
                 }
             }
             None => {
@@ -479,17 +484,26 @@ impl AgentView {
         }
     }
 
-    /// Whether the drain is blocked because the user is editing the front prompt.
+    /// Whether the next turn is held because the user is editing the front prompt.
+    ///
+    /// - Local rows (`server_id: None`): idle and the edited id is
+    ///   `pending_prompts` front.
+    /// - Server rows (`server_id: Some(sid)`): idle and `sid` is the front of
+    ///   `shared_queue` (wire excludes the running turn, so index 0 is next).
     pub(crate) fn drain_blocked(&self) -> bool {
-        if let PromptMode::EditingQueued { id, .. } = &self.prompt_mode {
-            self.session.state.is_idle()
-                && self
-                    .session
-                    .pending_prompts
-                    .front()
-                    .is_some_and(|p| p.id == *id)
-        } else {
-            false
+        let PromptMode::EditingQueued { id, server_id, .. } = &self.prompt_mode else {
+            return false;
+        };
+        if !self.session.state.is_idle() {
+            return false;
+        }
+        match server_id {
+            Some(sid) => self.shared_queue.first().is_some_and(|e| e.id == *sid),
+            None => self
+                .session
+                .pending_prompts
+                .front()
+                .is_some_and(|p| p.id == *id),
         }
     }
 
@@ -512,7 +526,7 @@ impl AgentView {
 
     /// Exit editing mode: restore stashed text, clear mode, focus queue pane.
     /// No-op unless `EditingQueued`. The default exit; releases the
-    /// server-side combine hold (cancel, lost-row, interject, modal paths).
+    /// server-side combine hold (cancel, lost-row, modal paths).
     ///
     /// Always resets `prompt_input_mode` to `Normal` so it doesn't leak
     /// into subsequent normal prompt entry.
@@ -702,6 +716,82 @@ mod tests {
             other => panic!("expected EditingQueued with server_id Some, got {other:?}"),
         }
         assert_eq!(agent.prompt.text(), "server one");
+    }
+
+    /// Idle + editing the shared-queue front blocks drain UI.
+    #[test]
+    fn drain_blocked_true_editing_server_front_while_idle() {
+        let mut agent = make_running_agent();
+        agent.session.state = AgentState::Idle;
+        let registry = non_vscode_registry();
+        let ids = agent.queue.entry_ids();
+        agent.queue.list_state.select_by_id(ids[0]);
+        let _ = agent.handle_queue_key(&edit_key(), &registry);
+        assert!(
+            agent.drain_blocked(),
+            "idle + editing shared-queue front must block drain"
+        );
+    }
+
+    /// Editing a non-front shared row does not block drain.
+    #[test]
+    fn drain_blocked_false_editing_server_non_front() {
+        let mut agent = make_running_agent();
+        agent.session.state = AgentState::Idle;
+        agent.shared_queue = vec![
+            crate::app::prompt_queue::QueueEntryWire {
+                id: "p1".into(),
+                version: 1,
+                owner: None,
+                last_editor: None,
+                kind: "prompt".into(),
+                text: "front".into(),
+                position: 0,
+                combined_texts: None,
+            },
+            crate::app::prompt_queue::QueueEntryWire {
+                id: "p2".into(),
+                version: 1,
+                owner: None,
+                last_editor: None,
+                kind: "prompt".into(),
+                text: "back".into(),
+                position: 1,
+                combined_texts: None,
+            },
+        ];
+        agent.queue.sync_from_merged(
+            &agent.session.pending_prompts,
+            &agent.shared_queue,
+            agent.session.current_prompt_id.as_deref(),
+            agent.expect_send_now_cancel.as_deref(),
+            &agent.send_now_painted_blocks,
+        );
+        agent.prompt_mode = PromptMode::EditingQueued {
+            id: 0,
+            original: "back".into(),
+            server_id: Some("p2".into()),
+            kind: crate::app::agent::QueueEntryKind::Prompt,
+        };
+        assert!(
+            !agent.drain_blocked(),
+            "editing a non-front shared row must not block drain"
+        );
+    }
+
+    /// Running turn: server front edit is not "drain blocked" (shell still holds).
+    #[test]
+    fn drain_blocked_false_editing_server_front_while_running() {
+        let mut agent = make_running_agent();
+        assert!(matches!(agent.session.state, AgentState::TurnRunning));
+        let registry = non_vscode_registry();
+        let ids = agent.queue.entry_ids();
+        agent.queue.list_state.select_by_id(ids[0]);
+        let _ = agent.handle_queue_key(&edit_key(), &registry);
+        assert!(
+            !agent.drain_blocked(),
+            "while a turn is running, drain_blocked is false (promote gate is shell-side)"
+        );
     }
 
     /// Submitting an edit on a server-origin row dispatches
@@ -1377,6 +1467,43 @@ mod tests {
         assert_eq!(agent.shared_queue.len(), 1);
         assert_eq!(agent.shared_queue[0].text, "server one");
         assert!(matches!(agent.prompt_mode, PromptMode::Normal));
+    }
+
+    /// Force-interject on a server row must not emit `QueueReleaseEdit` —
+    /// see `exit_editing_mode_keeping_hold`.
+    #[test]
+    fn edit_interject_server_row_keeps_combine_hold_until_interject() {
+        use crate::app::actions::Effect;
+        let mut agent = make_running_agent();
+        let registry = non_vscode_registry();
+
+        let ids = agent.queue.entry_ids();
+        agent.queue.list_state.select_by_id(ids[0]);
+        let _ = agent.handle_queue_key(&edit_key(), &registry);
+        assert!(
+            agent
+                .pending_effects
+                .iter()
+                .any(|e| matches!(e, Effect::QueueHoldEdit { .. })),
+            "entering edit must emit QueueHoldEdit"
+        );
+
+        agent.prompt.set_text("server one EDITED");
+        let outcome = agent.handle_prompt_key_for_test(&force_interject_key());
+        assert!(
+            matches!(
+                outcome,
+                InputOutcome::Action(Action::QueueInterjectShared { .. })
+            ),
+            "interject must route to QueueInterjectShared"
+        );
+        assert!(
+            !agent
+                .pending_effects
+                .iter()
+                .any(|e| matches!(e, Effect::QueueReleaseEdit { .. })),
+            "server-row interject must NOT emit QueueReleaseEdit (the handler clears the hold)"
+        );
     }
 
     /// Interject key while editing and IDLE behaves like the bare-Enter save

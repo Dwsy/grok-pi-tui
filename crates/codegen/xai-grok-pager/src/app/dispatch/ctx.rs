@@ -88,6 +88,19 @@ pub(super) fn get_active_agent_mut(app: &mut AppView) -> Option<&mut AgentView> 
     None
 }
 
+/// Child view when a fullscreen subagent overlay is open.
+///
+/// Unlike [`get_active_agent_mut`], never falls back to the parent.
+/// Overlay cancel uses this so the overlay-open check and cancel target cannot disagree.
+pub(super) fn active_subagent_view_mut(app: &mut AppView) -> Option<&mut AgentView> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return None;
+    };
+    let agent = app.agents.get_mut(&id)?;
+    let child_sid = agent.active_subagent.clone()?;
+    agent.subagent_views.get_mut(&child_sid).map(|b| &mut **b)
+}
+
 /// Apply a closure to the active agent's scrollback (if any).
 ///
 /// Resolves through `active_subagent` — see [`with_active_agent`].

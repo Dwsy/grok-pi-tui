@@ -193,13 +193,23 @@ pub(in crate::app) fn turn_failed_event(
 }
 
 fn driver_mid_active_work(agent: &AgentView) -> bool {
-    matches!(
-        agent.session.tracker.activity(),
-        Some(crate::acp::tracker::TurnActivity::ToolRunning { .. })
-            | Some(crate::acp::tracker::TurnActivity::Thinking)
-            | Some(crate::acp::tracker::TurnActivity::AutoCompacting)
-            | Some(crate::acp::tracker::TurnActivity::Retrying { .. })
-    )
+    use crate::acp::tracker::TurnActivity;
+    // A write whose delta stream died is positive evidence of a dead stream;
+    // whatever shows through it (an open thinking block, an earlier tool)
+    // must not block lost-response recovery.
+    if agent.session.tracker.has_stale_tool_call_write() {
+        return false;
+    }
+    match agent.session.tracker.activity() {
+        Some(
+            TurnActivity::ToolRunning { .. }
+            | TurnActivity::Thinking
+            | TurnActivity::AutoCompacting
+            | TurnActivity::Retrying { .. }
+            | TurnActivity::WritingToolCall(_),
+        ) => true,
+        Some(TurnActivity::Responding | TurnActivity::Waiting(_)) | None => false,
+    }
 }
 
 /// Finalize a turn from a terminal signal, shared by the `prompt_complete`

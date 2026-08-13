@@ -30,6 +30,7 @@ use actions::{
     ClipboardPasteTarget, Effect, ProbedAttachment, SubagentKillOutcome,
     SwitchModelError, TaskResult,
 };
+use crate::views::usage_modal::SessionInfoField;
 #[cfg(test)]
 use actions::PermissionModePersist;
 #[cfg(test)]
@@ -98,7 +99,7 @@ pub(crate) fn execute(
         }
         Effect::RegisterActiveSession { session_id, cwd } => {
             crate::app::signal_handler::set_current_session_id(Some(session_id.clone()));
-            if let Err(e) = xai_grok_shell::active_sessions::register(xai_grok_shell::active_sessions::ActiveSession {
+            if let Err(e) = xai_grok_active_sessions::register(xai_grok_active_sessions::ActiveSession {
                 session_id,
                 pid: std::process::id(),
                 cwd,
@@ -698,7 +699,7 @@ pub(crate) fn execute(
                     }
                     let summaries = tokio::task::spawn_blocking(move || {
                             let _permit = permit;
-                            xai_grok_workspace::foreign_sessions::scan_foreign_sessions(
+                            xai_grok_foreign_sessions::scan_foreign_sessions(
                                 &cwd,
                                 enabled,
                             )
@@ -751,7 +752,7 @@ pub(crate) fn execute(
                             compat,
                             &grok_home,
                             |enabled| async move {
-                                tokio::task::spawn_blocking(move || xai_grok_workspace::foreign_sessions::most_recent_foreign_session(
+                                tokio::task::spawn_blocking(move || xai_grok_foreign_sessions::most_recent_foreign_session(
                                         &cwd_for_scan,
                                         enabled,
                                         crate::app::foreign_sessions::RESUME_HINT_WINDOW,
@@ -2160,7 +2161,7 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::KillBgTask { session_id, task_id } => {
+        Effect::KillBgTask { session_id, task_id, source } => {
             let tx = acp_tx.clone();
             let sid = session_id.0.to_string();
             tasks
@@ -2168,6 +2169,7 @@ pub(crate) fn execute(
                     let params = xai_grok_shell::extensions::task::KillTaskRequest {
                         session_id: sid.clone(),
                         task_id: task_id.clone(),
+                        source,
                     };
                     let req = acp::ExtRequest::new(
                         "x.ai/task/kill",
@@ -3869,11 +3871,17 @@ pub(crate) fn execute(
                                 is_api_key_auth,
                                 api_key_env_set,
                             );
+                            let fields = session_info_fields(
+                                &info,
+                                title.as_deref(),
+                                show_resolved_model,
+                            );
                             TaskResult::SessionInfoComplete {
                                 agent_id,
                                 session_id,
                                 info: Box::new(info),
                                 text,
+                                fields,
                                 nonce,
                             }
                         }
@@ -3888,59 +3896,68 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::RenameSession { agent_id, session_id, title, cwd } => {
+        Effect::RenameSession { agent_id, session_id, title, cwd, kind } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
-                    #[derive(serde::Serialize)]
-                    #[serde(rename_all = "camelCase")]
-                    struct RenameRequest {
-                        session_id: String,
-                        title: String,
-                        cwd: String,
-                    }
-                    let request = acp::ExtRequest::new(
-                        "x.ai/session/rename",
-                        serde_json::value::to_raw_value(
-                                &RenameRequest {
-                                    session_id: session_id.0.to_string(),
-                                    title: title.clone(),
-                                    cwd: cwd.to_string_lossy().to_string(),
-                                },
-                            )
-                            .expect("serialize rename params")
-                            .into(),
-                    );
-                    match acp_send(request, &tx).await {
-                        Ok(resp) => {
-                            let wrapper: serde_json::Value = serde_json::from_str(
-                                    resp.0.get(),
-                                )
-                                .unwrap_or_default();
-                            if let Some(err) = wrapper
-                                .get("error")
-                                .filter(|v| !v.is_null())
-                            {
-                                let msg = err
-                                    .as_str()
-                                    .map(String::from)
-                                    .unwrap_or_else(|| err.to_string());
-                                return TaskResult::RenameSessionFailed {
-                                    agent_id,
-                                    error: msg,
-                                };
-                            }
+                    match session_rename_rpc(
+                            &tx,
+                            actions::RenameSessionRequest::for_rename(
+                                session_id.0.to_string(),
+                                title.clone(),
+                                cwd.to_string_lossy().to_string(),
+                                kind,
+                            ),
+                        )
+                        .await
+                    {
+                        Ok(()) => {
                             TaskResult::RenameSessionComplete {
                                 agent_id,
                                 title,
                             }
                         }
-                        Err(e) => {
+                        Err(error) => {
                             TaskResult::RenameSessionFailed {
                                 agent_id,
-                                error: sanitize_user_error(
-                                    &format!("couldn't rename session: {e}"),
-                                ),
+                                error,
+                            }
+                        }
+                    }
+                });
+        }
+        Effect::ResetSessionTitle {
+            agent_id,
+            session_id,
+            cwd,
+            kind,
+            previous_display_name,
+            previous_generated_title,
+        } => {
+            let tx = acp_tx.clone();
+            tasks
+                .spawn(async move {
+                    match session_rename_rpc(
+                            &tx,
+                            actions::RenameSessionRequest::for_reset(
+                                session_id.0.to_string(),
+                                cwd.to_string_lossy().to_string(),
+                                kind,
+                            ),
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            TaskResult::ResetSessionTitleComplete {
+                                agent_id,
+                            }
+                        }
+                        Err(error) => {
+                            TaskResult::ResetSessionTitleFailed {
+                                agent_id,
+                                error,
+                                previous_display_name,
+                                previous_generated_title,
                             }
                         }
                     }
@@ -5358,6 +5375,38 @@ async fn fetch_session_usage(
         })?;
     Ok(parsed.usage)
 }
+/// Shared `x.ai/session/rename` RPC for rename and `/rename --auto`.
+async fn session_rename_rpc(
+    tx: &AcpAgentTx,
+    request: actions::RenameSessionRequest,
+) -> Result<(), String> {
+    let verb = if request.reset_to_auto {
+        "reset session title"
+    } else {
+        "rename session"
+    };
+    let ext = acp::ExtRequest::new(
+        "x.ai/session/rename",
+        serde_json::value::to_raw_value(&request)
+            .expect("serialize rename params")
+            .into(),
+    );
+    match acp_send(ext, tx).await {
+        Ok(resp) => {
+            let wrapper: serde_json::Value = serde_json::from_str(resp.0.get())
+                .unwrap_or_default();
+            if let Some(err) = wrapper.get("error").filter(|v| !v.is_null()) {
+                let msg = err
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| err.to_string());
+                return Err(msg);
+            }
+            Ok(())
+        }
+        Err(e) => Err(sanitize_user_error(&format!("couldn't {verb}: {e}"))),
+    }
+}
 /// Look up the session title/summary from local persistence.
 async fn lookup_session_title(session_id: &acp::SessionId) -> Option<String> {
     let summaries = xai_grok_shell::session::persistence::list_summaries(None)
@@ -5382,26 +5431,29 @@ fn format_session_count(value: u64) -> String {
 }
 /// Format session info into a human-readable string.
 ///
-/// Pi owns the session-wide message/token/cost sections; Grok runtime details
-/// remain below them so `/session-info` keeps its existing auth/model context.
-fn format_session_info(
+/// Structured `/session-info` rows — the single source of truth for both the
+/// formatted string ([`format_session_info`]) and the modal, so neither has to
+/// re-parse the other. Auth is not a field here; it is prose the string appends
+/// on its own. `compact` marks the dense model/runtime group the modal renders
+/// as `Label: value` on one line.
+///
+/// Pi owns the session-wide message/token/cost totals, so those rows come from
+/// `sessionStats` and trail the Grok runtime group.
+fn session_info_fields(
     info: &SessionInfoResponse,
     title: Option<&str>,
     show_resolved_model: bool,
-    is_api_key_auth: bool,
-    api_key_env_set: bool,
-) -> String {
-    let session_id = &info.session_id;
-    let cwd = &info.cwd;
-    let model = info.data.model.as_deref().unwrap_or("unknown");
-    let model_display = xai_grok_shell::session::model_display_name(
-        info.data.model_display_name.as_deref(),
-        model,
-        info.data.resolved_model_id.as_deref(),
-        show_resolved_model,
-    );
-    let ctx = &info.data.context;
-    let mut text = String::from("Session Info\n\n");
+) -> Vec<SessionInfoField> {
+    let mut fields = Vec::new();
+    let mut push = |label: &'static str, value: String, compact: bool| {
+        fields
+            .push(SessionInfoField {
+                label,
+                value,
+                compact,
+            });
+    };
+    // Pi names the session itself; fall back to the Grok-side title.
     if let Some(name) = info
         .session_name
         .as_deref()
@@ -5409,7 +5461,16 @@ fn format_session_info(
         .map(str::trim)
         .filter(|name| !name.is_empty())
     {
-        text.push_str(&format!("  Name: {name}\n"));
+        push("Title", name.to_string(), false);
+    }
+    push(
+        "Shell version",
+        xai_grok_version::display_version(xai_grok_update::channel_label()),
+        false,
+    );
+    push("Session ID", info.session_id.to_string(), false);
+    if let Some(id) = info.data.conversation_id.as_deref().filter(|id| !id.is_empty()) {
+        push("Conversation ID", id.to_string(), false);
     }
     if let Some(path) = info
         .session_file
@@ -5417,105 +5478,120 @@ fn format_session_info(
         .map(str::trim)
         .filter(|path| !path.is_empty())
     {
-        text.push_str(&format!("  File: {path}\n"));
+        push("Session file", path.to_string(), false);
     }
-    text.push_str(&format!("  Session ID: {session_id}"));
-    if let Some(id) = info
-        .data
-        .conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
+    push("Working directory", info.cwd.to_string(), false);
+    let model = info.data.model.as_deref().unwrap_or("unknown");
+    let model_display = xai_grok_shell::session::model_display_name(
+        info.data.model_display_name.as_deref(),
+        model,
+        info.data.resolved_model_id.as_deref(),
+        show_resolved_model,
+    );
+    push("Model", model_display.to_string(), true);
+    if xai_grok_shell::session::should_show_model_fingerprint(
+        info.data.show_model_fingerprint,
+        model,
+    ) && let Some(fp) = info.data.model_fingerprint.as_deref()
     {
-        text.push_str(&format!("\n  Conversation ID: {id}"));
+        push("Model Hash", fp.to_string(), true);
     }
-
+    if let Some(b) = info.data.api_backend.as_deref() {
+        push("API Backend", b.to_string(), true);
+    }
+    if let Some(profile) = xai_grok_sandbox::profile_name() {
+        push("Sandbox", profile.to_string(), true);
+    }
+    push("Turn", info.data.turn_index.to_string(), true);
+    let ctx = &info.data.context;
+    push(
+        "Context",
+        format!("{} / {} tokens ({}%)", ctx.used, ctx.total, ctx.usage_pct),
+        true,
+    );
     if let Some(stats) = info.session_stats.as_ref() {
-        text.push_str("\n\nMessages\n");
-        text.push_str(&format!(
-            "  Total: {}\n  User: {}\n  Assistant: {}\n  Tools: {} calls, {} results",
-            format_session_count(stats.total_messages),
-            format_session_count(stats.user_messages),
-            format_session_count(stats.assistant_messages),
-            format_session_count(stats.tool_calls),
-            format_session_count(stats.tool_results),
-        ));
-
+        push(
+            "Messages",
+            format!(
+                "{} total · {} user · {} assistant",
+                format_session_count(stats.total_messages),
+                format_session_count(stats.user_messages),
+                format_session_count(stats.assistant_messages),
+            ),
+            false,
+        );
+        push(
+            "Tool calls",
+            format!(
+                "{} calls · {} results",
+                format_session_count(stats.tool_calls),
+                format_session_count(stats.tool_results),
+            ),
+            false,
+        );
         let tokens = &stats.tokens;
         let prompt_tokens = tokens
             .input
             .saturating_add(tokens.cache_read)
             .saturating_add(tokens.cache_write);
-        text.push_str("\n\nTokens\n");
-        text.push_str(&format!(
-            "  Input: {}",
-            format_session_count(prompt_tokens)
-        ));
+        let mut input = format_session_count(prompt_tokens);
         if prompt_tokens > 0 && (tokens.cache_read > 0 || tokens.cache_write > 0) {
             let hit_rate = (tokens.cache_read as f64 / prompt_tokens as f64) * 100.0;
-            text.push_str(&format!(
-                "\n    Cached: {} ({hit_rate:.1}%)",
+            input.push_str(&format!(
+                " ({} cached, {hit_rate:.1}%)",
                 format_session_count(tokens.cache_read)
             ));
-            let uncached = tokens.input.saturating_add(tokens.cache_write);
-            text.push_str(&format!(
-                "\n    Uncached: {}",
-                format_session_count(uncached)
-            ));
-            if tokens.cache_write > 0 {
-                text.push_str(&format!(
-                    " ({} written to cache)",
-                    format_session_count(tokens.cache_write)
-                ));
-            }
         }
-        text.push_str(&format!(
-            "\n  Output: {}\n  Total: {}",
+        push("Input tokens", input, false);
+        push(
+            "Output tokens",
             format_session_count(tokens.output),
-            format_session_count(tokens.total),
-        ));
+            false,
+        );
+        push("Total tokens", format_session_count(tokens.total), false);
         if stats.cost > 0.0 {
-            text.push_str(&format!("\n\nCost\n  Total: ${:.3}", stats.cost));
+            push("Cost", format!("${:.3}", stats.cost), false);
         }
     } else if ctx.message_count > 0 || ctx.tool_call_count > 0 || ctx.turn_count > 0 {
         // Older agents lack `sessionStats`; keep their compact count surface.
-        text.push_str(&format!(
-            "\n\nMessages\n  Total: {} (turns {})\n  Tools: {} calls",
-            format_session_count(ctx.message_count),
-            format_session_count(ctx.turn_count),
-            format_session_count(ctx.tool_call_count),
-        ));
+        push(
+            "Messages",
+            format!(
+                "{} total ({} turns) · {} tool calls",
+                format_session_count(ctx.message_count),
+                format_session_count(ctx.turn_count),
+                format_session_count(ctx.tool_call_count),
+            ),
+            false,
+        );
     }
-
-    let version_display = xai_grok_version::display_version(
-        xai_grok_update::channel_label(),
-    );
+    fields
+}
+/// The `/session-info` block as a plain string for minimal-mode scrollback.
+/// Built from [`session_info_fields`] (one `  Label: value` line each) with the
+/// auth prose spliced in after the shell version, so it stays a single source
+/// of truth with the modal.
+fn format_session_info(
+    info: &SessionInfoResponse,
+    title: Option<&str>,
+    show_resolved_model: bool,
+    is_api_key_auth: bool,
+    api_key_env_set: bool,
+) -> String {
     let auth_lines = format_auth_lines(is_api_key_auth, api_key_env_set);
-    text.push_str(&format!(
-        "\n\nRuntime\n  Shell version: {version_display}\n{auth_lines}  Working directory: {cwd}\n  Model: {model_display}"
-    ));
-    if xai_grok_shell::session::should_show_model_fingerprint(
-        info.data.show_model_fingerprint,
-        model,
-    ) {
-        if let Some(fingerprint) = info.data.model_fingerprint.as_deref() {
-            text.push_str(&format!("\n  Model Hash: {fingerprint}"));
+    let mut out = String::new();
+    for field in session_info_fields(info, title, show_resolved_model) {
+        out.push_str("  ");
+        out.push_str(field.label);
+        out.push_str(": ");
+        out.push_str(&field.value);
+        out.push('\n');
+        if field.label == "Shell version" {
+            out.push_str(&auth_lines);
         }
     }
-    if let Some(backend) = info.data.api_backend.as_deref() {
-        text.push_str(&format!("\n  API Backend: {backend}"));
-    }
-    if let Some(profile) = xai_grok_sandbox::profile_name() {
-        text.push_str(&format!("\n  Sandbox: {profile}"));
-    }
-    text.push_str(&format!(
-        "\n  Turn: {}\n  Context: {} / {} tokens ({}%)",
-        info.data.turn_index,
-        format_session_count(ctx.used),
-        format_session_count(ctx.total),
-        ctx.usage_pct,
-    ));
-    text
+    out.truncate(out.trim_end_matches('\n').len());
+    out
 }
 /// Auth section for `/session-info` — active login method.
 ///

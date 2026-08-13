@@ -3951,8 +3951,10 @@ fn dashboard_rename_end_to_end_top_level_row() {
     assert!(
         effects.iter().any(|e| matches!(
             e,
-            Effect::RenameSession { agent_id, title, .. }
-                if *agent_id == id && title == "My renamed session"
+            Effect::RenameSession { agent_id, title, kind, .. }
+                if *agent_id == id
+                    && title == "My renamed session"
+                    && *kind == xai_grok_shell::session::unified_list::SessionKind::Build
         )),
         "commit must emit a RenameSession effect, got {effects:?}",
     );
@@ -3963,6 +3965,38 @@ fn dashboard_rename_end_to_end_top_level_row() {
     assert!(
         app.dashboard.as_ref().unwrap().rename.is_none(),
         "commit must clear the rename overlay",
+    );
+}
+/// Dashboard rename of a chat-kind agent must stamp `kind: Chat` so the
+/// shell takes the conversations fork.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_rename_chat_kind_stamps_kind_chat() {
+    let mut app = test_app_with_agent();
+    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+    agent.chat_kind = true;
+    agent.conversation_entry = true;
+    open_dashboard(&mut app);
+    let id = AgentId(0);
+    if let Some(d) = app.dashboard.as_mut() {
+        d.selected = Some(crate::views::dashboard::DashboardRowId::TopLevel(id));
+    }
+    dispatch_dashboard_begin_rename(&mut app);
+    app.dashboard
+        .as_mut()
+        .and_then(|dashboard| dashboard.rename.as_mut())
+        .expect("rename draft")
+        .set_text("Chat title");
+    let effects = dispatch(Action::DashboardCommitRename, &mut app);
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::RenameSession { agent_id, title, kind, .. }
+                if *agent_id == id
+                    && title == "Chat title"
+                    && *kind == xai_grok_shell::session::unified_list::SessionKind::Chat
+        )),
+        "chat-lane dashboard rename must send kind=chat, got {effects:?}",
     );
 }
 /// `DashboardCancelRename` emits no effects and
@@ -5132,6 +5166,51 @@ fn dashboard_stop_bg_work_row_stops_without_arming() {
     let d = app.dashboard.as_ref().unwrap();
     assert!(d.delete_confirm.is_none(), "must not arm delete");
     assert!(d.error_toast.is_none(), "stopped work, so no toast");
+}
+/// Reverting stop-all to the wire default (`ClientUi`) would auto-wake.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_stop_running_bg_task_emits_teardown_kill() {
+    use xai_grok_shell::extensions::task::TaskKillSource;
+    let mut app = test_app();
+    let _ = dispatch_new_session_inner(&mut app, None);
+    let _ = dispatch_new_session_inner(&mut app, None);
+    let target = *app.agents.keys().next().unwrap();
+    {
+        let agent = app.agents.get_mut(&target).unwrap();
+        agent.session.session_id = Some(acp::SessionId::new("bg-stop"));
+        agent.session.state = AgentState::Idle;
+        agent
+            .session
+            .bg_tasks
+            .insert("bg-1".into(), super::make_bg_task("bg-1"));
+    }
+    open_dashboard(&mut app);
+    if let Some(d) = app.dashboard.as_mut() {
+        d.selected = Some(crate::views::dashboard::DashboardRowId::TopLevel(target));
+    }
+    let effects = dispatch_dashboard_stop(&mut app);
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::KillBgTask {
+                task_id,
+                source: TaskKillSource::Teardown,
+                ..
+            } if task_id == "bg-1"
+        )),
+        "dashboard stop-all must emit Teardown, got {effects:?}"
+    );
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::KillBgTask {
+                source: TaskKillSource::ClientUi,
+                ..
+            }
+        )),
+        "dashboard stop-all must not emit ClientUi, got {effects:?}"
+    );
 }
 /// A row that's `Working` only because of a queued (unsent) prompt: Ctrl+X
 /// drops the queue (local, no effect) rather than toasting, and never arms

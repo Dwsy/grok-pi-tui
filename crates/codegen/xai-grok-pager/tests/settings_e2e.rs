@@ -2001,7 +2001,7 @@ fn defaults_round_trip_through_registry() {
             "scroll_mode" => SettingValue::Enum("auto"),
             "scroll_lines" => SettingValue::Int(3),
             "invert_scroll" => SettingValue::Bool(false),
-            "display_refresh_auto_cadence" => SettingValue::Bool(false),
+            "display_refresh_auto_cadence" => SettingValue::Bool(true),
             "coding_data_sharing" => SettingValue::Enum("opt-out"),
             "default_selected_permission" => SettingValue::Enum("always_allow_all_sessions"),
             "hunk_tracker_mode" => SettingValue::Enum("agent_only"),
@@ -7221,22 +7221,23 @@ fn invert_scroll_renders_under_mouse_shell_owned_default_false() {
 }
 
 // ---------------------------------------------------------------------------
-// display_refresh_auto_cadence — SHELL-owned Bool (Appearance, default false)
+// display_refresh_auto_cadence — SHELL-owned Bool (Appearance, default ON)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn display_refresh_auto_cadence_space_dispatches_typed_setter() {
+    // Default is on; space toggles off.
     let mut s = make_state();
     navigate_to(&mut s, "display_refresh_auto_cadence");
     let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
-    assert_set_bool_action(outcome, "display_refresh_auto_cadence", true);
+    assert_set_bool_action(outcome, "display_refresh_auto_cadence", false);
 }
 
 #[test]
 fn display_refresh_auto_cadence_enter_dispatches_typed_setter() {
-    // Seed on so Enter toggles off.
+    // Seed off so Enter toggles on.
     let mut ui = UiConfig::default();
-    ui.display_refresh.auto_cadence_enabled = Some(true);
+    ui.display_refresh.auto_cadence_enabled = Some(false);
     let mut s = SettingsModalState::new(
         Arc::new(SettingsRegistry::defaults()),
         ui,
@@ -7247,11 +7248,12 @@ fn display_refresh_auto_cadence_enter_dispatches_typed_setter() {
     );
     navigate_to(&mut s, "display_refresh_auto_cadence");
     let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
-    assert_set_bool_action(outcome, "display_refresh_auto_cadence", false);
+    assert_set_bool_action(outcome, "display_refresh_auto_cadence", true);
 }
 
 #[test]
 fn display_refresh_auto_cadence_mouse_click_two_stage_toggles() {
+    // Default is on; second body-click toggles off.
     let mut s = make_state();
     synth_rects(&mut s);
     let row_y = row_idx_for(&s, "display_refresh_auto_cadence") as u16;
@@ -7271,7 +7273,7 @@ fn display_refresh_auto_cadence_mouse_click_two_stage_toggles() {
         10,
         row_y,
     );
-    assert_set_bool_action(outcome, "display_refresh_auto_cadence", true);
+    assert_set_bool_action(outcome, "display_refresh_auto_cadence", false);
 }
 
 #[test]
@@ -7287,7 +7289,7 @@ fn display_refresh_auto_cadence_meta_appearance_shell_restart_hidden_minimal() {
     assert_eq!(meta.label, "Match display refresh rate");
     match &meta.kind {
         SettingKind::Bool { default } => {
-            assert!(!default, "display_refresh_auto_cadence must default OFF")
+            assert!(*default, "display_refresh_auto_cadence must default ON")
         }
         other => panic!("expected Bool kind for display_refresh_auto_cadence, got {other:?}"),
     }
@@ -7300,13 +7302,13 @@ fn display_refresh_auto_cadence_defaults_roundtrip_via_current_value_for() {
     let pager = PagerLocalSnapshot::default();
     let value = current_value_for("display_refresh_auto_cadence", &ui, &pager)
         .expect("current_value_for(display_refresh_auto_cadence) must resolve");
-    assert_eq!(value, SettingValue::Bool(false));
-
-    let mut ui_on = UiConfig::default();
-    ui_on.display_refresh.auto_cadence_enabled = Some(true);
-    let value = current_value_for("display_refresh_auto_cadence", &ui_on, &pager)
-        .expect("current_value_for(display_refresh_auto_cadence) must resolve");
     assert_eq!(value, SettingValue::Bool(true));
+
+    let mut ui_off = UiConfig::default();
+    ui_off.display_refresh.auto_cadence_enabled = Some(false);
+    let value = current_value_for("display_refresh_auto_cadence", &ui_off, &pager)
+        .expect("current_value_for(display_refresh_auto_cadence) must resolve");
+    assert_eq!(value, SettingValue::Bool(false));
 }
 
 // ---------------------------------------------------------------------------

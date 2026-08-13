@@ -72,7 +72,7 @@ use super::session::load::{
     dispatch_session_picker_closed, dispatch_show_session_picker, dispatch_trigger_deep_search,
     session_picker_entry_matches, session_picker_external_filter_active,
 };
-use super::session::modal::dispatch_rename_session;
+use super::session::modal::{dispatch_rename_session, dispatch_reset_session_title};
 use super::session::tree::{
     dispatch_label_session_tree_entry, dispatch_navigate_session_tree,
     dispatch_rollback_files_execute, dispatch_rollback_files_preview, dispatch_session_tree_closed,
@@ -1143,6 +1143,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         }
         Action::OpenTutorial => dispatch_open_tutorial(app),
         Action::RenameSession { title } => dispatch_rename_session(app, title),
+        Action::ResetSessionTitleToAuto => dispatch_reset_session_title(app),
         Action::ShowContextInfo => dispatch_show_context_info(app),
         Action::ShowUsage => dispatch_show_usage(app),
         Action::ManageBilling => dispatch_manage_billing(app),

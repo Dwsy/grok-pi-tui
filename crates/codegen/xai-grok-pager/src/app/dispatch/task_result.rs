@@ -380,11 +380,16 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             last_turn_summary_gen,
         } => {
             if let Some(agent) = app.agents.get_mut(&agent_id) {
-                if let Some((t, is_manual)) = title.filter(|(s, _)| !s.trim().is_empty()) {
+                if let Some((raw, is_manual)) = title
+                    && let Some(t) =
+                        xai_grok_shell::session::persistence::sanitize_and_cap_title(&raw)
+                {
                     if is_manual && agent.display_name.is_none() {
                         agent.display_name = Some(t.clone());
                     }
-                    agent.generated_session_title = Some(t);
+                    if agent.generated_session_title.is_none() {
+                        agent.generated_session_title = Some(t);
+                    }
                 }
                 if agent.last_turn_summary_gen == last_turn_summary_gen
                     && agent.last_turn_summary.is_none()
@@ -999,6 +1004,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             session_id,
             info,
             text,
+            fields,
             nonce,
         } => {
             let minimal = app.screen_mode.is_minimal();
@@ -1017,7 +1023,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 }
                 agent.apply_full_context_info(info.data.context);
                 if let Some(state) = usage_modal_state_mut(agent) {
-                    state.session_text = Some(text);
+                    state.session_fields = Some(fields);
                     state.session_error = None;
                 } else if minimal {
                     push_and_page_flip(
@@ -1083,6 +1089,43 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                     .push_block(crate::scrollback::block::RenderBlock::system(format!(
                         "Couldn't rename session: {error}"
                     )));
+            }
+            vec![]
+        }
+        TaskResult::ResetSessionTitleComplete { agent_id } => {
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                agent.title_unpin_committed = false;
+                agent
+                    .scrollback
+                    .push_block(crate::scrollback::block::RenderBlock::system(
+                        "Session title reset to auto",
+                    ));
+            }
+            vec![]
+        }
+        TaskResult::ResetSessionTitleFailed {
+            agent_id,
+            error,
+            previous_display_name,
+            previous_generated_title,
+        } => {
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                if agent.title_unpin_committed {
+                    agent.title_unpin_committed = false;
+                    agent
+                        .scrollback
+                        .push_block(crate::scrollback::block::RenderBlock::system(
+                            "Session title reset to auto",
+                        ));
+                } else {
+                    agent.display_name = previous_display_name;
+                    agent.generated_session_title = previous_generated_title;
+                    agent
+                        .scrollback
+                        .push_block(crate::scrollback::block::RenderBlock::system(format!(
+                            "Couldn't reset session title: {error}"
+                        )));
+                }
             }
             vec![]
         }

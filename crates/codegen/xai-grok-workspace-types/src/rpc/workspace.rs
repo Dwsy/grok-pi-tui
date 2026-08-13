@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::WorkspaceRpc;
+use super::{RpcActivityClass, WorkspaceRpc};
 
 /// `workspace.info`. `Response` stays the raw [`Value`] to preserve the
 /// `WorkspaceOps::workspace_info()` contract; [`WorkspaceInfo`] is the
@@ -14,6 +14,7 @@ pub struct WorkspaceInfoReq {}
 
 impl WorkspaceRpc for WorkspaceInfoReq {
     const METHOD: &'static str = "workspace.info";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Read;
     type Response = Value;
 }
 
@@ -24,6 +25,7 @@ pub struct LoadProjectConfigReq {}
 
 impl WorkspaceRpc for LoadProjectConfigReq {
     const METHOD: &'static str = "workspace.load_project_config";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Read;
     type Response = Value;
 }
 
@@ -34,6 +36,7 @@ pub struct LoadPermissionsReq {}
 
 impl WorkspaceRpc for LoadPermissionsReq {
     const METHOD: &'static str = "workspace.load_permissions";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Read;
     type Response = Value;
 }
 
@@ -44,6 +47,7 @@ pub struct LoadEnvrcReq {}
 
 impl WorkspaceRpc for LoadEnvrcReq {
     const METHOD: &'static str = "workspace.load_envrc";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Read;
     type Response = Value;
 }
 
@@ -56,6 +60,7 @@ pub struct ToolDefinitionsReq {
 
 impl WorkspaceRpc for ToolDefinitionsReq {
     const METHOD: &'static str = "workspace.tool_definitions";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Read;
     type Response = Value;
 }
 
@@ -68,6 +73,7 @@ pub struct ResolveFileReferencesReq {
 
 impl WorkspaceRpc for ResolveFileReferencesReq {
     const METHOD: &'static str = "workspace.resolve_file_references";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Read;
     type Response = Value;
 }
 
@@ -92,6 +98,7 @@ pub struct UpdateToolConfigReq {
 
 impl WorkspaceRpc for UpdateToolConfigReq {
     const METHOD: &'static str = "workspace.update_tool_config";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Mutation;
     type Response = Value;
 }
 
@@ -111,6 +118,7 @@ pub struct DropSessionReq {
 
 impl WorkspaceRpc for DropSessionReq {
     const METHOD: &'static str = "workspace.drop_session";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Read;
     type Response = Value;
 }
 
@@ -124,6 +132,7 @@ pub struct ConfigureMcpReq {
 
 impl WorkspaceRpc for ConfigureMcpReq {
     const METHOD: &'static str = "workspace.configure_mcp";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Mutation;
     type Response = Value;
 }
 
@@ -134,6 +143,7 @@ pub struct InstallPluginReq {}
 
 impl WorkspaceRpc for InstallPluginReq {
     const METHOD: &'static str = "workspace.install_plugin";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Mutation;
     type Response = Value;
 }
 
@@ -143,6 +153,7 @@ pub struct RefreshPluginsReq {}
 
 impl WorkspaceRpc for RefreshPluginsReq {
     const METHOD: &'static str = "workspace.refresh_plugins";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Read;
     type Response = Value;
 }
 
@@ -176,47 +187,8 @@ pub struct ListBackgroundTasksReq {
 
 impl WorkspaceRpc for ListBackgroundTasksReq {
     const METHOD: &'static str = "workspace.list_background_tasks";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Read;
     type Response = ListBackgroundTasksResponse;
-}
-
-/// One TODO list item (slim DTO over `xai_grok_tools`'s `TodoState`). `status`
-/// is the snake_case tag: `pending` | `in_progress` | `completed` | `cancelled`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TodoSummaryWire {
-    pub id: String,
-    pub content: String,
-    pub status: String,
-}
-
-/// Response of `workspace.list_todos` — the full TODO list for the session.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ListTodosResponse {
-    pub todos: Vec<TodoSummaryWire>,
-}
-
-/// `workspace.list_todos` — list the session's TODO items for post-compaction
-/// `<system-reminder>` state. Caller supplies the hub-bound session id.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ListTodosReq {
-    pub session_id: String,
-}
-
-impl WorkspaceRpc for ListTodosReq {
-    const METHOD: &'static str = "workspace.list_todos";
-    type Response = ListTodosResponse;
-}
-
-/// Typed response of `workspace.info`.
-///
-/// SYNC: matches the object built by the `workspace.info` dispatch arm
-/// in `xai-grok-workspace/src/hub_server.rs`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceInfo {
-    /// `std::env::consts::OS` on the server (e.g. `"linux"`).
-    pub os: String,
-    /// Shell basename (e.g. `"bash"`); `"sh"` when `$SHELL` is unset.
-    pub shell: String,
-    pub cwd: String,
 }
 
 /// One outstanding background terminal task, with the fields client task UI
@@ -267,7 +239,84 @@ pub struct TasksSnapshotReq {
 
 impl WorkspaceRpc for TasksSnapshotReq {
     const METHOD: &'static str = "workspace.tasks_snapshot";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Read;
     type Response = TasksSnapshotResponse;
+}
+
+/// Outcome of `workspace.kill_task`, mirroring `xai_grok_tools::KillOutcome`
+/// wire tags (`killed` / `already_exited` / `not_found`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KillTaskOutcome {
+    Killed,
+    AlreadyExited,
+    NotFound,
+}
+
+/// Response of `workspace.kill_task`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KillTaskResponse {
+    pub task_id: String,
+    pub outcome: KillTaskOutcome,
+}
+
+/// `workspace.kill_task` — terminate a background terminal task by id.
+/// Caller supplies the hub-bound session id (same as `tasks_snapshot`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct KillTaskReq {
+    pub session_id: String,
+    pub task_id: String,
+}
+
+impl WorkspaceRpc for KillTaskReq {
+    const METHOD: &'static str = "workspace.kill_task";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Mutation;
+    type Response = KillTaskResponse;
+}
+
+/// One TODO list item (slim DTO over `xai_grok_tools`'s `TodoState`). `status`
+/// is the snake_case tag: `pending` | `in_progress` | `completed` | `cancelled`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoSummaryWire {
+    pub id: String,
+    pub content: String,
+    pub status: String,
+}
+
+/// Response of `workspace.list_todos` — the full TODO list for the session.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListTodosResponse {
+    pub todos: Vec<TodoSummaryWire>,
+}
+
+/// `workspace.list_todos` — list the session's TODO items for post-compaction
+/// `<system-reminder>` state. Caller supplies the hub-bound session id.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListTodosReq {
+    pub session_id: String,
+}
+
+impl WorkspaceRpc for ListTodosReq {
+    const METHOD: &'static str = "workspace.list_todos";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Read;
+    type Response = ListTodosResponse;
+}
+
+/// Typed response of `workspace.info`.
+///
+/// SYNC: matches the object built by the `workspace.info` dispatch arm
+/// in `xai-grok-workspace/src/hub_server.rs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceInfo {
+    /// `std::env::consts::OS` on the server (e.g. `"linux"`).
+    pub os: String,
+    /// Shell basename (e.g. `"bash"`); `"sh"` when `$SHELL` is unset.
+    pub shell: String,
+    pub cwd: String,
+    /// Server binary version (`xai_grok_version::VERSION`); `None` on
+    /// servers predating the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 #[cfg(test)]
@@ -282,9 +331,41 @@ mod tests {
             "cwd": "/workspace",
         });
         let info: WorkspaceInfo = serde_json::from_value(raw).unwrap();
-        assert_eq!(info.os, "linux");
-        assert_eq!(info.shell, "bash");
-        assert_eq!(info.cwd, "/workspace");
+        assert_eq!(
+            info,
+            WorkspaceInfo {
+                os: "linux".to_owned(),
+                shell: "bash".to_owned(),
+                cwd: "/workspace".to_owned(),
+                version: None,
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_info_round_trips_version_field() {
+        let info = WorkspaceInfo {
+            os: "linux".to_owned(),
+            shell: "bash".to_owned(),
+            cwd: "/workspace".to_owned(),
+            version: Some("1.2.3".to_owned()),
+        };
+        let raw = serde_json::to_value(&info).unwrap();
+        assert_eq!(raw["version"], "1.2.3");
+        let back: WorkspaceInfo = serde_json::from_value(raw).unwrap();
+        assert_eq!(back, info);
+    }
+
+    #[test]
+    fn workspace_info_omits_absent_optional_fields() {
+        let info = WorkspaceInfo {
+            os: "linux".to_owned(),
+            shell: "bash".to_owned(),
+            cwd: "/workspace".to_owned(),
+            version: None,
+        };
+        let raw = serde_json::to_value(&info).unwrap();
+        assert!(raw.get("version").is_none());
     }
 
     #[test]

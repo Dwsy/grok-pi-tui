@@ -138,7 +138,10 @@ impl From<&ConversationRequest> for rs::CreateResponse {
             parallel_tool_calls: None,
             previous_response_id: None,
             prompt: None,
-            prompt_cache_key: req.prompt_cache_key.clone(),
+            prompt_cache_key: req
+                .prompt_cache_key
+                .clone()
+                .or_else(|| req.x_grok_conv_id.clone()),
             prompt_cache_retention: None,
             reasoning: Some(rs::Reasoning {
                 effort: req.reasoning_effort.map(|e| e.to_responses_api()),

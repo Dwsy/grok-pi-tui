@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::model::{API_KEY_SCOPE, AuthMode, AuthStore, GrokAuth, lookup_auth};
+use super::model::{API_KEY_SCOPE, AuthMode, AuthStore, GrokAuth};
 
 /// RAII guard for an exclusive advisory lock on `auth.json.lock`.
 /// The lock is released when the inner `File` is dropped (closing the FD).
@@ -56,7 +56,23 @@ impl AuthFileLock {
     pub(crate) fn still_live(&self, _auth_json_path: &Path) -> bool {
         true
     }
+
+    /// Re-check liveness and mint the witness. `None` means a sibling broke
+    /// this lock as stuck (see [`Self::still_live`]); on non-Unix liveness is
+    /// assumed (no flock-break protocol there).
+    pub(crate) fn live(&self, auth_json_path: &Path) -> Option<LiveAuthFileLock<'_>> {
+        self.still_live(auth_json_path)
+            .then_some(LiveAuthFileLock(self))
+    }
 }
+
+/// Liveness-witnessed borrow of an [`AuthFileLock`], only obtainable via
+/// [`AuthFileLock::live`]: a function requiring it cannot be reached with a
+/// lock whose inode a sibling already broke — the post-suspend case
+/// [`AuthFileLock::still_live`] exists for. Borrowed, so it cannot outlive
+/// the flock it vouches for (though liveness is proved at mint time, not
+/// continuously).
+pub(crate) struct LiveAuthFileLock<'a>(#[allow(dead_code)] &'a AuthFileLock);
 
 pub fn read_auth_json(auth_file: &Path) -> std::io::Result<AuthStore> {
     let mut file = File::open(auth_file)?;
@@ -398,18 +414,6 @@ fn restore_prior_bytes(auth_file: &Path, bytes: &[u8]) -> std::io::Result<()> {
     file.sync_all()?;
     crate::util::secure_file::ensure_owner_only_permissions(auth_file)?;
     Ok(())
-}
-
-/// Read a single auth token from `auth.json` by scope key.
-/// Falls back to the legacy `https://accounts.x.ai/sign-in` scope key
-/// when the requested scope is not found (devbox auth.json migration).
-pub fn read_token_by_scope(grok_home: &Path, scope: &str) -> anyhow::Result<String> {
-    let path = grok_home.join("auth.json");
-    let store =
-        read_auth_json(&path).map_err(|_| anyhow::anyhow!("Not logged in. Run `grok login`."))?;
-    lookup_auth(&store, scope).map(|a| a.key).ok_or_else(|| {
-        anyhow::anyhow!("Your auth token is invalid. Run `grok login` to re-authenticate.")
-    })
 }
 
 /// Read the API key from the `xai::api_key` scope in auth.json.

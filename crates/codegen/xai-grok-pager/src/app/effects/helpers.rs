@@ -2006,7 +2006,7 @@ pub(super) fn unregister_active_session_best_effort_in(
     root: &Path,
     session_id: &acp::SessionId,
 ) {
-    match xai_grok_shell::active_sessions::try_unregister_in(root, session_id) {
+    match xai_grok_active_sessions::try_unregister_in(root, session_id) {
         Ok(true) => {}
         Ok(false) => {
             tracing::debug!(

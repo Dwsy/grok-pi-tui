@@ -1462,9 +1462,17 @@ pub(super) fn write_child_updates_jsonl(
     child_sid: &str,
     content: &str,
 ) {
+    write_child_updates_jsonl_under_cwd(grok_home, "/tmp", child_sid, content);
+}
+pub(super) fn write_child_updates_jsonl_under_cwd(
+    grok_home: &std::path::Path,
+    cwd: &str,
+    child_sid: &str,
+    content: &str,
+) {
     let sessions_dir = grok_home
         .join("sessions")
-        .join(urlencoding::encode("/tmp").as_ref())
+        .join(xai_grok_config::encode_cwd_dirname(cwd))
         .join(child_sid);
     std::fs::create_dir_all(&sessions_dir).unwrap();
     std::fs::write(sessions_dir.join("summary.json"), "{}").unwrap();
@@ -1843,6 +1851,7 @@ pub(super) fn task_completed_notif(
                 kind: Default::default(),
                 block_waited: false,
                 explicitly_killed: false,
+                kill_result_delivered: false,
                 owner_session_id: None,
                 description: None,
                 is_backgrounded: false,

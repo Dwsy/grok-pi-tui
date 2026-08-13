@@ -110,6 +110,71 @@
     }
 
     #[test]
+    fn exec_vehicle_permission_enqueues_a_persisting_default_scope() {
+        // Regression guard for the enqueue invariant: an exec-vehicle bash
+        // prompt that offers the scoped "Always allow:" row must open on a
+        // default scope that persists a grant — the full command, not a bare
+        // `python3` prefix (which the ←/→ arrows could not repair).
+        use std::sync::Arc;
+        use xai_grok_workspace::permission::bash_command_splitting::BashCommandHighlights;
+
+        let mut app = make_app_with_agent("sess-1");
+        let highlights = BashCommandHighlights {
+            prefix: vec![],
+            highlighted_words: vec![
+                "python3".to_owned(),
+                "-u".to_owned(),
+                "foo.py".to_owned(),
+                "arg".to_owned(),
+            ],
+            suffix: vec![],
+        };
+        let meta = serde_json::to_value(&highlights).unwrap().as_object().cloned();
+
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let request = acp::RequestPermissionRequest::new(
+            acp::SessionId::new("sess-1"),
+            acp::ToolCallUpdate::new(
+                acp::ToolCallId::new(Arc::from("call-perm-exec")),
+                acp::ToolCallUpdateFields::default(),
+            ),
+            vec![
+                acp::PermissionOption::new(
+                    acp::PermissionOptionId::new(Arc::from("allow-once")),
+                    "Allow once",
+                    acp::PermissionOptionKind::AllowOnce,
+                ),
+                acp::PermissionOption::new(
+                    acp::PermissionOptionId::new(Arc::from("allow-always-command")),
+                    "Always allow",
+                    acp::PermissionOptionKind::AllowAlways,
+                ),
+            ],
+        )
+        .meta(meta);
+        let msg = AcpClientMessage::RequestPermission(xai_acp_lib::AcpArgs {
+            request,
+            response_tx: tx,
+        });
+
+        handle(msg, &mut app);
+
+        let agent = app.agents.get(&AgentId(0)).unwrap();
+        let perm = agent.permission_queue.front().expect("permission queued");
+        assert_eq!(
+            perm.bash_selection_count, 4,
+            "exec vehicle must open on the full-command scope"
+        );
+        assert!(
+            xai_grok_workspace::permission::always_allow_scope_persists(
+                perm.bash_highlights.as_ref().unwrap(),
+                perm.bash_selection_count,
+            ),
+            "the enqueue default scope must persist a grant"
+        );
+    }
+
+    #[test]
     fn ask_user_question_routes_to_background_session_not_active_view() {
         // Repro of the dashboard bug: a session started but not entered asks a
         // question. Active view is agent A (sess-A); the question is for the

@@ -13,6 +13,7 @@ use crate::appearance::TextSelection;
 use crate::appearance::permission_cursor::DefaultSelectedPermission;
 
 use xai_grok_shell::agent::config::UiConfig;
+use xai_grok_shell::util::config::DISPLAY_REFRESH_DEFAULT_AUTO_CADENCE_ENABLED;
 use xai_grok_tools::implementations::grok_build::ask_user_question;
 
 // ---------------------------------------------------------------------------
@@ -1231,10 +1232,11 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "high", "120", "144",
             ],
             kind: SettingKind::Bool {
+                // Nested Option: None inherits DISPLAY_REFRESH_DEFAULT_AUTO_CADENCE_ENABLED.
                 default: ui_default
                     .display_refresh
                     .auto_cadence_enabled
-                    .unwrap_or(false),
+                    .unwrap_or(DISPLAY_REFRESH_DEFAULT_AUTO_CADENCE_ENABLED),
             },
             restart_required: true,
             hidden_in_minimal: true,

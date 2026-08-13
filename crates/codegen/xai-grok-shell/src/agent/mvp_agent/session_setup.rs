@@ -1194,6 +1194,8 @@ impl MvpAgent {
                 session_id.0.as_ref(),
                 &self.gateway,
                 Some(&parent_cmd_tx),
+                crate::agent::subagent::ORPHAN_RECONCILE_REASON,
+                self.session_registry.live_orphan_heal_lock(&session_id),
             )
             .await;
         }

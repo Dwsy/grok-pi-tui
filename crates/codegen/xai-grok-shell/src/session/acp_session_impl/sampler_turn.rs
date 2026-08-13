@@ -2,6 +2,10 @@
 //! facts/gates and retry, sampler config reconstruction, sampling-failure
 //! recovery, and per-response usage recording.
 use super::*;
+const CLASSIFIER_REQUEST_TOKEN_RESERVE: u64 = 16_384;
+fn classifier_request_fits_context(input_tokens: u64, context_window: u64) -> bool {
+    input_tokens <= context_window.saturating_sub(CLASSIFIER_REQUEST_TOKEN_RESERVE)
+}
 /// Auth-failure detector for tool errors. Matches strictly on HTTP 401
 /// when the error carries a structured status code, mirroring
 /// `SamplingError::is_auth_error` in xai-grok-sampling-types: 403 is
@@ -474,6 +478,11 @@ impl SessionActor {
                 extra_headers.insert("x-compaction-at".to_string(), value.to_string());
             }
         }
+        let extra_response_includes = crate::agent::config::response_include_extensions(
+            self.supports_backend_search.get(),
+            &cfg.api_backend,
+            &cfg.base_url,
+        );
         SamplingConfig {
             api_key,
             base_url: cfg.base_url,
@@ -484,6 +493,7 @@ impl SessionActor {
             api_backend: cfg.api_backend,
             auth_scheme,
             extra_headers,
+            extra_response_includes,
             query_params: cfg.query_params.clone(),
             env_http_headers: cfg.env_http_headers.clone(),
             context_window: cfg.context_window.get(),
@@ -546,7 +556,7 @@ impl SessionActor {
         let effective_supports_re = crate::agent::config::effective_classifier_supports_re(
             aux_classifier_sampler
                 .as_ref()
-                .map(|(_, model)| model.as_str()),
+                .map(|(_, model, _)| model.as_str()),
             &session_model,
             &models,
         );
@@ -563,22 +573,20 @@ impl SessionActor {
         tokio::task::spawn_local(async move {
             while let Some((messages, respond_to)) = rx.recv().await {
                 let result = async {
-                    let (sampling_client, model) = match &aux_classifier_sampler {
-                        Some((client, model)) => (client.clone(), model.clone()),
+                    let (sampling_client, model, context_window) = match &aux_classifier_sampler {
+                        Some((client, model, context_window)) => {
+                            (client.clone(), model.clone(), *context_window)
+                        }
                         None => {
-                            let client = session
-                                .prepare_chat_completion(false)
-                                .await
+                            session.refresh_token_if_expired().await;
+                            let config = session.reconstruct_full_config().await;
+                            let context_window = config.context_window;
+                            let model = config.model.clone();
+                            let client = xai_grok_sampler::SamplingClient::new(config)
                                 .map_err(|e| xai_grok_workspace::permission::ClassifierFailure::TransportError(
                                     e.to_string(),
                                 ))?;
-                            let model = session
-                                .chat_state_handle
-                                .get_sampling_config()
-                                .await
-                                .map(|c| c.model)
-                                .unwrap_or_default();
-                            (client, model)
+                            (client, model, context_window)
                         }
                     };
                     let session_id = session.session_info.id.to_string();
@@ -593,6 +601,17 @@ impl SessionActor {
                             }
                         })
                         .collect::<Vec<_>>();
+                    let input_tokens = xai_chat_state::estimate_conversation_tokens(
+                        &items,
+                    );
+                    if !classifier_request_fits_context(input_tokens, context_window) {
+                        return Err(
+                            xai_grok_workspace::permission::ClassifierFailure::TransportError(
+                                "permission auto classifier request exceeds context window"
+                                    .to_owned(),
+                            ),
+                        );
+                    }
                     let request = ConversationRequest {
                         items,
                         tools: vec![],
@@ -684,7 +703,7 @@ impl SessionActor {
     async fn resolve_auto_classifier_sampler(
         &self,
         slug: &str,
-    ) -> Option<(xai_grok_sampler::SamplingClient, String)> {
+    ) -> Option<(xai_grok_sampler::SamplingClient, String, u64)> {
         let active_session_config = self.reconstruct_full_config().await;
         let mut cfg = self.resolve_aux_sampler_config(slug).await?;
         crate::agent::config::stamp_session_local_sampler_fields(
@@ -694,12 +713,13 @@ impl SessionActor {
             Some(self.max_retries),
         );
         let model = cfg.model.clone();
+        let context_window = cfg.context_window;
         let client = xai_grok_sampler::SamplingClient::new(cfg)
             .map_err(|e| {
                 tracing::warn!(error = %e, "auto classifier aux sampler build failed; using session model")
             })
             .ok()?;
-        Some((client, model))
+        Some((client, model, context_window))
     }
     #[tracing::instrument(
         name = "session.prepare_chat_completion",
@@ -1436,6 +1456,24 @@ fn resolve_configured_cutoff(
     ToolOverrides {
         x_search: prefer_non_empty(over_x, seed_x, XSearchOptions::is_empty),
         web_search: prefer_non_empty(over_w, seed_w, WebSearchOptions::is_empty),
+    }
+}
+#[cfg(test)]
+mod classifier_request_bound_tests {
+    use super::{CLASSIFIER_REQUEST_TOKEN_RESERVE, classifier_request_fits_context};
+    #[test]
+    fn enforces_reserved_threshold_with_saturating_arithmetic() {
+        let window = 12_000 + CLASSIFIER_REQUEST_TOKEN_RESERVE;
+        for (input, context_window, expected) in [
+            (12_000, window, true),
+            (12_001, window, false),
+            (u64::MAX, u64::MAX, false),
+        ] {
+            assert_eq!(
+                classifier_request_fits_context(input, context_window),
+                expected
+            );
+        }
     }
 }
 #[cfg(test)]

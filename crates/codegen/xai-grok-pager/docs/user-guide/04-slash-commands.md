@@ -98,7 +98,10 @@ Rename the current session. Alias: `/title`.
 
 ```
 /rename new session title
+/rename --auto
 ```
+
+`--auto` unpins a manual title and lets auto-titling resume. It applies to Build sessions only — chat conversations have no local auto-titler. It must be the only argument (`/rename --auto Something` is an error). A session cannot be named `--auto` via this command; use the dashboard rename editor (`Ctrl+R`) for that pathological case.
 
 ---
 

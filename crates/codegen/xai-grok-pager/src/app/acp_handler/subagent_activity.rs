@@ -23,6 +23,9 @@ pub(super) fn sync_activity_label(
 /// Fan a subagent's computed activity label out to both surfaces that show
 /// it — the collapsed scrollback block and the [`SubagentInfo`] backing the
 /// tasks pane / dashboard rows — so the two can't drift.
+///
+/// A finished row accepts only the `None` clear: buffered child-rail updates
+/// race `SubagentFinished` and must not re-stamp it.
 pub(super) fn sync_subagent_activity(
     parent: &mut AgentView,
     child_key: &str,
@@ -31,6 +34,9 @@ pub(super) fn sync_subagent_activity(
     let Some(info) = parent.subagent_sessions.get_mut(child_key) else {
         return;
     };
+    if info.finished && activity_label.is_some() {
+        return;
+    }
     sync_activity_label(
         &mut parent.scrollback,
         info.scrollback_entry_id,

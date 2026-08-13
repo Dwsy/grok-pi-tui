@@ -1,5 +1,6 @@
 use super::*;
 use xai_grok_shell::sampling::error::format_rate_limited_user_message;
+use xai_grok_shell::session::storage::ReplayLookupFallback;
 /// Stash a live stop/stop_failure batch under `stash_pid` for the turn marker
 /// to fold. `merge_same_name` merges a same-name repeat instead of standalone.
 pub(super) fn stash_live_stop_batch(
@@ -221,6 +222,25 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             ref images,
             ref message,
         } => apply_image_compressed(agent, images, message),
+        XaiSessionUpdate::ToolCallDeltaChunk {
+            ref name,
+            tool_index,
+            ..
+        } => {
+            if meta.is_replay || agent.session.loading_replay || agent.running_wake_turn.is_some() {
+                false
+            } else {
+                let had_activity_before = agent.session.tracker.activity().is_some();
+                let changed = agent
+                    .session
+                    .tracker
+                    .note_tool_call_arguments_delta(name.as_deref(), tool_index);
+                if !had_activity_before && agent.session.tracker.activity().is_some() {
+                    note_first_turn_activity(agent);
+                }
+                changed
+            }
+        }
         XaiSessionUpdate::TurnCompleted {
             prompt_id,
             stop_reason,
@@ -352,6 +372,8 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             let persona_display = persona.clone();
             let role_display = role.clone();
             let model_display = model.clone();
+            let live_resume =
+                resumed_from.is_some() || effective_context_source.as_deref() == Some("resumed");
             agent.subagent_sessions.insert(
                 child_session_id.clone(),
                 SubagentInfo {
@@ -483,17 +505,23 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             child_view.set_restricted_commands(&restricted);
             agent.insert_subagent_view(child_session_id.clone(), Box::new(child_view));
             if !agent.session.loading_replay && !meta.is_replay {
+                let fallback = if live_resume {
+                    ReplayLookupFallback::Relocation
+                } else {
+                    ReplayLookupFallback::HintedOnly
+                };
                 let parent_cwd = agent.session.cwd.clone();
                 let child_cwd = agent
                     .subagent_sessions
                     .get(&child_session_id)
                     .and_then(|info| info.child_cwd.clone());
                 if let Some(child_view) = agent.subagent_views.get_mut(&child_session_id) {
-                    crate::app::subagent::replay_inherited_updates(
+                    crate::app::subagent::replay_inherited_updates_with_fallback(
                         child_view,
                         &child_session_id,
                         &parent_cwd,
                         child_cwd.as_deref().map(std::path::Path::new),
+                        fallback,
                     );
                 }
                 if let Some(info) = agent.subagent_sessions.get_mut(&child_session_id) {
@@ -829,8 +857,41 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             }
         }
         XaiSessionUpdate::SessionSummaryGenerated { session_summary } => {
-            agent.generated_session_title =
-                Some(crate::util::decode_html_entities(&session_summary).into_owned());
+            let title_is_manual = session_notif.meta.as_ref().and_then(|v| {
+                v.get(xai_grok_shell::extensions::notification::TITLE_IS_MANUAL_META_KEY)
+                    .and_then(|v| v.as_bool())
+            });
+            match title_is_manual {
+                Some(true) => {
+                    if let Some(clean) =
+                        xai_grok_shell::session::persistence::sanitize_and_cap_title(
+                            &session_summary,
+                        )
+                    {
+                        agent.display_name = Some(clean.clone());
+                        agent.generated_session_title = Some(clean);
+                        agent.title_unpin_committed = false;
+                    }
+                }
+                other => {
+                    let pin = if other == Some(false) {
+                        agent.title_unpin_committed = true;
+                        agent.display_name.take()
+                    } else {
+                        None
+                    };
+                    let decoded = crate::util::decode_html_entities(&session_summary);
+                    if let Some(clean) =
+                        xai_grok_shell::session::persistence::sanitize_and_cap_title(&decoded)
+                    {
+                        agent.generated_session_title = Some(clean);
+                    } else if other == Some(false)
+                        && agent.generated_session_title.as_deref() == pin.as_deref()
+                    {
+                        agent.generated_session_title = None;
+                    }
+                }
+            }
             true
         }
         XaiSessionUpdate::LastTurnSummary {
@@ -1186,6 +1247,35 @@ pub(super) fn handle_child_session_notification(
             } else {
                 false
             }
+        }
+        XaiSessionUpdate::ToolCallDeltaChunk {
+            ref name,
+            tool_index,
+            ..
+        } => {
+            let Some(child_view) = agent.subagent_views.get_mut(child_sid) else {
+                return false;
+            };
+            if child_view.session.loading_replay {
+                return false;
+            }
+            let row_live = agent
+                .subagent_sessions
+                .get(child_sid)
+                .is_some_and(|info| !info.finished);
+            if !row_live {
+                return false;
+            }
+            if !child_view
+                .session
+                .tracker
+                .note_tool_call_arguments_delta(name.as_deref(), tool_index)
+            {
+                return false;
+            }
+            let activity_label = subagent_activity_label(child_view);
+            sync_subagent_activity(agent, child_sid, activity_label);
+            true
         }
         _ => false,
     }

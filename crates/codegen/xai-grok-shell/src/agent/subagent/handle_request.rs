@@ -1,4 +1,5 @@
 use super::*;
+use crate::upload::trace::PromptMetadataParams;
 use xai_grok_sampling_types::ReasoningEffort;
 use xai_grok_tools::implementations::{grok_build, opencode};
 pub(super) fn canonical_total_tokens(totals: &xai_chat_state::UsageTotals) -> u64 {
@@ -497,6 +498,9 @@ pub(crate) async fn run_shell_child(
         cwd: effective_cwd,
     };
     let child_session_dir = session::persistence::session_dir(&child_session_info);
+    if let Err(e) = crate::util::grok_home::ensure_sessions_cwd_dir(&child_session_info.cwd) {
+        tracing::warn!(?e, "failed to ensure sessions cwd dir for subagent session");
+    }
     let parent_session_dir = session::persistence::session_dir(&SessionInfo {
         id: acp::SessionId::new(ctx.parent_session_id.clone()),
         cwd: ctx.parent_cwd.to_string_lossy().to_string(),
@@ -1539,14 +1543,12 @@ pub(crate) async fn run_shell_child(
         )
         .await;
         let subagent_auth = ctx.auth_manager.current();
-        let metadata = PromptMetadata {
+        let metadata = PromptMetadata::new(PromptMetadataParams {
             schema_version: GCS_SCHEMA_VERSION.to_string(),
             session_id: child_session_id.0.to_string(),
             turn_number: 0,
             request_id: child_prompt_id.clone(),
             turn_started_at: turn_started_at.clone(),
-            repo_root: None,
-            remote_url: None,
             user_id: subagent_auth.as_ref().map(|a| a.user_id.clone()),
             user_email: subagent_auth.as_ref().and_then(|a| a.email.clone()),
             team_id: subagent_auth.as_ref().and_then(|a| a.team_id.clone()),
@@ -1556,7 +1558,6 @@ pub(crate) async fn run_shell_child(
             reasoning_effort: child_handle
                 .reasoning_effort
                 .map(|e| e.as_str().to_string()),
-            experiment_id: None,
             host_os: std::env::consts::OS.to_string(),
             host_arch: std::env::consts::ARCH.to_string(),
             prompt_has_image: Some(false),
@@ -1565,9 +1566,9 @@ pub(crate) async fn run_shell_child(
             cwd: Some(child_handle.info.cwd.clone()),
             agent_type: Some(request.subagent_type.clone()),
             shell_version: Some(xai_grok_version::VERSION.to_string()),
-            workspace_type: None,
             sandbox: local_sandbox_telemetry(),
-        };
+            ..Default::default()
+        });
         upload_metadata(&trace_ctx, metadata).await;
         let resolved_model = child_handle
             .get_model_metadata()

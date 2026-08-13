@@ -1884,19 +1884,7 @@ pub(super) fn dispatch_dashboard_begin_rename(app: &mut AppView) {
 }
 
 fn rename_prefill_title(agent: &AgentView) -> String {
-    if let Some(name) = agent.display_name.as_deref() {
-        let trimmed = name.trim();
-        if !trimmed.is_empty() {
-            return crate::views::session_title::sanitize_display_text(trimmed).into_owned();
-        }
-    }
-    if let Some(title) = agent.generated_session_title.as_deref() {
-        let trimmed = title.trim();
-        if !trimmed.is_empty() {
-            return crate::views::session_title::sanitize_display_text(trimmed).into_owned();
-        }
-    }
-    String::new()
+    crate::views::session_title::rename_source_title(agent).unwrap_or_default()
 }
 
 pub(super) fn dispatch_dashboard_commit_rename(app: &mut AppView) -> Vec<Effect> {
@@ -1928,6 +1916,7 @@ pub(super) fn dispatch_dashboard_commit_rename(app: &mut AppView) -> Vec<Effect>
                 session_id,
                 title,
                 cwd,
+                kind: agent.rename_kind(),
             });
         } else {
             agent.display_name = Some(title);
@@ -2140,6 +2129,7 @@ fn stop_top_level_activity(agent: &mut crate::app::agent_view::AgentView) -> Opt
             effects.push(Effect::KillBgTask {
                 session_id: session_id.clone(),
                 task_id,
+                source: xai_grok_shell::extensions::task::TaskKillSource::Teardown,
             });
         }
         let scheduled: Vec<String> = agent.session.scheduled_tasks.keys().cloned().collect();

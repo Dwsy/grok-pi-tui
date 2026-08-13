@@ -7,6 +7,7 @@ use crate::app::agent::AgentId;
 use crate::app::app_view::{ActiveView, AppView};
 use crate::app::dispatch::ctx::{SwitchCause, show_welcome, switch_to_agent};
 use crate::app::dispatch::task_result::unregister_session_effect;
+use crate::scrollback::block::RenderBlock;
 /// Remove an agent and clean up all references to it:
 /// `forked_from` pointers on surviving agents.
 pub(in crate::app::dispatch) fn remove_agent_and_cleanup(app: &mut AppView, agent_id: AgentId) {
@@ -85,8 +86,16 @@ pub(in crate::app::dispatch) fn dispatch_rename_session(
     let Some(session_id) = agent.session.session_id.clone() else {
         return vec![];
     };
-    let cwd = agent.session.cwd.clone();
+    let title = xai_grok_shell::session::persistence::sanitize_rename_title(&title).into_owned();
+    if title.is_empty() {
+        agent.scrollback.push_block(RenderBlock::system(
+            "Couldn't rename session: title must not be blank".to_string(),
+        ));
+        return vec![];
+    }
     agent.display_name = Some(title.clone());
+    let cwd = agent.session.cwd.clone();
+    let kind = agent.rename_kind();
     // Pi TUI refreshes the terminal title as soon as session_info_changed
     // follows setSessionName; mirror that local state transition here rather
     // than waiting for a future animation tick while the session is idle.
@@ -96,5 +105,45 @@ pub(in crate::app::dispatch) fn dispatch_rename_session(
         session_id,
         title,
         cwd,
+        kind,
+    }]
+}
+/// Unpin the current session title via `x.ai/session/rename` + `resetToAuto`.
+///
+/// Chat-kind sessions have no local `SummaryGenerator` to restore, so they
+/// are refused here (no optimistic clear, no ext request).
+pub(in crate::app::dispatch) fn dispatch_reset_session_title(app: &mut AppView) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    let Some(session_id) = agent.session.session_id.clone() else {
+        return vec![];
+    };
+    let kind = agent.rename_kind();
+    if kind == xai_grok_shell::session::unified_list::SessionKind::Chat {
+        agent
+            .scrollback
+            .push_block(crate::scrollback::block::RenderBlock::system(
+                "Chat conversations have no auto-title to restore",
+            ));
+        return vec![];
+    }
+    let previous_display_name = agent.display_name.clone();
+    let previous_generated_title = agent.generated_session_title.clone();
+    agent.title_unpin_committed = false;
+    let pin = agent.display_name.take();
+    if agent.generated_session_title.as_deref() == pin.as_deref() {
+        agent.generated_session_title = None;
+    }
+    vec![Effect::ResetSessionTitle {
+        agent_id: id,
+        session_id,
+        cwd: agent.session.cwd.clone(),
+        kind,
+        previous_display_name,
+        previous_generated_title,
     }]
 }

@@ -80,7 +80,7 @@ impl AgentView {
     /// waits — see [`Self::renders_parked`].
     /// Purely view-derived — reading it has no turn-lifecycle side effects.
     pub(crate) fn is_parked_on_sendable_wait(&self) -> bool {
-        crate::views::turn_status::is_sendable_wait(&self.resolve_turn_activity())
+        crate::views::turn_status::is_sendable_wait(&self.resolve_turn_activity_unenriched())
             && !self
                 .goal_state
                 .as_ref()
@@ -143,8 +143,8 @@ impl AgentView {
     pub(crate) fn is_waiting_on_subagent(&self) -> bool {
         use crate::acp::tracker::{TurnActivity, WaitingReason};
         matches!(
-            self.resolve_turn_activity(),
-            Some(TurnActivity::Waiting(WaitingReason::Subagent))
+            self.resolve_turn_activity_unenriched(),
+            Some(TurnActivity::Waiting(WaitingReason::Subagent { .. }))
         )
     }
 

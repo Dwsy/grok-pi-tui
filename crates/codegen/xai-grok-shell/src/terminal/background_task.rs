@@ -259,19 +259,6 @@ impl BackgroundTaskRegistry {
     }
 }
 
-/// Get output file path for a background task.
-///
-/// Creates the directory structure if it doesn't exist.
-/// Path format: `~/.grok/sessions/{session_id}/tasks/{task_id}.log`
-pub fn get_task_output_path(session_id: &str, task_id: &str) -> PathBuf {
-    use crate::util::grok_home::grok_home;
-
-    let tasks_dir = grok_home().join("sessions").join(session_id).join("tasks");
-    // Create directory (ignore errors - will fail on write if dir creation fails)
-    std::fs::create_dir_all(&tasks_dir).ok();
-    tasks_dir.join(format!("{}.log", task_id))
-}
-
 // ── Background task manifest for session resume ──
 
 const MANIFEST_FILENAME: &str = "background_tasks_manifest.json";

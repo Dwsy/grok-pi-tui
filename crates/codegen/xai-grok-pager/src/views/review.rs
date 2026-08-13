@@ -805,7 +805,7 @@ pub fn handle_review_ask_key(state: &mut ReviewState, key: &KeyEvent) -> ReviewI
     }
 }
 
-fn count_hunk_changes(hunks: &[crate::diff::DiffHunk]) -> (usize, usize) {
+fn count_hunk_changes(hunks: &[xai_grok_pager_diff::DiffHunk]) -> (usize, usize) {
     let mut additions = 0;
     let mut deletions = 0;
     for hunk in hunks {
@@ -1968,7 +1968,7 @@ fn aggregate_stats(node: &TrieNode) -> (usize, usize, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diff::DiffLine;
+    use xai_grok_pager_diff::DiffLine;
     use crate::scrollback::blocks::tool::EditToolCallBlock;
     use crate::scrollback::blocks::tool::ExecuteToolCallBlock;
     use crate::scrollback::blocks::tool::ReadToolCallBlock;

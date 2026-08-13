@@ -9,7 +9,6 @@ pub mod client_identity;
 pub mod completions_cmd;
 mod config_toml_edit;
 pub mod diagnostics;
-pub mod diff;
 pub mod disk_usage_cmd;
 pub mod docs;
 pub mod doctor_cmd;

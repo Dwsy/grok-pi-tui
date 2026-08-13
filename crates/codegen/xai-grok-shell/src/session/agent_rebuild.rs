@@ -239,6 +239,11 @@ impl AgentRebuildSpec {
         #[allow(unused_variables)]
         let is_cursor_template =
             crate::session::is_cursor_system_template(&definition.system_prompt);
+        let session_env = {
+            let mut env = session_env.as_ref().clone();
+            env.insert("GROK_SESSION_ID".to_string(), session_id_str.clone());
+            Arc::new(env)
+        };
         let mut builder = AgentBuilder::new(
             working_directory.clone(),
             terminal_backend.clone(),

@@ -1260,6 +1260,46 @@ fn fork_session_ready_emits_load_session_with_new_id() {
     assert!(app.agents[&AgentId(1)].session.loading_replay);
 }
 
+/// Successful no-worktree fork under sticky `--chat` (child not a local
+/// Build row under cwd) must stamp `conversation_entry` so `rename_kind()`
+/// matches the effects `kind=chat` load stamp.
+#[test]
+fn fork_session_ready_sticky_chat_sets_rename_kind_chat() {
+    let mut app = fork_test_app();
+    insert_placeholder_agent(&mut app, AgentId(1));
+    app.agents.get_mut(&AgentId(1)).unwrap().session.session_id = None;
+    app.agents.get_mut(&AgentId(1)).unwrap().conversation_entry = false;
+    app.chat_mode = true;
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::ForkSessionReady {
+            agent_id: AgentId(1),
+            new_session_id: "new-sid-chat".into(),
+            cwd: PathBuf::from("/tmp/forked"),
+            parent_session_id: acp::SessionId::new("test-session"),
+        }),
+        &mut app,
+    );
+    match effects.as_slice() {
+        [Effect::LoadSession { chat_kind, .. }] => {
+            assert!(
+                !*chat_kind,
+                "LoadSession chat_kind stays the raw conversation-entry bit"
+            );
+        }
+        other => panic!("expected LoadSession, got {other:?}"),
+    }
+    let agent = app.agents.get(&AgentId(1)).expect("fork agent kept");
+    assert!(agent.chat_kind, "UI bit comes from sticky --chat");
+    assert!(
+        agent.conversation_entry,
+        "sticky --chat fork with no local disk opens as chat (rename kind)"
+    );
+    assert_eq!(
+        agent.rename_kind(),
+        xai_grok_shell::session::unified_list::SessionKind::Chat
+    );
+}
+
 /// No-worktree fork under sticky `--chat` must refuse a local Build row
 /// (same gate as WorktreeForked / dispatch_load_session_ungated).
 #[test]

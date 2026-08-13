@@ -154,33 +154,14 @@ impl ModelState {
         self.context_window_override = Some(tokens);
     }
 
-    /// Replace the available models, preserving current selection if still valid.
-    pub fn update_catalog(
-        &mut self,
-        new_available: IndexMap<acp::ModelId, acp::ModelInfo>,
-        fallback_current: Option<acp::ModelId>,
-    ) {
-        let previous_current_model = self.current.clone();
+    /// Replace the available-model list. Leaves `current` and
+    /// `reasoning_effort` alone — those change only via `/model` / create / load.
+    pub fn update_catalog(&mut self, new_available: IndexMap<acp::ModelId, acp::ModelInfo>) {
         self.available = new_available;
+        // Pi owns the session scope, but it can only contain models this
+        // session actually has.
         self.scoped_models
             .retain(|entry| self.available.contains_key(&entry.model_id));
-        if let Some(ref id) = self.current {
-            if !self.available.contains_key(id) {
-                self.current = fallback_current;
-            }
-        } else {
-            self.current = fallback_current;
-        }
-        // The models/update broadcast carries each model's static default effort,
-        // not this session's choice; only re-derive when the model changed so a
-        // catalog refresh can't clobber a user-set effort.
-        if self.current != previous_current_model {
-            self.reasoning_effort = self
-                .current
-                .as_ref()
-                .and_then(|id| self.available.get(id))
-                .and_then(|info| parse_reasoning_effort_meta(info.meta.as_ref()));
-        }
     }
 
     /// Replace the session-only scope, preserving first occurrence order and
@@ -591,7 +572,7 @@ mod tests {
             id_b.clone(),
             acp::ModelInfo::new(id_b.clone(), "Model B".to_string()),
         );
-        state.update_catalog(refreshed, Some(id_b.clone()));
+        state.update_catalog(refreshed);
         assert_eq!(state.scoped_models().len(), 1);
         assert_eq!(state.scoped_models()[0].model_id, id_b);
     }
@@ -623,63 +604,6 @@ mod tests {
         assert!(state.is_empty());
         assert!(state.current_model_name().is_none());
         assert!(state.next_model().is_none());
-    }
-
-    fn model_with_effort(id: &str, name: &str, effort: &str) -> acp::ModelInfo {
-        acp::ModelInfo::new(acp::ModelId::new(Arc::from(id)), name.to_string()).meta(
-            serde_json::json!({
-                "supportsReasoningEffort": true,
-                "reasoningEffort": effort,
-            })
-            .as_object()
-            .cloned(),
-        )
-    }
-
-    #[test]
-    fn update_catalog_preserves_user_effort_when_model_unchanged() {
-        let id = acp::ModelId::new(Arc::from("grok-build"));
-        let mut state = ModelState::default();
-        state.available.insert(
-            id.clone(),
-            model_with_effort("grok-build", "Grok Build", "high"),
-        );
-        state.set_current(id.clone(), Some(ReasoningEffort::Xhigh));
-        assert_eq!(state.reasoning_effort, Some(ReasoningEffort::Xhigh));
-
-        // The broadcast carries the model's static default (high) for the same model.
-        let mut refreshed = IndexMap::new();
-        refreshed.insert(
-            id.clone(),
-            model_with_effort("grok-build", "Grok Build", "high"),
-        );
-        state.update_catalog(refreshed, Some(id.clone()));
-
-        assert_eq!(
-            state.reasoning_effort,
-            Some(ReasoningEffort::Xhigh),
-            "catalog refresh must not clobber a user-set per-session effort"
-        );
-    }
-
-    #[test]
-    fn update_catalog_rederives_effort_when_current_model_changes() {
-        let id_a = acp::ModelId::new(Arc::from("model-a"));
-        let mut state = ModelState::default();
-        state.available.insert(
-            id_a.clone(),
-            model_with_effort("model-a", "Model A", "high"),
-        );
-        state.set_current(id_a.clone(), Some(ReasoningEffort::Xhigh));
-
-        // Refresh drops model-a; fall back to model-b whose default is low.
-        let id_b = acp::ModelId::new(Arc::from("model-b"));
-        let mut refreshed = IndexMap::new();
-        refreshed.insert(id_b.clone(), model_with_effort("model-b", "Model B", "low"));
-        state.update_catalog(refreshed, Some(id_b.clone()));
-
-        assert_eq!(state.current, Some(id_b));
-        assert_eq!(state.reasoning_effort, Some(ReasoningEffort::Low));
     }
 
     fn state_with_meta(meta: Option<serde_json::Value>) -> ModelState {

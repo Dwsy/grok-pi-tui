@@ -288,8 +288,8 @@ impl JsonlStorageAdapter {
         target_info: &Info,
         options: CopySessionOptions,
     ) -> io::Result<CopySessionResult> {
-        let target_dir = self.session_dir(target_info);
-        std::fs::create_dir_all(&target_dir)?;
+        // Canonical creator: the fork target chain is born owner-only.
+        let target_dir = self.create_session_dir_owner_only(target_info)?;
 
         let source_summary = self.read_summary_sync(source_info)?;
         let chat_format_version = source_summary.chat_format_version;
@@ -418,12 +418,12 @@ impl JsonlStorageAdapter {
         let compaction_segments_copied = if options.copy_compaction_segments {
             let src_dir = self
                 .session_dir(source_info)
-                .join(xai_chat_state::compaction_transcript::COMPACTION_DIR);
+                .join(xai_compaction_transcript::COMPACTION_DIR);
             let mut copied = 0usize;
             if src_dir.is_dir() {
                 let dst_dir = self
                     .session_dir(target_info)
-                    .join(xai_chat_state::compaction_transcript::COMPACTION_DIR);
+                    .join(xai_compaction_transcript::COMPACTION_DIR);
                 std::fs::create_dir_all(&dst_dir)?;
                 for entry in std::fs::read_dir(&src_dir)? {
                     let entry = entry?;

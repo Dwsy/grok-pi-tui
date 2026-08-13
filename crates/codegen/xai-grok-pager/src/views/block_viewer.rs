@@ -100,8 +100,8 @@ struct DiffLineMeta {
 }
 
 impl DiffLineMeta {
-    fn from_pair(pair: &(Option<crate::diff::DiffLine>, Option<crate::diff::DiffLine>)) -> Self {
-        let to_meta = |line: &crate::diff::DiffLine| DiffLineMetaLine {
+    fn from_pair(pair: &(Option<xai_grok_pager_diff::DiffLine>, Option<xai_grok_pager_diff::DiffLine>)) -> Self {
+        let to_meta = |line: &xai_grok_pager_diff::DiffLine| DiffLineMetaLine {
             tag: line.tag,
             text: line.text.clone(),
             lo: line.lo,
@@ -1894,7 +1894,7 @@ impl BlockViewerPane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diff::DiffLine;
+    use xai_grok_pager_diff::DiffLine;
     use similar::ChangeTag;
 
     #[test]

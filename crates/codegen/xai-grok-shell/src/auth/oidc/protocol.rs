@@ -464,12 +464,18 @@ fn refresh_retry_policy() -> backon::ExponentialBuilder {
         .with_max_delay(StdDuration::from_secs(2))
         .with_jitter()
 }
+/// `exchange_probe` is the caller's [`ProbeScope::Exchange`] suspend probe,
+/// shared with its possibly-consumed-RT decision so the in-call retry
+/// suppression and the sentinel gate cannot drift.
+///
+/// [`ProbeScope::Exchange`]: super::refresh::ProbeScope::Exchange
 pub(super) async fn refresh_tokens(
     token_endpoint: &str,
     refresh_token: &str,
     client_id: &str,
     principal_type: Option<&str>,
     principal_id: Option<&str>,
+    exchange_probe: &super::refresh::SuspendProbe,
 ) -> anyhow::Result<TokenResponse> {
     use backon::Retryable;
     tracing::debug!(
@@ -478,7 +484,7 @@ pub(super) async fn refresh_tokens(
         principal_id = ?principal_id,
         "OIDC: refreshing token"
     );
-    let probe = super::refresh::SuspendProbe::start();
+    let probe = exchange_probe;
     (|| {
         refresh_tokens_once(
             token_endpoint,
@@ -1192,7 +1198,10 @@ mod tests {
         );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let token_endpoint = format!("http://127.0.0.1:{port}/token");
-        let resp = refresh_tokens(&token_endpoint, "rt", "client", None, None)
+        let probe = crate::auth::oidc::refresh::SuspendProbe::start(
+            crate::auth::oidc::refresh::ProbeScope::Exchange,
+        );
+        let resp = refresh_tokens(&token_endpoint, "rt", "client", None, None, &probe)
             .await
             .expect("transient 5xx must be retried until success");
         assert_eq!(resp.access_token, "new-at");
@@ -1230,7 +1239,10 @@ mod tests {
         );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let token_endpoint = format!("http://127.0.0.1:{port}/token");
-        let err = refresh_tokens(&token_endpoint, "rt", "client", None, None)
+        let probe = crate::auth::oidc::refresh::SuspendProbe::start(
+            crate::auth::oidc::refresh::ProbeScope::Exchange,
+        );
+        let err = refresh_tokens(&token_endpoint, "rt", "client", None, None, &probe)
             .await
             .expect_err("invalid_grant is terminal");
         assert!(
@@ -1277,7 +1289,10 @@ mod tests {
         );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let token_endpoint = format!("http://127.0.0.1:{port}/token");
-        let resp = refresh_tokens(&token_endpoint, "rt", "client", None, None)
+        let probe = crate::auth::oidc::refresh::SuspendProbe::start(
+            crate::auth::oidc::refresh::ProbeScope::Exchange,
+        );
+        let resp = refresh_tokens(&token_endpoint, "rt", "client", None, None, &probe)
             .await
             .expect("a non-terminal coded 4xx must be retried until success");
         assert_eq!(resp.access_token, "new-at");

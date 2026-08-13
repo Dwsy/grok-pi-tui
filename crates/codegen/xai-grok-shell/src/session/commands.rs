@@ -41,7 +41,7 @@ pub enum PromptCompletionKind {
     /// Completed so goal continuation is not re-queued under an active goal.
     StationarityEnded,
     Cancelled {
-        category: Option<xai_file_utils::events::types::CancellationCategory>,
+        category: Option<xai_grok_session_events::types::CancellationCategory>,
         context: Option<CancellationContext>,
     },
     MaxTurnsReached {
@@ -541,6 +541,7 @@ pub enum SessionCommand {
     /// Routes through the ToolBridge's TerminalBackend (lock-free, Arc-shared).
     KillBackgroundTask {
         task_id: String,
+        source: xai_grok_tools::types::KillSource,
         respond_to: oneshot::Sender<Result<xai_grok_tools::types::KillOutcome, String>>,
     },
     DeleteScheduledTask {
@@ -650,13 +651,15 @@ pub enum SessionCommand {
         new_text: String,
         editor: Option<String>,
     },
-    /// Hold a queued prompt out of combine-on-promote while a client edits it
-    /// in the composer. Released via [`Self::ReleaseCombineEdit`].
-    HoldCombineEdit {
+    /// Hold a queued prompt while a client edits it in the composer: skip it as
+    /// a combine follower **and** block promote while it is the queue front.
+    /// Released via [`Self::ReleaseEdit`], or cleared by edit / remove / interject.
+    HoldEdit {
         id: String,
     },
-    /// Release a previous [`Self::HoldCombineEdit`].
-    ReleaseCombineEdit {
+    /// Release a previous [`Self::HoldEdit`]. Re-kicks the promoter so a
+    /// previously held front can start when the session is idle.
+    ReleaseEdit {
         id: String,
     },
     /// Atomically interject a queued (not-yet-running) prompt into the running

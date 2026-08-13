@@ -72,6 +72,7 @@ impl AgentView {
             usage_command_visible: slash_controller.usage_command_visible(),
             workflows_available: slash_controller.workflows_available(),
             screen_mode: slash_controller.screen_mode(),
+            current_title: slash_controller.current_title(),
         };
         let Some(model_items) = cmd.suggest_args(&ctx, "") else {
             return false;
@@ -646,6 +647,10 @@ impl AgentView {
                     return match usage_modal::handle_usage_modal_key(state, key) {
                         UsageModalOutcome::CopySessionId => {
                             self.copy_usage_modal_session_id();
+                            InputOutcome::Changed
+                        }
+                        UsageModalOutcome::CopyText(text) => {
+                            self.copy_usage_modal_text(&text);
                             InputOutcome::Changed
                         }
                         UsageModalOutcome::Changed => InputOutcome::Changed,
@@ -2438,7 +2443,9 @@ impl AgentView {
 
         // UsageInfo: chrome (close / tab clicks / footer copy), then wheel scroll.
         if let Some(ActiveModal::UsageInfo { state }) = &mut self.active_modal {
-            use crate::views::usage_modal::{self, COPY_SESSION_ID_SHORTCUT, UsageModalOutcome};
+            use crate::views::usage_modal::{
+                self, COPY_ALL_SESSION_INFO_SHORTCUT, COPY_SESSION_ID_SHORTCUT, UsageModalOutcome,
+            };
             let outcome =
                 mw::handle_modal_mouse(&mut state.window, mouse.kind, mouse.column, mouse.row);
             match outcome {
@@ -2451,12 +2458,28 @@ impl AgentView {
                     return InputOutcome::Changed;
                 }
                 ModalWindowOutcome::ShortcutActivated(id) => {
+                    // The pointer is on the footer, not a value row.
+                    state.hovered_copy_line = None;
                     if id == COPY_SESSION_ID_SHORTCUT {
                         self.copy_usage_modal_session_id();
+                    } else if id == COPY_ALL_SESSION_INFO_SHORTCUT {
+                        let text = match self.active_modal.as_ref() {
+                            Some(ActiveModal::UsageInfo { state }) => state.session_info_copy_all(),
+                            _ => None,
+                        };
+                        if let Some(text) = text {
+                            self.copy_usage_modal_text(&text);
+                        }
                     }
                     return InputOutcome::Changed;
                 }
-                ModalWindowOutcome::Handled => return InputOutcome::Changed,
+                ModalWindowOutcome::Handled => {
+                    // Chrome consumed the event (cursor on a tab / close /
+                    // footer, or a no-op tab click). The pointer is no longer
+                    // over a value row, so drop any stale hover highlight.
+                    state.hovered_copy_line = None;
+                    return InputOutcome::Changed;
+                }
                 ModalWindowOutcome::Unhandled => {
                     return match usage_modal::handle_usage_modal_mouse(
                         state,
@@ -2466,6 +2489,10 @@ impl AgentView {
                     ) {
                         UsageModalOutcome::CopySessionId => {
                             self.copy_usage_modal_session_id();
+                            InputOutcome::Changed
+                        }
+                        UsageModalOutcome::CopyText(text) => {
+                            self.copy_usage_modal_text(&text);
                             InputOutcome::Changed
                         }
                         UsageModalOutcome::Changed => InputOutcome::Changed,
@@ -2550,6 +2577,13 @@ impl AgentView {
             return;
         };
         let delivery = crate::clipboard::copy_text_or_file(&id);
+        self.show_toast(delivery.toast_message().as_ref());
+    }
+
+    /// Copy an arbitrary Session-info value row (Model Hash, Turn, etc.) and
+    /// toast the delivery outcome. Mirrors [`Self::copy_usage_modal_session_id`].
+    fn copy_usage_modal_text(&mut self, text: &str) {
+        let delivery = crate::clipboard::copy_text_or_file(text);
         self.show_toast(delivery.toast_message().as_ref());
     }
 

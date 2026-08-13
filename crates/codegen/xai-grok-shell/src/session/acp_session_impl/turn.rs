@@ -248,6 +248,7 @@ impl SessionActor {
         prompt_client_identifier: Option<String>,
         prompt_screen_mode: Option<String>,
         verbatim: bool,
+        send_now: bool,
         json_schema: Option<serde_json::Value>,
         persist_ack: Option<oneshot::Sender<()>>,
         parsed_prompt_tx: Option<oneshot::Sender<ParsedPromptInfo>>,
@@ -599,6 +600,11 @@ impl SessionActor {
             );
         }
         let query = crate::session::placeholder_images::strip_paths_from_image_placeholders(query);
+        let query = if send_now && !verbatim {
+            xai_interjection_core::frame_user_turn(xai_interjection_core::INTERJECTION_NOTE, &query)
+        } else {
+            query
+        };
         let user_images = self
             .normalize_images_with_notices(&mut context, raw_images, is_cursor)
             .await;
@@ -711,11 +717,15 @@ impl SessionActor {
             self.transcribe_user_images(user_message, &user_images)
                 .await?
         } else {
-            let session_dir =
-                crate::session::persistence::session_dir(&crate::session::info::Info {
+            let session_dir = crate::session::persistence::ensure_owner_only_session_dir(
+                &crate::session::info::Info {
                     id: self.session_info.id.clone(),
                     cwd: self.session_info.cwd.clone(),
-                });
+                },
+            )
+            .map_err(|e| {
+                acp::Error::internal_error().data(format!("failed to create session dir: {e}"))
+            })?;
             crate::session::image_describe::persist_and_prepend_image_files(
                 &session_dir,
                 &user_images,
@@ -742,9 +752,6 @@ impl SessionActor {
                 self.chat_state_handle.begin_turn_capture();
             }
             let origin = super::super::PromptOrigin::from_prompt_id(prompt_id);
-            if matches!(origin, super::super::PromptOrigin::User) {
-                self.maybe_inject_interrupt_reminder().await;
-            }
             let mut user_chat = match &origin {
                 super::super::PromptOrigin::TaskCompleted { .. } => {
                     ConversationItem::task_completed(user_message)
@@ -769,7 +776,9 @@ impl SessionActor {
                 }
                 super::super::PromptOrigin::PlanResume => ConversationItem::user(user_message),
                 super::super::PromptOrigin::User => {
-                    let mut item = ConversationItem::user(user_message);
+                    let mut item = ConversationItem::user(
+                        self.maybe_apply_interrupt_envelope(user_message, verbatim),
+                    );
                     if let Some(interrupt) = self
                         .events
                         .take_prior_interrupt_category()
@@ -1658,6 +1667,9 @@ impl SessionActor {
             }
         }
     }
+    pub(super) fn is_first_turn_memory_score_visible(score: f64) -> bool {
+        format!("{score:.2}") != "0.00"
+    }
     /// Compute the first-turn memory reminder, if one should be injected.
     ///
     /// A block persisted by an earlier session segment (a prior `--resume`
@@ -1715,15 +1727,14 @@ impl SessionActor {
             raw_query
         };
         let inject_start = std::time::Instant::now();
-        let inject_results = backend.search(&query, 6, configured_min_score).await.ok();
-        let result_count = inject_results.as_ref().map_or(0, |r| r.len());
-        let top_score = inject_results
-            .as_ref()
-            .and_then(|r| r.first())
-            .map_or(0.0, |r| r.score);
-        let total_snippet_chars: usize = inject_results
-            .as_ref()
-            .map_or(0, |r| r.iter().map(|s| s.snippet.len()).sum());
+        let mut inject_results = backend
+            .search(&query, 6, configured_min_score)
+            .await
+            .unwrap_or_default();
+        inject_results.retain(|result| Self::is_first_turn_memory_score_visible(result.score));
+        let result_count = inject_results.len();
+        let top_score = inject_results.first().map_or(0.0, |r| r.score);
+        let total_snippet_chars: usize = inject_results.iter().map(|s| s.snippet.len()).sum();
         tracing::info!(
             target: xai_grok_telemetry::memory_log::TARGET,
             configured_min_score,
@@ -1740,9 +1751,7 @@ impl SessionActor {
                 injection_duration_ms: inject_start.elapsed().as_millis() as u64,
             },
         );
-        inject_results.and_then(|results| {
-            crate::session::helpers::memory_context::format_memory_reminder(&results)
-        })
+        crate::session::helpers::memory_context::format_memory_reminder(&inject_results)
     }
     /// Inspect `tool_calls` for a `StructuredOutput` call and decide the turn's
     /// next step, pushing the call's `tool_result` (correction / retry error /

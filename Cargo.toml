@@ -16,18 +16,24 @@ members = [
     "crates/codegen/xai-agent-lifecycle",
     "crates/codegen/xai-chat-state",
     "crates/codegen/xai-codebase-graph",
+    "crates/codegen/xai-compaction-transcript",
     "crates/codegen/xai-crash-handler",
     "crates/codegen/xai-fast-worktree",
     "crates/codegen/xai-file-utils",
     "crates/codegen/xai-fsnotify",
+    "crates/codegen/xai-fuzzy-file-search",
     "crates/codegen/xai-gix-status",
+    "crates/codegen/xai-grok-active-sessions",
     "crates/codegen/xai-grok-agent",
     "crates/codegen/xai-grok-announcements",
     "crates/codegen/xai-grok-auth",
+    "crates/codegen/xai-grok-bundle",
     "crates/codegen/xai-grok-config",
     "crates/codegen/xai-grok-config-types",
+    "crates/codegen/xai-grok-diag-server",
     "crates/codegen/xai-grok-env",
     "crates/codegen/xai-grok-extra-ca",
+    "crates/codegen/xai-grok-foreign-sessions",
     "crates/codegen/xai-grok-hooks",
     "crates/codegen/xai-grok-http",
     "crates/codegen/xai-grok-markdown",
@@ -38,6 +44,7 @@ members = [
     "crates/codegen/xai-grok-models",
     "crates/codegen/xai-grok-pager",
     "crates/codegen/xai-grok-pager-bin",
+    "crates/codegen/xai-grok-pager-diff",
     "crates/codegen/xai-grok-pager-minimal",
     "crates/codegen/xai-grok-pager-pty-harness",
     "crates/codegen/xai-grok-pager-render",
@@ -47,6 +54,8 @@ members = [
     "crates/codegen/xai-grok-sampling-types",
     "crates/codegen/xai-grok-sandbox",
     "crates/codegen/xai-grok-secrets",
+    "crates/codegen/xai-grok-session-events",
+    "crates/codegen/xai-grok-session-search",
     "crates/codegen/xai-grok-shared",
     "crates/codegen/xai-grok-shell",
     "crates/codegen/xai-grok-shell-base",
@@ -61,6 +70,7 @@ members = [
     "crates/codegen/xai-grok-voice",
     "crates/codegen/xai-grok-workspace",
     "crates/codegen/xai-grok-workspace-client",
+    "crates/codegen/xai-grok-workspace-daemon",
     "crates/codegen/xai-grok-workspace-types",
     "crates/codegen/xai-hooks-plugins-types",
     "crates/codegen/xai-hunk-tracker",
@@ -293,16 +303,22 @@ wl-clipboard-rs = "0.9"
 xai-acp-lib = { path = "crates/codegen/xai-acp-lib" }
 xai-agent-lifecycle = { path = "crates/codegen/xai-agent-lifecycle" }
 xai-circuit-breaker = { path = "crates/common/xai-circuit-breaker" }
+xai-compaction-transcript = { path = "crates/codegen/xai-compaction-transcript" }
 xai-computer-hub-core = { path = "crates/common/xai-computer-hub-core" }
 xai-computer-hub-sdk = { path = "crates/common/xai-computer-hub-sdk" }
+xai-fuzzy-file-search = { path = "crates/codegen/xai-fuzzy-file-search" }
 xai-gix-status = { path = "crates/codegen/xai-gix-status" }
+xai-grok-active-sessions = { path = "crates/codegen/xai-grok-active-sessions" }
 xai-grok-agent = { path = "crates/codegen/xai-grok-agent" }
 xai-grok-announcements = { path = "crates/codegen/xai-grok-announcements" }
 xai-grok-auth = { path = "crates/codegen/xai-grok-auth" }
+xai-grok-bundle = { path = "crates/codegen/xai-grok-bundle" }
 xai-grok-config = { path = "crates/codegen/xai-grok-config" }
 xai-grok-config-types = { path = "crates/codegen/xai-grok-config-types" }
+xai-grok-diag-server = { path = "crates/codegen/xai-grok-diag-server" }
 xai-grok-env = { path = "crates/codegen/xai-grok-env" }
 xai-grok-extra-ca = { path = "crates/codegen/xai-grok-extra-ca" }
+xai-grok-foreign-sessions = { path = "crates/codegen/xai-grok-foreign-sessions" }
 xai-grok-http = { path = "crates/codegen/xai-grok-http" }
 xai-grok-markdown = { path = "crates/codegen/xai-grok-markdown" }
 xai-grok-markdown-core = { path = "crates/codegen/xai-grok-markdown-core" }
@@ -312,6 +328,8 @@ xai-grok-mermaid = { path = "crates/codegen/xai-grok-mermaid" }
 xai-grok-models = { path = "crates/codegen/xai-grok-models" }
 xai-grok-sampler = { path = "crates/codegen/xai-grok-sampler" }
 xai-grok-secrets = { path = "crates/codegen/xai-grok-secrets" }
+xai-grok-session-events = { path = "crates/codegen/xai-grok-session-events" }
+xai-grok-session-search = { path = "crates/codegen/xai-grok-session-search" }
 xai-grok-shared = { path = "crates/codegen/xai-grok-shared" }
 xai-grok-shell = { path = "crates/codegen/xai-grok-shell" }
 xai-grok-shell-base = { path = "crates/codegen/xai-grok-shell-base" }

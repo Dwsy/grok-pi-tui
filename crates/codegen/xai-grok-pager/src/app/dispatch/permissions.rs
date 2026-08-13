@@ -91,14 +91,19 @@ pub(super) fn build_selection_meta(
         .and_then(obj);
     }
 
-    if let Some(h) = perm
-        .bash_highlights
-        .as_ref()
-        .filter(|_| perm.bash_selection_count > 0)
-    {
+    // Each scoped row owns its selection (the deny row narrows freely, the
+    // allow row is clamped), so the persisted words must come from the count
+    // of the row that was actually chosen.
+    let count =
+        if option_id.0.as_ref() == crate::views::permission_view::REJECT_ALWAYS_COMMAND_OPTION_ID {
+            perm.bash_deny_selection_count
+        } else {
+            perm.bash_selection_count
+        };
+    if let Some(h) = perm.bash_highlights.as_ref().filter(|_| count > 0) {
         // Arrow word-scope: a literal command prefix, never a glob.
         return serde_json::to_value(BashCommandSelectedTerms {
-            command_parts: h.highlighted_words[..perm.bash_selection_count].to_vec(),
+            command_parts: h.highlighted_words[..count].to_vec(),
             is_glob: false,
         })
         .ok()

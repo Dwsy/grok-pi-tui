@@ -17,7 +17,7 @@ use super::edit::{
     DiffLineOutput, DiffLinePair, DiffRenderConfig, EditHighlightPhase, EditLineStyles,
     EditToolCallBlock, expand_tabs, map_spans_for_line, render_content_spans, wrap_text,
 };
-use crate::diff::{DiffHunk, DiffLine};
+use xai_grok_pager_diff::{DiffHunk, DiffLine};
 use crate::syntax::{Syntect, get_syntect};
 use crate::theme::Theme;
 

@@ -4,6 +4,7 @@
 
 use agent_client_protocol as acp;
 use xai_grok_shell::agent::config::UiConfig;
+use xai_grok_shell::util::config::DISPLAY_REFRESH_DEFAULT_AUTO_CADENCE_ENABLED;
 use xai_grok_tools::implementations::grok_build::ask_user_question;
 
 // ---------------------------------------------------------------------------
@@ -598,9 +599,11 @@ pub fn current_value_for(
         "invert_scroll" => Some(SettingValue::Bool(
             crate::appearance::cache::load_invert_scroll(),
         )),
-        // Nested `[ui.display_refresh].auto_cadence_enabled`; None → default false.
+        // Nested `[ui.display_refresh].auto_cadence_enabled`; None → compiled default.
         "display_refresh_auto_cadence" => Some(SettingValue::Bool(
-            ui.display_refresh.auto_cadence_enabled.unwrap_or(false),
+            ui.display_refresh
+                .auto_cadence_enabled
+                .unwrap_or(DISPLAY_REFRESH_DEFAULT_AUTO_CADENCE_ENABLED),
         )),
         "scroll_lines" => Some(SettingValue::Int(
             crate::appearance::cache::load_scroll_lines()
@@ -1240,12 +1243,15 @@ mod tests {
                         "invert_scroll default drifts from UiConfig::default()"
                     );
                 }
-                // display_refresh.auto_cadence_enabled: Option<bool>; None → false.
+                // display_refresh.auto_cadence_enabled: Option<bool>; None →
+                // DISPLAY_REFRESH_DEFAULT_AUTO_CADENCE_ENABLED.
                 ("display_refresh_auto_cadence", SettingKind::Bool { default }) => {
                     assert_eq!(
                         *default,
-                        ui.display_refresh.auto_cadence_enabled.unwrap_or(false),
-                        "display_refresh_auto_cadence default drifts from UiConfig::default()"
+                        ui.display_refresh
+                            .auto_cadence_enabled
+                            .unwrap_or(DISPLAY_REFRESH_DEFAULT_AUTO_CADENCE_ENABLED),
+                        "display_refresh_auto_cadence default drifts from resolve default"
                     );
                 }
                 // scroll_lines: Option<u8>; None → registry default 3 (the

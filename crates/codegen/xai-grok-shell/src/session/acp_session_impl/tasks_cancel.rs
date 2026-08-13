@@ -77,6 +77,7 @@ impl AgentTask {
         client_identifier: Option<String>,
         screen_mode: Option<String>,
         verbatim: bool,
+        send_now: bool,
         json_schema: Option<serde_json::Value>,
         completion_tx: mpsc::UnboundedSender<(String, PromptTurnResult)>,
         persist_ack: Option<oneshot::Sender<()>>,
@@ -95,6 +96,7 @@ impl AgentTask {
                     client_identifier,
                     screen_mode,
                     verbatim,
+                    send_now,
                     json_schema,
                     pid,
                     completion_tx,
@@ -159,6 +161,7 @@ async fn run_task(
     client_identifier: Option<String>,
     screen_mode: Option<String>,
     verbatim: bool,
+    send_now: bool,
     json_schema: Option<serde_json::Value>,
     prompt_id: String,
     completion_tx: mpsc::UnboundedSender<(String, PromptTurnResult)>,
@@ -175,6 +178,7 @@ async fn run_task(
             client_identifier,
             screen_mode,
             verbatim,
+            send_now,
             json_schema,
             persist_ack,
             parsed_prompt_tx,
@@ -572,9 +576,9 @@ impl SessionActor {
             );
             // Mark the next real user prompt as following a mid-turn abort so
             // replay/analytics/the model can see the user stopped this turn.
-            // Send-now is a silent cancel-and-send — the user is continuing,
-            // not aborting — so it must not arm the interrupt category or the
-            // "[Request interrupted]" reminder for its own continuation turn
+            // Send-now is a silent cancel-and-send: the user is continuing,
+            // not aborting, so it must not arm the interrupt category or the
+            // interrupt envelope for its own continuation turn
             // (mirrors the cancel-rate skip above).
             let send_now = matches!(trigger, Some(crate::session::CancelTrigger::SendNow));
             if !send_now {
@@ -582,16 +586,16 @@ impl SessionActor {
                     crate::session::events::CancellationCategory::MidTurnAbort,
                 );
             }
-            // Arm a one-shot `<system-reminder>` for the next real user turn,
-            // but only when the abort leaves the model with NO other signal:
-            // the partial assistant text is discarded out-of-band, so the only
-            // remaining cue is the dangling-tool-call repair. If a tool call is
-            // committed but unanswered — a tool mid-execution, OR a turn parked
-            // on a permission prompt (where no tool is marked active yet) — the
-            // next-turn repair already emits a "cancelled" tool-result, so we
-            // skip the reminder to avoid a duplicate signal. Gating on the
-            // actual dangling state (not `had_active_tool`) covers the
-            // permission-prompt and partial-parallel-call cases too.
+            // Arm a one-shot interjection-shaped frame for the next real user
+            // query, but only when the abort leaves the model with NO other
+            // signal: the partial assistant text is discarded out-of-band, so
+            // the only remaining cue is the dangling-tool-call repair. If a
+            // tool call is committed but unanswered (a tool mid-execution, OR
+            // a turn parked on a permission prompt where no tool is marked
+            // active yet), the next-turn repair already emits a "cancelled"
+            // tool-result, so we skip the frame to avoid a duplicate signal.
+            // Gating on the actual dangling state (not `had_active_tool`)
+            // covers the permission-prompt and partial-parallel-call cases too.
             if !send_now && !self.chat_state_handle.has_dangling_tool_calls().await {
                 self.events.set_pending_interrupt_reminder();
             }

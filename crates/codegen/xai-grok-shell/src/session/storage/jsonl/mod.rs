@@ -53,10 +53,9 @@ impl JsonlStorageAdapter {
         }
     }
     /// Create an adapter that writes directly to `session_dir`, bypassing
-    /// the `{root}/sessions/{cwd}/{id}/` path computation.
-    ///
-    /// Used for subagent child sessions whose files live under the parent's
-    /// session directory: `{parent_session_dir}/subagents/{subagent_id}/`.
+    /// the `{root}/sessions/{cwd}/{id}/` path computation. Used for subagent
+    /// child sessions (top-level dirs; only their metadata nests under the
+    /// parent's session dir).
     pub fn with_explicit_session_dir(session_dir: PathBuf) -> Self {
         Self {
             dir_mode: SessionDirMode::Explicit(session_dir),
@@ -85,12 +84,22 @@ impl JsonlStorageAdapter {
     }
     fn session_dir(&self, info: &Info) -> PathBuf {
         match &self.dir_mode {
-            SessionDirMode::FromRoot(root) => root
-                .join("sessions")
-                .join(crate::util::grok_home::encode_cwd_dirname(&info.cwd))
-                .join(info.id.to_string()),
+            SessionDirMode::FromRoot(root) => {
+                crate::util::grok_home::sessions_cwd_dir_in(root, &info.cwd)
+                    .join(info.id.to_string())
+            }
             SessionDirMode::Explicit(dir) => dir.clone(),
         }
+    }
+    /// Create `info`'s session dir owner-only. `FromRoot` also ensures the
+    /// `<encoded-cwd>` shield + root; `Explicit` parents are caller-owned.
+    fn create_session_dir_owner_only(&self, info: &Info) -> io::Result<PathBuf> {
+        let dir = self.session_dir(info);
+        if let SessionDirMode::FromRoot(root) = &self.dir_mode {
+            let _ = crate::util::grok_home::ensure_sessions_cwd_dir_in(root, &info.cwd);
+        }
+        crate::util::grok_home::create_dir_all_owner_only(&dir)?;
+        Ok(dir)
     }
     pub(super) fn updates_file(&self, info: &Info) -> PathBuf {
         self.session_dir(info).join(super::UPDATES_FILE)
@@ -924,7 +933,8 @@ impl JsonlStorageAdapter {
         Ok(())
     }
     /// Like [`Self::apply_summary_patch`], but returns whether a
-    /// `generated_title_if_absent` was applied (see [`Summary::apply_patch`]).
+    /// `generated_title_if_absent` was applied or a manual pin was
+    /// cleared by `reset_title_to_auto` (see [`Summary::apply_patch`]).
     async fn apply_summary_patch_reporting(
         &self,
         info: &Info,
@@ -966,7 +976,7 @@ async fn next_compaction_segment_index(compaction_dir: &std::path::Path) -> u64 
         if let Some(n) = entry
             .file_name()
             .to_str()
-            .and_then(xai_chat_state::compaction_transcript::parse_segment_index)
+            .and_then(xai_compaction_transcript::parse_segment_index)
         {
             next = next.max(n + 1);
         }
@@ -976,8 +986,7 @@ async fn next_compaction_segment_index(compaction_dir: &std::path::Path) -> u64 
 #[async_trait]
 impl StorageAdapter for JsonlStorageAdapter {
     async fn init_session(&self, info: &Info, model_id: acp::ModelId) -> io::Result<Summary> {
-        let dir = self.session_dir(info);
-        std::fs::create_dir_all(&dir)?;
+        self.create_session_dir_owner_only(info)?;
         let summary_path = self.summary_file(info);
         if Path::new(&summary_path).exists() {
             tracing::info!("Loading existing session from JSONL");
@@ -1011,6 +1020,16 @@ impl StorageAdapter for JsonlStorageAdapter {
             info,
             super::summary_write::SummaryPatch {
                 generated_title_if_absent: Some(session_title),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+    async fn reset_title_to_auto(&self, info: &Info) -> io::Result<bool> {
+        self.apply_summary_patch_reporting(
+            info,
+            super::summary_write::SummaryPatch {
+                reset_title_to_auto: true,
                 ..Default::default()
             },
         )
@@ -1433,6 +1452,17 @@ impl StorageAdapter for JsonlStorageAdapter {
         .await
         .map_err(io::Error::other)?
     }
+    async fn backup_chat_history_before_strip(&self, info: &Info) -> io::Result<()> {
+        let path = self.chat_file(info);
+        let backup = path.with_extension("jsonl.pre-strip");
+        if !tokio::fs::try_exists(&path).await? || tokio::fs::try_exists(&backup).await? {
+            return Ok(());
+        }
+        let staging = path.with_extension("jsonl.pre-strip.tmp");
+        tokio::fs::copy(&path, &staging).await?;
+        tokio::fs::rename(&staging, &backup).await?;
+        Ok(())
+    }
     async fn replace_chat_history(
         &self,
         info: &Info,
@@ -1579,7 +1609,7 @@ impl StorageAdapter for JsonlStorageAdapter {
         segment: &crate::extensions::notification::CompactionSegmentFile,
     ) -> io::Result<()> {
         use tokio::io::AsyncWriteExt;
-        use xai_chat_state::compaction_transcript::{
+        use xai_compaction_transcript::{
             COMPACTION_DIR, INDEX_FILE, INDEX_HEADER, extract_keywords, render_index_row,
             render_segment_md, segment_filename,
         };

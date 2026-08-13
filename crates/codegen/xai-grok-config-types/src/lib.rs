@@ -42,7 +42,7 @@ pub struct DoomLoopRecoverySettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     /// Highest `tail_repetition` threshold considered confident (clamped to
-    /// 2..=64). Absent ⇒ client default (8). CLIENT-side filter over the
+    /// 2..=64). Absent ⇒ client default (32). CLIENT-side filter over the
     /// trigger labels the server returns — the server emits every fired
     /// threshold; this is never sent as a request parameter.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,6 +51,10 @@ pub struct DoomLoopRecoverySettings {
     /// default (2).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_retries: Option<u32>,
+    /// Detector window sent as the value of `x-grok-doom-loop-check`
+    /// (honored in 512..=4096, otherwise 4096; absent ⇒ client default 1024).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_tokens: Option<u32>,
 }
 /// Per-kind age policy for auto-GC: seconds or never.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,8 +174,8 @@ pub struct WorktreeAutoGcSettings {
 /// `[ui.display_refresh]`, remote settings `display_refresh`, and `UiConfig`.
 /// Field-wise tolerant deserialize (wrong types → `None`); unknown keys kept in
 /// [`Self::extra`] so settings save cannot drop future knobs. Resolved by
-/// `resolve_display_refresh`. Client defaults: probe on, auto off, floor 8 ms,
-/// ceiling 16 ms, Hz band 55–165.
+/// `resolve_display_refresh`. Client defaults: probe on, auto on, floor 8 ms,
+/// ceiling 16 ms, Hz band 55–240.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct DisplayRefreshSettings {
