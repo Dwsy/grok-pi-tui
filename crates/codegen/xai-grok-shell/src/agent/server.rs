@@ -312,6 +312,7 @@ async fn run_persistent_agent(
         MvpAgent::new(gateway, &agent_config, auth_manager, prefetched_models)
             .unwrap_or_else(crate::agent::init::exit_on_config_error),
     );
+    agent.models_manager.spawn_background_refresh();
 
     let relay_dest: RelayDest = Rc::new(RefCell::new(None));
 

@@ -2331,7 +2331,9 @@ mod inline_auto_compact_flow_tests {
             tool_context,
             deny_read_globs: Vec::new(),
             mcp_state: Arc::new(TokioMutex::new(McpState::new(vec![]))),
-            mcp_strategy: McpInitStrategy::Blocking,
+            mcp_strategy: std::cell::Cell::new(McpInitStrategy::Blocking),
+            delivery_tools: std::cell::RefCell::new(Vec::new()),
+            attach_non_interactive: std::cell::Cell::new(false),
             chat_state_handle,
             current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
             pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
@@ -2451,7 +2453,6 @@ mod inline_auto_compact_flow_tests {
             ),
             goal_classifier_in_flight: std::sync::atomic::AtomicBool::new(false),
             managed_mcp_handle: Default::default(),
-            managed_mcp_expires_at: std::sync::Mutex::new(None),
             initial_client_mcp_servers: vec![],
             tool_metadata_snapshot: Arc::new(std::sync::Mutex::new(Default::default())),
             mcp_announced_servers: parking_lot::Mutex::new(std::collections::HashMap::new()),

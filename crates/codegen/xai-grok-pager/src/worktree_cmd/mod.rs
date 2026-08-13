@@ -1,5 +1,7 @@
 mod display;
 
+use std::io::Write;
+
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use tokio_util::sync::CancellationToken;
@@ -95,6 +97,7 @@ enum WorktreeDbCommand {
 
 pub async fn run(args: WorktreeArgs, agent_config: &AgentConfig) -> Result<()> {
     let cancel = CancellationToken::new();
+    xai_grok_telemetry::startup::mark_utility_process();
     let spawned = crate::acp::spawn::spawn_grok_shell(agent_config.clone(), &cancel, None).await?;
     // Cancel + join on every return path, including the `?` below.
     let _agent_guard =
@@ -198,12 +201,13 @@ async fn cmd_list(
     )
     .await?;
 
-    if json {
-        display::print_json(&records);
+    let mut out = std::io::stdout().lock();
+    let written = if json {
+        display::print_json(&records, &mut out)
     } else {
-        display::print_table(&records);
-    }
-    Ok(())
+        display::print_table(&records, &mut out)
+    };
+    Ok(crate::util::ignore_broken_pipe(written)?)
 }
 
 async fn cmd_show(tx: &xai_acp_lib::AcpAgentTx, id_or_path: &str) -> Result<()> {
@@ -216,8 +220,8 @@ async fn cmd_show(tx: &xai_acp_lib::AcpAgentTx, id_or_path: &str) -> Result<()> 
 
     match rec {
         Some(r) => {
-            display::print_show(&r);
-            Ok(())
+            let written = display::print_show(&r, &mut std::io::stdout().lock());
+            Ok(crate::util::ignore_broken_pipe(written)?)
         }
         None => bail!("worktree not found: {id_or_path}"),
     }
@@ -281,19 +285,22 @@ async fn cmd_gc(
     )
     .await?;
 
-    if dry_run {
-        println!("Dry run \u{2014} no changes made.");
-    }
-    display::print_gc(&report);
-    Ok(())
+    let mut out = std::io::stdout().lock();
+    let written = (|| {
+        if dry_run {
+            writeln!(out, "Dry run \u{2014} no changes made.")?;
+        }
+        display::print_gc(&report, &mut out)
+    })();
+    Ok(crate::util::ignore_broken_pipe(written)?)
 }
 
 async fn cmd_db(tx: &xai_acp_lib::AcpAgentTx, command: WorktreeDbCommand) -> Result<()> {
     match command {
         WorktreeDbCommand::Stats => {
             let stats: DbStats = ext_call(tx, "x.ai/git/worktree/db/stats", &()).await?;
-            display::print_stats(&stats);
-            Ok(())
+            let written = display::print_stats(&stats, &mut std::io::stdout().lock());
+            Ok(crate::util::ignore_broken_pipe(written)?)
         }
         WorktreeDbCommand::Path => {
             #[derive(serde::Deserialize)]
@@ -306,8 +313,8 @@ async fn cmd_db(tx: &xai_acp_lib::AcpAgentTx, command: WorktreeDbCommand) -> Res
         }
         WorktreeDbCommand::Rebuild => {
             let report: RebuildReport = ext_call(tx, "x.ai/git/worktree/db/rebuild", &()).await?;
-            display::print_rebuild(&report);
-            Ok(())
+            let written = display::print_rebuild(&report, &mut std::io::stdout().lock());
+            Ok(crate::util::ignore_broken_pipe(written)?)
         }
     }
 }

@@ -65,6 +65,77 @@ fn worktree_forked_sets_session_id_eagerly_and_emits_load() {
 }
 
 #[test]
+fn startup_fork_parent_is_worktree_for_standalone_clone() {
+    let mut app = test_app();
+    let main = crate::test_util::TempGitRepo::init("main-only");
+    let clone = main.standalone_clone("wt-branch");
+    let effects = dispatch(
+        Action::StartupForkSession {
+            parent_session_id: "parent-sid".into(),
+            parent_cwd: Some(clone.path.clone()),
+            new_session_id: None,
+        },
+        &mut app,
+    );
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::ForkSession {
+                parent_is_worktree: true,
+                ..
+            }
+        )),
+        "startup fork from a standalone clone must pass parent_is_worktree, got {effects:?}"
+    );
+}
+
+#[test]
+fn worktree_forked_clears_sticky_branch_from_main_repo() {
+    let mut app = test_app_git();
+    dispatch(
+        Action::NewWorktreeSession {
+            load_session_id: Some("orig-sess".into()),
+            label: None,
+            git_ref: None,
+        },
+        &mut app,
+    );
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.current_branch = Some("main-random".into());
+        agent.main_repo = Some("~/old-main".into());
+        agent.is_worktree = false;
+    }
+
+    let worktree_path = PathBuf::from("/tmp/grok-worktrees/pager-fork-sticky");
+    let session_cwd = worktree_path.join("sub");
+    dispatch(
+        Action::TaskComplete(TaskResult::WorktreeForked {
+            agent_id: id,
+            session_id: acp::SessionId::new("forked-sess-sticky"),
+            worktree_path,
+            session_cwd: session_cwd.clone(),
+            code_restored: false,
+            restore_summary: None,
+            restore_degree: None,
+            resume_session_id: Some("orig-sess".into()),
+        }),
+        &mut app,
+    );
+
+    let agent = &app.agents[&id];
+    assert!(
+        agent.current_branch.is_none(),
+        "sticky main-repo branch must not survive the worktree cwd switch"
+    );
+    assert!(agent.main_repo.is_none());
+    assert!(agent.is_worktree);
+    assert!(agent.session.is_worktree);
+    assert_eq!(agent.session.cwd, session_cwd);
+}
+
+#[test]
 fn worktree_forked_with_restore_shows_summary_in_scrollback() {
     let mut app = test_app_git();
     dispatch(

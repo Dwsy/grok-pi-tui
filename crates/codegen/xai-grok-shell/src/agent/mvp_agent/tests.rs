@@ -939,6 +939,32 @@ fn read_session_or_init_meta_str_ignores_non_string_values() {
     );
 }
 #[test]
+fn startup_hints_from_meta_prefers_session_request_over_init() {
+    let session = serde_json::json!({
+        "startupHints": { "nonInteractive": true, "deliveryTools": ["srv__post"] }
+    });
+    let init = serde_json::json!({ "startupHints": { "nonInteractive": false } });
+    let hints = startup_hints_from_meta(session.as_object(), init.as_object());
+    assert!(hints.non_interactive);
+    assert_eq!(hints.delivery_tools, vec!["srv__post"]);
+    assert!(startup_hints_from_meta(None, session.as_object()).non_interactive);
+}
+#[test]
+fn startup_hints_from_meta_session_object_wins_whole_not_merged() {
+    let session = serde_json::json!({ "startupHints": { "skipGitStatus": true } });
+    let init = serde_json::json!({ "startupHints": { "nonInteractive": true } });
+    let hints = startup_hints_from_meta(session.as_object(), init.as_object());
+    assert!(hints.skip_git_status);
+    assert!(!hints.non_interactive);
+}
+#[test]
+fn startup_hints_from_meta_unparseable_falls_through_then_defaults() {
+    let bad = serde_json::json!({ "startupHints": "yes" });
+    let init = serde_json::json!({ "startupHints": { "nonInteractive": true } });
+    assert!(startup_hints_from_meta(bad.as_object(), init.as_object()).non_interactive);
+    assert!(!startup_hints_from_meta(None, None).non_interactive);
+}
+#[test]
 fn system_prompt_override_from_meta_prefers_session_and_rejects_empty() {
     let session = serde_json::json!({ "systemPromptOverride": "from session" });
     let init = serde_json::json!({ "systemPromptOverride": "from init" });
@@ -1187,6 +1213,7 @@ fn make_test_handle(
         }),
         code_nav_enabled: false,
         ask_user_question_enabled: true,
+        non_interactive: false,
         plan_mode: std::sync::Arc::new(parking_lot::Mutex::new(
             crate::session::plan_mode::PlanModeTracker::new(std::path::PathBuf::from("/tmp")),
         )),
@@ -1610,64 +1637,196 @@ async fn ext_method_routes_auth_cleared_and_refreshes_resident_sessions() {
         })
         .await;
 }
-/// Fresh managed catalog sync must push UpdateMcpServers with the injected
-/// managed connector. The `search_tool` rebuild is a SEPARATE broadcast
-/// (`refresh_mcp_search_index_in_sessions`), so it is not asserted here.
+fn empty_gateway_catalog() -> crate::session::managed_mcp::GatewayToolCatalog {
+    crate::session::managed_mcp::GatewayToolCatalog {
+        tools: vec![],
+        total_tools: 0,
+        connectors_needing_reauth: vec![],
+    }
+}
+fn assert_no_update_mcp_servers(cmds: &[SessionCommand]) {
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, SessionCommand::UpdateMcpServers { .. })),
+        "mcp/list must not push UpdateMcpServers"
+    );
+}
+/// `mcp/list` refresh: two resident sessions, cache=false + committed catalog
+/// fans `RefreshMcpSearchIndex`; failed catalog and cache=true do not.
 #[tokio::test(flavor = "current_thread")]
-async fn sync_fresh_managed_mcp_pushes_update() {
+async fn mcp_list_gateway_refresh_fans_only_on_committed_uncached_catalog() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let agent = build_agent_with_auth(crate::auth::GrokAuth {
-                key: "eligible".into(),
-                auth_mode: crate::auth::AuthMode::WebLogin,
-                ..crate::auth::GrokAuth::test_default()
-            });
-            let sid = acp::SessionId::new("sess-managed-sync");
+            use crate::session::managed_mcp::GatewayToolCatalogCache;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            let list_hits = std::sync::Arc::new(AtomicUsize::new(0));
+            let list_hits_route = list_hits.clone();
+            let app = axum::Router::new().route(
+                "/mcp/tools/list",
+                axum::routing::get(move || {
+                    list_hits_route.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        axum::Json(serde_json::json!({
+                            "tools": [{
+                                "connector_id": "gmail",
+                                "connector_name": "Gmail",
+                                "tool_id": "search",
+                                "tool_name": "Search",
+                                "call_id": "gmail_search",
+                                "description": "d",
+                                "json_schema": {"type": "object"}
+                            }],
+                            "total_tools": 1,
+                            "connectors_needing_reauth": []
+                        }))
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let proxy_url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let (agent, _rx) = build_agent_with_auth_and_proxy(
+                crate::auth::GrokAuth {
+                    key: "eligible".into(),
+                    auth_mode: crate::auth::AuthMode::WebLogin,
+                    ..crate::auth::GrokAuth::test_default()
+                },
+                proxy_url,
+                crate::agent::config::AgentMode::Generic,
+            );
+            agent.cfg.borrow_mut().managed_mcp_gateway_tools_enabled = true;
+            let sid_a = acp::SessionId::new("sess-list-a");
+            let sid_b = acp::SessionId::new("sess-list-b");
+            let (handle_a, _tx_a, mut cmd_rx_a) = make_live_session_handle(&sid_a, None);
+            let (handle_b, _tx_b, mut cmd_rx_b) = make_live_session_handle(&sid_b, None);
+            agent.insert_resident(&sid_a, handle_a);
+            agent.insert_resident(&sid_b, handle_b);
+            {
+                let mut state = agent.managed_mcp_cache.lock().await;
+                state.enable_gateway_tools();
+                let epoch = state.start_gateway_tool_fetch().unwrap();
+                assert!(state.complete_gateway_tool_fetch(epoch, empty_gateway_catalog()));
+            }
+            let cached = agent.fetch_gateway_catalog_for_mcp_list(true).await;
+            let cached = cached.expect("cache=true should hit Ready catalog");
+            assert!(
+                cached.tools.is_empty() && cached.total_tools == 0,
+                "cache=true must return the seeded empty catalog, not a mock refetch"
+            );
+            assert_eq!(
+                list_hits.load(Ordering::SeqCst),
+                0,
+                "cache=true must not hit /mcp/tools/list"
+            );
+            assert!(
+                cmd_rx_a.try_recv().is_err() && cmd_rx_b.try_recv().is_err(),
+                "cache=true must not fan RefreshMcpSearchIndex"
+            );
+            match &agent.managed_mcp_cache.lock().await.gateway_tool_cache {
+                GatewayToolCatalogCache::Ready(catalog) => {
+                    assert!(
+                        catalog.tools.is_empty() && catalog.total_tools == 0,
+                        "in-memory cache must stay the seeded empty Ready catalog"
+                    );
+                }
+                GatewayToolCatalogCache::NotFetched => {
+                    panic!("expected Ready(empty), got NotFetched")
+                }
+                GatewayToolCatalogCache::Fetching(_) => {
+                    panic!("expected Ready(empty), got Fetching")
+                }
+            }
+            agent.cfg.borrow_mut().managed_mcp_gateway_tools_enabled = false;
+            let failed = agent.fetch_gateway_catalog_for_mcp_list(false).await;
+            assert!(failed.is_none(), "gateway off after invalidate is None");
+            assert!(
+                cmd_rx_a.try_recv().is_err() && cmd_rx_b.try_recv().is_err(),
+                "failed catalog must not fan RefreshMcpSearchIndex"
+            );
+            agent.cfg.borrow_mut().managed_mcp_gateway_tools_enabled = true;
+            let fresh = agent.fetch_gateway_catalog_for_mcp_list(false).await;
+            assert!(
+                fresh.is_some_and(|c| !c.tools.is_empty()),
+                "cache=false should refetch a non-empty catalog"
+            );
+            assert!(
+                list_hits.load(Ordering::SeqCst) >= 1,
+                "cache=false refetch must hit /mcp/tools/list"
+            );
+            let cmd_a = tokio::time::timeout(std::time::Duration::from_secs(1), cmd_rx_a.recv())
+                .await
+                .expect("session A RefreshMcpSearchIndex")
+                .expect("channel open");
+            let cmd_b = tokio::time::timeout(std::time::Duration::from_secs(1), cmd_rx_b.recv())
+                .await
+                .expect("session B RefreshMcpSearchIndex")
+                .expect("channel open");
+            assert!(matches!(cmd_a, SessionCommand::RefreshMcpSearchIndex));
+            assert!(matches!(cmd_b, SessionCommand::RefreshMcpSearchIndex));
+            assert_no_update_mcp_servers(&[cmd_a, cmd_b]);
+            assert!(cmd_rx_a.try_recv().is_err() && cmd_rx_b.try_recv().is_err());
+            server.abort();
+        })
+        .await;
+}
+/// mcp/list with gateway off must disable the cache, same as initialize.
+#[tokio::test(flavor = "current_thread")]
+async fn mcp_list_gateway_off_disables_cached_catalog() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            use crate::session::managed_mcp::GatewayToolCatalogCache;
+            let (agent, _rx) = build_agent_with_auth_and_proxy(
+                crate::auth::GrokAuth {
+                    key: "eligible".into(),
+                    auth_mode: crate::auth::AuthMode::WebLogin,
+                    ..crate::auth::GrokAuth::test_default()
+                },
+                "http://127.0.0.1:1".into(),
+                crate::agent::config::AgentMode::Generic,
+            );
+            agent.cfg.borrow_mut().managed_mcp_gateway_tools_enabled = true;
+            let sid = acp::SessionId::new("sess-list-off");
             let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
             agent.insert_resident(&sid, handle);
-            let managed = vec![crate::session::managed_mcp::ManagedMcpConfig {
-                name: "Linear".into(),
-                endpoint: "https://mcp.example.com/linear".into(),
-                headers: std::collections::HashMap::from([(
-                    "Authorization".into(),
-                    "Bearer tok".into(),
-                )]),
-                token_expires_at: None,
-                scope: None,
-                scope_id: None,
-                scope_name: None,
-            }];
-            agent.sync_fresh_managed_mcp_to_sessions(&managed);
-            let first = tokio::time::timeout(std::time::Duration::from_secs(1), cmd_rx.recv())
-                .await
-                .expect("UpdateMcpServers should be sent")
-                .expect("channel should stay open");
-            let SessionCommand::UpdateMcpServers { mcp_servers, .. } = first else {
-                panic!("expected UpdateMcpServers as the first synced command");
-            };
-            let managed_name = crate::session::managed_mcp::to_managed_name("Linear");
-            let linear = mcp_servers
-                .iter()
-                .find_map(|s| match s {
-                    acp::McpServer::Http(http) if http.name == managed_name => Some(http),
-                    _ => None,
-                })
-                .unwrap_or_else(|| {
-                    panic!("merged catalog must contain managed HTTP server {managed_name}")
-                });
+            {
+                let mut state = agent.managed_mcp_cache.lock().await;
+                state.enable_gateway_tools();
+                let epoch = state.start_gateway_tool_fetch().unwrap();
+                assert!(state.complete_gateway_tool_fetch(epoch, empty_gateway_catalog()));
+            }
+            agent.cfg.borrow_mut().managed_mcp_gateway_tools_enabled = false;
             assert!(
-                linear
-                    .headers
-                    .iter()
-                    .any(|h| h.name == "Authorization" && h.value == "Bearer tok"),
-                "managed server must carry the injected Authorization header"
+                agent
+                    .fetch_gateway_catalog_for_mcp_list(true)
+                    .await
+                    .is_none(),
+                "gateway off must return None"
+            );
+            let state = agent.managed_mcp_cache.lock().await;
+            assert!(
+                !state.gateway_tools_active,
+                "gateway off must disable the cache"
+            );
+            assert!(
+                matches!(
+                    state.gateway_tool_cache,
+                    GatewayToolCatalogCache::NotFetched
+                ),
+                "disable must clear a Ready catalog"
+            );
+            drop(state);
+            assert!(
+                cmd_rx.try_recv().is_err(),
+                "disable via mcp/list must not fan RefreshMcpSearchIndex"
             );
         })
         .await;
 }
-/// The gateway-catalog refresh broadcast pushes `RefreshMcpSearchIndex` to every
-/// live session (independent of the legacy managed-connector sync).
+/// Gateway tools live on the agent catalog, so sessions only rebuild
+/// `search_tool`.
 #[tokio::test(flavor = "current_thread")]
 async fn refresh_mcp_search_index_broadcasts_to_sessions() {
     let agent = build_minimal_agent_for_tests();
@@ -3379,7 +3538,6 @@ fn chat_session_spawn_options_matches_thin_profile() {
     assert!(!opts.client_fs_read);
     assert!(!opts.client_fs_write);
     assert!(opts.chat_history.is_empty());
-    assert!(opts.managed_mcp_expires_at.is_none());
     assert!(!opts.session_auto_mode);
     assert!(
         opts.persistence.is_noop(),
@@ -3610,6 +3768,256 @@ async fn drive_close(agent: &MvpAgent, session_id: &str) -> Result<acp::ExtRespo
             std::sync::Arc::from(raw),
         ))
         .await
+}
+/// Every method `parse_queue_edit_command` accepts must be forwarded from
+/// `ext_notification` to that session's mailbox. Parser-only coverage misses
+/// a dispatch drop.
+#[tokio::test(flavor = "current_thread")]
+async fn ext_notification_forwards_each_queue_method_to_session_actor() {
+    use acp::Agent as _;
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("sess-queue-rt");
+    let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+    agent.insert_resident(&sid, handle);
+    let session_id = sid.0.as_ref();
+    let cases: [(&str, serde_json::Value); 7] = [
+        (
+            "x.ai/queue/remove",
+            serde_json::json!({
+                "sessionId": session_id,
+                "id": "p-remove",
+                "expectedVersion": 3,
+                "owner": "grok-tui",
+            }),
+        ),
+        (
+            "x.ai/queue/reorder",
+            serde_json::json!({
+                "sessionId": session_id,
+                "orderedIds": ["a", "b"],
+            }),
+        ),
+        (
+            "x.ai/queue/clear",
+            serde_json::json!({
+                "sessionId": session_id,
+                "clientIdentifier": "grok-desktop",
+            }),
+        ),
+        (
+            "x.ai/queue/edit",
+            serde_json::json!({
+                "sessionId": session_id,
+                "id": "p-edit",
+                "newText": "rewritten",
+                "owner": "grok-vscode",
+            }),
+        ),
+        (
+            "x.ai/queue/interject",
+            serde_json::json!({
+                "sessionId": session_id,
+                "id": "p-interject",
+                "expectedVersion": 2,
+                "owner": "grok-tui",
+                "newText": "now",
+            }),
+        ),
+        (
+            "x.ai/queue/hold_edit",
+            serde_json::json!({
+                "sessionId": session_id,
+                "id": "p-hold",
+            }),
+        ),
+        (
+            "x.ai/queue/release_edit",
+            serde_json::json!({
+                "sessionId": session_id,
+                "id": "p-release",
+            }),
+        ),
+    ];
+    for (method, params) in cases {
+        let raw = serde_json::value::to_raw_value(&params).expect("serialize queue params");
+        agent
+            .ext_notification(acp::ExtNotification::new(method, raw.into()))
+            .await
+            .unwrap_or_else(|e| panic!("{method} ext_notification failed: {e}"));
+        let cmd = cmd_rx.try_recv().unwrap_or_else(|e| {
+            panic!("{method} must land a SessionCommand on the actor mailbox, try_recv={e}")
+        });
+        match (method, cmd) {
+            (
+                "x.ai/queue/remove",
+                SessionCommand::RemoveQueuedPrompt {
+                    id,
+                    expected_version,
+                    owner,
+                },
+            ) => {
+                assert_eq!(id, "p-remove");
+                assert_eq!(expected_version, 3);
+                assert_eq!(owner.as_deref(), Some("grok-tui"));
+            }
+            ("x.ai/queue/reorder", SessionCommand::ReorderQueue { ordered_ids }) => {
+                assert_eq!(ordered_ids, vec!["a", "b"]);
+            }
+            ("x.ai/queue/clear", SessionCommand::ClearQueue { owner }) => {
+                assert_eq!(owner.as_deref(), Some("grok-desktop"));
+            }
+            (
+                "x.ai/queue/edit",
+                SessionCommand::EditQueuedPrompt {
+                    id,
+                    new_text,
+                    editor,
+                },
+            ) => {
+                assert_eq!(id, "p-edit");
+                assert_eq!(new_text, "rewritten");
+                assert_eq!(editor.as_deref(), Some("grok-vscode"));
+            }
+            (
+                "x.ai/queue/interject",
+                SessionCommand::InterjectQueuedPrompt {
+                    id,
+                    expected_version,
+                    owner,
+                    new_text,
+                },
+            ) => {
+                assert_eq!(id, "p-interject");
+                assert_eq!(expected_version, 2);
+                assert_eq!(owner.as_deref(), Some("grok-tui"));
+                assert_eq!(new_text.as_deref(), Some("now"));
+            }
+            ("x.ai/queue/hold_edit", SessionCommand::HoldCombineEdit { id }) => {
+                assert_eq!(id, "p-hold");
+            }
+            ("x.ai/queue/release_edit", SessionCommand::ReleaseCombineEdit { id }) => {
+                assert_eq!(id, "p-release");
+            }
+            (method, _) => {
+                panic!("{method} dispatched a SessionCommand of the wrong variant")
+            }
+        }
+    }
+    assert!(
+        matches!(
+            cmd_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ),
+        "no extra SessionCommand may remain after the seven queue methods"
+    );
+}
+/// Methods the parser rejects (unknown, outbound `changed`, missing id /
+/// newText) and a missing session must not send a command or panic.
+#[tokio::test(flavor = "current_thread")]
+async fn ext_notification_queue_rejects_unknown_method_missing_id_and_unknown_session() {
+    use acp::Agent as _;
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("sess-queue-neg");
+    let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+    agent.insert_resident(&sid, handle);
+    let session_id = sid.0.as_ref();
+    let negatives: [(&str, serde_json::Value); 9] = [
+        (
+            "x.ai/queue/bogus",
+            serde_json::json!({ "sessionId": session_id, "id": "p1" }),
+        ),
+        (
+            "x.ai/queue/changed",
+            serde_json::json!({
+                "sessionId": session_id,
+                "entries": [{
+                    "id": "p1",
+                    "version": 0,
+                    "kind": "prompt",
+                    "text": "hello",
+                    "position": 0,
+                }],
+            }),
+        ),
+        (
+            "x.ai/queue/hold_edit",
+            serde_json::json!({ "sessionId": session_id }),
+        ),
+        (
+            "x.ai/queue/release_edit",
+            serde_json::json!({ "sessionId": session_id }),
+        ),
+        (
+            "x.ai/queue/remove",
+            serde_json::json!({ "sessionId": session_id }),
+        ),
+        (
+            "x.ai/queue/edit",
+            serde_json::json!({ "sessionId": session_id, "newText": "x" }),
+        ),
+        (
+            "x.ai/queue/edit",
+            serde_json::json!({ "sessionId": session_id, "id": "p-edit" }),
+        ),
+        (
+            "x.ai/queue/interject",
+            serde_json::json!({ "sessionId": session_id }),
+        ),
+        (
+            "x.ai/queue/hold_edit",
+            serde_json::json!({ "sessionId": "no-such-session", "id": "p1" }),
+        ),
+    ];
+    for (method, params) in negatives {
+        let raw = serde_json::value::to_raw_value(&params).expect("serialize queue params");
+        agent
+            .ext_notification(acp::ExtNotification::new(method, raw.into()))
+            .await
+            .unwrap_or_else(|e| panic!("{method} ext_notification must not fail: {e}"));
+        assert!(
+            matches!(
+                cmd_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "{method} must not send a SessionCommand (params={params})"
+        );
+    }
+    let agent_empty = build_minimal_agent_for_tests();
+    let raw = serde_json::value::to_raw_value(&serde_json::json!({
+        "sessionId": "ghost",
+        "id": "p1",
+    }))
+    .expect("serialize");
+    agent_empty
+        .ext_notification(acp::ExtNotification::new(
+            "x.ai/queue/release_edit",
+            raw.into(),
+        ))
+        .await
+        .expect("queue edit for a missing session must not error");
+}
+/// Fire-and-forget: a gone session actor must not turn `ext_notification`
+/// into an error or panic.
+#[tokio::test(flavor = "current_thread")]
+async fn ext_notification_queue_edit_survives_dropped_actor_mailbox() {
+    use acp::Agent as _;
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("sess-queue-dead");
+    let (handle, _tx, cmd_rx) = make_live_session_handle(&sid, None);
+    agent.insert_resident(&sid, handle);
+    drop(cmd_rx);
+    let params = serde_json::json!({
+        "sessionId": sid.0.as_ref(),
+        "id": "p-hold",
+    });
+    let raw = serde_json::value::to_raw_value(&params).expect("serialize queue params");
+    agent
+        .ext_notification(acp::ExtNotification::new(
+            "x.ai/queue/hold_edit",
+            raw.into(),
+        ))
+        .await
+        .expect("queue edit must not error when the session actor mailbox is gone");
 }
 /// No-evict keystone: a client disconnecting mid-turn must NOT destroy the
 /// session. The actor stays resident, no `Shutdown` is sent, the resident

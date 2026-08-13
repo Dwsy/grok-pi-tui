@@ -89,8 +89,6 @@ impl Theme {
 
             accent_verify: rgb(120, 80, 160), // deep violet (readable on light bg)
 
-            accent_feedback: GREEN1,
-
             accent_remember: rgb(76, 175, 80), // #4CAF50 — Material Design green (readable on light bg)
 
             selection_border: rgb(185, 185, 190),

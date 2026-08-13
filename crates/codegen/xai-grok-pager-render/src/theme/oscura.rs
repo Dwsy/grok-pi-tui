@@ -92,8 +92,6 @@ impl Theme {
 
             accent_verify: PURPLE,
 
-            accent_feedback: TEAL,
-
             accent_remember: rgb(139, 195, 74), // #8BC34A — Material Design light green
 
             selection_border: HIGHLIGHT_HIGH,

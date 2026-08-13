@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use agent_client_protocol as acp;
 use tokio::task::JoinSet;
 use xai_acp_lib::{AcpAgentTx, acp_send};
+use xai_grok_telemetry::startup::{self, StartupPhase};
 use actions::{
     ClipboardPasteTarget, Effect, ProbedAttachment, SubagentKillOutcome,
     SwitchModelError, TaskResult,
@@ -219,17 +220,19 @@ pub(crate) fn execute(
                             };
                         }
                     }
+                    let _phase = startup::phase_scope(StartupPhase::SessionCreate);
                     ulog::info(
                         "session.create.start",
                         None,
                         Some(serde_json::json!({"mcp_server_count": mcp_count})),
                     );
                     let create_start = std::time::Instant::now();
-                    let result = acp_send(
+                    let result = helpers::acp_send_bounded(
                             acp::NewSessionRequest::new(session_cwd.clone())
                                 .mcp_servers(mcp_servers)
                                 .meta(meta),
                             &tx,
+                            "Session creation",
                         )
                         .await;
                     let create_elapsed_ms = create_start.elapsed().as_millis() as u64;
@@ -338,7 +341,14 @@ pub(crate) fn execute(
                                 .expect("serialize resume params")
                                 .into(),
                         );
-                        let ext_resp = match acp_send(ext_req, &tx).await {
+                        let _phase = startup::phase_scope(StartupPhase::SessionCreate);
+                        let ext_resp = match helpers::acp_send_bounded(
+                                ext_req,
+                                &tx,
+                                "Worktree session resume",
+                            )
+                            .await
+                        {
                             Ok(resp) => {
                                 tracing::info!(
                                 session_id = %sid,
@@ -530,11 +540,13 @@ pub(crate) fn execute(
                         &session_cwd,
                         &xai_grok_tools::types::compat::CompatConfig::default(),
                     );
-                    let result = acp_send(
+                    let _phase = startup::phase_scope(StartupPhase::SessionCreate);
+                    let result = helpers::acp_send_bounded(
                             acp::NewSessionRequest::new(session_cwd.clone())
                                 .mcp_servers(mcp_servers)
                                 .meta(meta),
                             &tx,
+                            "Worktree session creation",
                         )
                         .await;
                     match result {
@@ -586,9 +598,10 @@ pub(crate) fn execute(
             let acp_session_id = acp::SessionId::new(session_id);
             tasks
                 .spawn(async move {
+                    let _phase = startup::phase_scope(StartupPhase::SessionCreate);
                     ulog::info("session.load.start", Some(&acp_session_id.0), None);
                     let load_started = std::time::Instant::now();
-                    let result = acp_send(
+                    let result = helpers::acp_send_bounded(
                             acp::LoadSessionRequest::new(
                                     acp_session_id.clone(),
                                     cwd.clone(),
@@ -596,6 +609,7 @@ pub(crate) fn execute(
                                 .mcp_servers(mcp_servers.clone())
                                 .meta(meta.clone()),
                             &tx,
+                            "Session loading",
                         )
                         .await;
                     let load_elapsed_ms = load_started.elapsed().as_millis() as u64;
@@ -1803,7 +1817,7 @@ pub(crate) fn execute(
             session_id,
             cancel_subagents,
             trigger,
-            rewind_if_pristine,
+            rewind_if_no_output,
         } => {
             let tx = acp_tx.clone();
             let trigger_str = trigger.map(|t| t.as_wire_str());
@@ -1816,7 +1830,7 @@ pub(crate) fn execute(
                             serde_json::json!({
                         "cancel_subagents": cancel_subagents,
                         "trigger": trigger_str,
-                        "rewind_if_pristine": rewind_if_pristine,
+                        "rewind_if_no_output": rewind_if_no_output,
                     }),
                         ),
                     );
@@ -1825,7 +1839,8 @@ pub(crate) fn execute(
                     if let Some(t) = trigger_str {
                         meta["cancelTrigger"] = t.into();
                     }
-                    if rewind_if_pristine {
+                    if rewind_if_no_output {
+                        meta["rewindIfNoOutput"] = true.into();
                         meta["rewindIfPristine"] = true.into();
                     }
                     let req = acp::CancelNotification::new(session_id.clone())
@@ -3834,7 +3849,7 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::ShowSessionInfo { agent_id, session_id, show_resolved_model } => {
+        Effect::ShowSessionInfo { agent_id, session_id, show_resolved_model, nonce } => {
             let is_api_key_auth = session_flags.is_api_key_auth;
             let api_key_env_set = xai_grok_shell::agent::auth_method::has_xai_api_key_env();
             let tx = acp_tx.clone();
@@ -3856,14 +3871,18 @@ pub(crate) fn execute(
                             );
                             TaskResult::SessionInfoComplete {
                                 agent_id,
+                                session_id,
                                 info: Box::new(info),
                                 text,
+                                nonce,
                             }
                         }
                         Err(error) => {
                             TaskResult::SessionInfoFailed {
                                 agent_id,
+                                session_id,
                                 error,
+                                nonce,
                             }
                         }
                     }
@@ -4055,7 +4074,7 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::ShowContextInfo { agent_id, session_id } => {
+        Effect::ShowContextInfo { agent_id, session_id, nonce } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
@@ -4063,19 +4082,23 @@ pub(crate) fn execute(
                         Ok(info) => {
                             TaskResult::ContextInfoComplete {
                                 agent_id,
+                                session_id,
                                 info: Box::new(info),
+                                nonce,
                             }
                         }
                         Err(error) => {
                             TaskResult::ContextInfoFailed {
                                 agent_id,
+                                session_id,
                                 error,
+                                nonce,
                             }
                         }
                     }
                 });
         }
-        Effect::FetchSessionUsage { agent_id, session_id } => {
+        Effect::FetchSessionUsage { agent_id, session_id, nonce } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
@@ -4085,6 +4108,7 @@ pub(crate) fn execute(
                                 agent_id,
                                 session_id,
                                 usage: Box::new(usage),
+                                nonce,
                             }
                         }
                         Err(error) => {
@@ -4092,6 +4116,7 @@ pub(crate) fn execute(
                                 agent_id,
                                 session_id,
                                 error,
+                                nonce,
                             }
                         }
                     }
@@ -4111,7 +4136,7 @@ pub(crate) fn execute(
                         client_type: ClientType::Tui,
                         rating_type: None,
                         rating_value: None,
-                        feedback_text: Some(feedback_text),
+                        feedback_text: Some(feedback_text.clone()),
                         feedback_categories: vec![],
                         context_type: None,
                         turn_number: None,
@@ -4600,74 +4625,17 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::RewindPreview { agent_id, session_id, target_prompt_index, mode } => {
+        Effect::RewindExecute { agent_id, session_id, target_prompt_index } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
                     let request = acp::ExtRequest::new(
                         "x.ai/rewind/execute",
                         serde_json::value::to_raw_value(
-                                &serde_json::json!({
-                        "sessionId": session_id.0.to_string(),
-                        "targetPromptIndex": target_prompt_index,
-                        "force": false,
-                        "mode": mode.wire_value(),
-                    }),
-                            )
-                            .expect("serialize rewind/execute preview params")
-                            .into(),
-                    );
-                    match acp_send(request, &tx).await {
-                        Ok(resp) => {
-                            let wrapper: serde_json::Value = serde_json::from_str(
-                                    resp.0.get(),
-                                )
-                                .unwrap_or_default();
-                            let result_val = wrapper
-                                .get("result")
-                                .cloned()
-                                .unwrap_or(wrapper.clone());
-                            match serde_json::from_value::<
-                                crate::views::rewind::RewindResponse,
-                            >(result_val) {
-                                Ok(r) => {
-                                    TaskResult::RewindPreviewComplete {
-                                        agent_id,
-                                        response: r,
-                                        target_prompt_index,
-                                        mode,
-                                    }
-                                }
-                                Err(e) => {
-                                    TaskResult::RewindPreviewFailed {
-                                        agent_id,
-                                        error: format!("invalid response: {e}"),
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            TaskResult::RewindPreviewFailed {
-                                agent_id,
-                                error: sanitize_user_error(&e.to_string()),
-                            }
-                        }
-                    }
-                });
-        }
-        Effect::RewindExecute { agent_id, session_id, target_prompt_index, mode } => {
-            let tx = acp_tx.clone();
-            tasks
-                .spawn(async move {
-                    let request = acp::ExtRequest::new(
-                        "x.ai/rewind/execute",
-                        serde_json::value::to_raw_value(
-                                &serde_json::json!({
-                        "sessionId": session_id.0.to_string(),
-                        "targetPromptIndex": target_prompt_index,
-                        "force": true,
-                        "mode": mode.wire_value(),
-                    }),
+                                &rewind_execute_params(
+                                    session_id.0.as_ref(),
+                                    target_prompt_index,
+                                ),
                             )
                             .expect("serialize rewind/execute params")
                             .into(),
@@ -5057,7 +5025,7 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::FetchBilling { agent_id, silent } => {
+        Effect::FetchBilling { agent_id, silent, nonce } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
@@ -5084,6 +5052,7 @@ pub(crate) fn execute(
                                 agent_id,
                                 error: sanitize_user_error(&format!("{e}")),
                                 silent,
+                                nonce,
                             };
                         }
                     };
@@ -5094,6 +5063,7 @@ pub(crate) fn execute(
                                 agent_id,
                                 error: format!("Parse error: {e}"),
                                 silent,
+                                nonce,
                             };
                         }
                     };
@@ -5110,6 +5080,7 @@ pub(crate) fn execute(
                         silent,
                         subscription_tier,
                         autotopup,
+                        nonce,
                     }
                 });
         }
@@ -5221,7 +5192,7 @@ pub(crate) fn execute(
         Effect::DebouncePluginCta { agent_id, generation } => {
             tasks
                 .spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     TaskResult::PluginCtaDebounceExpired {
                         agent_id,
                         generation,
@@ -5610,6 +5581,18 @@ fn prompt_request_meta(
         map.insert("screenMode".into(), serde_json::Value::String(mode.into()));
     }
     serde_json::Value::Object(map)
+}
+pub(crate) const REWIND_MODE_WIRE: &str = "conversation_only";
+pub(crate) fn rewind_execute_params(
+    session_id: &str,
+    target_prompt_index: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "sessionId": session_id,
+        "targetPromptIndex": target_prompt_index,
+        "force": true,
+        "mode": REWIND_MODE_WIRE,
+    })
 }
 /// Build the `x.ai/interject` params. The optional structured `content`
 /// (text + images) is omitted ENTIRELY when `None` so the legacy wire

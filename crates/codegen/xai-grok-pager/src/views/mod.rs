@@ -60,5 +60,6 @@ pub mod todo_pane;
 pub mod tree_map;
 pub mod turn_status;
 pub mod tutorial;
+pub mod usage_modal;
 pub mod welcome;
 pub mod workflows;

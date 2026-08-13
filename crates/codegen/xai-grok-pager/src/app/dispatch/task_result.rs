@@ -19,9 +19,9 @@ use super::prompt::{
     defer_to_open_reload_window, handle_compact_complete, handle_prompt_response,
     handle_suggestion_debounce_expired,
 };
+use super::queue::push_and_page_flip;
 use super::rewind::{
     dispatch_rewind_success, handle_rewind_execute_failed, handle_rewind_points_loaded,
-    handle_rewind_preview_complete, handle_rewind_preview_failed,
 };
 use super::router::{dispatch, dispatch_action_result};
 use super::session::foreign::{
@@ -42,8 +42,9 @@ use super::session::load::{
 use super::session::modal::remove_agent_and_cleanup;
 use super::settings::ui::apply_setting_rollback;
 use super::status::{
-    commit_session_usage_block, handle_coding_data_sharing_failed,
-    handle_coding_data_sharing_updated, handle_context_info_complete, scrub_error_for_toast,
+    handle_coding_data_sharing_failed, handle_coding_data_sharing_updated,
+    handle_context_info_complete, handle_session_usage_result, scrub_error_for_toast,
+    usage_modal_state_mut,
 };
 use super::transcript::{
     handle_hooks_list_loaded, handle_marketplace_list_loaded, handle_marketplace_updates_available,
@@ -240,6 +241,9 @@ pub(crate) fn deliver_doctor_message(app: &mut AppView, preferred: AgentId, mess
 }
 /// Handle a completed async task result.
 pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec<Effect> {
+    if result.ends_startup() {
+        app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Ok);
+    }
     match result {
         TaskResult::SessionCreated {
             agent_id,
@@ -310,18 +314,36 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             silent,
             subscription_tier,
             autotopup,
-        } => handle_billing_fetched(app, agent_id, balance, silent, subscription_tier, autotopup),
+            nonce,
+        } => handle_billing_fetched(
+            app,
+            agent_id,
+            balance,
+            silent,
+            subscription_tier,
+            autotopup,
+            nonce,
+        ),
         TaskResult::BillingError {
             agent_id,
             error,
             silent,
+            nonce,
         } => {
-            if !silent && let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent.scrollback.push_block(RenderBlock::System(
-                    crate::scrollback::blocks::SystemMessageBlock::new(format!(
-                        "Billing error: {error}"
-                    )),
-                ));
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                if let Some(state) = usage_modal_state_mut(agent)
+                    && state.fetch_nonce == nonce
+                {
+                    state.billing_loading = false;
+                    state.billing_error = Some(error.clone());
+                }
+                if !silent {
+                    agent.scrollback.push_block(RenderBlock::System(
+                        crate::scrollback::blocks::SystemMessageBlock::new(format!(
+                            "Billing error: {error}"
+                        )),
+                    ));
+                }
             }
             vec![]
         }
@@ -974,28 +996,61 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::SessionInfoComplete {
             agent_id,
+            session_id,
             info,
             text,
+            nonce,
         } => {
+            let minimal = app.screen_mode.is_minimal();
             if let Some(agent) = app.agents.get_mut(&agent_id) {
+                if agent.session.session_id.as_ref() != Some(&session_id) {
+                    return vec![];
+                }
+                if let Some(state) = usage_modal_state_mut(agent)
+                    && state.fetch_nonce != nonce
+                {
+                    return vec![];
+                }
                 agent.session_agent_name = info.data.agent_name.clone();
                 if let Some(modal) = agent.agents_modal.as_mut() {
                     modal.active_agent = info.data.agent_name.clone();
                 }
                 agent.apply_full_context_info(info.data.context);
-                agent
-                    .scrollback
-                    .push_block(crate::scrollback::block::RenderBlock::system(text));
+                if let Some(state) = usage_modal_state_mut(agent) {
+                    state.session_text = Some(text);
+                    state.session_error = None;
+                } else if minimal {
+                    push_and_page_flip(
+                        &mut agent.scrollback,
+                        crate::scrollback::block::RenderBlock::system(text),
+                    );
+                }
             }
             vec![]
         }
-        TaskResult::SessionInfoFailed { agent_id, error } => {
+        TaskResult::SessionInfoFailed {
+            agent_id,
+            session_id,
+            error,
+            nonce,
+        } => {
+            let minimal = app.screen_mode.is_minimal();
             if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent
-                    .scrollback
-                    .push_block(crate::scrollback::block::RenderBlock::system(format!(
-                        "Couldn't load session info: {error}"
-                    )));
+                if agent.session.session_id.as_ref() != Some(&session_id) {
+                    return vec![];
+                }
+                if let Some(state) = usage_modal_state_mut(agent) {
+                    if state.fetch_nonce == nonce {
+                        state.session_error = Some(error);
+                    }
+                } else if minimal {
+                    push_and_page_flip(
+                        &mut agent.scrollback,
+                        crate::scrollback::block::RenderBlock::system(format!(
+                            "Couldn't load session info: {error}"
+                        )),
+                    );
+                }
             }
             vec![]
         }
@@ -1125,32 +1180,62 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             app.show_toast(&format!("Couldn't delete session: {error}"));
             vec![]
         }
-        TaskResult::ContextInfoComplete { agent_id, info } => {
-            handle_context_info_complete(app, agent_id, info)
-        }
-        TaskResult::ContextInfoFailed { agent_id: _, error } => {
-            app.show_toast(&format!("Couldn't load context info: {error}"));
+        TaskResult::ContextInfoComplete {
+            agent_id,
+            session_id,
+            info,
+            nonce,
+        } => handle_context_info_complete(app, agent_id, &session_id, info, nonce),
+        TaskResult::ContextInfoFailed {
+            agent_id,
+            session_id,
+            error,
+            nonce,
+        } => {
+            let minimal = app.screen_mode.is_minimal();
+            let Some(agent) = app.agents.get_mut(&agent_id) else {
+                return vec![];
+            };
+            if agent.session.session_id.as_ref() != Some(&session_id) {
+                return vec![];
+            }
+            if let Some(state) = usage_modal_state_mut(agent) {
+                if state.fetch_nonce == nonce {
+                    state.context_error = Some(error);
+                }
+            } else if minimal {
+                push_and_page_flip(
+                    &mut agent.scrollback,
+                    crate::scrollback::block::RenderBlock::system(format!(
+                        "Couldn't load context info: {error}"
+                    )),
+                );
+            }
             vec![]
         }
         TaskResult::SessionUsageComplete {
             agent_id,
             session_id,
             usage,
-        } => commit_session_usage_block(
+            nonce,
+        } => handle_session_usage_result(
             app,
             agent_id,
             &session_id,
             crate::app::status_blocks::session_usage_block_text(&usage),
+            nonce,
         ),
         TaskResult::SessionUsageFailed {
             agent_id,
             session_id,
             error,
-        } => commit_session_usage_block(
+            nonce,
+        } => handle_session_usage_result(
             app,
             agent_id,
             &session_id,
             format!("Couldn't load session usage: {error}"),
+            nonce,
         ),
         TaskResult::FeedbackComplete { .. } => vec![],
         TaskResult::FeedbackFailed { agent_id, error } => {
@@ -1360,15 +1445,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             agent.rewind_state = None;
             app.show_toast(&format!("Undo failed: {error}"));
             vec![]
-        }
-        TaskResult::RewindPreviewComplete {
-            agent_id,
-            response,
-            target_prompt_index,
-            mode,
-        } => handle_rewind_preview_complete(app, agent_id, response, target_prompt_index, mode),
-        TaskResult::RewindPreviewFailed { agent_id, error } => {
-            handle_rewind_preview_failed(app, agent_id, error)
         }
         TaskResult::RewindExecuteComplete { agent_id, response } => {
             dispatch_rewind_success(app, agent_id, response)

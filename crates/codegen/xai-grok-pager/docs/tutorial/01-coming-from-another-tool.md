@@ -34,7 +34,7 @@ server Grok picked up, tagged with where it came from. Each compat source
 can be toggled in `[compat.claude]` / `[compat.cursor]` config sections.
 
 And a few things you might have missed elsewhere: `/btw` asks a side
-question without interrupting the current task, and `/rewind` restores
-actual file snapshots, not just chat history.
+question without interrupting the current task, and `/rewind` rewinds the
+conversation to an earlier turn (file changes stay as they are).
 
 *Go deeper: `/docs Project Rules (AGENTS.md)`, `/docs Skills`, or `/docs MCP Servers`*

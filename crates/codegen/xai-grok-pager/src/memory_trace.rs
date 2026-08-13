@@ -41,9 +41,33 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[path = "memory_trace_wait.rs"]
+mod memory_trace_wait;
+use memory_trace_wait::wait_full_interval;
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[path = "memory_trace_signal_topology_tests.rs"]
+mod memory_trace_signal_topology_tests;
+
+/// Test-only: `pthread_t` of the live `grok-memtrace` sampler, published when
+/// the thread starts so the isolated SIGCHLD topology test can `pthread_kill`
+/// that waiter (errno is thread-local; process-wide `kill` can miss it).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+static SAMPLER_PTHREAD: AtomicUsize = AtomicUsize::new(0);
+
+/// Test-only accessor for [`SAMPLER_PTHREAD`]. `None` until the sampler thread
+/// has entered its entry point after [`start`].
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(super) fn test_only_sampler_pthread() -> Option<usize> {
+    let value = SAMPLER_PTHREAD.load(Ordering::SeqCst);
+    (value != 0).then_some(value)
+}
 
 pub use xai_tty_utils::{ProcessResources, sample_process_memory};
 
@@ -69,7 +93,7 @@ pub struct AllocatorStats {
 struct TraceEvent<'a> {
     /// Unix millis.
     ts_ms: u64,
-    /// "start" | "sample" | "purge" | "threshold".
+    /// "start" | "sample" | "purge" | "threshold" | "crash".
     kind: &'a str,
     /// macOS `phys_footprint` (resident dirty + compressed + swapped); the
     /// number that matches Activity Monitor "Memory" and `vmmap`'s
@@ -406,9 +430,11 @@ fn interval_from_env() -> Duration {
     let secs = std::env::var("GROK_MEMTRACE_INTERVAL_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(30)
-        .max(5);
-    Duration::from_secs(secs)
+        .unwrap_or(30);
+    // Production floors at 5s so accidental tiny values don't spam samples.
+    // Test builds allow 1s so isolated regressions can finish quickly.
+    let min_secs = if cfg!(test) { 1 } else { 5 };
+    Duration::from_secs(secs.max(min_secs))
 }
 
 fn first_threshold_from_env() -> u64 {
@@ -449,14 +475,22 @@ pub fn start(dir: PathBuf) {
         )));
     }
     let interval = interval_from_env();
-    // Detached sampler; the thread holds no locks across sleeps and dies
-    // with the process. Named for `sample`/Instruments visibility.
+    // Detached sampler: holds no locks across waits, and the JoinHandle is
+    // dropped so nothing else can unpark this thread (see memory_trace_wait).
+    // Named for `sample`/Instruments visibility; dies with the process.
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    SAMPLER_PTHREAD.store(0, Ordering::SeqCst);
     let _ = std::thread::Builder::new()
         .name("grok-memtrace".into())
         .spawn(move || {
+            #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+            {
+                // SAFETY: pthread_self returns this thread's valid pthread_t.
+                SAMPLER_PTHREAD.store(unsafe { libc::pthread_self() as usize }, Ordering::SeqCst);
+            }
             let mut wrote_start = false;
             loop {
-                std::thread::sleep(interval);
+                wait_full_interval(interval);
                 with_sink(|s| {
                     if !wrote_start {
                         wrote_start = true;
@@ -480,6 +514,164 @@ pub fn start(dir: PathBuf) {
                 });
             }
         });
+}
+
+/// Appends without taking the sink's write lock, so a panic raised while that
+/// lock is held cannot hang the hook before the process reports the panic.
+pub fn record_crash_sample() {
+    let Ok(sink) = SINK.try_read() else {
+        return;
+    };
+    let Some(path) = sink.as_ref().map(|s| s.path.clone()) else {
+        return;
+    };
+    drop(sink);
+
+    let mem = sample_process_memory();
+    let Ok(line) = serde_json::to_string(&TraceEvent {
+        ts_ms: now_ms(),
+        kind: "crash",
+        footprint_bytes: mem.footprint_bytes,
+        rss_bytes: mem.rss_bytes,
+        alloc: STATS_PROVIDER.get().and_then(|p| p()),
+        reason: None,
+        hook_installed: None,
+        gauge_before_bytes: None,
+        purge_us: None,
+        threshold_bytes: None,
+        dump_file: None,
+        pid: None,
+        version: None,
+    }) else {
+        return;
+    };
+
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = file.write_all(format!("{line}\n").as_bytes());
+    }
+}
+
+pub fn default_dir() -> PathBuf {
+    xai_grok_shell::util::grok_home::grok_home().join("memtrace")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ExportedTrace {
+    pub name: String,
+    pub data: Vec<u8>,
+}
+
+pub struct ExportLimits {
+    pub max_files: usize,
+    pub max_total_bytes: u64,
+}
+
+impl Default for ExportLimits {
+    fn default() -> Self {
+        Self {
+            max_files: 32,
+            max_total_bytes: 16 << 20,
+        }
+    }
+}
+
+struct Candidate {
+    stem: String,
+    name: String,
+    path: PathBuf,
+    len: u64,
+    modified: SystemTime,
+    is_dump: bool,
+    dump_seq: u64,
+}
+
+fn parse_trace_name(name: &str) -> Option<(String, bool, u64)> {
+    let (stem, is_dump, dump_seq) = match name.rsplit_once("-jemalloc-") {
+        Some((stem, seq)) => (stem, true, seq.strip_suffix(".txt")?.parse().ok()?),
+        None => {
+            let stem = name
+                .strip_suffix(".jsonl")
+                .or_else(|| name.strip_suffix(".jsonl.1"))?;
+            (stem, false, 0)
+        }
+    };
+    let (start_ts, pid) = stem.split_once('-')?;
+    start_ts.parse::<u64>().ok()?;
+    pid.parse::<u32>().ok()?;
+    Some((stem.to_owned(), is_dump, dump_seq))
+}
+
+pub fn collect_for_export(dir: &Path, limits: ExportLimits) -> Vec<ExportedTrace> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    let mut candidates: Vec<Candidate> = entries
+        .flatten()
+        .filter_map(|entry| {
+            if !entry.file_type().ok()?.is_file() {
+                return None;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let (stem, is_dump, dump_seq) = parse_trace_name(&name)?;
+            let meta = entry.metadata().ok()?;
+            Some(Candidate {
+                stem,
+                name,
+                path: entry.path(),
+                len: meta.len(),
+                modified: meta.modified().unwrap_or(UNIX_EPOCH),
+                is_dump,
+                dump_seq,
+            })
+        })
+        .collect();
+
+    let mut last_activity: std::collections::HashMap<String, SystemTime> =
+        std::collections::HashMap::new();
+    for candidate in &candidates {
+        let seen = last_activity
+            .entry(candidate.stem.clone())
+            .or_insert(candidate.modified);
+        *seen = (*seen).max(candidate.modified);
+    }
+
+    candidates.sort_by_cached_key(|c| {
+        (
+            std::cmp::Reverse(last_activity.get(&c.stem).copied().unwrap_or(c.modified)),
+            c.stem.clone(),
+            c.is_dump,
+            std::cmp::Reverse(c.dump_seq),
+            c.name.clone(),
+        )
+    });
+
+    let mut exported = Vec::new();
+    let mut total_bytes: u64 = 0;
+    for candidate in candidates {
+        if exported.len() >= limits.max_files {
+            break;
+        }
+        if total_bytes.saturating_add(candidate.len) > limits.max_total_bytes {
+            continue;
+        }
+        let Ok(data) = std::fs::read(&candidate.path) else {
+            continue;
+        };
+        total_bytes = total_bytes.saturating_add(data.len() as u64);
+        exported.push(ExportedTrace {
+            name: candidate.name,
+            data,
+        });
+    }
+    exported
 }
 
 // ─── Test support ──────────────────────────────────────────────────────────
@@ -611,6 +803,96 @@ mod tests {
         assert!(
             purge_line["gauge_before_bytes"].as_u64().unwrap_or(0) > 0,
             "purge events must carry a before-gauge for delta analysis"
+        );
+    }
+
+    fn write_aged(dir: &Path, name: &str, len: usize, age_secs: u64) {
+        let path = dir.join(name);
+        std::fs::write(&path, vec![b'x'; len]).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(age_secs))
+            .unwrap();
+    }
+
+    fn names(exported: &[ExportedTrace]) -> Vec<&str> {
+        exported.iter().map(|t| t.name.as_str()).collect()
+    }
+
+    #[test]
+    #[serial_test::serial(MEMTRACE_SINK)]
+    fn crash_sample_lands_even_when_the_trace_directory_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("absent").join("t.jsonl");
+        let _guard = test_support::install_test_sink(path.clone(), 1 << 20);
+
+        record_crash_sample();
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        let event: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(event["kind"], "crash");
+    }
+
+    #[test]
+    fn export_groups_each_process_and_leads_with_its_timeline() {
+        let dir = tempfile::tempdir().unwrap();
+        write_aged(dir.path(), "100-1.jsonl", 8, 60);
+        write_aged(dir.path(), "100-1-jemalloc-2.txt", 8, 300);
+        write_aged(dir.path(), "100-1-jemalloc-10.txt", 8, 120);
+        write_aged(dir.path(), "100-2.jsonl", 8, 5);
+        write_aged(dir.path(), "100-2-jemalloc-0.txt", 8, 30);
+
+        let exported = collect_for_export(dir.path(), ExportLimits::default());
+
+        assert_eq!(
+            names(&exported),
+            [
+                "100-2.jsonl",
+                "100-2-jemalloc-0.txt",
+                "100-1.jsonl",
+                "100-1-jemalloc-10.txt",
+                "100-1-jemalloc-2.txt"
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn export_ignores_files_it_did_not_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = dir.path().join("credentials");
+        std::fs::write(&elsewhere, "secret").unwrap();
+        write_aged(dir.path(), "100-1.jsonl", 8, 0);
+        std::fs::write(dir.path().join("notes.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.path().join("200-2.jsonl")).unwrap();
+
+        let exported = collect_for_export(dir.path(), ExportLimits::default());
+
+        assert_eq!(names(&exported), ["100-1.jsonl"]);
+    }
+
+    #[test]
+    fn export_skips_an_over_budget_trace_and_keeps_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        write_aged(dir.path(), "200-1.jsonl", 128, 0);
+        write_aged(dir.path(), "100-1.jsonl", 32, 60);
+
+        let exported = collect_for_export(
+            dir.path(),
+            ExportLimits {
+                max_files: usize::MAX,
+                max_total_bytes: 64,
+            },
+        );
+
+        assert_eq!(
+            exported,
+            vec![ExportedTrace {
+                name: "100-1.jsonl".into(),
+                data: vec![b'x'; 32],
+            }]
         );
     }
 }

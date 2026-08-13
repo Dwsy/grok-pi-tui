@@ -86,8 +86,7 @@ impl SessionActor {
         &self,
     ) -> Result<crate::session::goal_evaluator::GoalEvaluatorVerdict, String> {
         use crate::session::goal_evaluator::{
-            GOAL_EVALUATOR_TIMEOUT, bounded_goal_transcript, build_goal_evaluator_request,
-            parse_goal_evaluator_verdict,
+            bounded_goal_transcript, build_goal_evaluator_request, parse_goal_evaluator_verdict,
         };
         let (objective, plan_file) = {
             let tracker = self.goal_tracker.lock();
@@ -111,84 +110,31 @@ impl SessionActor {
             .map(|config| config.model)
             .filter(|model| !model.is_empty())
             .unwrap_or_else(|| self.models_manager.current_model_id().0.to_string());
-        let small_model = crate::session::helpers::prompt_suggest::DEFAULT_SUGGEST_MODEL;
-        let preferred_model = self
-            .models_manager
-            .model_in_catalog(small_model)
-            .then_some(small_model);
         let session_id = self.session_info.id.to_string();
         let mut last_error = String::new();
-        for attempt in 0..2 {
-            let requested_model = if attempt == 0 {
-                preferred_model.unwrap_or(active_model.as_str())
-            } else {
-                active_model.as_str()
-            };
-            let (client, model) = if requested_model == active_model {
-                match self.prepare_chat_completion(false).await {
-                    Ok(client) => (client, active_model.clone()),
-                    Err(error) => {
-                        last_error = format!("could not prepare evaluator client: {error}");
-                        continue;
-                    }
-                }
-            } else {
-                let active_config = self.reconstruct_full_config().await;
-                match self.resolve_aux_sampler_config(requested_model).await {
-                    Some(mut config) => {
-                        crate::agent::config::stamp_session_local_sampler_fields(
-                            &mut config,
-                            &active_config,
-                            self.client_identifier.clone(),
-                            Some(self.max_retries),
-                        );
-                        let model = config.model.clone();
-                        match xai_grok_sampler::SamplingClient::new(config) {
-                            Ok(client) => (client, model),
-                            Err(error) => {
-                                last_error = format!("could not prepare small evaluator: {error}");
-                                continue;
-                            }
-                        }
-                    }
-                    None => {
-                        last_error =
-                            format!("small evaluator model `{requested_model}` unavailable");
-                        continue;
-                    }
+        for _ in 0..2 {
+            let client = match self.prepare_chat_completion(false).await {
+                Ok(client) => client,
+                Err(error) => {
+                    last_error = format!("could not prepare evaluator client: {error}");
+                    continue;
                 }
             };
             let request = build_goal_evaluator_request(
                 &objective,
                 &transcript,
                 plan.as_deref(),
-                model.clone(),
+                active_model.clone(),
                 &session_id,
             );
-            let response = match tokio::time::timeout(
-                GOAL_EVALUATOR_TIMEOUT,
-                client.conversation_collect(request),
-            )
-            .await
-            {
-                Ok(Ok(response)) => response,
-                Ok(Err(error)) => {
+            let response = match client.conversation_collect(request).await {
+                Ok(response) => response,
+                Err(error) => {
                     let _ = self
                         .chat_state_handle
                         .mark_usage_incomplete(true, true)
                         .await;
                     last_error = format!("goal evaluator request failed: {error}");
-                    continue;
-                }
-                Err(_) => {
-                    let _ = self
-                        .chat_state_handle
-                        .mark_usage_incomplete(true, true)
-                        .await;
-                    last_error = format!(
-                        "goal evaluator timed out after {}s",
-                        GOAL_EVALUATOR_TIMEOUT.as_secs()
-                    );
                     continue;
                 }
             };
@@ -1497,7 +1443,9 @@ impl SessionActor {
         &self,
         reason: crate::session::goal_tracker::GoalPauseReason,
     ) {
-        let _ = self.auto_pause_goal_if_active_inner(reason, None).await;
+        let _ = self
+            .auto_pause_goal_if_active_inner(reason, None, None)
+            .await;
     }
 
     pub(crate) async fn auto_pause_goal_if_active_with_message(
@@ -1505,19 +1453,43 @@ impl SessionActor {
         reason: crate::session::goal_tracker::GoalPauseReason,
         message: String,
     ) -> bool {
-        self.auto_pause_goal_if_active_inner(reason, Some(message))
+        self.auto_pause_goal_if_active_inner(reason, Some(message), None)
             .await
     }
 
+    /// Pause only if the active goal still has `goal_id` — the goal-identity
+    /// variant used by stale planner work, so a replacement goal created while
+    /// the planner ran cannot be paused by the previous goal's failure.
+    pub(crate) async fn auto_pause_goal_if_matches_with_message(
+        &self,
+        goal_id: &str,
+        reason: crate::session::goal_tracker::GoalPauseReason,
+        message: String,
+    ) -> bool {
+        self.auto_pause_goal_if_active_inner(reason, Some(message), Some(goal_id))
+            .await
+    }
+
+    /// Shared auto-pause body. Pauses the goal (with `message`, else the bare
+    /// reason) and emits, but only when the goal is `Active` AND — when
+    /// `expected_goal_id` is `Some` — still carries that id.
     async fn auto_pause_goal_if_active_inner(
         &self,
         reason: crate::session::goal_tracker::GoalPauseReason,
         message: Option<String>,
+        expected_goal_id: Option<&str>,
     ) -> bool {
         let current_tokens = self.chat_state_handle.get_total_tokens().await as i64;
         {
             let mut tracker = self.goal_tracker.lock();
-            if tracker.status() != Some(crate::session::goal_tracker::GoalStatus::Active) {
+            let is_match = match expected_goal_id {
+                Some(goal_id) => tracker.snapshot().is_some_and(|goal| {
+                    goal.goal_id == goal_id
+                        && goal.status == crate::session::goal_tracker::GoalStatus::Active
+                }),
+                None => tracker.status() == Some(crate::session::goal_tracker::GoalStatus::Active),
+            };
+            if !is_match {
                 return false;
             }
             match message {

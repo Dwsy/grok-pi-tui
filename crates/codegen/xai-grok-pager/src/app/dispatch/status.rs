@@ -3,6 +3,7 @@
 use agent_client_protocol as acp;
 
 use super::ctx::get_active_agent;
+use super::queue::push_and_page_flip;
 use super::settings::ui::refresh_open_settings_modals;
 use crate::app::actions::Effect;
 use crate::app::agent::AgentId;
@@ -19,11 +20,106 @@ pub(super) fn dispatch_share_session(app: &mut AppView) -> Vec<Effect> {
     vec![]
 }
 
-/// Show session info: fetch via x.ai/session/info and display in scrollback.
-///
-/// Produces Effect::ShowSessionInfo which spawns an async ACP ext request.
-/// On completion, TaskResult::SessionInfoComplete shows the formatted info.
+/// Monotonic generation for usage-modal fetches. Each open stamps the modal
+/// and its effects with a fresh value so a reply from a previous open (same
+/// session, modal closed and reopened) can't overwrite newer results. `0` is
+/// reserved for the minimal-mode paths, which never touch the modal.
+static USAGE_FETCH_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_usage_fetch_nonce() -> u64 {
+    USAGE_FETCH_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
+
+/// The agent's open usage modal state, if any.
+pub(super) fn usage_modal_state_mut(
+    agent: &mut AgentView,
+) -> Option<&mut crate::views::usage_modal::UsageInfoModalState> {
+    match agent.active_modal.as_mut() {
+        Some(crate::views::modal::ActiveModal::UsageInfo { state }) => Some(state),
+        _ => None,
+    }
+}
+
+/// Open (or re-tab) the usage/session-info modal and fire the fetch effects
+/// that populate it. Full-TUI only — minimal mode keeps scrollback blocks.
+pub(super) fn open_usage_info_modal(
+    app: &mut AppView,
+    tab: crate::views::usage_modal::UsageInfoTab,
+) -> Vec<Effect> {
+    use crate::views::modal::ActiveModal;
+    use crate::views::usage_modal::{UsageInfoContext, UsageInfoModalState};
+
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let usage_visible = app.usage_visible;
+    let redirect_url = app.usage_billing_redirect_url.clone();
+    let tier = app.subscription_tier.clone();
+    let show_resolved_model = app.show_resolved_model;
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    let session_id = agent.session.session_id.clone();
+
+    if let Some(state) = usage_modal_state_mut(agent) {
+        state.set_tab(tab);
+        return vec![];
+    }
+
+    let billing_reachable = usage_visible && !agent.chat_kind && redirect_url.is_none();
+    let nonce = next_usage_fetch_nonce();
+    let mut state = UsageInfoModalState::new(
+        tab,
+        UsageInfoContext {
+            session_id: session_id.as_ref().map(|s| s.0.to_string()),
+            usage_visible,
+            chat_kind: agent.chat_kind,
+            billing_redirect_url: redirect_url,
+            subscription_tier: tier,
+        },
+    );
+    state.fetch_nonce = nonce;
+
+    let mut effects = Vec::new();
+    if let Some(session_id) = session_id {
+        effects.push(Effect::ShowContextInfo {
+            agent_id: id,
+            session_id: session_id.clone(),
+            nonce,
+        });
+        effects.push(Effect::ShowSessionInfo {
+            agent_id: id,
+            session_id: session_id.clone(),
+            show_resolved_model,
+            nonce,
+        });
+        effects.push(Effect::FetchSessionUsage {
+            agent_id: id,
+            session_id,
+            nonce,
+        });
+    }
+    // Silent refresh of the cached billing mirrors the modal renders from.
+    if billing_reachable {
+        state.billing_loading = true;
+        effects.push(Effect::FetchBilling {
+            agent_id: id,
+            silent: true,
+            nonce,
+        });
+    }
+    agent.active_modal = Some(ActiveModal::UsageInfo {
+        state: Box::new(state),
+    });
+    effects
+}
+
+/// `/session-info` — open the usage modal on its "Session info" tab, or
+/// fetch-and-show in scrollback in minimal mode.
 pub(super) fn dispatch_show_session_info(app: &mut AppView) -> Vec<Effect> {
+    if !app.screen_mode.is_minimal() {
+        return open_usage_info_modal(app, crate::views::usage_modal::UsageInfoTab::SessionInfo);
+    }
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
@@ -40,6 +136,7 @@ pub(super) fn dispatch_show_session_info(app: &mut AppView) -> Vec<Effect> {
         agent_id: id,
         session_id,
         show_resolved_model: app.show_resolved_model,
+        nonce: 0,
     }]
 }
 
@@ -220,11 +317,16 @@ fn push_system_to_any_agent(app: &mut AppView, msg: &str) {
     }
 }
 
-/// Show context info: fetch via x.ai/session/info and display rich breakdown.
-///
-/// Produces Effect::ShowContextInfo which spawns an async ACP ext request.
-/// On completion, TaskResult::ContextInfoComplete shows the formatted info.
+/// `/context` and the context-bar click. Stock/full mode uses the upstream
+/// tabbed usage modal. The external grok-pi profile keeps its cache-graph
+/// Context modal when that F2 seam is enabled; minimal mode stays scrollback.
 pub(super) fn dispatch_show_context_info(app: &mut AppView) -> Vec<Effect> {
+    let minimal = app.screen_mode.is_minimal();
+    let use_pi_context_modal =
+        crate::app::external_agent_active() && app.current_ui.pi_cache_graph && !minimal;
+    if !minimal && !use_pi_context_modal {
+        return open_usage_info_modal(app, crate::views::usage_modal::UsageInfoTab::ContextUsage);
+    }
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
@@ -238,12 +340,16 @@ pub(super) fn dispatch_show_context_info(app: &mut AppView) -> Vec<Effect> {
     vec![Effect::ShowContextInfo {
         agent_id: id,
         session_id,
+        nonce: 0,
     }]
 }
 
-/// `/usage` — session token/cost, then consumer credits when visible.
-/// Credits are chained after the session block so layout stays ordered.
+/// `/usage` — open the usage modal on its "Usage limit" tab. Minimal mode
+/// keeps the scrollback flow: session token/cost, then consumer credits.
 pub(super) fn dispatch_show_usage(app: &mut AppView) -> Vec<Effect> {
+    if !app.screen_mode.is_minimal() {
+        return open_usage_info_modal(app, crate::views::usage_modal::UsageInfoTab::UsageLimit);
+    }
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
@@ -257,16 +363,45 @@ pub(super) fn dispatch_show_usage(app: &mut AppView) -> Vec<Effect> {
         Some(session_id) => vec![Effect::FetchSessionUsage {
             agent_id: id,
             session_id,
+            nonce: 0,
         }],
         None => {
             if let Some(agent) = app.agents.get_mut(&id) {
-                agent.scrollback.push_block(RenderBlock::system(
-                    "Session usage is unavailable until the session starts.".to_string(),
-                ));
+                push_and_page_flip(
+                    &mut agent.scrollback,
+                    RenderBlock::system(
+                        "Session usage is unavailable until the session starts.".to_string(),
+                    ),
+                );
             }
             append_consumer_billing_surface(app, id)
         }
     }
+}
+
+/// Route a session-usage result (success or failure text) into the open
+/// usage modal, or into scrollback in minimal mode. Stale results are dropped.
+pub(super) fn handle_session_usage_result(
+    app: &mut AppView,
+    agent_id: AgentId,
+    session_id: &acp::SessionId,
+    text: String,
+    nonce: u64,
+) -> Vec<Effect> {
+    if !app.screen_mode.is_minimal() {
+        if let Some(agent) = app.agents.get_mut(&agent_id) {
+            if agent.session.session_id.as_ref() != Some(session_id) {
+                return vec![];
+            }
+            if let Some(state) = usage_modal_state_mut(agent)
+                && state.fetch_nonce == nonce
+            {
+                state.session_usage_text = Some(text);
+            }
+        }
+        return vec![];
+    }
+    commit_session_usage_block(app, agent_id, session_id, text)
 }
 
 /// Commit a session-usage block if still on `session_id`, then consumer credits.
@@ -282,7 +417,7 @@ pub(super) fn commit_session_usage_block(
     if agent.session.session_id.as_ref() != Some(session_id) {
         return vec![];
     }
-    agent.scrollback.push_block(RenderBlock::system(text));
+    push_and_page_flip(&mut agent.scrollback, RenderBlock::system(text));
     append_consumer_billing_surface(app, agent_id)
 }
 
@@ -311,6 +446,7 @@ pub(super) fn append_consumer_billing_surface(app: &mut AppView, agent_id: Agent
     vec![Effect::FetchBilling {
         agent_id,
         silent: false,
+        nonce: 0,
     }]
 }
 
@@ -547,54 +683,79 @@ pub(in crate::app::dispatch) fn dispatch_privacy_banner_opt_out(app: &mut AppVie
 pub(super) fn handle_context_info_complete(
     app: &mut AppView,
     agent_id: AgentId,
+    session_id: &acp::SessionId,
     info: Box<xai_grok_shell::session::SessionInfoResponse>,
+    nonce: u64,
 ) -> Vec<Effect> {
-    // Read F2 gate before mutably borrowing agents.
+    let minimal = app.screen_mode.is_minimal();
+    // Read the external-only F2 gate before mutably borrowing agents.
     let cache_graph_enabled = app.current_ui.pi_cache_graph;
+    let use_pi_context_modal =
+        crate::app::external_agent_active() && cache_graph_enabled && !minimal;
     if let Some(agent) = app.agents.get_mut(&agent_id) {
+        if agent.session.session_id.as_ref() != Some(session_id) {
+            return vec![];
+        }
+        // A reply from a previous modal open must not touch anything — not
+        // even the agent's context mirrors, which a fresher reply already set.
+        if let Some(state) = usage_modal_state_mut(agent)
+            && state.fetch_nonce != nonce
+        {
+            return vec![];
+        }
         let model = info.data.model.as_deref().unwrap_or("unknown").to_string();
         let snapshot = info.data.context.clone();
         agent.apply_full_context_info(snapshot.clone());
-        // Preserve view mode across refresh (`r`) so graph/stats stay put.
-        let prev_view = match &agent.active_modal {
-            Some(ActiveModal::ContextInfo { view, .. }) => *view,
-            _ => crate::views::cache_graph::CacheGraphView::Breakdown,
-        };
-        let export_basename = info
-            .session_file
-            .as_deref()
-            .and_then(|p| {
-                std::path::Path::new(p)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(str::to_owned)
-            })
-            .filter(|s| !s.is_empty())
-            .or_else(|| agent.session.session_id.as_ref().map(|id| id.0.to_string()))
-            .unwrap_or_else(|| "session".into());
-        let export_basename = crate::views::cache_graph::sanitize_export_name(&export_basename);
-        let cache_metrics = if cache_graph_enabled {
-            info.cache_metrics.clone()
-        } else {
-            None
-        };
-        let view = if cache_metrics.is_some() {
-            prev_view
-        } else {
-            crate::views::cache_graph::CacheGraphView::Breakdown
-        };
-        // Context is a transient inspection surface, not conversation history.
         let cost_usd = info.session_stats.as_ref().map(|stats| stats.cost);
-        agent.active_modal = Some(ActiveModal::ContextInfo {
-            block: crate::scrollback::blocks::ContextInfoBlock::new(snapshot, model)
-                .with_cost(cost_usd),
-            scroll: 0,
-            window: ModalWindowState::new(),
-            cache_metrics,
-            view,
-            export_cwd: info.cwd.clone(),
-            export_basename,
-        });
+        if use_pi_context_modal {
+            // Preserve Pi cache-graph view across refresh (`r`) while keeping
+            // the surface transient (never append it to conversation history).
+            let prev_view = match &agent.active_modal {
+                Some(ActiveModal::ContextInfo { view, .. }) => *view,
+                _ => crate::views::cache_graph::CacheGraphView::Breakdown,
+            };
+            let export_basename = info
+                .session_file
+                .as_deref()
+                .and_then(|p| {
+                    std::path::Path::new(p)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(str::to_owned)
+                })
+                .filter(|s| !s.is_empty())
+                .or_else(|| agent.session.session_id.as_ref().map(|id| id.0.to_string()))
+                .unwrap_or_else(|| "session".into());
+            let export_basename = crate::views::cache_graph::sanitize_export_name(&export_basename);
+            let cache_metrics = info.cache_metrics.clone();
+            let view = if cache_metrics.is_some() {
+                prev_view
+            } else {
+                crate::views::cache_graph::CacheGraphView::Breakdown
+            };
+            agent.active_modal = Some(ActiveModal::ContextInfo {
+                block: crate::scrollback::blocks::ContextInfoBlock::new(snapshot, model)
+                    .with_cost(cost_usd),
+                scroll: 0,
+                window: ModalWindowState::new(),
+                cache_metrics,
+                view,
+                export_cwd: info.cwd.clone(),
+                export_basename,
+            });
+        } else if let Some(state) = usage_modal_state_mut(agent) {
+            state.context = Some(
+                crate::scrollback::blocks::ContextInfoBlock::new(snapshot, model)
+                    .with_cost(cost_usd),
+            );
+            state.context_error = None;
+        } else if minimal {
+            push_and_page_flip(
+                &mut agent.scrollback,
+                crate::scrollback::block::RenderBlock::context_info(snapshot, model),
+            );
+        }
+        // Full mode with the modal closed: result arrived after dismissal — drop.
     }
     vec![]
 }

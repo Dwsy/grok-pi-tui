@@ -1332,6 +1332,72 @@ fn dashboard_peek_cycle_does_not_retire_the_nudge() {
         "the dashboard peek must not retire (or attribute) the nudge",
     );
 }
+#[test]
+fn dashboard_open_or_merges_session_is_worktree_when_probe_is_plain() {
+    let repo = crate::test_util::TempGitRepo::init("main");
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.cwd = repo.path.clone();
+        agent.session.is_worktree = true;
+        agent.is_worktree = false;
+        agent.current_branch = Some("stale".into());
+    }
+    app.active_view = ActiveView::Agent(id);
+    let _ = dispatch_open_dashboard(&mut app);
+    let agent = &app.agents[&id];
+    assert!(
+        agent.is_worktree,
+        "session.is_worktree must not be clobbered by a plain-repo probe"
+    );
+    assert_eq!(agent.current_branch.as_deref(), Some("main"));
+}
+#[test]
+fn dashboard_open_clears_stale_agent_is_worktree_when_probe_and_session_false() {
+    let repo = crate::test_util::TempGitRepo::init("main");
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.cwd = repo.path.clone();
+        agent.session.is_worktree = false;
+        agent.is_worktree = true;
+        agent.current_branch = Some("stale".into());
+    }
+    app.active_view = ActiveView::Agent(id);
+    let _ = dispatch_open_dashboard(&mut app);
+    let agent = &app.agents[&id];
+    assert!(
+        !agent.is_worktree,
+        "stale agent.is_worktree must clear when probe and session are false"
+    );
+    assert_eq!(agent.current_branch.as_deref(), Some("main"));
+}
+#[test]
+fn dashboard_open_detects_standalone_grok_worktree() {
+    let main = crate::test_util::TempGitRepo::init("main-only");
+    let clone = main.standalone_clone("wt-branch");
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.cwd = clone.path.clone();
+        agent.session.is_worktree = false;
+        agent.is_worktree = false;
+        agent.current_branch = Some("main-random".into());
+        agent.main_repo = None;
+    }
+    app.active_view = ActiveView::Agent(id);
+    let _ = dispatch_open_dashboard(&mut app);
+    let agent = &app.agents[&id];
+    assert!(agent.is_worktree);
+    assert_eq!(agent.current_branch.as_deref(), Some("wt-branch"));
+    assert_eq!(
+        agent.main_repo.as_deref(),
+        Some(crate::test_util::collapsed_path_display(&main.path).as_str())
+    );
+}
 /// Leader-mode independence: opening the dashboard works even when NOT in
 /// leader mode. The dashboard renders local sessions regardless; leader
 /// mode only adds the roster poll. Every entry point funnels through
@@ -3832,11 +3898,10 @@ fn dashboard_toggle_auto_approve_with_no_selection_toasts() {
         "missing selection must surface a toast",
     );
 }
-/// End-to-end rename flow: begin rename ->
-/// type characters -> commit. Verifies the rename draft starts
-/// EMPTY (no prefilled title), that typing populates the draft,
-/// and that committing produces a `RenameSession` effect and
-/// stamps `display_name` on the agent.
+/// End-to-end rename flow: begin rename -> type characters -> commit.
+/// Untitled fixture agent has no display_name / generated title, so the
+/// draft prefills empty; typing then commit emit `RenameSession` and stamp
+/// `display_name`.
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 #[test]
 fn dashboard_rename_end_to_end_top_level_row() {
@@ -3856,7 +3921,7 @@ fn dashboard_rename_end_to_end_top_level_row() {
             .expect("begin_rename must arm the rename overlay")
             .text(),
         "",
-        "rename draft must start empty (no prefilled title)",
+        "untitled agent prefills an empty draft",
     );
     let registry = crate::actions::ActionRegistry::defaults();
     for character in "My renamed session".chars() {
@@ -4162,6 +4227,114 @@ fn dashboard_begin_rename_on_subagent_row_sets_error_toast() {
     assert!(d.rename.is_none());
     assert!(d.error_toast.is_some());
 }
+/// Begin-rename prefills the draft from the agent's `display_name`.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_begin_rename_prefills_display_name() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().display_name = Some("  My Session Name  ".into());
+    open_dashboard(&mut app);
+    if let Some(d) = app.dashboard.as_mut() {
+        d.selected = Some(crate::views::dashboard::DashboardRowId::TopLevel(id));
+    }
+    dispatch_dashboard_begin_rename(&mut app);
+    assert_eq!(
+        app.dashboard
+            .as_ref()
+            .unwrap()
+            .rename
+            .as_ref()
+            .expect("begin_rename must arm the rename overlay")
+            .text(),
+        "My Session Name",
+        "begin-rename must prefill trimmed display_name",
+    );
+}
+/// Begin-rename falls back to `generated_session_title` when `display_name` is absent.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_begin_rename_prefills_generated_session_title() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.display_name = None;
+        agent.generated_session_title = Some("  Auto Title  ".into());
+    }
+    open_dashboard(&mut app);
+    if let Some(d) = app.dashboard.as_mut() {
+        d.selected = Some(crate::views::dashboard::DashboardRowId::TopLevel(id));
+    }
+    dispatch_dashboard_begin_rename(&mut app);
+    assert_eq!(
+        app.dashboard
+            .as_ref()
+            .unwrap()
+            .rename
+            .as_ref()
+            .expect("begin_rename must arm the rename overlay")
+            .text(),
+        "Auto Title",
+        "begin-rename must prefill trimmed generated_session_title",
+    );
+}
+/// Non-empty `display_name` wins over `generated_session_title`.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_begin_rename_prefers_display_name_over_generated() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.display_name = Some("User Name".into());
+        agent.generated_session_title = Some("Generated Name".into());
+    }
+    open_dashboard(&mut app);
+    if let Some(d) = app.dashboard.as_mut() {
+        d.selected = Some(crate::views::dashboard::DashboardRowId::TopLevel(id));
+    }
+    dispatch_dashboard_begin_rename(&mut app);
+    assert_eq!(
+        app.dashboard
+            .as_ref()
+            .unwrap()
+            .rename
+            .as_ref()
+            .expect("begin_rename must arm the rename overlay")
+            .text(),
+        "User Name",
+        "display_name must take precedence over generated_session_title",
+    );
+}
+/// Whitespace-only `display_name` falls through to `generated_session_title`.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_begin_rename_whitespace_display_name_falls_through() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.display_name = Some("   ".into());
+        agent.generated_session_title = Some("Generated".into());
+    }
+    open_dashboard(&mut app);
+    if let Some(d) = app.dashboard.as_mut() {
+        d.selected = Some(crate::views::dashboard::DashboardRowId::TopLevel(id));
+    }
+    dispatch_dashboard_begin_rename(&mut app);
+    assert_eq!(
+        app.dashboard
+            .as_ref()
+            .unwrap()
+            .rename
+            .as_ref()
+            .expect("begin_rename must arm the rename overlay")
+            .text(),
+        "Generated",
+        "whitespace-only display_name must fall through to generated_session_title",
+    );
+}
 /// Dispatch text + filter survive a close
 /// and reopen of the dashboard. The contract is
 /// "in-memory state preserved across reopen"; this test pins it.
@@ -4216,6 +4389,87 @@ fn dashboard_open_drops_pinned_ids_for_missing_agents() {
     assert!(d.pinned.is_empty(), "stale pin should be gc'd at open");
 }
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_row_stop_cancels_wake_turn_with_gesture_trigger() {
+    let mut app = test_app();
+    let _ = dispatch_new_session_inner(&mut app, None);
+    let target = *app.agents.keys().next().unwrap();
+    {
+        let agent = app.agents.get_mut(&target).unwrap();
+        agent.session.session_id = Some(acp::SessionId::new("s0"));
+        agent.running_wake_turn = Some(crate::app::agent_view::RunningWakeTurn {
+            prompt_id: "task-completed-bg1".into(),
+            cancel_sent: false,
+        });
+    }
+    open_dashboard(&mut app);
+    if let Some(d) = app.dashboard.as_mut() {
+        d.selected = Some(crate::views::dashboard::DashboardRowId::TopLevel(target));
+    }
+    let effects = dispatch_dashboard_stop(&mut app);
+    assert!(
+        matches!(
+            effects.first(),
+            Some(crate::app::actions::Effect::CancelTurn {
+                trigger: Some(crate::app::actions::CancelTrigger::DashboardStop),
+                ..
+            })
+        ),
+        "the row stop must cancel the wake turn with the gesture trigger, got {effects:?}"
+    );
+    assert!(
+        app.agents[&target].wake_turn_cancelling(),
+        "the wake marker must record the cancelling phase"
+    );
+}
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_row_stop_during_send_over_wake_cancels_wake_not_local_turn() {
+    let mut app = test_app();
+    let _ = dispatch_new_session_inner(&mut app, None);
+    let target = *app.agents.keys().next().unwrap();
+    {
+        let agent = app.agents.get_mut(&target).unwrap();
+        agent.session.session_id = Some(acp::SessionId::new("s0"));
+        agent.session.state = crate::app::agent::AgentState::TurnRunning;
+        agent.session.current_prompt_id = Some("user-1".into());
+        agent.running_wake_turn = Some(crate::app::agent_view::RunningWakeTurn {
+            prompt_id: "task-completed-bg1".into(),
+            cancel_sent: false,
+        });
+    }
+    open_dashboard(&mut app);
+    if let Some(d) = app.dashboard.as_mut() {
+        d.selected = Some(crate::views::dashboard::DashboardRowId::TopLevel(target));
+    }
+    let effects = dispatch_dashboard_stop(&mut app);
+    assert!(
+        matches!(
+            effects.first(),
+            Some(crate::app::actions::Effect::CancelTurn {
+                trigger: Some(crate::app::actions::CancelTrigger::DashboardStop),
+                ..
+            })
+        ),
+        "row stop must still emit cancel, got {effects:?}"
+    );
+    let agent = &app.agents[&target];
+    assert!(
+        agent.session.state.is_turn_running(),
+        "local user turn is queued behind the wake, not cancelled"
+    );
+    assert!(
+        agent
+            .running_wake_turn
+            .as_ref()
+            .is_some_and(|w| w.cancel_sent),
+        "row stop must cancel the shell-front wake"
+    );
+    assert!(
+        agent.pending_cancel_resend.is_none(),
+        "auto-resend would hit the promoted user turn"
+    );
+}
 #[test]
 fn dashboard_stop_double_press_deletes_top_level() {
     let mut app = test_app();

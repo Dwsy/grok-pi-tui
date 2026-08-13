@@ -91,10 +91,7 @@ pub struct Theme {
     pub accent_plan: Color, // Golden accent for plan mode indicator
 
     // Context-window overhead category (context info block)
-    pub accent_verify: Color, // Violet accent — distinct from plan gold and feedback teal
-
-    // Feedback mode
-    pub accent_feedback: Color, // Teal/green accent for feedback mode
+    pub accent_verify: Color, // Violet accent, distinct from plan gold
 
     // Remember mode
     pub accent_remember: Color, // Green accent for # remember mode
@@ -190,9 +187,7 @@ impl Theme {
 
             accent_plan: rgb(230, 180, 50), // #E6B432 — golden
 
-            accent_verify: MAGENTA, // #bb9af7 — violet (distinct from plan / feedback)
-
-            accent_feedback: GREEN1, // #73daca — warm teal/green
+            accent_verify: MAGENTA, // #bb9af7: violet (distinct from plan)
 
             accent_remember: Color::Rgb(139, 195, 74), // #8BC34A — Material Design light green
 

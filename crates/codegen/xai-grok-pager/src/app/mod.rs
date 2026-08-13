@@ -36,6 +36,7 @@ pub mod subagent;
 pub mod subscription;
 pub(crate) use effects::sanitize_user_error;
 mod event_loop;
+mod exit_timeout;
 pub mod extension_shortcuts;
 pub(crate) mod external_editor;
 mod foreign_sessions;
@@ -46,6 +47,7 @@ mod modals;
 mod mouse;
 mod queue_edit;
 pub(crate) mod screen_mode_relaunch;
+mod session_load_barrier;
 pub mod signal_handler;
 mod turn_completion;
 mod xt_filter;
@@ -398,7 +400,7 @@ pub(crate) struct ExitInfo {
     pub session_id: String,
     pub minimal: bool,
     /// Glanceable session tail; `Some` exactly when it should print. The
-    /// presence policy lives at the sole construction site, `make_run_result`.
+    /// presence policy lives at the sole construction site, `finish_run`.
     pub summary: Option<ExitSummary>,
 }
 /// Session tail printed above the resume command on fullscreen quits.
@@ -775,20 +777,58 @@ fn format_external_resume_command(session_id: &str, session_dir: Option<&str>) -
     }
 }
 
-/// Run a connect future bounded by cancellation and `timeout`, so a hung leader
-/// or embedded spawn cannot strand the user on a blank screen.
+/// A failed connect attempt, classified for telemetry at the point of failure
+/// rather than by parsing the error message.
+struct ConnectFailure {
+    outcome: crate::acp::StartupOutcome,
+    error: anyhow::Error,
+    timeout_secs: Option<u64>,
+}
+/// Bound connect so a hung leader/spawn cannot blank-screen forever.
+/// Timeout error includes phase summary (`stuck in` + `phases=`).
 async fn bounded_connect(
     cancel: &CancellationToken,
     timeout: std::time::Duration,
-    target: &str,
+    target: crate::acp::AgentKind,
+    timer: &crate::acp::StartupTimer,
     connect: impl std::future::Future<Output = anyhow::Result<crate::acp::AcpConnection>>,
-) -> anyhow::Result<crate::acp::AcpConnection> {
+) -> Result<crate::acp::AcpConnection, ConnectFailure> {
+    use crate::acp::StartupOutcome;
     tokio::select! {
         biased;
-        () = cancel.cancelled() => Err(anyhow::anyhow!("startup cancelled before {target} connected")),
-        r = connect => r,
+        () = cancel.cancelled() => Err(ConnectFailure {
+            outcome: StartupOutcome::Cancelled,
+            error: anyhow::anyhow!("startup cancelled before {target} connected"),
+            timeout_secs: None,
+        }),
+        r = connect => r.map_err(|error| ConnectFailure {
+            outcome: StartupOutcome::Error,
+            error,
+            timeout_secs: None,
+        }),
         () = tokio::time::sleep(timeout) => {
-            Err(anyhow::anyhow!("timed out after {}s connecting to {target}", timeout.as_secs()))
+            let stuck = timer.stuck_in();
+            let phases = timer.summary();
+            // `connect_target`: tracing reserves bare `target=` for the log target.
+            tracing::error!(
+                connect_target = %target,
+                stuck_in = stuck,
+                phases = %phases,
+                timeout_secs = timeout.as_secs(),
+                "connect timed out"
+            );
+            Err(ConnectFailure {
+                outcome: StartupOutcome::Timeout,
+                error: anyhow::anyhow!(
+                    "timed out after {}s connecting to {target}\n  \
+                     stuck in: {stuck}\n  \
+                     phases: {phases}\n  \
+                     startup log: {}",
+                    timeout.as_secs(),
+                    xai_grok_telemetry::unified_log::path().display()
+                ),
+                timeout_secs: Some(timeout.as_secs()),
+            })
         }
     }
 }
@@ -1094,30 +1134,44 @@ pub async fn run(
     const CONNECT_UI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
     let fallback_flags = use_leader.then(|| connect_flags.clone());
     let primary_target = if use_leader {
-        "the grok leader"
+        crate::acp::AgentKind::Leader
     } else {
-        "the embedded agent"
+        crate::acp::AgentKind::Embedded
     };
-    let connect_result = bounded_connect(&cancel, CONNECT_UI_TIMEOUT, primary_target, async {
-        if use_leader {
-            crate::acp::connect_via_leader(&cancel, connect_flags, &raw_config).await
-        } else {
-            crate::acp::connect(&cancel, connect_flags).await
-        }
-    })
-    .await;
-    let (connect_result, embedded_fallback) = match connect_result {
-        Err(e) if use_leader && !cancel.is_cancelled() => {
-            tracing::warn!(error = %e, "leader connect failed; falling back to embedded agent");
+    xai_grok_telemetry::external::init(
+        xai_grok_shell::agent::config::resolve_external_otel_config(
+            xai_grok_telemetry::external::config::ExternalClientInfo {
+                service_version: env!("VERSION_WITH_COMMIT").to_owned(),
+                client_version: xai_grok_version::VERSION.to_owned(),
+                app_entrypoint: "tui".to_owned(),
+            },
+        ),
+    );
+    let pending_startup = xai_grok_telemetry::startup::PendingStartup::new();
+    let timer = xai_grok_telemetry::startup::begin(crate::acp::Owner::Client);
+    let connect_result =
+        bounded_connect(&cancel, CONNECT_UI_TIMEOUT, primary_target, &timer, async {
+            if use_leader {
+                crate::acp::connect_via_leader(&cancel, connect_flags, &raw_config).await
+            } else {
+                crate::acp::connect(&cancel, connect_flags).await
+            }
+        })
+        .await;
+    let (connect_result, embedded_fallback, timer, connect_target) = match connect_result {
+        Err(f) if use_leader && !cancel.is_cancelled() => {
+            tracing::warn!(error = %f.error, "leader connect failed; falling back to embedded agent");
+            timer.emit_telemetry(primary_target, f.outcome, f.timeout_secs, false);
             let flags = fallback_flags.expect("set on the use_leader path");
-            let fallback =
-                bounded_connect(&cancel, CONNECT_UI_TIMEOUT, "the embedded agent", async {
-                    crate::acp::connect(&cancel, flags).await
-                })
-                .await;
-            (fallback, true)
+            let timer = xai_grok_telemetry::startup::begin(crate::acp::Owner::Client);
+            let target = crate::acp::AgentKind::Embedded;
+            let fallback = bounded_connect(&cancel, CONNECT_UI_TIMEOUT, target, &timer, async {
+                crate::acp::connect(&cancel, flags).await
+            })
+            .await;
+            (fallback, true, timer, target)
         }
-        other => (other, false),
+        other => (other, false, timer, primary_target),
     };
     let mut connection = match connect_result {
         Ok(conn) => {
@@ -1125,15 +1179,28 @@ pub async fn run(
                 elapsed_ms = startup_start.elapsed().as_millis() as u64,
                 use_leader = use_leader && !embedded_fallback,
                 embedded_fallback,
+                phases = %timer.summary(),
                 "Connected"
+            );
+            timer.emit_telemetry(
+                connect_target,
+                crate::acp::StartupOutcome::Ok,
+                None,
+                embedded_fallback,
             );
             conn
         }
-        Err(e) => {
+        Err(f) => {
+            timer.emit_telemetry(connect_target, f.outcome, f.timeout_secs, embedded_fallback);
+            if f.outcome == crate::acp::StartupOutcome::Cancelled {
+                pending_startup.abandon();
+            } else {
+                pending_startup.finish(f.outcome);
+            }
             crate::unified_log::flush_blocking().await;
             let _ = restore_terminal(terminal, writer_thread, screen_mode);
             cancel.cancel();
-            return Err(e);
+            return Err(f.error);
         }
     };
     let agent_guard =
@@ -1155,6 +1222,7 @@ pub async fn run(
     let result = event_loop::run(
         &mut terminal,
         connection,
+        pending_startup,
         &mut config_watcher,
         &effective_args,
         session_cwd,
@@ -1165,6 +1233,16 @@ pub async fn run(
         writer_event_rx,
     )
     .await;
+    signal_handler::clear_quit_notify();
+    let forced_exit_code = match &result {
+        Ok(run_result) if run_result.quit_for_update || run_result.relaunch.is_some() => None,
+        Ok(_) => Some(0),
+        Err(_) => Some(1),
+    };
+    if let Some(code) = forced_exit_code {
+        exit_timeout::arm(code);
+        exit_timeout::hold_teardown_for_test();
+    }
     crate::unified_log::flush_blocking().await;
     let restore_result = restore_terminal(terminal, writer_thread, screen_mode);
     drop(agent_guard);
@@ -1838,6 +1916,7 @@ fn set_panic_hook(mode: ScreenMode) {
         xai_crash_handler::disable_terminal_escape_restore();
         xai_tty_utils::restore_native_stderr();
         xai_tty_utils::global_process_scope().kill_all();
+        crate::memory_trace::record_crash_sample();
         hook(info);
     }));
 }
@@ -1900,28 +1979,49 @@ mod tests {
     }
     #[tokio::test]
     async fn bounded_connect_times_out_when_the_target_stalls() {
+        xai_grok_telemetry::unified_log::redirect_to_temp_for_tests();
         let cancel = CancellationToken::new();
+        let timer = crate::acp::StartupTimer::new();
+        timer.enter(crate::acp::StartupPhase::LoadConfig);
+        timer.enter(crate::acp::StartupPhase::ModelCatalog);
         let r = bounded_connect(
             &cancel,
             std::time::Duration::from_millis(20),
-            "the test target",
+            crate::acp::AgentKind::Embedded,
+            &timer,
             std::future::pending::<anyhow::Result<crate::acp::AcpConnection>>(),
         )
         .await;
-        assert!(r.is_err_and(|e| e.to_string().contains("timed out")));
+        let Err(f) = r else {
+            panic!("should time out");
+        };
+        assert_eq!(f.outcome, crate::acp::StartupOutcome::Timeout);
+        let msg = f.error.to_string();
+        assert!(
+            msg.contains("timed out after 0s connecting to the embedded agent"),
+            "{msg}"
+        );
+        assert!(msg.contains("stuck in: model_catalog"), "{msg}");
+        assert!(msg.contains("startup log: "), "{msg}");
     }
     #[tokio::test]
     async fn bounded_connect_returns_err_on_cancel() {
+        xai_grok_telemetry::unified_log::redirect_to_temp_for_tests();
         let cancel = CancellationToken::new();
         cancel.cancel();
+        let timer = crate::acp::StartupTimer::new();
         let r = bounded_connect(
             &cancel,
             std::time::Duration::from_secs(60),
-            "the test target",
+            crate::acp::AgentKind::Embedded,
+            &timer,
             std::future::pending::<anyhow::Result<crate::acp::AcpConnection>>(),
         )
         .await;
-        assert!(r.is_err_and(|e| e.to_string().contains("cancelled")));
+        assert!(r.is_err_and(|f| {
+            f.outcome == crate::acp::StartupOutcome::Cancelled
+                && f.error.to_string().contains("cancelled")
+        }));
     }
     #[test]
     fn terminal_title_strips_control_characters() {
