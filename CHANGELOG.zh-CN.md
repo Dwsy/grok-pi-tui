@@ -7,6 +7,34 @@
 
 ---
 
+## [0.0.16] - 2026-08-15
+
+范围：`v0.0.15` → `v0.0.16`（2026-08-09 → 2026-08-15）。
+
+### 亮点
+
+- **Pi 运行时自愈** — Pi RPC 子进程意外退出或心跳卡死后，grok-pi 可自动恢复、重新挂接当前 session，并收敛原本会悬空的后台 Bash 状态。
+- **grok-pi 原生设置面板** — F2 改为打开分栏、可搜索的 grok-pi 设置面板，继续复用上游同一套 settings registry 与 Action。
+- **更稳的上游整合** — 同步 Grok Build 至 `e5fd481`，同时恢复合并时丢失的 Pi-Grok 测试适配、Edit coalescing 与 `/fork` 选择器输入接缝。
+
+### 新增
+
+- 按类别/分区组织的 F2 标签页设置面板，支持跨标签搜索与固定描述区。
+- 大幅扩充内置 Pi theme 目录并刷新主题资源。
+
+### 修复
+
+- Pi RPC 意外退出与 heartbeat 卡死进入有上限的自动恢复；主动 teardown 仍不会误触发恢复。
+- 后台 Bash 终态通过独立状态通道投影并去重，RPC 丢失后完成/孤儿任务不再永久保持运行动画。
+- cancel idle probe 在 `await` 后重新确认 ownership，旧取消快照不再覆盖刚启动的 Goal successor turn。
+- 恢复 `/fork` 选择器键盘与鼠标输入路由，包括 Enter/Esc、`j`/`k`、Ctrl+C 取消逃生口与 Ctrl+Q 放行。
+- 恢复上游抽离测试模块中的 grok-pi 适配，并重新接上 Edit coalescing 调用点。
+- 适配本轮上游同步带来的 theme、event loop、settings 与 workflow API 变化。
+
+### 变更
+
+- Grok Build 同步至 `e5fd481`，继续保留已声明的 Pi-Grok 窄接缝与产品隔离规则。
+
 ## [0.0.15] - 2026-08-09
 
 范围：`v0.0.14` → `v0.0.15`（2026-07-31 → 2026-08-09）。

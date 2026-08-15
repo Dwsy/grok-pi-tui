@@ -4,6 +4,36 @@ All notable changes to **grok-pi** (Pi agent core in Grok Build's production TUI
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.16] - 2026-08-15
+
+Range: `v0.0.15` → `v0.0.16` (2026-08-09 → 2026-08-15).
+
+> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+
+### Highlights
+
+- **Resilient Pi runtime** — grok-pi can recover an unexpectedly exited or wedged Pi RPC child, reattach the active session, and settle background Bash rows that would otherwise remain orphaned.
+- **Native grok-pi settings** — F2 now opens a tabbed, searchable grok-pi settings panel backed by the same settings registry and actions as the upstream modal.
+- **Safer upstream integration** — Grok Build is synchronized through `e5fd481` while restoring Pi-Grok test adaptations, Edit coalescing, and the `/fork` picker input seam that were lost during merge resolution.
+
+### Added
+
+- Tabbed F2 settings grouped by category and section, with cross-tab search and pinned setting descriptions.
+- A substantially expanded bundled Pi theme catalog with refreshed theme assets.
+
+### Fixed
+
+- Unexpected Pi RPC exits and heartbeat stalls now enter bounded automatic recovery; intentional teardowns still bypass recovery.
+- Background Bash terminal state is projected out of band and de-duplicated so completed/orphaned tasks do not animate forever after RPC loss.
+- Cancellation idle probes re-check ownership after `await`, preventing a stale cancel snapshot from clearing a newly started Goal successor turn.
+- `/fork` picker keyboard and mouse routing is restored, including Enter/Esc, `j`/`k`, Ctrl+C cancellation escape, and Ctrl+Q pass-through.
+- Upstream-extracted Pager tests retain grok-pi adaptations, and Edit coalescing call sites are restored.
+- Build seams are updated for the upstream theme, event-loop, settings, and workflow API changes introduced by the sync.
+
+### Changed
+
+- Integrated Grok Build updates through `e5fd481` while preserving the documented Pi-Grok seams and product isolation rules.
+
 ## [0.0.15] - 2026-08-09
 
 Range: `v0.0.14` → `v0.0.15` (2026-07-31 → 2026-08-09).
