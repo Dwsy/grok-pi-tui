@@ -3,7 +3,7 @@ id: "2026-07-22-grok-pi-goal"
 title: "grok-pi Goal 模式（F2 默认 off）"
 status: "in_progress"
 created: "2026-07-22"
-updated: "2026-07-22"
+updated: "2026-08-15"
 category: "adapter"
 tags: ["goal", "pi-grok", "f2", "extension"]
 ---
@@ -50,6 +50,7 @@ tags: ["goal", "pi-grok", "f2", "extension"]
 | S3 | extension `/goal` + `update_goal` + control file | 插件静态 + inject |
 | S4 | adapter 接线 + continuation | adapter test + binary check |
 | S5 | FEATURE_MATRIX / 手测清单 | 文档回写 |
+| S6 | cancel idle probe successor ownership 门禁 | adapter 回归测试 + 原场景手测 |
 
 ## Acceptance
 
@@ -60,6 +61,8 @@ tags: ["goal", "pi-grok", "f2", "extension"]
 - [ ] A5 `update_goal(completed:true)` → Complete 并停止 continuation
 - [ ] A6 pause/resume/clear 工作
 - [ ] A7 adapter headless；无 Pi 源码改动
+- [x] A8 cancel idle probe 不得清除刚启动的 Goal successor turn
+- [x] A9 Goal 自动续作期间 Pager 保持 Working/Waiting；用户消息进入 follow-up，不触发 `already processing`
 
 ## Residual（后续）
 
@@ -78,6 +81,13 @@ tags: ["goal", "pi-grok", "f2", "extension"]
 - [x] S3 extension `/goal` + `update_goal`
 - [x] S4 adapter bridge + continuation + grok-pi inject
 - [x] S5 窄测 + cargo check 结果回写
+- [x] S6 修复 cancel idle probe 覆盖 Goal successor 状态的竞态
+
+## Regression: cancel → Goal successor 状态丢失（2026-08-15）
+
+真实会话中，取消后的 Goal 自动续作已写入 Pi session，但 Pager/adapter 被旧的 cancel idle probe 重置为 idle；下一条用户消息因此以 bare prompt 提交，被正在处理的 Pi 拒绝为 `Agent is already processing`。
+
+根因位于 `settle_cancelled_prompts()`：`get_state=false` 是 await 前旧取消轮次的快照，返回后未重新确认 cancellation ownership，可能覆盖 `agent_settled` 已启动的 Goal successor。修复只允许仍处于 cancelling 且尚无 successor running slot 的 probe 清状态。
 
 ## Verification (2026-07-22)
 
@@ -87,6 +97,17 @@ tags: ["goal", "pi-grok", "f2", "extension"]
 | `cargo test -p pi-grok-adapter --lib` | PASS 103 |
 | `cargo test -p xai-grok-pager-bin --bin grok-pi goal_extension` | PASS 1 |
 | `cargo check -p xai-grok-pager-bin --bin grok-pi` | PASS (pre-existing warnings only) |
+
+## Verification (2026-08-15 regression)
+
+| Command / scenario | Result |
+|---|---|
+| `./scripts/cargo-shared.sh test -p pi-grok-adapter --lib stale_cancellation_probe_cannot_clear_successor_goal_turn` | PASS 1 |
+| `./scripts/cargo-shared.sh test -p pi-grok-adapter --lib` | PASS 161 |
+| `./scripts/cargo-shared.sh test -p xai-grok-pager --lib queue_changed_still_adopts_running_prompt_not_terminal_in_replay` | PASS 1 |
+| `./scripts/cargo-shared.sh check -p xai-grok-pager-bin --bin grok-pi` | PASS（既有 warnings） |
+| `./scripts/cargo-shared.sh build -p xai-grok-pager-bin --bin grok-pi` | PASS |
+| 隔离 `--no-session`：`/goal` → Esc cancel → 自动 continuation → 立即发送普通消息 | PASS：底部持续 `Waiting for response…`，消息显示 `Queued`，无 `already processing` |
 
 ### Handtest (recommended)
 

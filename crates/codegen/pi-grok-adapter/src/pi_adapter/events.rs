@@ -11,6 +11,10 @@ fn cancellation_idle_confirmed(idle_polls: &mut u8, is_streaming: bool) -> bool 
     *idle_polls >= CANCEL_IDLE_CONFIRMATIONS
 }
 
+fn cancellation_probe_still_current(cancelling: bool, has_running_prompt: bool) -> bool {
+    cancelling && !has_running_prompt
+}
+
 impl PiAgent {
     pub(super) async fn handle_event(&self, event: Value) -> Result<()> {
         let event_type = event
@@ -394,6 +398,12 @@ impl PiAgent {
             if cancellation_idle_confirmed(&mut idle_polls, is_streaming) {
                 {
                     let mut state = self.state.borrow_mut();
+                    if !cancellation_probe_still_current(
+                        state.cancelling,
+                        state.queue_mirror.running().is_some(),
+                    ) {
+                        return;
+                    }
                     state.agent_running = false;
                     state.cancelling = false;
                     state.live_prompt_id = None;
@@ -469,5 +479,12 @@ mod tests {
         assert!(!cancellation_idle_confirmed(&mut idle_polls, true));
         assert_eq!(idle_polls, 0);
         assert!(!cancellation_idle_confirmed(&mut idle_polls, false));
+    }
+
+    #[test]
+    fn stale_cancellation_probe_cannot_clear_successor_goal_turn() {
+        assert!(cancellation_probe_still_current(true, false));
+        assert!(!cancellation_probe_still_current(false, false));
+        assert!(!cancellation_probe_still_current(true, true));
     }
 }
