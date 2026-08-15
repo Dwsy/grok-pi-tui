@@ -1059,6 +1059,28 @@ impl AgentView {
                 _ => InputOutcome::Unchanged,
             };
         }
+        if self.dismiss_fork_picker_if_suppressed() {
+            return InputOutcome::Changed;
+        }
+        if self.fork_state.is_some() {
+            return match ev {
+                Event::Key(key) if key.kind != KeyEventKind::Release => {
+                    if key!('q', CONTROL).matches(key) {
+                        return InputOutcome::Unchanged;
+                    }
+                    if registry.matches_id(ActionId::CancelTurn, key)
+                        && (self.stoppable_activity_running() || self.any_cancel_pending())
+                    {
+                        self.dismiss_fork_picker();
+                        return self
+                            .handle_agent_action_with_registry(ActionId::CancelTurn, registry);
+                    }
+                    self.handle_fork_picker_key(key)
+                }
+                Event::Mouse(mouse) => self.handle_fork_picker_mouse(mouse),
+                _ => InputOutcome::Unchanged,
+            };
+        }
         if self.focused_card() == Some(BlockingCard::CancelTurn) {
             return match ev {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
@@ -2506,6 +2528,115 @@ mod jump_backout_key_tests {
         assert!(
             matches!(outcome, InputOutcome::Action(Action::Quit)),
             "Ctrl+C during a stuck wake cancel must escalate to quit, got {outcome:?}"
+        );
+    }
+}
+/// The `/fork` picker's key and mouse routing was dropped during the upstream
+/// `a5589e9` merge conflict resolution: the overlay still opened and rendered,
+/// but every key fell through to the prompt, so it could not be confirmed,
+/// dismissed, or navigated. These tests hold that seam against the next merge.
+#[cfg(test)]
+mod fork_picker_key_tests {
+    use super::AgentView;
+    use super::test_fixtures::make_agent;
+    use crate::actions::ActionRegistry;
+    use crate::app::actions::{Action, PiForkMessage};
+    use crate::app::agent::{AgentCommand, AgentState};
+    use crate::app::app_view::InputOutcome;
+    use crate::views::fork_picker::ForkPickerState;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    fn open_fork(agent: &mut AgentView) {
+        agent.fork_state = Some(ForkPickerState::new(vec![
+            PiForkMessage {
+                entry_id: "entry-1".into(),
+                text: "first".into(),
+            },
+            PiForkMessage {
+                entry_id: "entry-2".into(),
+                text: "second".into(),
+            },
+        ]));
+    }
+
+    fn key(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn ctrl(c: char) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    fn selected(agent: &AgentView) -> usize {
+        agent.fork_state.as_ref().expect("picker open").selected
+    }
+
+    #[test]
+    fn enter_forks_the_selected_message() {
+        let mut agent = make_agent();
+        open_fork(&mut agent);
+        let outcome = agent.handle_input(&key(KeyCode::Enter), &ActionRegistry::defaults());
+        match outcome {
+            InputOutcome::Action(Action::Fork(args)) => assert_eq!(
+                args.directive.as_deref(),
+                Some("entry-2"),
+                "Enter forks from the selected entry"
+            ),
+            other => panic!("Enter must fork the selected message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn esc_dismisses_the_picker() {
+        let mut agent = make_agent();
+        open_fork(&mut agent);
+        let outcome = agent.handle_input(&key(KeyCode::Esc), &ActionRegistry::defaults());
+        assert!(
+            matches!(outcome, InputOutcome::Action(Action::PiForkDismiss)),
+            "Esc must dismiss the fork picker, got {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn j_and_k_move_the_cursor() {
+        let mut agent = make_agent();
+        open_fork(&mut agent);
+        assert_eq!(selected(&agent), 1, "baseline: newest message selected");
+        agent.handle_input(&key(KeyCode::Char('k')), &ActionRegistry::defaults());
+        assert_eq!(selected(&agent), 0, "k moves the cursor up");
+        agent.handle_input(&key(KeyCode::Char('j')), &ActionRegistry::defaults());
+        assert_eq!(selected(&agent), 1, "j moves the cursor back down");
+    }
+
+    /// Same escape hatch as `/jump`: the picker must not trap Ctrl+C while an
+    /// activity is running.
+    #[test]
+    fn ctrl_c_cancels_a_running_command() {
+        let mut agent = make_agent();
+        agent.session.state = AgentState::CommandRunning {
+            command: AgentCommand::Compact,
+            started_at: std::time::Instant::now(),
+        };
+        open_fork(&mut agent);
+        let outcome = agent.handle_input(&ctrl('c'), &ActionRegistry::defaults());
+        assert!(
+            agent.fork_state.is_none(),
+            "Ctrl+C during /compact must dismiss the fork picker"
+        );
+        assert!(
+            matches!(outcome, InputOutcome::Action(Action::CancelTurn)),
+            "Ctrl+C during /compact with /fork open must cancel, got {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn ctrl_q_stays_available_for_quit() {
+        let mut agent = make_agent();
+        open_fork(&mut agent);
+        let outcome = agent.handle_input(&ctrl('q'), &ActionRegistry::defaults());
+        assert!(
+            matches!(outcome, InputOutcome::Unchanged),
+            "the picker must let Ctrl+Q reach the global quit path, got {outcome:?}"
         );
     }
 }
