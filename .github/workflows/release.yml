@@ -40,11 +40,14 @@ jobs:
             bin: grok-pi
             cross: false
           - name: Linux ARM64
-            runner: ubuntu-latest
+            # Build natively on an arm64-hosted runner. Cross-compiling the
+            # large release-dist profile (codegen-units=1 + thin LTO) from a
+            # shared 16 GB x64 runner OOM-kills the job (exit 143).
+            runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             asset: grok-pi-linux-aarch64.tar.gz
             bin: grok-pi
-            cross: true
+            cross: false
 
           # ── Windows ──────────────────────────────────────────────────────
           - name: Windows x64
