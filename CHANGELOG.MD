@@ -4,6 +4,20 @@ All notable changes to **grok-pi** (Pi agent core in Grok Build's production TUI
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.17] - 2026-08-16
+
+Range: `v0.0.16` → `v0.0.17` (2026-08-15 → 2026-08-16).
+
+> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+
+### Fixed
+
+- The Linux ARM64 release build is now compiled natively on an arm64-hosted
+  runner instead of cross-compiling from a shared 16 GB x64 runner. Cross
+  compiling the large `release-dist` profile (`codegen-units=1` + thin LTO)
+  there OOM-killed the job (exit 143), leaving release `v0.0.16` without a
+  Linux ARM64 asset.
+
 ## [0.0.16] - 2026-08-15
 
 Range: `v0.0.15` → `v0.0.16` (2026-08-09 → 2026-08-15).
