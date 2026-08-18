@@ -5439,7 +5439,7 @@ fn format_session_count(value: u64) -> String {
 ///
 /// Pi owns the session-wide message/token/cost totals, so those rows come from
 /// `sessionStats` and trail the Grok runtime group.
-fn session_info_fields(
+pub(crate) fn session_info_fields(
     info: &SessionInfoResponse,
     title: Option<&str>,
     show_resolved_model: bool,
@@ -5510,20 +5510,17 @@ fn session_info_fields(
         true,
     );
     if let Some(stats) = info.session_stats.as_ref() {
+        push("Messages — Total", format_session_count(stats.total_messages), false);
+        push("Messages — User", format_session_count(stats.user_messages), false);
         push(
-            "Messages",
-            format!(
-                "{} total · {} user · {} assistant",
-                format_session_count(stats.total_messages),
-                format_session_count(stats.user_messages),
-                format_session_count(stats.assistant_messages),
-            ),
+            "Messages — Assistant",
+            format_session_count(stats.assistant_messages),
             false,
         );
         push(
-            "Tool calls",
+            "Tools",
             format!(
-                "{} calls · {} results",
+                "{} calls, {} results",
                 format_session_count(stats.tool_calls),
                 format_session_count(stats.tool_results),
             ),
@@ -5534,24 +5531,23 @@ fn session_info_fields(
             .input
             .saturating_add(tokens.cache_read)
             .saturating_add(tokens.cache_write);
-        let mut input = format_session_count(prompt_tokens);
+        push("Tokens — Input", format_session_count(prompt_tokens), false);
         if prompt_tokens > 0 && (tokens.cache_read > 0 || tokens.cache_write > 0) {
             let hit_rate = (tokens.cache_read as f64 / prompt_tokens as f64) * 100.0;
-            input.push_str(&format!(
-                " ({} cached, {hit_rate:.1}%)",
-                format_session_count(tokens.cache_read)
-            ));
+            push(
+                "Tokens — Cached",
+                format!("{} ({hit_rate:.1}%)", format_session_count(tokens.cache_read)),
+                false,
+            );
+            push(
+                "Tokens — Uncached",
+                format_session_count(tokens.input.saturating_add(tokens.cache_write)),
+                false,
+            );
         }
-        push("Input tokens", input, false);
-        push(
-            "Output tokens",
-            format_session_count(tokens.output),
-            false,
-        );
-        push("Total tokens", format_session_count(tokens.total), false);
-        if stats.cost > 0.0 {
-            push("Cost", format!("${:.3}", stats.cost), false);
-        }
+        push("Tokens — Output", format_session_count(tokens.output), false);
+        push("Tokens — Total", format_session_count(tokens.total), false);
+        push("Cost — Total", format!("${:.3}", stats.cost), false);
     } else if ctx.message_count > 0 || ctx.tool_call_count > 0 || ctx.turn_count > 0 {
         // Older agents lack `sessionStats`; keep their compact count surface.
         push(

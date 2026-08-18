@@ -186,8 +186,7 @@ fn entries_replay_preserves_messages_across_compaction() {
     ));
     assert!(matches!(
         items[1].item,
-        PiHistoryItem::AgentText(ref text)
-            if text == "**Compaction summary**\n\nolder context summary"
+        PiHistoryItem::CompactionSummary(ref text) if text == "older context summary"
     ));
     assert!(matches!(
         items[2].item,

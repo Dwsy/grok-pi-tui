@@ -72,6 +72,7 @@ pub(super) fn open_usage_info_modal(
         tab,
         UsageInfoContext {
             session_id: session_id.as_ref().map(|s| s.0.to_string()),
+            session_file: None,
             usage_visible,
             chat_kind: agent.chat_kind,
             billing_redirect_url: redirect_url,
@@ -681,6 +682,7 @@ pub(super) fn handle_context_info_complete(
     let minimal = app.screen_mode.is_minimal();
     // Read the external-only F2 gate before mutably borrowing agents.
     let cache_graph_enabled = app.current_ui.pi_cache_graph;
+    let show_resolved_model = app.show_resolved_model;
     let use_pi_context_modal =
         crate::app::external_agent_active() && cache_graph_enabled && !minimal;
     if let Some(agent) = app.agents.get_mut(&agent_id) {
@@ -701,9 +703,18 @@ pub(super) fn handle_context_info_complete(
         if use_pi_context_modal {
             // Preserve Pi cache-graph view across refresh (`r`) while keeping
             // the surface transient (never append it to conversation history).
-            let prev_view = match &agent.active_modal {
-                Some(ActiveModal::ContextInfo { view, .. }) => *view,
-                _ => crate::views::cache_graph::CacheGraphView::Breakdown,
+            let (prev_view, prev_selected, prev_detail) = match &agent.active_modal {
+                Some(ActiveModal::ContextInfo {
+                    view,
+                    selected_row,
+                    detail_open,
+                    ..
+                }) => (*view, *selected_row, *detail_open),
+                _ => (
+                    crate::views::cache_graph::CacheGraphView::Breakdown,
+                    None,
+                    false,
+                ),
             };
             let export_basename = info
                 .session_file
@@ -724,6 +735,20 @@ pub(super) fn handle_context_info_complete(
             } else {
                 crate::views::cache_graph::CacheGraphView::Breakdown
             };
+            let selected_row = cache_metrics.as_ref().and_then(|metrics| {
+                if metrics.all_messages.is_empty() {
+                    None
+                } else {
+                    Some(
+                        prev_selected
+                            .unwrap_or(metrics.all_messages.len() - 1)
+                            .min(metrics.all_messages.len() - 1),
+                    )
+                }
+            });
+            let session_fields =
+                crate::app::effects::session_info_fields(&info, None, show_resolved_model);
+            let session_file = info.session_file.clone();
             agent.active_modal = Some(ActiveModal::ContextInfo {
                 block: crate::scrollback::blocks::ContextInfoBlock::new(snapshot, model)
                     .with_cost(cost_usd),
@@ -731,6 +756,10 @@ pub(super) fn handle_context_info_complete(
                 window: ModalWindowState::new(),
                 cache_metrics,
                 view,
+                selected_row,
+                detail_open: prev_detail,
+                session_file,
+                session_fields,
                 export_cwd: info.cwd.clone(),
                 export_basename,
             });

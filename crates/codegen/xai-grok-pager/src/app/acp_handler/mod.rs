@@ -728,6 +728,7 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         // info → SystemMessage scrollback (Pi showStatus / chat append);
         // warning/error stay transient toasts.
         "pi/ui/notify" => handle_pi_ui_notify(notif, app),
+        "pi/ui/compaction_summary" => handle_pi_ui_compaction_summary(notif, app),
         "pi/ui/btw_history" => handle_pi_ui_btw_history(notif, app),
         "pi/ui/status" => handle_pi_ui_status(notif, app),
         "pi/ui/widget" => handle_pi_ui_widget(notif, app),
@@ -826,6 +827,45 @@ fn handle_pi_ui_notify(notif: &acp::ExtNotification, app: &mut AppView) -> bool 
         .or_else(|| params.get("kind"))
         .and_then(serde_json::Value::as_str);
     app.show_external_notification(message, kind);
+    true
+}
+
+fn handle_pi_ui_compaction_summary(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Some(params) = pi_ui_params(notif) else {
+        return false;
+    };
+    let Some(summary) = params
+        .get("summary")
+        .and_then(serde_json::Value::as_str)
+        .filter(|summary| !summary.trim().is_empty())
+    else {
+        return false;
+    };
+    let target_id = params
+        .get("sessionId")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|session_id| {
+            app.agents.iter().find_map(|(id, agent)| {
+                agent
+                    .session
+                    .session_id
+                    .as_ref()
+                    .is_some_and(|current| current.0.as_ref() == session_id)
+                    .then_some(*id)
+            })
+        })
+        .or_else(|| match app.active_view {
+            ActiveView::Agent(id) => Some(id),
+            _ => None,
+        });
+    let Some(agent) = target_id.and_then(|id| app.agents.get_mut(&id)) else {
+        return false;
+    };
+    agent
+        .scrollback
+        .push_block(RenderBlock::session_event(SessionEvent::CompactionSummary {
+            summary: summary.to_string(),
+        }));
     true
 }
 

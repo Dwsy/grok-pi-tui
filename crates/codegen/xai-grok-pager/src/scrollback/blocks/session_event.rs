@@ -69,6 +69,10 @@ pub enum SessionEvent {
         /// How long compaction took (milliseconds).
         elapsed_ms: Option<i64>,
     },
+    /// Pi's persisted compaction summary, rendered as a foldable Markdown block.
+    CompactionSummary {
+        summary: String,
+    },
     /// Auto-compaction failed.
     CompactionFailed {
         /// Error description.
@@ -273,6 +277,9 @@ impl SessionEvent {
                     format_duration(*elapsed)
                 )
             }
+            SessionEvent::CompactionSummary { summary } => {
+                format!("Compaction summary \u{2014} {summary}")
+            }
             SessionEvent::Recap { summary, auto: _ } => {
                 // Always "Recap —" (manual `/recap` and auto return-from-away).
                 format!("Recap \u{2014} {summary}")
@@ -280,15 +287,13 @@ impl SessionEvent {
         }
     }
 
-    /// The recap summary text when this is a [`SessionEvent::Recap`].
-    ///
-    /// Recap events render in the tool-call visual style (bullet + bold
-    /// "Recap" header + muted body); every other variant stays a plain
-    /// informational line. This accessor is the single branch point the
-    /// `SessionEventBlock` trait methods use to opt the recap into that style.
-    fn recap_summary(&self) -> Option<&str> {
+    /// Foldable Markdown summaries rendered with the shared tool-like surface.
+    fn summary_body(&self) -> Option<(&'static str, &str)> {
         match self {
-            SessionEvent::Recap { summary, .. } => Some(summary.as_str()),
+            SessionEvent::Recap { summary, .. } => Some(("Recap", summary.as_str())),
+            SessionEvent::CompactionSummary { summary } => {
+                Some(("Compaction summary", summary.as_str()))
+            }
             _ => None,
         }
     }
@@ -389,13 +394,11 @@ impl SessionEventBlock {
         })
     }
 
-    /// A recap with real body content — i.e. not the empty loading spinner or a
-    /// stray empty recap. Gates the interactive affordances (folding + j/k
-    /// selection) so navigation never lands on a recap that can't fold.
-    fn recap_has_body(&self) -> bool {
+    /// A foldable summary with real body content.
+    fn summary_has_body(&self) -> bool {
         self.event
-            .recap_summary()
-            .is_some_and(|s| !s.trim().is_empty())
+            .summary_body()
+            .is_some_and(|(_, summary)| !summary.trim().is_empty())
     }
 
     /// Merge the stop-hook runs into the marker's output: a right-justified
@@ -477,7 +480,7 @@ impl SessionEventBlock {
     /// "Recap" label (and the blank separator under it) are decoration
     /// ([`BlockLine::separator`] / [`Selectable::None`]) so drag-highlight and
     /// copy only include the summary body, never the chrome label.
-    fn recap_output(&self, ctx: &BlockContext, summary: &str) -> BlockOutput {
+    fn summary_output(&self, ctx: &BlockContext, label: &str, summary: &str) -> BlockOutput {
         let theme = Theme::current();
         let muted_collapsed =
             ctx.mute_when_collapsed(ctx.appearance.scrollback.blocks.tool.muted_collapsed);
@@ -492,7 +495,7 @@ impl SessionEventBlock {
         let header_style = header_text_style.add_modifier(Modifier::BOLD);
         // Non-selectable chrome (same as Thinking / tool label prefixes).
         let header_line =
-            || BlockLine::separator(Line::from(Span::styled("Recap".to_string(), header_style)));
+            || BlockLine::separator(Line::from(Span::styled(label.to_string(), header_style)));
 
         // Loading: header only; the animated gray sidebar is the feedback.
         if ctx.is_running {
@@ -503,7 +506,7 @@ impl SessionEventBlock {
 
         match ctx.mode {
             DisplayMode::Collapsed => {
-                let mut spans = vec![Span::styled("Recap".to_string(), header_style)];
+                let mut spans = vec![Span::styled(label.to_string(), header_style)];
                 let preview = summary.lines().next().unwrap_or(summary).trim();
                 if !preview.is_empty() {
                     spans.push(Span::styled(format!("  {preview}"), theme.muted()));
@@ -549,9 +552,9 @@ impl SessionEventBlock {
 
 impl BlockContent for SessionEventBlock {
     fn output(&self, ctx: &BlockContext) -> BlockOutput {
-        // Recap renders in the tool-call style (bullet + bold header + body).
-        if let Some(summary) = self.event.recap_summary() {
-            return self.recap_output(ctx, summary);
+        // Foldable summaries share the tool-call style (bullet + bold header + body).
+        if let Some((label, summary)) = self.event.summary_body() {
+            return self.summary_output(ctx, label, summary);
         }
 
         let theme = Theme::current();
@@ -589,7 +592,7 @@ impl BlockContent for SessionEventBlock {
 
     fn accent(&self, ctx: &BlockContext) -> Option<AccentStyle> {
         let theme = Theme::current();
-        if self.event.recap_summary().is_some() {
+        if self.event.summary_body().is_some() {
             // Loading: animated sidebar so there's feedback that the recap is
             // being generated. Gray rather than the magenta `accent_running` —
             // the recap is a passive marker, not an active tool turn.
@@ -610,7 +613,7 @@ impl BlockContent for SessionEventBlock {
     fn bullet(&self, ctx: &BlockContext) -> Option<AccentStyle> {
         // Recap: animated dot while loading; default gray dot when collapsed-idle;
         // accent color when expanded. Other events never show a bullet.
-        if self.event.recap_summary().is_some()
+        if self.event.summary_body().is_some()
             && !ctx.is_running
             && ctx.mode == DisplayMode::Collapsed
         {
@@ -628,24 +631,21 @@ impl BlockContent for SessionEventBlock {
     }
 
     fn is_foldable(&self) -> bool {
-        // A recap with body content folds, as does a turn marker carrying
-        // stop-hook runs (fold = per-hook detail). Other events are single
-        // informational lines with nothing to collapse.
-        self.recap_has_body() || self.has_stop_hook_content()
+        // Summary bodies fold like tool details; turn markers can also fold
+        // their attached stop-hook runs.
+        self.summary_has_body() || self.has_stop_hook_content()
     }
 
     fn is_selectable(&self) -> bool {
-        // Recap is tool-like: navigable so it can be folded — but only once it
-        // has body content (mirrors `is_foldable`), so j/k never lands on the
-        // loading spinner or an empty recap. A turn marker with stop hooks is
-        // navigable for the same reason. Other events stay non-interactive.
-        self.recap_has_body() || self.has_stop_hook_content()
+        self.summary_has_body() || self.has_stop_hook_content()
     }
 
     fn default_display_mode(&self) -> DisplayMode {
-        // A marker with stop hooks starts collapsed: the right-justified
-        // summary is the resting state; detail is opt-in via fold.
-        if self.has_stop_hook_content() {
+        // Compaction summaries are historical context and start dense; recap
+        // remains open by default. Stop-hook details also start collapsed.
+        if self.has_stop_hook_content()
+            || matches!(self.event, SessionEvent::CompactionSummary { .. })
+        {
             DisplayMode::Collapsed
         } else {
             DisplayMode::Expanded
@@ -655,7 +655,7 @@ impl BlockContent for SessionEventBlock {
     fn has_bullet(&self, ctx: &BlockContext) -> bool {
         // Recap only, and only when the shared tool bullet is configured — so it
         // tracks the same appearance setting as real tool calls.
-        self.event.recap_summary().is_some()
+        self.event.summary_body().is_some()
             && ctx
                 .appearance
                 .scrollback
@@ -1011,6 +1011,29 @@ mod tests {
             DisplayMode::Expanded,
             "recap is open by default"
         );
+    }
+
+    #[test]
+    fn compaction_summary_is_foldable_and_collapsed_by_default() {
+        let block = SessionEventBlock::new(SessionEvent::CompactionSummary {
+            summary: "Preserved `main.rs` and the latest tool results.".into(),
+        });
+        assert!(block.is_foldable());
+        assert!(block.is_selectable());
+        assert_eq!(block.default_display_mode(), DisplayMode::Collapsed);
+
+        let collapsed = block.output(&recap_ctx(DisplayMode::Collapsed, false));
+        assert!(plain(&collapsed.lines[0]).starts_with("Compaction summary"));
+        let expanded = block.output(&recap_ctx(DisplayMode::Expanded, false));
+        let body = expanded
+            .lines
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains("Preserved"));
+        assert!(body.contains("main.rs"));
+        assert!(body.contains("latest tool results."));
     }
 
     #[test]

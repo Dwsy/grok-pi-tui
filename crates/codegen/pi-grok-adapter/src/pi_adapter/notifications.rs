@@ -275,6 +275,13 @@ impl PiAgent {
             self.send_ext_notification("x.ai/session/update", notification)
                 .await;
         }
+        if let Some(summary) = event
+            .get("result")
+            .and_then(|result| string(result, &["summary"]))
+            .filter(|summary| !summary.trim().is_empty())
+        {
+            self.send_compaction_summary(summary, false, None).await;
+        }
         self.send_status("compaction", None).await;
         if let Some(error) = string(event, &["errorMessage", "error"])
             && !error.is_empty()

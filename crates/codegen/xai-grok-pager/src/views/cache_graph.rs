@@ -298,13 +298,19 @@ pub fn render_cache_view_lines(
     metrics: &CacheSessionMetrics,
     width: u16,
     view: CacheGraphView,
+    selected_row: Option<usize>,
+    detail_open: bool,
 ) -> Vec<Line<'static>> {
     match view {
         CacheGraphView::Breakdown => vec![],
-        CacheGraphView::Stats => render_stats_body(theme, metrics, width),
+        CacheGraphView::Stats => {
+            render_stats_body(theme, metrics, width, selected_row, detail_open)
+        }
         CacheGraphView::PerTurn
         | CacheGraphView::CumulativePercent
-        | CacheGraphView::CumulativeTotal => render_graph_body(theme, metrics, width, view),
+        | CacheGraphView::CumulativeTotal => {
+            render_graph_body(theme, metrics, width, view, selected_row, detail_open)
+        }
     }
 }
 
@@ -313,6 +319,8 @@ fn render_graph_body(
     metrics: &CacheSessionMetrics,
     width: u16,
     view: CacheGraphView,
+    selected_row: Option<usize>,
+    detail_open: bool,
 ) -> Vec<Line<'static>> {
     let messages = &metrics.all_messages;
     let mut lines = Vec::new();
@@ -424,26 +432,14 @@ fn render_graph_body(
                 "   assistant-message sequence in session append order",
             ));
             lines.push(Line::from(""));
-            let recent_count = messages.len().min(8);
-            let recent = &messages[messages.len() - recent_count..];
-            lines.push(accent_line(theme, format!("Recent {recent_count} turns")));
-            lines.push(dim_line(theme, "* = on current active branch"));
-            for m in recent {
-                let star = if m.is_on_active_branch { "*" } else { " " };
-                lines.push(muted_line(
-                    theme,
-                    format!(
-                        "#{:2}{} {:>6}  in {:>6}  cache {:>6}  {}/{}",
-                        m.sequence,
-                        star,
-                        format_percent(m.cache_hit_percent),
-                        format_int(m.input),
-                        format_int(m.cache_read),
-                        m.provider,
-                        m.model,
-                    ),
-                ));
-            }
+            lines.extend(render_message_table(
+                theme,
+                metrics,
+                width,
+                selected_row,
+                detail_open,
+                None,
+            ));
         }
         CacheGraphView::CumulativePercent => {
             let cum = cum.as_ref().unwrap();
@@ -458,32 +454,14 @@ fn render_graph_body(
                 ),
             ));
             lines.push(Line::from(""));
-            let recent_count = messages.len().min(8);
-            let start = messages.len() - recent_count;
-            lines.push(accent_line(theme, format!("Recent {recent_count} turns")));
-            lines.push(dim_line(
+            lines.extend(render_message_table(
                 theme,
-                "* = on current active branch  |  values are aggregate (running) totals",
+                metrics,
+                width,
+                selected_row,
+                detail_open,
+                Some(cum),
             ));
-            for (i, m) in messages[start..].iter().enumerate() {
-                let star = if m.is_on_active_branch { "*" } else { " " };
-                let hit = cum.cum_hit_percent[start + i];
-                let cin = cum.cum_input[start + i];
-                let cread = cum.cum_cache_read[start + i];
-                lines.push(muted_line(
-                    theme,
-                    format!(
-                        "#{:2}{} {:>6}  aggIn {:>7}  aggHit {:>7}  {}/{}",
-                        m.sequence,
-                        star,
-                        format_percent(hit),
-                        format_int(cin),
-                        format_int(cread),
-                        m.provider,
-                        m.model,
-                    ),
-                ));
-            }
         }
         CacheGraphView::CumulativeTotal => {
             let cum = cum.as_ref().unwrap();
@@ -509,25 +487,14 @@ fn render_graph_body(
                 ),
             ));
             lines.push(Line::from(""));
-            let recent_count = messages.len().min(8);
-            let start = messages.len() - recent_count;
-            lines.push(accent_line(theme, format!("Recent {recent_count} turns")));
-            for (i, m) in messages[start..].iter().enumerate() {
-                let star = if m.is_on_active_branch { "*" } else { " " };
-                lines.push(muted_line(
-                    theme,
-                    format!(
-                        "#{:2}{} aggIn {:>7}  aggWrite {:>7}  aggHit {:>7}  {}/{}",
-                        m.sequence,
-                        star,
-                        format_int(cum.cum_input[start + i]),
-                        format_int(cum.cum_cache_write[start + i]),
-                        format_int(cum.cum_cache_read[start + i]),
-                        m.provider,
-                        m.model,
-                    ),
-                ));
-            }
+            lines.extend(render_message_table(
+                theme,
+                metrics,
+                width,
+                selected_row,
+                detail_open,
+                Some(cum),
+            ));
         }
         _ => {}
     }
@@ -538,6 +505,8 @@ fn render_stats_body(
     theme: &Theme,
     metrics: &CacheSessionMetrics,
     width: u16,
+    selected_row: Option<usize>,
+    detail_open: bool,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     lines.push(accent_line(theme, "Token/cache stats by assistant message"));
@@ -612,67 +581,122 @@ fn render_stats_body(
         return lines;
     }
 
-    let include_entry = width >= 92;
-    let include_ts = width >= 104;
-    lines.push(accent_line(theme, "Per-message breakdown"));
-    let mut header = format!(
-        "{:>4} {} {:24} {:>9} {:>9} {:>9} {:>9} {:>7}",
-        "#", "B", "model", "prompt", "recv", "hit", "write", "hit%"
-    );
-    if include_entry {
-        header = format!(
-            "{:>4} {} {:8} {:24} {:>9} {:>9} {:>9} {:>9} {:>7}",
-            "#", "B", "entry", "model", "prompt", "recv", "hit", "write", "hit%"
-        );
-    }
-    if include_ts {
-        // keep header simple when wide enough — entry already optional
-    }
-    lines.push(muted_line(theme, header.clone()));
-    lines.push(dim_line(
+    lines.extend(render_message_table(
         theme,
-        "-".repeat(header.len().min(width as usize).max(20)),
+        metrics,
+        width,
+        selected_row,
+        detail_open,
+        None,
     ));
+    lines
+}
 
-    for m in &metrics.all_messages {
+fn render_message_table(
+    theme: &Theme,
+    metrics: &CacheSessionMetrics,
+    width: u16,
+    selected_row: Option<usize>,
+    detail_open: bool,
+    cumulative: Option<&CumSeries>,
+) -> Vec<Line<'static>> {
+    let messages = &metrics.all_messages;
+    if messages.is_empty() {
+        return Vec::new();
+    }
+    let selected = selected_row
+        .unwrap_or(messages.len() - 1)
+        .min(messages.len() - 1);
+    let visible_rows = 8usize;
+    let start = selected.saturating_add(1).saturating_sub(visible_rows);
+    let end = (start + visible_rows).min(messages.len());
+    let mut lines = vec![
+        accent_line(theme, "Assistant messages"),
+        dim_line(
+            theme,
+            "↑/↓ or wheel select • Enter details • * active branch",
+        ),
+        muted_line(
+            theme,
+            " sel    # B model                    prompt      recv       hit     write    hit%",
+        ),
+        dim_line(theme, "─".repeat((width as usize).min(88).max(20))),
+    ];
+    for (idx, m) in messages[start..end].iter().enumerate() {
+        let absolute = start + idx;
+        let marker = if absolute == selected { ">" } else { " " };
+        let branch = if m.is_on_active_branch { "*" } else { " " };
         let model = format!("{}/{}", m.provider, m.model);
-        let model = if model.len() > 24 {
-            format!("{}…", &model[..23.min(model.len())])
+        let model = if model.chars().count() > 24 {
+            format!("{}…", model.chars().take(23).collect::<String>())
         } else {
             model
         };
-        let prompt = m
-            .input
-            .saturating_add(m.cache_read)
-            .saturating_add(m.cache_write);
-        let b = if m.is_on_active_branch { "*" } else { " " };
-        let row = if include_entry {
-            format!(
-                "{:>4} {} {:8} {:24} {:>9} {:>9} {:>9} {:>9} {:>7}",
-                m.sequence,
-                b,
-                &m.entry_id[..m.entry_id.len().min(8)],
-                model,
-                format_int(prompt),
-                format_int(m.output),
-                format_int(m.cache_read),
-                format_int(m.cache_write),
-                format_percent(m.cache_hit_percent),
-            )
+        let prompt = cumulative
+            .map(|cum| cum.cum_input[absolute])
+            .unwrap_or_else(|| {
+                m.input
+                    .saturating_add(m.cache_read)
+                    .saturating_add(m.cache_write)
+            });
+        let hit = cumulative
+            .map(|cum| cum.cum_cache_read[absolute])
+            .unwrap_or(m.cache_read);
+        let write = cumulative
+            .map(|cum| cum.cum_cache_write[absolute])
+            .unwrap_or(m.cache_write);
+        let hit_pct = cumulative
+            .map(|cum| cum.cum_hit_percent[absolute])
+            .unwrap_or(m.cache_hit_percent);
+        let style = if absolute == selected {
+            Style::default().fg(theme.text_primary).bg(theme.bg_hover)
         } else {
+            theme.muted()
+        };
+        lines.push(Line::from(Span::styled(
             format!(
-                "{:>4} {} {:24} {:>9} {:>9} {:>9} {:>9} {:>7}",
+                "  {marker} {:>4} {branch} {:24} {:>9} {:>9} {:>9} {:>9} {:>7}",
                 m.sequence,
-                b,
                 model,
                 format_int(prompt),
                 format_int(m.output),
+                format_int(hit),
+                format_int(write),
+                format_percent(hit_pct),
+            ),
+            style,
+        )));
+    }
+    if detail_open {
+        let m = &messages[selected];
+        lines.push(Line::from(""));
+        lines.push(accent_line(
+            theme,
+            format!("Message #{} details", m.sequence),
+        ));
+        lines.push(muted_line(theme, format!("Entry: {}", m.entry_id)));
+        lines.push(muted_line(theme, format!("Timestamp: {}", m.timestamp)));
+        lines.push(muted_line(
+            theme,
+            format!("Provider/model: {}/{}", m.provider, m.model),
+        ));
+        lines.push(muted_line(
+            theme,
+            format!(
+                "Input {} • Output {} • Cache read {} • Cache write {} • Total {} • Hit {}{}",
+                format_int(m.input),
+                format_int(m.output),
                 format_int(m.cache_read),
                 format_int(m.cache_write),
+                format_int(m.total_tokens),
                 format_percent(m.cache_hit_percent),
-            )
-        };
-        lines.push(muted_line(theme, row));
+                if m.usage_estimated {
+                    " • estimated"
+                } else {
+                    ""
+                },
+            ),
+        ));
     }
     lines
 }
@@ -811,11 +835,47 @@ mod tests {
                 assistant_messages: 1,
             },
             estimated_count: 0,
+            cache_miss_count: 0,
+            rebilled_tokens: 0,
         };
         assert!((summarize_hit_percent(&metrics.tree_totals) - 80.0).abs() < 0.01);
         let csv = build_cache_stats_csv(&metrics);
         assert!(csv.contains("message"));
         assert!(csv.contains("80"));
         assert_eq!(sanitize_export_name("My Session!"), "My-Session");
+    }
+
+    #[test]
+    fn message_table_defaults_to_latest_and_expands_details() {
+        let row = |sequence| AssistantUsageMetric {
+            sequence,
+            active_branch_sequence: Some(sequence),
+            entry_id: format!("a{sequence}"),
+            timestamp: format!("2026-01-01T00:00:{sequence:02}Z"),
+            provider: "xai".into(),
+            model: "grok".into(),
+            input: sequence as u64,
+            output: 1,
+            cache_read: 10,
+            cache_write: 0,
+            total_tokens: sequence as u64 + 11,
+            cache_hit_percent: 90.0,
+            is_on_active_branch: true,
+            usage_estimated: false,
+        };
+        let metrics = CacheSessionMetrics {
+            all_messages: (1..=10).map(row).collect(),
+            ..CacheSessionMetrics::default()
+        };
+        let lines = render_message_table(&Theme::default(), &metrics, 100, None, true, None);
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains(">   10"));
+        assert!(text.contains("Message #10 details"));
+        assert!(!text.contains("# 1 "));
     }
 }

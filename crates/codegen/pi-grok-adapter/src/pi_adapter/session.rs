@@ -570,10 +570,38 @@ impl PiAgent {
             }
             None => return,
         };
+        let guard_armed = self
+            .goal_host
+            .borrow()
+            .as_ref()
+            .is_some_and(|host| host.continuation_guard_armed(&control));
+        if guard_armed {
+            let blocked = self
+                .goal_host
+                .borrow_mut()
+                .as_mut()
+                .and_then(|host| match host.block_continuation_loop(&control) {
+                    Ok(blocked) => Some(blocked),
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "failed to persist goal continuation loop guard"
+                        );
+                        None
+                    }
+                });
+            if let Some(blocked) = blocked {
+                self.emit_goal_updated_from_control(&blocked).await;
+            }
+            return;
+        }
         self.emit_goal_updated_from_control(&control).await;
         let directive = GoalHost::continuation_directive(&control);
         self.enqueue_extension_message(directive, Vec::new(), Some("followUp"))
             .await;
+        if let Some(host) = self.goal_host.borrow_mut().as_mut() {
+            host.record_continuation(&control);
+        }
     }
 
     pub(super) async fn handle_workflow_bridge_message(&self, event: &Value) -> Result<bool> {

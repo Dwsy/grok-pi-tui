@@ -858,6 +858,7 @@ pub enum PiHistoryItem {
         mime_type: String,
     },
     AgentText(String),
+    CompactionSummary(String),
     AgentThought(String),
     ToolStart {
         id: String,
@@ -1395,9 +1396,7 @@ fn parse_message(value: &Value, message_index: usize, output: &mut Vec<PiHistory
         }
         "compaction" | "compactionsummary" | "compaction_summary" => {
             if let Some(summary) = string(value, &["summary", "text"]) {
-                output.push(PiHistoryItem::AgentText(format!(
-                    "**Compaction summary**\n\n{summary}"
-                )));
+                output.push(PiHistoryItem::CompactionSummary(summary.to_string()));
             }
         }
         _ => {

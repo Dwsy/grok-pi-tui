@@ -116,6 +116,25 @@ impl PiAgent {
         self.send_btw_history(entries, source).await;
     }
 
+    pub(super) async fn send_compaction_summary(
+        &self,
+        summary: &str,
+        is_replay: bool,
+        timestamp_ms: Option<i64>,
+    ) {
+        let session_id = self.session_id();
+        self.send_ext_notification(
+            "pi/ui/compaction_summary",
+            json!({
+                "sessionId": session_id.0.as_ref(),
+                "summary": summary,
+                "isReplay": is_replay,
+                "agentTimestampMs": timestamp_ms,
+            }),
+        )
+        .await;
+    }
+
     pub(super) async fn replay_history_item(&self, entry: PiReplayEntry) {
         let timestamp_ms = entry.timestamp_ms;
         let update = match entry.item {
@@ -127,6 +146,10 @@ impl PiAgent {
             }
             PiHistoryItem::AgentText(text) => {
                 acp::SessionUpdate::AgentMessageChunk(text_chunk(text))
+            }
+            PiHistoryItem::CompactionSummary(summary) => {
+                self.send_compaction_summary(&summary, true, timestamp_ms).await;
+                return;
             }
             PiHistoryItem::AgentThought(text) => {
                 acp::SessionUpdate::AgentThoughtChunk(text_chunk(text))

@@ -1402,30 +1402,10 @@ impl ScrollbackState {
         self.invalidate_heights();
     }
 
-    /// Re-materialize UserPrompt display modes when grok-pi toggles markdown
-    /// user rendering. Enabling expands collapsed/truncated prompts; disabling
-    /// restores each block's classic default (collapsed when foldable). Pins
-    /// win under `respect_manual_folds`.
-    pub fn apply_pi_user_markdown_flip(&mut self, enabled: bool) {
-        let respect_manual_folds = self.appearance.scrollback.scroll.respect_manual_folds;
-        for entry in self.entries.values_mut() {
-            let RenderBlock::UserPrompt(_) = &entry.block else {
-                continue;
-            };
-            if respect_manual_folds && entry.display_mode_pinned {
-                continue;
-            }
-            if enabled {
-                if matches!(
-                    entry.display_mode,
-                    DisplayMode::Collapsed | DisplayMode::Truncated
-                ) {
-                    entry.display_mode = DisplayMode::Expanded;
-                }
-            } else {
-                entry.display_mode = entry.block.default_display_mode();
-            }
-        }
+    /// Re-render UserPrompt blocks when grok-pi toggles markdown user rendering.
+    /// Both renderers support the same fold states, so toggling style must not
+    /// overwrite a default or user-selected collapsed/expanded mode.
+    pub fn apply_pi_user_markdown_flip(&mut self, _enabled: bool) {
         self.invalidate_heights();
     }
 
@@ -2460,7 +2440,7 @@ mod tests {
     }
 
     #[test]
-    fn pi_user_markdown_flip_expands_collapsed_then_restores_default() {
+    fn pi_user_markdown_flip_preserves_fold_state() {
         std::thread::spawn(|| {
             crate::app::set_external_agent_active(true);
             crate::appearance::cache::set_pi_user_markdown(false);
@@ -2474,15 +2454,16 @@ mod tests {
             state.apply_pi_user_markdown_flip(true);
             assert_eq!(
                 state.get_by_id(id).unwrap().display_mode,
-                DisplayMode::Expanded,
-                "enabling markdown must expand collapsed prompts"
+                DisplayMode::Collapsed,
+                "enabling markdown must preserve the prompt fold state"
             );
 
+            state.get_by_id_mut(id).unwrap().display_mode = DisplayMode::Expanded;
             state.apply_pi_user_markdown_flip(false);
             assert_eq!(
                 state.get_by_id(id).unwrap().display_mode,
-                DisplayMode::Collapsed,
-                "disabling markdown must restore classic default"
+                DisplayMode::Expanded,
+                "disabling markdown must preserve the prompt fold state"
             );
         })
         .join()

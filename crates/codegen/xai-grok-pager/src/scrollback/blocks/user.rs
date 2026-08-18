@@ -503,8 +503,9 @@ impl UserPromptBlock {
         all_lines
     }
 
-    /// Agent-markdown path: render body via [`MarkdownContent`], keep user
-    /// prompt prefix/indent and elevated band. Ignores collapse limits.
+    /// Expanded agent-markdown path: render body via [`MarkdownContent`] while
+    /// keeping user prompt prefix/indent and elevated band. Collapsed prompts
+    /// use the classic preview path so original line boundaries stay visible.
     fn markdown_prompt_lines(&self, ctx: &BlockContext) -> Vec<BlockLine> {
         self.ensure_markdown();
         let md = self.markdown.borrow();
@@ -580,7 +581,7 @@ impl UserPromptBlock {
 
 impl BlockContent for UserPromptBlock {
     fn output(&self, ctx: &BlockContext) -> BlockOutput {
-        if Self::use_agent_renderer() {
+        if Self::use_agent_renderer() && ctx.mode == DisplayMode::Expanded {
             let lines = self.markdown_prompt_lines(ctx);
             return BlockOutput { lines };
         }
@@ -631,9 +632,6 @@ impl BlockContent for UserPromptBlock {
     }
 
     fn is_foldable(&self) -> bool {
-        if Self::use_agent_renderer() {
-            return false;
-        }
         // Estimate visual line count to catch long single-line prompts that
         // wrap past the limit. Uses a conservative content width (terminal
         // width minus prefix/padding); at wider terminals we may slightly
@@ -655,9 +653,6 @@ impl BlockContent for UserPromptBlock {
     }
 
     fn default_display_mode(&self) -> DisplayMode {
-        if Self::use_agent_renderer() {
-            return DisplayMode::Expanded;
-        }
         if self.is_foldable() {
             DisplayMode::Collapsed
         } else {
@@ -1314,11 +1309,11 @@ mod tests {
     }
 
     #[test]
-    fn external_agent_markdown_on_expanded_not_foldable() {
+    fn external_agent_markdown_on_preserves_folding() {
         with_external_agent_markdown(true, || {
             let block = UserPromptBlock::new("one\ntwo\nthree\nfour");
-            assert!(!block.is_foldable());
-            assert_eq!(block.default_display_mode(), DisplayMode::Expanded);
+            assert!(block.is_foldable());
+            assert_eq!(block.default_display_mode(), DisplayMode::Collapsed);
             assert!(block.has_raw_mode());
         });
     }
@@ -1347,7 +1342,7 @@ mod tests {
     }
 
     #[test]
-    fn markdown_path_ignores_collapsed_mode() {
+    fn markdown_path_respects_collapsed_mode() {
         use crate::appearance::AppearanceConfig;
         use crate::scrollback::types::BlockContext;
 
@@ -1364,9 +1359,10 @@ mod tests {
                 cwd: None,
             };
             let out = block.output(&ctx);
+            assert_eq!(out.lines.len(), COLLAPSED_MAX_LINES);
             assert!(
-                out.lines.len() > 3,
-                "markdown path must ignore collapse max_lines"
+                line_text(&out.lines[COLLAPSED_MAX_LINES - 1].content).ends_with('…'),
+                "collapsed markdown prompt must show an ellipsis"
             );
         });
     }

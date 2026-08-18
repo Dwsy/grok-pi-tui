@@ -596,6 +596,12 @@ pub struct CacheSessionMetrics {
     pub active_branch_messages: Vec<AssistantUsageMetric>,
     pub tree_totals: CacheUsageTotals,
     pub active_branch_totals: CacheUsageTotals,
+    /// Prompt tokens that should have been cache reads but were billed again.
+    #[serde(default)]
+    pub rebilled_tokens: u64,
+    /// Number of cache misses above Pi's 1,024-token noise floor.
+    #[serde(default)]
+    pub cache_miss_count: u32,
     /// How many assistant rows used content-size estimates (provider wrote 0 usage).
     #[serde(default)]
     pub estimated_count: u32,

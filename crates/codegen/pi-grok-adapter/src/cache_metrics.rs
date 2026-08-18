@@ -41,11 +41,18 @@ pub(crate) fn collect_cache_session_metrics(entries_payload: &Value) -> Value {
     let mut sequence: u32 = 0;
     let mut active_branch_sequence: u32 = 0;
     let mut estimated_count: u32 = 0;
+    let mut rebilled_tokens: u64 = 0;
+    let mut cache_miss_count: u32 = 0;
+    let mut previous_prompt: Option<(u64, bool)> = None;
 
     for entry in &items {
         let kind = string(entry, &["type", "kind"])
             .unwrap_or_default()
             .to_ascii_lowercase();
+        if kind == "compaction" || kind == "branch_summary" {
+            previous_prompt = None;
+            continue;
+        }
         if kind != "message" {
             continue;
         }
@@ -92,6 +99,25 @@ pub(crate) fn collect_cache_session_metrics(entries_payload: &Value) -> Value {
             active_branch_ids.contains(&entry_id)
         };
         let hit = compute_cache_hit_percent(input, cache_read, cache_write);
+        let prompt_tokens = input.saturating_add(cache_read).saturating_add(cache_write);
+        if let Some((previous_tokens, reported_cache)) = previous_prompt {
+            if prompt_tokens > 0 && (cache_read + cache_write > 0 || reported_cache) {
+                let missed = previous_tokens
+                    .min(prompt_tokens)
+                    .saturating_sub(cache_read);
+                if missed > 1024 {
+                    rebilled_tokens = rebilled_tokens.saturating_add(missed);
+                    cache_miss_count = cache_miss_count.saturating_add(1);
+                }
+            }
+        }
+        if prompt_tokens > 0 {
+            previous_prompt = Some((
+                prompt_tokens,
+                previous_prompt.is_some_and(|(_, reported)| reported)
+                    || cache_read.saturating_add(cache_write) > 0,
+            ));
+        }
 
         let mut metric = json!({
             "sequence": sequence,
@@ -154,6 +180,8 @@ pub(crate) fn collect_cache_session_metrics(entries_payload: &Value) -> Value {
         "activeBranchMessages": active_branch_messages,
         "treeTotals": totals_json(&tree_totals),
         "activeBranchTotals": totals_json(&active_branch_totals),
+        "rebilledTokens": rebilled_tokens,
+        "cacheMissCount": cache_miss_count,
         "estimatedCount": estimated_count,
     })
 }

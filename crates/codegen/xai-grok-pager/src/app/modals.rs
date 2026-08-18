@@ -307,6 +307,9 @@ impl AgentView {
                 scroll,
                 cache_metrics,
                 view,
+                selected_row,
+                detail_open,
+                session_file,
                 export_cwd,
                 export_basename,
                 ..
@@ -327,15 +330,37 @@ impl AgentView {
                     return InputOutcome::Changed;
                 }
                 ModalWindowOutcome::Unhandled => {
-                    if crate::views::modal::apply_doc_scroll(key.code, scroll) {
-                        return InputOutcome::Changed;
+                    if matches!(key.code, KeyCode::Char('c')) {
+                        if let Some(path) = session_file.as_deref() {
+                            let delivery = crate::clipboard::copy_text_or_file(path);
+                            self.show_toast(delivery.toast_message().as_ref());
+                            return InputOutcome::Changed;
+                        }
                     }
-                    // View switching / export when cache metrics are attached.
-                    if cache_metrics.is_some() {
-                        let next = match key.code {
-                            KeyCode::Char('0') | KeyCode::Char('c') => {
-                                Some(CacheGraphView::Breakdown)
+                    // View switching / table navigation when cache metrics are attached.
+                    if let Some(metrics) = cache_metrics.as_ref() {
+                        if *view != CacheGraphView::Breakdown {
+                            if matches!(key.code, KeyCode::Up | KeyCode::Char('k')) {
+                                if let Some(selected) = selected_row.as_mut() {
+                                    *selected = selected.saturating_sub(1);
+                                }
+                                return InputOutcome::Changed;
                             }
+                            if matches!(key.code, KeyCode::Down | KeyCode::Char('j')) {
+                                if let Some(selected) = selected_row.as_mut() {
+                                    *selected = selected
+                                        .saturating_add(1)
+                                        .min(metrics.all_messages.len().saturating_sub(1));
+                                }
+                                return InputOutcome::Changed;
+                            }
+                            if matches!(key.code, KeyCode::Enter) && selected_row.is_some() {
+                                *detail_open = !*detail_open;
+                                return InputOutcome::Changed;
+                            }
+                        }
+                        let next = match key.code {
+                            KeyCode::Char('0') => Some(CacheGraphView::Breakdown),
                             KeyCode::Char('1') => Some(CacheGraphView::PerTurn),
                             KeyCode::Char('2') => Some(CacheGraphView::CumulativePercent),
                             KeyCode::Char('3') => Some(CacheGraphView::CumulativeTotal),
@@ -347,6 +372,9 @@ impl AgentView {
                             if next_view != *view {
                                 *view = next_view;
                                 *scroll = 0;
+                                *detail_open = false;
+                                *selected_row = (!metrics.all_messages.is_empty())
+                                    .then(|| metrics.all_messages.len() - 1);
                             }
                             return InputOutcome::Changed;
                         }
@@ -375,6 +403,9 @@ impl AgentView {
                                 crate::app::actions::Action::ShowContextInfo,
                             );
                         }
+                    }
+                    if crate::views::modal::apply_doc_scroll(key.code, scroll) {
+                        return InputOutcome::Changed;
                     }
                     return InputOutcome::Unchanged;
                 }
@@ -2197,7 +2228,33 @@ impl AgentView {
                     return InputOutcome::Changed;
                 }
                 ModalWindowOutcome::Unhandled => {
-                    // DocViewer / RememberNoteReview: wheel scrolls the markdown body.
+                    if let Some(ActiveModal::ContextInfo {
+                        view,
+                        selected_row,
+                        cache_metrics: Some(metrics),
+                        ..
+                    }) = self.active_modal.as_mut()
+                        && *view != crate::views::cache_graph::CacheGraphView::Breakdown
+                    {
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => {
+                                if let Some(selected) = selected_row.as_mut() {
+                                    *selected = selected.saturating_sub(1);
+                                }
+                                return InputOutcome::Changed;
+                            }
+                            MouseEventKind::ScrollDown => {
+                                if let Some(selected) = selected_row.as_mut() {
+                                    *selected = selected
+                                        .saturating_add(1)
+                                        .min(metrics.all_messages.len().saturating_sub(1));
+                                }
+                                return InputOutcome::Changed;
+                            }
+                            _ => return InputOutcome::Changed,
+                        }
+                    }
+                    // DocViewer / Context breakdown / RememberNoteReview: wheel scrolls the body.
                     if let Some(
                         ActiveModal::DocViewer { scroll, .. }
                         | ActiveModal::ContextInfo { scroll, .. }
@@ -2568,15 +2625,15 @@ impl AgentView {
         }
     }
 
-    /// Copy the usage modal's session ID and toast the delivery outcome.
+    /// Copy the usage modal's JSONL session path and toast the delivery outcome.
     fn copy_usage_modal_session_id(&mut self) {
         let Some(ActiveModal::UsageInfo { state }) = self.active_modal.as_ref() else {
             return;
         };
-        let Some(id) = state.ctx.session_id.clone() else {
+        let Some(path) = state.ctx.session_file.clone() else {
             return;
         };
-        let delivery = crate::clipboard::copy_text_or_file(&id);
+        let delivery = crate::clipboard::copy_text_or_file(&path);
         self.show_toast(delivery.toast_message().as_ref());
     }
 
@@ -3645,6 +3702,9 @@ impl AgentView {
                 window,
                 cache_metrics,
                 view,
+                selected_row,
+                detail_open,
+                session_fields,
                 ..
             } = active_modal
             {
@@ -3661,6 +3721,9 @@ impl AgentView {
                     &theme,
                     cache_metrics.as_ref(),
                     *view,
+                    *selected_row,
+                    *detail_open,
+                    session_fields,
                     cache_enabled,
                 );
             } else if let modal::ActiveModal::RememberNoteReview {
@@ -5927,7 +5990,7 @@ mod notifications_modal_input_tests {
     use crate::app::app_view::ExternalNotification;
     use crate::views::modal::{ActiveModal, NotificationListState};
     use crate::views::modal_window::ModalWindowState;
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)

@@ -19,7 +19,7 @@ use crate::views::modal_window::{
     self as mw, ModalSizing, ModalWindowConfig, ModalWindowState, Shortcut,
 };
 
-/// Footer shortcut ID for "copy session ID".
+/// Footer shortcut ID for "copy session file".
 pub const COPY_SESSION_ID_SHORTCUT: usize = 1;
 
 /// Footer shortcut ID for "copy all session info".
@@ -59,8 +59,10 @@ impl UsageInfoTab {
 
 /// Account/session facts captured when the modal opens.
 pub struct UsageInfoContext {
-    /// Session ID for the copy shortcut (`None` before the session starts).
+    /// Session ID (`None` before the session starts).
     pub session_id: Option<String>,
+    /// JSONL session file path, populated with `/session-info` data.
+    pub session_file: Option<String>,
     /// False for team/enterprise accounts, which have no consumer billing.
     pub usage_visible: bool,
     /// True for gateway chat sessions, which have no Build coding credits.
@@ -192,7 +194,7 @@ impl UsageInfoModalState {
 /// clicks, footer clicks) are handled by the caller via `modal_window`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UsageModalOutcome {
-    /// Copy the session ID to the clipboard (caller owns clipboard + toast).
+    /// Copy the JSONL session path to the clipboard (caller owns clipboard + toast).
     /// Emitted by the `c` shortcut and the footer button.
     CopySessionId,
     /// Copy an arbitrary Session-info value row (caller owns clipboard +
@@ -252,7 +254,7 @@ pub fn handle_usage_modal_key(
             state.scroll_to(u16::MAX);
             UsageModalOutcome::Changed
         }
-        KeyCode::Char('c') if state.ctx.session_id.is_some() => UsageModalOutcome::CopySessionId,
+        KeyCode::Char('c') if state.ctx.session_file.is_some() => UsageModalOutcome::CopySessionId,
         KeyCode::Char('y') => match state.session_info_copy_all() {
             Some(text) => UsageModalOutcome::CopyText(text),
             None => UsageModalOutcome::Unchanged,
@@ -328,9 +330,9 @@ pub fn render_usage_modal(
             id: 0,
         },
     ];
-    if state.ctx.session_id.is_some() {
+    if state.ctx.session_file.is_some() {
         shortcuts.push(Shortcut {
-            label: "c copy session ID",
+            label: "c copy JSONL path",
             clickable: true,
             id: COPY_SESSION_ID_SHORTCUT,
         });
@@ -708,6 +710,7 @@ mod tests {
             UsageInfoTab::UsageLimit,
             UsageInfoContext {
                 session_id: Some("sid-123".to_string()),
+                session_file: Some("/tmp/sid-123.jsonl".to_string()),
                 usage_visible: true,
                 chat_kind: false,
                 billing_redirect_url: None,
@@ -733,13 +736,13 @@ mod tests {
     }
 
     #[test]
-    fn copy_shortcut_requires_a_session_id() {
+    fn copy_shortcut_requires_a_session_file() {
         let mut state = state_with_session();
         assert_eq!(
             handle_usage_modal_key(&mut state, &key(KeyCode::Char('c'))),
             UsageModalOutcome::CopySessionId
         );
-        state.ctx.session_id = None;
+        state.ctx.session_file = None;
         assert_eq!(
             handle_usage_modal_key(&mut state, &key(KeyCode::Char('c'))),
             UsageModalOutcome::Unchanged
@@ -819,7 +822,7 @@ mod tests {
             "Context usage",
             "Usage limit",
             "Session info",
-            "copy session ID",
+            "copy JSONL path",
             "Session usage: no model calls yet.",
         ] {
             assert!(text.contains(needle), "missing {needle:?} in:\n{text}");

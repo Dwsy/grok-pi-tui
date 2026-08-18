@@ -5,8 +5,14 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const CONTINUATION_LOOP_WINDOW: Duration = Duration::from_secs(30);
+const CONTINUATION_LOOP_LIMIT: usize = 3;
+const CONTINUATION_LOOP_GUARD_MESSAGE: &str =
+    "Auto-stopped after 3 goal continuations within 30 seconds to prevent a loop.";
 
 /// Control file schema written by `extensions/pi-grok-goal`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -54,6 +60,9 @@ pub struct GoalHost {
     control_path: PathBuf,
     started: Option<Instant>,
     last_snapshot: Option<GoalControl>,
+    continuation_goal_id: Option<String>,
+    continuation_sends: VecDeque<Instant>,
+    continuation_guard_armed: bool,
 }
 
 impl GoalHost {
@@ -62,6 +71,9 @@ impl GoalHost {
             control_path,
             started: None,
             last_snapshot: None,
+            continuation_goal_id: None,
+            continuation_sends: VecDeque::new(),
+            continuation_guard_armed: false,
         }
     }
 
@@ -83,7 +95,64 @@ impl GoalHost {
         if !control.is_present() {
             self.started = None;
         }
+        let same_active_goal = control.is_active()
+            && self.continuation_goal_id.as_deref() == Some(control.goal_id.as_str());
+        if !same_active_goal {
+            self.continuation_sends.clear();
+            self.continuation_guard_armed = false;
+            self.continuation_goal_id = control.is_active().then(|| control.goal_id.clone());
+        }
         self.last_snapshot = Some(control);
+    }
+
+    pub fn continuation_guard_armed(&self, control: &GoalControl) -> bool {
+        control.is_active()
+            && self.continuation_goal_id.as_deref() == Some(control.goal_id.as_str())
+            && self.continuation_guard_armed
+    }
+
+    pub fn record_continuation(&mut self, control: &GoalControl) {
+        self.record_continuation_at(control, Instant::now());
+    }
+
+    fn record_continuation_at(&mut self, control: &GoalControl, now: Instant) -> bool {
+        if !control.is_active() {
+            return false;
+        }
+        if self.continuation_goal_id.as_deref() != Some(control.goal_id.as_str()) {
+            self.continuation_goal_id = Some(control.goal_id.clone());
+            self.continuation_sends.clear();
+            self.continuation_guard_armed = false;
+        }
+        while self
+            .continuation_sends
+            .front()
+            .is_some_and(|sent| now.duration_since(*sent) >= CONTINUATION_LOOP_WINDOW)
+        {
+            self.continuation_sends.pop_front();
+        }
+        self.continuation_sends.push_back(now);
+        if self.continuation_sends.len() >= CONTINUATION_LOOP_LIMIT {
+            self.continuation_guard_armed = true;
+        }
+        self.continuation_guard_armed
+    }
+
+    pub fn block_continuation_loop(
+        &mut self,
+        control: &GoalControl,
+    ) -> std::io::Result<GoalControl> {
+        let mut blocked = control.clone();
+        blocked.status = "blocked".into();
+        blocked.phase = "idle".into();
+        blocked.pause_message = Some(CONTINUATION_LOOP_GUARD_MESSAGE.into());
+        blocked.last_event = Some("goal_paused".into());
+        blocked.last_event_detail = Some("loop_guard".into());
+        let raw = serde_json::to_string_pretty(&blocked)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        std::fs::write(&self.control_path, raw)?;
+        self.apply_control(blocked.clone());
+        Ok(blocked)
     }
 
     pub fn snapshot(&self) -> Option<&GoalControl> {
@@ -168,6 +237,22 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
+    fn active_control() -> GoalControl {
+        GoalControl {
+            goal_id: "g".into(),
+            objective: "x".into(),
+            status: "active".into(),
+            phase: "executing".into(),
+            token_budget: None,
+            token_baseline: 0,
+            tokens_used: 0,
+            created_at: String::new(),
+            pause_message: None,
+            last_event: None,
+            last_event_detail: None,
+        }
+    }
+
     #[test]
     fn parse_goal_set_args_budget() {
         let (obj, budget) = parse_goal_set_args("ship auth --budget 50000");
@@ -190,6 +275,39 @@ mod tests {
         assert_eq!(payload["update"]["sessionUpdate"], "goal_updated");
         assert_eq!(payload["update"]["goal_id"], "g1");
         assert_eq!(payload["update"]["status"], "active");
+    }
+
+    #[test]
+    fn continuation_guard_arms_after_three_sends_within_30_seconds() {
+        let f = NamedTempFile::new().unwrap();
+        let mut host = GoalHost::new(f.path().to_path_buf());
+        let control = active_control();
+        host.apply_control(control.clone());
+        let start = Instant::now();
+        assert!(!host.record_continuation_at(&control, start));
+        assert!(!host.record_continuation_at(&control, start + Duration::from_secs(10)));
+        assert!(host.record_continuation_at(&control, start + Duration::from_secs(20)));
+        assert!(host.continuation_guard_armed(&control));
+
+        let blocked = host.block_continuation_loop(&control).unwrap();
+        assert_eq!(blocked.status, "blocked");
+        assert_eq!(blocked.last_event_detail.as_deref(), Some("loop_guard"));
+        let stored: GoalControl =
+            serde_json::from_str(&std::fs::read_to_string(f.path()).unwrap()).unwrap();
+        assert_eq!(stored.status, "blocked");
+    }
+
+    #[test]
+    fn continuation_guard_expires_old_sends() {
+        let f = NamedTempFile::new().unwrap();
+        let mut host = GoalHost::new(f.path().to_path_buf());
+        let control = active_control();
+        host.apply_control(control.clone());
+        let start = Instant::now();
+        assert!(!host.record_continuation_at(&control, start));
+        assert!(!host.record_continuation_at(&control, start + Duration::from_secs(20)));
+        assert!(!host.record_continuation_at(&control, start + Duration::from_secs(31)));
+        assert!(!host.continuation_guard_armed(&control));
     }
 
     #[test]

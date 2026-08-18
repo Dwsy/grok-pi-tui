@@ -399,6 +399,14 @@ pub enum ActiveModal {
         window: ModalWindowState,
         cache_metrics: Option<xai_grok_shell::session::CacheSessionMetrics>,
         view: crate::views::cache_graph::CacheGraphView,
+        /// Selected assistant-message row in cache views; defaults to latest.
+        selected_row: Option<usize>,
+        /// Expanded detail for the selected cache row.
+        detail_open: bool,
+        /// JSONL path for `c` copy in the Pi context modal.
+        session_file: Option<String>,
+        /// Structured `/session-info` rows shown in view 0.
+        session_fields: Vec<crate::views::usage_modal::SessionInfoField>,
         /// Project cwd for CSV export (from session/info).
         export_cwd: String,
         /// Basename for `{name}.csv` export.
@@ -1360,6 +1368,9 @@ pub fn render_context_info_overlay(
     theme: &Theme,
     cache_metrics: Option<&xai_grok_shell::session::CacheSessionMetrics>,
     view: crate::views::cache_graph::CacheGraphView,
+    selected_row: Option<usize>,
+    detail_open: bool,
+    session_fields: &[crate::views::usage_modal::SessionInfoField],
     cache_enabled: bool,
 ) {
     use crate::views::cache_graph::{CacheGraphView, render_cache_view_lines};
@@ -1389,7 +1400,21 @@ pub fn render_context_info_overlay(
                 id: 0,
             },
             super::modal_window::Shortcut {
-                label: "↑/↓ scroll",
+                label: "c copy JSONL path",
+                clickable: false,
+                id: 0,
+            },
+            super::modal_window::Shortcut {
+                label: if view == CacheGraphView::Breakdown {
+                    "↑/↓ scroll"
+                } else {
+                    "↑/↓ select"
+                },
+                clickable: false,
+                id: 0,
+            },
+            super::modal_window::Shortcut {
+                label: "Enter details",
                 clickable: false,
                 id: 0,
             },
@@ -1434,9 +1459,66 @@ pub fn render_context_info_overlay(
         ..
     }) = super::modal_window::render_modal_window(buf, area, window, &modal_config, theme)
     {
-        let lines = if show_cache && view != CacheGraphView::Breakdown {
+        let lines = if show_cache {
             if let Some(metrics) = cache_metrics {
-                render_cache_view_lines(theme, metrics, content_area.width, view)
+                if view == CacheGraphView::Breakdown {
+                    let mut lines = vec![ratatui::text::Line::styled(
+                        "Session Info",
+                        ratatui::style::Style::default()
+                            .fg(theme.text_primary)
+                            .add_modifier(ratatui::style::Modifier::BOLD),
+                    )];
+                    for field in session_fields {
+                        let label = match field.label {
+                            "Title" => "Name",
+                            "Session file" => "File",
+                            "Session ID" => "ID",
+                            other => other,
+                        };
+                        lines.push(ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled(
+                                format!("{label}: "),
+                                theme.muted(),
+                            ),
+                            ratatui::text::Span::styled(
+                                field.value.clone(),
+                                ratatui::style::Style::default().fg(theme.text_primary),
+                            ),
+                        ]));
+                    }
+                    lines.push(ratatui::text::Line::default());
+                    lines.extend(block.modal_lines(theme, content_area.width));
+                    lines.push(ratatui::text::Line::default());
+                    lines.push(ratatui::text::Line::styled(
+                        "Session cache",
+                        ratatui::style::Style::default()
+                            .fg(theme.text_primary)
+                            .add_modifier(ratatui::style::Modifier::BOLD),
+                    ));
+                    lines.push(ratatui::text::Line::styled(
+                        format!(
+                            "Cache Re-billed: {} tokens, {} {}",
+                            crate::views::cache_graph::format_int(metrics.rebilled_tokens),
+                            metrics.cache_miss_count,
+                            if metrics.cache_miss_count == 1 {
+                                "miss"
+                            } else {
+                                "misses"
+                            },
+                        ),
+                        theme.muted(),
+                    ));
+                    lines
+                } else {
+                    render_cache_view_lines(
+                        theme,
+                        metrics,
+                        content_area.width,
+                        view,
+                        selected_row,
+                        detail_open,
+                    )
+                }
             } else {
                 block.modal_lines(theme, content_area.width)
             }

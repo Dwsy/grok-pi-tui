@@ -1023,6 +1023,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 }
                 agent.apply_full_context_info(info.data.context);
                 if let Some(state) = usage_modal_state_mut(agent) {
+                    state.ctx.session_file = info.session_file.clone();
                     state.session_fields = Some(fields);
                     state.session_error = None;
                 } else if minimal {
