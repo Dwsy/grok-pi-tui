@@ -133,6 +133,37 @@ Before reporting completion:
 3. Review the diff for scope and whitespace errors.
 4. State known blockers separately from passing checks.
 
+## Diagnosing Pi RPC bootstrap / extension failures
+
+When Pi RPC bootstrap fails and grok-pi self-heals by dropping an extension or
+relaunching with `-ne`, do not stop at the reported culprit name — the bisect
+only names a file (e.g. `index.ts`), never the real error. Follow this order:
+
+1. **Read the real Pi error first.** Pi's complete stderr is appended to
+   `{GROK_HOME}/logs/pi-rpc-stderr.log` (default `~/.grok-pi/logs/pi-rpc-stderr.log`)
+   by `pi_rpc.rs`'s stderr reader. This is the authoritative failure message
+   (e.g. `Cannot find module './eval-tasks.ts'`). Trace it to the exact line
+   before touching any Rust injector.
+2. **Isolate the injected bundle.** Injected extensions live in
+   `$TMPDIR/pi-grok-bash-*` (`NSTemporaryDirectory` on macOS) and are deleted by
+   self-heal after the crash, so reproduce a clean copy before the directory
+   disappears. Verify the bundle loads in isolation:
+   `pi -ne --mode rpc --extension <bundle>/index.ts` (must exit 0).
+3. **Check injection completeness.** The Rust injector
+   (`bash_extension.rs` / `*_extension.rs`) must materialize **every** relative
+   import of the TypeScript entry, and the transitive closure of those modules.
+   Known regression: splitting the Bash extension into multiple modules
+   (`eval.ts`, `bash-tasks.ts`, `eval-tasks.ts`, `prompts.ts`, `shared.ts`,
+   `tool-bridge.ts`) added imports the injector did not initially copy, causing
+   `Cannot find module './eval-tasks.ts'` at boot. When adding a module, mirror
+   it into the injector and extend the injector's single unit test to assert the
+   new import and module content.
+4. **Rule out tool-name conflicts separately.** `Tool "bash" conflicts with …`
+   comes from Pi's `resource-loader.ts` extension-conflict check (two extension
+   registrations), independent of bundle loading. It only appears when Pi
+   auto-discovers another extension, so reproduce with `-ne` to separate bundle
+   errors from cross-extension conflicts.
+
 ## Documentation and change control
 
 - Complex work must have a record in `docs/issues/` before implementation.
