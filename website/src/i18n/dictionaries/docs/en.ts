@@ -562,7 +562,7 @@ export const docsEn = {
           {
             feature: "Todo / plan list",
             status: "Native+Adapted",
-            notes: "rpiv-todo → ACP Plan → TodoPane",
+            notes: "Built-in todo (F2 pi_todo, default on) → ACP Plan → TodoPane",
           },
           {
             feature: "Plan mode",
@@ -736,18 +736,6 @@ export const docsEn = {
     quickInstallLabel: "Quick install",
     recommended: [
       {
-        pkg: "npm:@juicesharp/rpiv-todo",
-        title: "Todo list → native TodoPane",
-        status: "Recommended · Adapted",
-        body: "Agent updates a structured task list via the todo tool. grok-pi projects details.tasks into ACP Plan → Grok TodoPane / plan badge. The raw todo tool card is suppressed in scrollback so you see one native list, not a duplicate card.",
-        install: "pi install npm:@juicesharp/rpiv-todo",
-        notes: [
-          "Unidirectional: Pi tool details → ACP Plan → Pager UI.",
-          "Works in RPC mode without Remote TUI.",
-          "Use for multi-step agent work you want visible as a checklist.",
-        ],
-      },
-      {
         pkg: "npm:@juicesharp/rpiv-ask-user-question",
         title: "Structured questions → QuestionView",
         status: "Recommended · Remote TUI path",
@@ -916,11 +904,11 @@ export const docsEn = {
     faqs: [
       {
         q: "Do I need to install pi-grok-bash myself?",
-        a: "No. The composition binary injects it at runtime. You only install community packages (todo / ask).",
+        a: "No. The composition binary injects it at runtime. Built-in Todo is also injected by default; install only community packages you still want, such as ask-user-question.",
       },
       {
-        q: "Why is todo recommended if the host already has plan mode?",
-        a: "Plan mode is a write gate + approval flow. rpiv-todo is a living checklist projected into TodoPane — complementary, not a replacement.",
+        q: "Why have Todo if the host already has plan mode?",
+        a: "Plan mode is a write gate + approval flow. Built-in Todo is the living checklist projected into TodoPane — complementary, not a replacement. F2 pi_todo is on by default; when it is on grok-pi blocks rpiv-todo to avoid duplicate tool registration. Turn pi_todo off and restart if you intentionally want the community provider instead.",
       },
       {
         q: "Will ask-user-question work without Remote TUI?",

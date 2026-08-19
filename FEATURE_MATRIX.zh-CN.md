@@ -24,7 +24,7 @@
 | Theme / timestamps / mouse | 原生+适配 | Grok appearance/input；Pi 主题 JSON 经 `theme::pi` 映射为 Grok `Theme`，`/theme` 可选 `pi:<name>`；内置实验性 `pi:transparent`（暗色）与 `pi:transparent-light`（浅色）将主画布交给终端默认背景（用于终端透明度/毛玻璃），同时保留选中态、代码、diff 与工具表面的实色；F2 可控制 OSC 9;4 terminal-tab progress，默认关闭 |
 | Markdown / code blocks | 原生+适配 | Pi text/reasoning → ACP chunks → `xai-grok-markdown` |
 | Tool cards | 原生+适配 | Pi tool events → ACP ToolCall；`read`/`bash`/`edit`/`write`/`grep`/`find`/`ls` 投影到原生卡 |
-| Todo / plan list | 原生+适配 | Pi `@juicesharp/rpiv-todo` 的 `todo` tool `details.tasks` → ACP `Plan` → 原生 TodoPane/badge；scrollback 抑制 `todo` 卡 |
+| Todo / plan list | 原生+适配 | F2 `[ui].pi_todo` **默认开启**（需重启）会注入 grok-pi 内置 `todo` 工具；`details.tasks` → ACP `Plan` → 原生 TodoPane/badge，并在 scrollback 抑制原始 `todo` 卡。内置 Todo 开启时资源策略会屏蔽 `npm:@juicesharp/rpiv-todo`；关闭 `pi_todo` 后可改用这个兼容 provider。 |
 | Plan mode | 原生+适配 | Pi 仅暴露 Normal ↔ Plan：`/plan-mode` 与 Ctrl+Shift+T 用于切换，`/plan` 用于进入；Shift+Tab 保持 thinking level 切换。Pager 原生 Plan 开关 → adapter 负责的 `Inactive/Pending/Active/ExitPending` 状态机；full/sparse system-reminder 前缀；session 私有 `.plan.md` sidecar；注入 Pi `tool_call` gate 阻止 `edit`/`write`/`bash`（仅放行计划文件）；Pi `exit_plan_mode` 打开原生 `x.ai/exit_plan_mode` 审批，并持久化 `.plan-mode.json` 状态 |
 | Goal 模式（`/goal`） | 适配（MVP legacy） | F2 `[ui].pi_goal` **默认关闭**（需重启）。注入扩展：`/goal` + `update_goal` + control 文件；adapter GoalHost 发原生 `GoalUpdated`（状态条 / detail）。Active 时 `agent_settled` follow-up 续跑。**不含** shell 完整 multi-agent classifier/planner/strategist（后续切片）。 |
 | Loop 定时（`/loop`） | 适配（MVP） | F2 `[ui].pi_loop` **默认关闭**（需重启）。注入扩展：`/loop` + `scheduler_create/delete/list` + 进程内 timer；adapter bridge → 原生 `ScheduledTask*`（tasks pane）。仅 session（无 durable / loop subagent）。 |

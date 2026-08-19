@@ -560,7 +560,7 @@ const docsZh: DocsDictionary = {
           {
             feature: "Todo / 计划列表",
             status: "Native+Adapted",
-            notes: "rpiv-todo → ACP Plan → TodoPane",
+            notes: "内置 todo（F2 pi_todo，默认开）→ ACP Plan → TodoPane",
           },
           {
             feature: "计划模式",
@@ -732,18 +732,6 @@ const docsZh: DocsDictionary = {
     quickInstallLabel: "快速安装",
     recommended: [
       {
-        pkg: "npm:@juicesharp/rpiv-todo",
-        title: "Todo 列表 → 原生 TodoPane",
-        status: "推荐 · 已适配",
-        body: "Agent 通过 todo 工具更新结构化任务列表。grok-pi 将 details.tasks 投影为 ACP Plan → Grok TodoPane / 计划徽章。scrollback 中会抑制原始 todo 工具卡片，避免重复。",
-        install: "pi install npm:@juicesharp/rpiv-todo",
-        notes: [
-          "单向：Pi 工具 details → ACP Plan → Pager UI。",
-          "RPC 模式下无需 Remote TUI 即可工作。",
-          "适合希望以清单形式可见的多步 Agent 工作。",
-        ],
-      },
-      {
         pkg: "npm:@juicesharp/rpiv-ask-user-question",
         title: "结构化问题 → QuestionView",
         status: "推荐 · Remote TUI 路径",
@@ -912,11 +900,11 @@ const docsZh: DocsDictionary = {
     faqs: [
       {
         q: "需要自己安装 pi-grok-bash 吗？",
-        a: "不需要。组合二进制在运行时注入。你只需安装社区包（todo / ask）。",
+        a: "不需要。组合二进制会在运行时注入；内置 Todo 也默认注入。只安装你仍需要的社区包，例如 ask-user-question。",
       },
       {
-        q: "宿主已有计划模式，为何还推荐 todo？",
-        a: "计划模式是写门控 + 审批流。rpiv-todo 是投影到 TodoPane 的活清单——互补，不是替代。",
+        q: "宿主已有计划模式，为何还需要 Todo？",
+        a: "计划模式是写门控 + 审批流；内置 Todo 是投影到 TodoPane 的实时工作清单——两者互补。F2 pi_todo 默认开启；开启时 grok-pi 会屏蔽 rpiv-todo，避免重复注册同名工具。如确实要改用社区 provider，请先关闭 pi_todo 并重启。",
       },
       {
         q: "没有 Remote TUI，ask-user-question 能用吗？",
