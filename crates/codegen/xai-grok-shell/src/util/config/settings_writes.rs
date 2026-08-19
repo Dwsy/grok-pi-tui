@@ -236,6 +236,21 @@ pub async fn set_pi_builtin_tools(value: PiBuiltinTools) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_builtin_tools = value).await
 }
 
+/// Persist the grok-pi Bash/Eval bridge master switch.
+pub async fn set_pi_bash(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_bash = value).await
+}
+
+/// Persist the grok-pi Eval bridge generation (`v1` or `v2`).
+pub async fn set_pi_eval(value: String) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_eval = value).await
+}
+
+/// Persist the grok-pi Eval v2 isolation mode.
+pub async fn set_pi_eval_v2_only(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_eval_v2_only = value).await
+}
+
 /// Persist the optional PSM SQLite session-index preference for grok-pi.
 pub async fn set_psm_resume_index(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.psm_resume_index = value).await
@@ -259,6 +274,11 @@ pub async fn set_pi_subagents(value: bool) -> Result<()> {
 /// Persist `[ui].pi_workflows` via `update_config`.
 pub async fn set_pi_workflows(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_workflows = value).await
+}
+
+/// Persist `[ui].pi_todo` via `update_config`.
+pub async fn set_pi_todo(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_todo = value).await
 }
 
 /// Persist `[ui].pi_goal` via `update_config`.

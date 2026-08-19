@@ -84,6 +84,11 @@ pub struct ResourcePolicy {
     /// `assets/native_feature_conflicts.toml`. Not persisted.
     #[serde(skip)]
     pub enabled_native_features: Vec<String>,
+    /// Native feature conflicts that cannot be overridden by user `allow`.
+    /// Reserved for same-tool-name collisions where loading both providers
+    /// would make registration order determine behavior. Not persisted.
+    #[serde(skip)]
+    pub forced_native_features: Vec<String>,
 }
 
 impl ResourcePolicy {
@@ -145,6 +150,7 @@ impl ResourcePolicy {
             block: partial.block,
             disable_heuristics: partial.disable_heuristics.unwrap_or(false),
             enabled_native_features: Vec::new(),
+            forced_native_features: Vec::new(),
         }
     }
 
@@ -292,20 +298,30 @@ impl ResourcePolicy {
             };
         }
 
-        // 2. User explicit allow overrides the *host* blocklist and
-        //    heuristics only — it cannot re-enable Pi-disabled resources.
+        // 2. Same-tool-name native conflicts are hard blocks. These must win
+        //    over user `allow`, otherwise extension registration order would
+        //    decide which provider owns the tool name.
+        if let Some(reason) =
+            self.forced_feature_conflict_reason(&resource.source, resource.path.as_path())
+        {
+            return Decision::Block { reason };
+        }
+
+        // 3. User explicit allow overrides the ordinary host blocklist and
+        //    heuristics only — it cannot re-enable Pi-disabled resources or
+        //    forced native conflicts.
         if self.matches_any(&resource.source, &resource.path, &self.allow) {
             return Decision::Allow;
         }
 
-        // 3. User explicit block.
+        // 4. User explicit block.
         if self.matches_any(&resource.source, &resource.path, &self.block) {
             return Decision::Block {
                 reason: "blocked by user policy".to_owned(),
             };
         }
 
-        // 4. Built-in default blocklist (source match).
+        // 5. Built-in default blocklist (source match).
         for blocked in DEFAULT_BLOCKED_SOURCES {
             if resource.source == *blocked {
                 return Decision::Block {
@@ -317,14 +333,14 @@ impl ResourcePolicy {
             }
         }
 
-        // 4b. Feature-gated conflicts from assets/native_feature_conflicts.toml.
+        // 5b. Feature-gated conflicts from assets/native_feature_conflicts.toml.
         if let Some(reason) =
             self.feature_conflict_reason(&resource.source, resource.path.as_path())
         {
             return Decision::Block { reason };
         }
 
-        // 5. Renderer name heuristic (unless disabled).
+        // 6. Renderer name heuristic (unless disabled).
         if !self.disable_heuristics {
             let file_name = resource
                 .path
@@ -364,7 +380,13 @@ impl ResourcePolicy {
     pub fn check_explicit_path(&self, path: &str) -> Option<String> {
         let path_buf = Path::new(path);
 
-        // User explicit allow always wins for explicit paths.
+        // Same-tool-name native conflicts cannot be bypassed by an explicit
+        // extension path or user `allow`.
+        if let Some(reason) = self.forced_feature_conflict_reason(path, path_buf) {
+            return Some(reason);
+        }
+
+        // User explicit allow wins over ordinary host policy.
         if self.matches_any(path, path_buf, &self.allow) {
             return None;
         }
@@ -415,15 +437,29 @@ impl ResourcePolicy {
         None
     }
 
+    /// Match against packages listed for forced native features.
+    fn forced_feature_conflict_reason(&self, source_or_path: &str, path: &Path) -> Option<String> {
+        self.feature_conflict_reason_for(&self.forced_native_features, source_or_path, path)
+    }
+
     /// Match against packages listed for currently enabled native features.
     /// `source_or_path` is either `resource.source` (exact `npm:…`) or a CLI path.
     fn feature_conflict_reason(&self, source_or_path: &str, path: &Path) -> Option<String> {
-        if self.enabled_native_features.is_empty() {
+        self.feature_conflict_reason_for(&self.enabled_native_features, source_or_path, path)
+    }
+
+    fn feature_conflict_reason_for(
+        &self,
+        features: &[String],
+        source_or_path: &str,
+        path: &Path,
+    ) -> Option<String> {
+        if features.is_empty() {
             return None;
         }
         let table = crate::native_feature_conflicts::FeatureConflictTable::load();
         let path_str = path.to_string_lossy();
-        for feature in &self.enabled_native_features {
+        for feature in features {
             for blocked in table.packages_for(feature) {
                 let exact = source_or_path == blocked.as_str();
                 let pkg_name = blocked.strip_prefix("npm:").unwrap_or(blocked.as_str());
@@ -721,6 +757,57 @@ mod tests {
             reason
                 .unwrap()
                 .contains("@juicesharp/rpiv-ask-user-question")
+        );
+    }
+
+    #[test]
+    fn rpiv_todo_blocked_only_while_native_todo_is_on() {
+        let catalog = make_catalog(vec![make_resource(
+            "/home/user/.pi/agent/npm/node_modules/@juicesharp/rpiv-todo/index.ts",
+            "npm:@juicesharp/rpiv-todo",
+            PiResourceType::Extensions,
+            true,
+        )]);
+        assert!(
+            ResourcePolicy::default()
+                .evaluate(&catalog)
+                .blocked
+                .is_empty()
+        );
+
+        let on = ResourcePolicy {
+            enabled_native_features: vec!["pi_todo".to_owned()],
+            ..Default::default()
+        };
+        let plan = on.evaluate(&catalog);
+        assert_eq!(plan.blocked.len(), 1);
+        assert!(plan.blocked[0].reason.contains("@juicesharp/rpiv-todo"));
+
+        // Preserve the existing policy contract for ordinary feature conflicts:
+        // a user allow remains authoritative unless the host marks the native
+        // feature as a same-tool-name forced conflict.
+        let allowed = ResourcePolicy {
+            allow: vec!["npm:@juicesharp/rpiv-todo".to_owned()],
+            enabled_native_features: vec!["pi_todo".to_owned()],
+            ..Default::default()
+        };
+        assert!(allowed.evaluate(&catalog).blocked.is_empty());
+
+        let forced = ResourcePolicy {
+            allow: vec!["npm:@juicesharp/rpiv-todo".to_owned()],
+            enabled_native_features: vec!["pi_todo".to_owned()],
+            forced_native_features: vec!["pi_todo".to_owned()],
+            ..Default::default()
+        };
+        let plan = forced.evaluate(&catalog);
+        assert_eq!(plan.blocked.len(), 1);
+        assert!(plan.blocked[0].reason.contains("@juicesharp/rpiv-todo"));
+        assert!(
+            forced
+                .check_explicit_path(
+                    "/home/user/.pi/agent/npm/node_modules/@juicesharp/rpiv-todo/index.ts"
+                )
+                .is_some()
         );
     }
 
@@ -1059,6 +1146,7 @@ mod tests {
             block: vec!["my-bad-ext".to_owned()],
             disable_heuristics: true,
             enabled_native_features: Vec::new(),
+            forced_native_features: Vec::new(),
         };
         policy.save_to_path(&path).unwrap();
 
@@ -1134,6 +1222,7 @@ mod tests {
             block: vec!["npm:b".to_owned()],
             disable_heuristics: true,
             enabled_native_features: Vec::new(),
+            forced_native_features: Vec::new(),
         };
         // Layer without disable_heuristics key must not reset the flag.
         policy.merge_partial(&PartialPolicy {

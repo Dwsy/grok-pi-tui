@@ -1105,6 +1105,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
             tool: crate::app::actions::PiBuiltinTool::Eval,
             enabled: *b,
         }),
+        ("pi_bash", SettingValue::Bool(b)) => Some(Action::SetPiBash(*b)),
+        ("pi_eval", SettingValue::Enum(s)) => Some(Action::SetPiEval((*s).to_string())),
+        ("pi_eval_v2_only", SettingValue::Bool(b)) => Some(Action::SetPiEvalV2Only(*b)),
         ("psm_resume_index", SettingValue::Bool(b)) => Some(Action::SetPsmResumeIndex(*b)),
         ("pi_tree_file_rollback", SettingValue::Bool(b)) => Some(Action::SetPiTreeFileRollback(*b)),
         ("pi_tree_skip_summary_prompt", SettingValue::Bool(b)) => {
@@ -1113,6 +1116,7 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("pi_herdr", SettingValue::Bool(b)) => Some(Action::SetPiHerdr(*b)),
         ("pi_subagents", SettingValue::Bool(b)) => Some(Action::SetPiSubagents(*b)),
         ("pi_workflows", SettingValue::Bool(b)) => Some(Action::SetPiWorkflows(*b)),
+        ("pi_todo", SettingValue::Bool(b)) => Some(Action::SetPiTodo(*b)),
         ("pi_goal", SettingValue::Bool(b)) => Some(Action::SetPiGoal(*b)),
         ("pi_loop", SettingValue::Bool(b)) => Some(Action::SetPiLoop(*b)),
         ("pi_ask_user_question", SettingValue::Bool(b)) => Some(Action::SetPiAskUserQuestion(*b)),
@@ -1356,6 +1360,9 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         ("pi_builtin_tools", SettingValue::PiBuiltinTools(value)) => {
             app.current_ui.pi_builtin_tools = value.clone()
         }
+        ("pi_bash", SettingValue::Bool(b)) => app.current_ui.pi_bash = *b,
+        ("pi_eval", SettingValue::Enum(s)) => app.current_ui.pi_eval = (*s).to_string(),
+        ("pi_eval_v2_only", SettingValue::Bool(b)) => app.current_ui.pi_eval_v2_only = *b,
         ("psm_resume_index", SettingValue::Bool(b)) => app.current_ui.psm_resume_index = *b,
         ("pi_tree_file_rollback", SettingValue::Bool(b)) => {
             app.current_ui.pi_tree_file_rollback = *b

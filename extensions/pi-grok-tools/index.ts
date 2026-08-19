@@ -11,7 +11,10 @@ const BUILTIN_TOOLS = [
 
 /**
  * Applies the host's persisted grok-pi built-in-tool preference at session
- * startup. It deliberately leaves extension and custom tools untouched.
+ * startup. The host also maps F2-disabled built-in names to Pi's native
+ * `--exclude-tools` so those names are absent from the registry/getAllTools;
+ * this extension then activates the selected names that are still registered.
+ * Non-built-in extension/custom tool names remain untouched.
  *
  * CLI tool restrictions always take priority over F2 preferences:
  * - --no-tools / --no-builtin-tools: extension is not injected at all.

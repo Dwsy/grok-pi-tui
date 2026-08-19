@@ -15,6 +15,12 @@ packages = [
   "npm:@juicesharp/rpiv-ask-user-question",
 ]
 
+[features.pi_todo]
+reason = "same tool name as built-in todo"
+packages = [
+  "npm:@juicesharp/rpiv-todo",
+]
+
 [features.pi_goal]
 reason = "same role as native /goal"
 packages = [

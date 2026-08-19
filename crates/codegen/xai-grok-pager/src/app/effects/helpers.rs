@@ -1544,6 +1544,30 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "pi_bash" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_bash", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_bash(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_eval" => {
+            let SettingValue::Enum(version) = value else {
+                return Err(kind_mismatch("pi_eval", "Enum", &value));
+            };
+            xai_grok_shell::util::config::set_pi_eval(version.to_string())
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_eval_v2_only" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_eval_v2_only", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_eval_v2_only(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
         "psm_resume_index" => {
             let SettingValue::Bool(b) = value else {
                 return Err(kind_mismatch("psm_resume_index", "Bool", &value));
@@ -1581,6 +1605,14 @@ pub(crate) async fn persist_setting(
                 return Err(kind_mismatch("pi_workflows", "Bool", &value));
             };
             xai_grok_shell::util::config::set_pi_workflows(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_todo" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_todo", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_todo(b)
                 .await
                 .map_err(|e| e.to_string())
         }

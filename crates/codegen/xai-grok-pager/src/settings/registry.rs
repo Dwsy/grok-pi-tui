@@ -530,12 +530,19 @@ pub fn current_value_for(
         "pi_builtin_tools.find" => Some(SettingValue::Bool(ui.pi_builtin_tools.find)),
         "pi_builtin_tools.ls" => Some(SettingValue::Bool(ui.pi_builtin_tools.ls)),
         "pi_builtin_tools.eval" => Some(SettingValue::Bool(ui.pi_builtin_tools.eval)),
+        "pi_bash" => Some(SettingValue::Bool(ui.pi_bash)),
+        "pi_eval" => Some(SettingValue::Enum(match ui.pi_eval.as_str() {
+            "v2" => "v2",
+            _ => "v1",
+        })),
+        "pi_eval_v2_only" => Some(SettingValue::Bool(ui.pi_eval_v2_only)),
         "psm_resume_index" => Some(SettingValue::Bool(ui.psm_resume_index)),
         "pi_tree_file_rollback" => Some(SettingValue::Bool(ui.pi_tree_file_rollback)),
         "pi_tree_skip_summary_prompt" => Some(SettingValue::Bool(ui.pi_tree_skip_summary_prompt)),
         "pi_herdr" => Some(SettingValue::Bool(ui.pi_herdr)),
         "pi_subagents" => Some(SettingValue::Bool(ui.pi_subagents)),
         "pi_workflows" => Some(SettingValue::Bool(ui.pi_workflows)),
+        "pi_todo" => Some(SettingValue::Bool(ui.pi_todo)),
         "pi_goal" => Some(SettingValue::Bool(ui.pi_goal)),
         "pi_loop" => Some(SettingValue::Bool(ui.pi_loop)),
         "pi_ask_user_question" => Some(SettingValue::Bool(ui.pi_ask_user_question)),
@@ -929,6 +936,16 @@ mod tests {
                 }
                 ("pi_builtin_tools.eval", SettingKind::Bool { default }) => {
                     assert_eq!(*default, ui.pi_builtin_tools.eval);
+                }
+                ("pi_bash", SettingKind::Bool { default }) => {
+                    assert_eq!(*default, ui.pi_bash);
+                }
+                ("pi_eval", SettingKind::Enum { default, .. }) => {
+                    let expected = if ui.pi_eval == "v2" { "v2" } else { "v1" };
+                    assert_eq!(*default, expected);
+                }
+                ("pi_eval_v2_only", SettingKind::Bool { default }) => {
+                    assert_eq!(*default, ui.pi_eval_v2_only);
                 }
                 ("page_flip_on_send", SettingKind::Bool { default }) => {
                     assert_eq!(
@@ -1379,6 +1396,13 @@ mod tests {
                         "pi_workflows default drifts from UiConfig::default()"
                     );
                     assert!(!*default, "pi_workflows must default OFF");
+                }
+                ("pi_todo", SettingKind::Bool { default }) => {
+                    assert_eq!(
+                        *default, ui.pi_todo,
+                        "pi_todo default drifts from UiConfig::default()"
+                    );
+                    assert!(*default, "pi_todo must default ON");
                 }
                 ("pi_goal", SettingKind::Bool { default }) => {
                     assert_eq!(

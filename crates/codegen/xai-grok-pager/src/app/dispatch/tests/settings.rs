@@ -1761,11 +1761,23 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
                 app,
             );
         }
+        "pi_bash" => {
+            let _ = dispatch(Action::SetPiBash(false), app);
+        }
+        "pi_eval" => {
+            let _ = dispatch(Action::SetPiEval("v2".to_string()), app);
+        }
+        "pi_eval_v2_only" => {
+            let _ = dispatch(Action::SetPiEvalV2Only(true), app);
+        }
         "pi_herdr" => {
             let _ = dispatch(Action::SetPiHerdr(false), app);
         }
         "pi_subagents" => {
             let _ = dispatch(Action::SetPiSubagents(false), app);
+        }
+        "pi_todo" => {
+            let _ = dispatch(Action::SetPiTodo(false), app);
         }
         other => {
             panic!(
@@ -1775,6 +1787,26 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         }
     }
 }
+#[test]
+fn set_pi_todo_persists_restart_required_toggle() {
+    let mut app = test_app_with_agent();
+    app.current_ui.pi_todo = true;
+
+    let effects = dispatch(Action::SetPiTodo(false), &mut app);
+    assert!(!app.current_ui.pi_todo);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::PersistSetting {
+            key: "pi_todo",
+            value: crate::settings::SettingValue::Bool(false),
+            rollback_value: crate::settings::SettingValue::Bool(true),
+        }]
+    ));
+    let toast = read_toast(&app);
+    assert!(toast.contains("Pi todo: off"));
+    assert!(toast.contains("restart grok-pi to apply"));
+}
+
 #[test]
 fn set_pi_subagents_persists_restart_required_toggle() {
     let mut app = test_app_with_agent();

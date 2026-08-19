@@ -2269,6 +2269,69 @@ pub(in crate::app::dispatch) fn set_pi_builtin_tool(
 }
 
 /// Persist the optional PSM SQLite catalog setting.
+pub(in crate::app::dispatch) fn set_pi_bash(app: &mut AppView, enabled: bool) -> Vec<Effect> {
+    let previous = app.current_ui.pi_bash;
+    if previous == enabled {
+        return vec![];
+    }
+    app.current_ui.pi_bash = enabled;
+    refresh_open_settings_modals(app);
+    let value = if enabled { "on" } else { "off" };
+    app.show_toast(&format!(
+        "\u{2713} Pi Bash bridge: {value} \u{2014} restart grok-pi to apply"
+    ));
+    vec![Effect::PersistSetting {
+        key: "pi_bash",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
+pub(in crate::app::dispatch) fn set_pi_eval(app: &mut AppView, requested: String) -> Vec<Effect> {
+    let canonical = match requested.as_str() {
+        "v2" => "v2",
+        _ => "v1",
+    };
+    let previous = match app.current_ui.pi_eval.as_str() {
+        "v2" => "v2",
+        _ => "v1",
+    };
+    if previous == canonical {
+        return vec![];
+    }
+    app.current_ui.pi_eval = canonical.to_string();
+    refresh_open_settings_modals(app);
+    app.show_toast(&format!(
+        "\u{2713} Eval bridge version: {canonical} \u{2014} restart grok-pi to apply"
+    ));
+    vec![Effect::PersistSetting {
+        key: "pi_eval",
+        value: crate::settings::SettingValue::Enum(canonical),
+        rollback_value: crate::settings::SettingValue::Enum(previous),
+    }]
+}
+
+pub(in crate::app::dispatch) fn set_pi_eval_v2_only(
+    app: &mut AppView,
+    enabled: bool,
+) -> Vec<Effect> {
+    let previous = app.current_ui.pi_eval_v2_only;
+    if previous == enabled {
+        return vec![];
+    }
+    app.current_ui.pi_eval_v2_only = enabled;
+    refresh_open_settings_modals(app);
+    let value = if enabled { "on" } else { "off" };
+    app.show_toast(&format!(
+        "\u{2713} Eval v2 only: {value} \u{2014} restart grok-pi to apply"
+    ));
+    vec![Effect::PersistSetting {
+        key: "pi_eval_v2_only",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
 pub(in crate::app::dispatch) fn set_psm_resume_index(
     app: &mut AppView,
     enabled: bool,
@@ -2374,6 +2437,24 @@ pub(in crate::app::dispatch) fn set_pi_workflows(app: &mut AppView, enabled: boo
     ));
     vec![Effect::PersistSetting {
         key: "pi_workflows",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
+pub(in crate::app::dispatch) fn set_pi_todo(app: &mut AppView, enabled: bool) -> Vec<Effect> {
+    let previous = app.current_ui.pi_todo;
+    if previous == enabled {
+        return vec![];
+    }
+    app.current_ui.pi_todo = enabled;
+    refresh_open_settings_modals(app);
+    let value = if enabled { "on" } else { "off" };
+    app.show_toast(&format!(
+        "\u{2713} Pi todo: {value} \u{2014} restart grok-pi to apply"
+    ));
+    vec![Effect::PersistSetting {
+        key: "pi_todo",
         value: crate::settings::SettingValue::Bool(enabled),
         rollback_value: crate::settings::SettingValue::Bool(previous),
     }]

@@ -30,6 +30,19 @@ pub(crate) const MAX_THOUGHTS_WIDTH_MAX: i64 = 500;
 /// definition and the live-wrap-preview gate in the int stepper.
 pub(crate) const MAX_THOUGHTS_WIDTH_KEY: &str = "max_thoughts_width";
 
+const PI_EVAL_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        canonical: "v1",
+        display: "v1",
+        description: "Legacy Eval: persistent Python and JavaScript kernels.",
+    },
+    EnumChoice {
+        canonical: "v2",
+        display: "v2",
+        description: "Eval Bridge v2: JavaScript-only host RPC runtime.",
+    },
+];
+
 // ---------------------------------------------------------------------------
 // Theme choice catalogs.
 //
@@ -1838,6 +1851,61 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
             external_only: false,
         },
+        SettingMeta {
+            key: "pi_bash",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Pi Bash bridge",
+            description: "Enable grok-pi's enhanced Bash bridge for the next session. Off restores stock Pi Bash; Eval remains independent.",
+            keywords: &["pi", "bash", "bridge", "extension", "runtime"],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_bash,
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
+        SettingMeta {
+            key: "pi_eval",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Eval bridge version",
+            description: "Choose the Eval runtime for the next grok-pi session. v1 supports Python + JavaScript; v2 is JavaScript-only.",
+            keywords: &[
+                "pi",
+                "eval",
+                "v1",
+                "v2",
+                "javascript",
+                "python",
+                "runtime",
+                "bridge",
+            ],
+            kind: SettingKind::Enum {
+                default: "v1",
+                choices: PI_EVAL_CHOICES,
+                supports_preview: false,
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
+        SettingMeta {
+            key: "pi_eval_v2_only",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Eval v2 only",
+            description: "Force Eval Bridge v2 and hide every other Pi tool for the next grok-pi session. Explicit CLI --tools/--no-tools still takes precedence.",
+            keywords: &[
+                "pi", "eval", "v2", "only", "isolate", "tools", "hide", "sandbox",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_eval_v2_only,
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
         // External Pi profile resource manager. This is a Pager navigation row,
         // not a Grok-shell setting, so its Group form only supplies the native
         // chevron presentation; settings-modal input maps it to OpenPiConfig.
@@ -1972,7 +2040,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Agent,
             owner: SettingOwner::Shell,
             label: "Eval",
-            description: "Allow Pi to run Python or JavaScript in persistent per-language kernels.",
+            description: "Expose Pi's Eval tool. The grok-pi Eval bridge version is configured separately by Eval bridge version.",
             keywords: &[
                 "pi",
                 "tool",
@@ -2117,6 +2185,23 @@ pub fn default_settings() -> Vec<SettingMeta> {
             ],
             kind: SettingKind::Bool {
                 default: ui_default.pi_workflows,
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
+        SettingMeta {
+            key: "pi_todo",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Pi todo",
+            description: crate::native_feature_conflicts::f2_description_with_conflicts(
+                "Enable grok-pi's built-in structured `todo` tool and native TodoPane projection. Default on; takes effect for new grok-pi sessions.",
+                "pi_todo",
+            ),
+            keywords: &["pi", "todo", "todos", "task", "tasks", "plan", "progress"],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_todo,
             },
             restart_required: true,
             hidden_in_minimal: false,

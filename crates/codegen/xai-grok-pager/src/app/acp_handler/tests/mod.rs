@@ -1281,11 +1281,20 @@ pub(super) fn make_ext_session_notification_with_method(
     method: &str,
     update: XaiSessionUpdate,
 ) -> AcpClientMessage {
+    make_ext_session_notification_with_method_and_meta(session_id, method, update, None)
+}
+
+pub(super) fn make_ext_session_notification_with_method_and_meta(
+    session_id: &str,
+    method: &str,
+    update: XaiSessionUpdate,
+    meta: Option<serde_json::Value>,
+) -> AcpClientMessage {
     let (tx, _rx) = tokio::sync::oneshot::channel();
     let payload = SessionNotification {
         session_id: acp::SessionId::new(session_id),
         update,
-        meta: None,
+        meta,
     };
     let raw = serde_json::value::to_raw_value(&payload).unwrap();
     let request = acp::ExtNotification::new(method, raw.into());

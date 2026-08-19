@@ -196,6 +196,11 @@ mod tests {
                 .iter()
                 .any(|p| p.contains("rpiv-ask-user-question"))
         );
+        assert!(
+            t.packages_for("pi_todo")
+                .iter()
+                .any(|p| p == "npm:@juicesharp/rpiv-todo")
+        );
         assert!(t.packages_for("pi_goal").iter().any(|p| p == "npm:pi-goal"));
         assert!(
             t.packages_for("pi_subagents")

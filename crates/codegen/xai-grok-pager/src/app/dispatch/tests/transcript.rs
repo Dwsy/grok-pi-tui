@@ -86,6 +86,30 @@ fn open_block_viewer_on_group_header_toggles_group() {
 }
 
 #[test]
+fn open_block_viewer_opens_eval_block() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let agent = app.agents.get_mut(&id).unwrap();
+    agent.scrollback.push_block(RenderBlock::ToolCall(ToolCallBlock::Eval(
+        crate::scrollback::blocks::tool::EvalToolCallBlock::new("python", "print('hello')")
+            .with_output("hello".to_string()),
+    )));
+    agent.scrollback.set_selected(Some(0));
+
+    let entry = agent.scrollback.entry(0).unwrap();
+    assert!(entry.block.has_normal_fullscreen_viewer());
+
+    let effects = dispatch(Action::OpenBlockViewer, &mut app);
+    assert!(effects.is_empty());
+    let agent = app.agents.get(&id).unwrap();
+    assert!(agent.block_viewer.is_some());
+    assert_eq!(
+        agent.block_viewer.as_ref().unwrap().kind,
+        crate::views::block_viewer::ViewerKind::PlainText
+    );
+}
+
+#[test]
 fn open_block_viewer_opens_grep_search_block() {
     use crate::scrollback::blocks::{SearchFileMatch, SearchLineMatch};
 

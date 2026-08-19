@@ -9,7 +9,13 @@ Press `Ctrl+Shift+T` to toggle grok-pi Plan mode for the current Pi session.
 - Pi's `exit_plan_mode` bridge opens the native approval view so you can accept
   the plan or request changes before implementation.
 
-Todo is a separate structured projection: when a Pi todo tool reports
-`details.tasks`, grok-pi maps it to the native TodoPane, badge and ACP Plan
-instead of rendering a duplicate tool card. Plan and Todo are product bridges,
-not fixed Pi kernel features.
+Todo is a separate structured projection. grok-pi injects a built-in `todo`
+tool by default; F2 `[ui].pi_todo` controls it and requires a restart. Its
+`details.tasks` snapshots map to the native TodoPane, badge and ACP Plan instead
+of rendering a duplicate tool card.
+
+When built-in Todo is enabled, grok-pi's resource policy blocks the compatible
+`npm:@juicesharp/rpiv-todo` provider so only one `todo` tool is registered. Turn
+`pi_todo` off and restart before using that community provider instead. Plan
+mode and Todo remain complementary: Plan gates mutations and approval, while
+Todo tracks the live work list.

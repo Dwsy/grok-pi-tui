@@ -47,12 +47,15 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
             tool: PiBuiltinTool::Eval,
             enabled: new,
         },
+        "pi_bash" => Action::SetPiBash(new),
+        "pi_eval_v2_only" => Action::SetPiEvalV2Only(new),
         "psm_resume_index" => Action::SetPsmResumeIndex(new),
         "pi_tree_file_rollback" => Action::SetPiTreeFileRollback(new),
         "pi_tree_skip_summary_prompt" => Action::SetPiTreeSkipSummaryPrompt(new),
         "pi_herdr" => Action::SetPiHerdr(new),
         "pi_subagents" => Action::SetPiSubagents(new),
         "pi_workflows" => Action::SetPiWorkflows(new),
+        "pi_todo" => Action::SetPiTodo(new),
         "pi_goal" => Action::SetPiGoal(new),
         "pi_loop" => Action::SetPiLoop(new),
         "pi_ask_user_question" => Action::SetPiAskUserQuestion(new),
@@ -79,7 +82,9 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "remote_tui_footer" => Action::SetRemoteTuiFooter(new),
         "voice_keybind_enabled" => Action::SetVoiceKeybindEnabled(new),
         "remember_tool_approvals" => Action::SetRememberToolApprovals(new),
-        "toolset.ask_user_question.timeout_enabled" => Action::SetAskUserQuestionTimeoutEnabled(new),
+        "toolset.ask_user_question.timeout_enabled" => {
+            Action::SetAskUserQuestionTimeoutEnabled(new)
+        }
         "show_thinking_blocks" => Action::SetShowThinkingBlocks(new),
         "thinking_border_colors" => Action::SetThinkingBorderColors(new),
         "group_tool_verbs" => Action::SetGroupToolVerbs(new),
@@ -88,6 +93,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "prompt_suggestions" => Action::SetPromptSuggestions(new),
         "respect_manual_folds" => Action::SetRespectManualFolds(new),
         "page_flip_on_send" => Action::SetPageFlipOnSend(new),
+        "confirm_before_rewind" => Action::SetConfirmBeforeRewind(new),
         "combine_queued_prompts" => Action::SetCombineQueuedPrompts(new),
         "invert_scroll" => Action::SetInvertScroll(new),
         "show_tips" => Action::SetShowTips(new),
@@ -139,6 +145,10 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &str) -> Option<Ac
             _ => None,
         },
         "ctrl_o_tool_expansion" => Some(Action::SetCtrlOToolExpansion(choice.to_string())),
+        "pi_eval" => match choice {
+            "v1" | "v2" => Some(Action::SetPiEval(choice.to_string())),
+            _ => None,
+        },
         "pi_bash_run_display" => crate::appearance::ExecuteHeaderContent::from_canonical(choice)
             .map(Action::SetPiBashRunDisplay),
         "hunk_tracker_mode" => Some(Action::SetHunkTrackerMode(choice.to_string())),
@@ -153,9 +163,9 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &str) -> Option<Ac
         "scroll_mode" => {
             crate::appearance::ScrollMode::from_canonical(choice).map(Action::SetScrollMode)
         }
-        "default_selected_permission" => Some(Action::SetDefaultSelectedPermission(
-            choice.to_string(),
-        )),
+        "default_selected_permission" => {
+            Some(Action::SetDefaultSelectedPermission(choice.to_string()))
+        }
         _ => None,
     }
 }
@@ -191,7 +201,9 @@ pub(super) fn action_for_string(
             if value.is_empty() {
                 Some(Action::ClearRecapModel)
             } else {
-                snapshot.resolve_model_name(&value).map(Action::SetRecapModel)
+                snapshot
+                    .resolve_model_name(&value)
+                    .map(Action::SetRecapModel)
             }
         }
         "recap_model_2" => Some(if value.is_empty() {
@@ -259,7 +271,9 @@ pub(super) fn validate_string(
         StringValidator::Any => None,
         StringValidator::PromptCursor => crate::appearance::PromptCursor::parse_config(buffer)
             .is_none()
-            .then(|| "Use native, block, underline, bar, or one single-column character".to_string()),
+            .then(|| {
+                "Use native, block, underline, bar, or one single-column character".to_string()
+            }),
         StringValidator::NonEmptyToken => {
             if buffer.is_empty() {
                 Some("Value cannot be empty".to_string())

@@ -5,6 +5,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_pi_eval() -> String {
+    "v1".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
@@ -13,6 +17,22 @@ pub struct UiConfig {
     /// default preserves Pi's own default tool set; F2 writes this as a group.
     #[serde(default, skip_serializing_if = "PiBuiltinTools::is_default")]
     pub pi_builtin_tools: PiBuiltinTools,
+    /// Enable grok-pi's enhanced Bash bridge. This is separate from
+    /// `pi_builtin_tools.bash`: disabling it restores stock Pi Bash behavior
+    /// while leaving Eval runtime injection independent.
+    /// Default on; takes effect for new grok-pi sessions only.
+    #[serde(default = "default_true")]
+    pub pi_bash: bool,
+    /// Select the Eval bridge generation independently of `pi_bash`.
+    /// `v1` keeps Python + JavaScript; `v2` is JavaScript-only.
+    /// Default v1; takes effect for new grok-pi sessions only.
+    #[serde(default = "default_pi_eval")]
+    pub pi_eval: String,
+    /// Force Eval Bridge v2 and allow only the Eval tool in the Pi registry.
+    /// This is a restart-required grok-pi isolation mode; it does not mutate
+    /// the stored `pi_eval` or per-tool preferences underneath it.
+    #[serde(default)]
+    pub pi_eval_v2_only: bool,
     /// Use Pi Session Manager for external Pi `/resume`: SQLite catalog,
     /// Ctrl+F full-text search, and message preview. Requires PSM running.
     /// Disabled by default; off → Pi JSONL list only (no PSM SQLite paths).
@@ -38,6 +58,10 @@ pub struct UiConfig {
     /// Default off; takes effect for new grok-pi sessions only.
     #[serde(default)]
     pub pi_workflows: bool,
+    /// Enable grok-pi's built-in structured `todo` tool and native TodoPane projection.
+    /// Default on; takes effect for new grok-pi sessions only.
+    #[serde(default = "default_true")]
+    pub pi_todo: bool,
     /// Enable Grok-style `/goal` loop for grok-pi (GoalHost + update_goal).
     /// Default off; takes effect for new grok-pi sessions only.
     #[serde(default)]
@@ -420,12 +444,16 @@ impl Default for UiConfig {
         Self {
             max_thoughts_width: DEFAULT_MAX_THOUGHTS_WIDTH,
             pi_builtin_tools: PiBuiltinTools::default(),
+            pi_bash: true,
+            pi_eval: default_pi_eval(),
+            pi_eval_v2_only: false,
             psm_resume_index: false,
             pi_tree_file_rollback: false,
             pi_tree_skip_summary_prompt: false,
             pi_herdr: true,
             pi_subagents: true,
             pi_workflows: false,
+            pi_todo: true,
             pi_goal: false,
             pi_loop: false,
             pi_ask_user_question: false,

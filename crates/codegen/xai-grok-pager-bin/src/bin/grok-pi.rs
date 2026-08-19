@@ -53,6 +53,8 @@ mod session_paths;
 mod shortcut_manager_extension;
 #[path = "grok_pi/subagent_extension.rs"]
 mod subagent_extension;
+#[path = "grok_pi/todo_extension.rs"]
+mod todo_extension;
 #[path = "grok_pi/tools_extension.rs"]
 mod tools_extension;
 #[path = "grok_pi/tree_bridge.rs"]
@@ -97,9 +99,11 @@ use rust_tui_bridge_extension::write_rust_tui_bridge_extension;
 use session_paths::pi_session_dir;
 use shortcut_manager_extension::write_shortcut_manager_extension;
 use subagent_extension::write_subagent_extension;
+use todo_extension::write_todo_extension;
 use tools_extension::{
-    cli_tool_exclusions, configured_builtin_tools, has_no_tools_arg, should_inject_tools_extension,
-    write_tools_extension,
+    cli_tool_exclusions, configured_builtin_tools, disabled_builtin_tools_from_selected,
+    has_explicit_tools_arg, has_no_tools_arg, merge_tool_exclusions, should_inject_tools_extension,
+    tool_name_allowed_by_cli, write_tools_extension,
 };
 use tree_bridge::write_navigate_tree_extension;
 use workflow_extension::write_workflow_extension;
@@ -306,14 +310,25 @@ async fn run(mut args: Args) -> Result<()> {
     } else {
         None
     };
-    let bash_extension = if bridge_extensions_enabled && env_flag_default_on("PI_GROK_BASH") {
-        Some(write_bash_extension().context("failed to create Pi Bash extension")?)
-    } else {
-        None
-    };
+    let bash_bridge_enabled = bash_bridge_enabled();
+    // Eval and enhanced Bash share one physical extension bundle, but their
+    // runtime switches are independent. Keep the bundle available whenever
+    // bridge extensions are enabled; PI_GROK_BASH gates only Bash registration.
+    let bash_extension = bridge_extensions_enabled
+        .then(|| write_bash_extension())
+        .transpose()
+        .context("failed to create Pi Bash/Eval extension")?;
+    let eval_v2_only = eval_v2_only_enabled();
+    let eval_version = if eval_v2_only { "v2" } else { eval_version() };
     // F2 `[ui].pi_subagents` (default on). Restart required — inject at startup only.
     let subagent_extension = if bridge_extensions_enabled && subagents_enabled() {
         Some(write_subagent_extension().context("failed to create Pi subagent extension")?)
+    } else {
+        None
+    };
+    // F2 `[ui].pi_todo` (default on). Restart required — inject at startup only.
+    let todo_extension = if bridge_extensions_enabled && todo_enabled() {
+        Some(write_todo_extension().context("failed to create Pi todo extension")?)
     } else {
         None
     };
@@ -437,6 +452,14 @@ async fn run(mut args: Args) -> Result<()> {
         resource_policy
             .enabled_native_features
             .push("pi_goal".to_owned());
+    }
+    if todo_extension.is_some() {
+        resource_policy
+            .enabled_native_features
+            .push("pi_todo".to_owned());
+        resource_policy
+            .forced_native_features
+            .push("pi_todo".to_owned());
     }
     if workflow_extension.is_some() {
         resource_policy
@@ -562,17 +585,33 @@ async fn run(mut args: Args) -> Result<()> {
         }
     }
 
+    // Eval-v2-only is a strong F2 isolation mode: force Pi's native registry
+    // allowlist to the extension-provided `eval` tool. Explicit user --tools or
+    // --no-tools still wins; --no-builtin-tools is compatible because Eval is
+    // an extension tool, not an upstream Pi builtin.
+    apply_eval_v2_only_tool_policy(&mut pi_args, bridge_extensions_enabled, eval_v2_only);
+
     // CLI tool restrictions (--tools, --no-tools, --no-builtin-tools,
-    // --exclude-tools) are authoritative and always override F2 preferences.
-    // Skip the tools extension entirely when CLI disables all tools or all
-    // builtins; for --exclude-tools, inject but pass the exclusion list so the
-    // extension filters them out.
-    let cli_exclusions = cli_tool_exclusions(&pi_args);
-    let tools_extension = (bridge_extensions_enabled && should_inject_tools_extension(&pi_args))
+    // --exclude-tools) are authoritative and always override normal F2 preferences.
+    // When F2 owns the selection, disabled built-in names are also merged into
+    // Pi's native --exclude-tools denylist. That removes them from the registry
+    // (and same-name extension replacements) rather than merely deactivating
+    // them with setActiveTools(). The tools extension remains responsible for
+    // activating selected non-default tools such as grep/eval.
+    let f2_tools_enabled = bridge_extensions_enabled && should_inject_tools_extension(&pi_args);
+    let selected_builtin_tools = f2_tools_enabled.then(configured_builtin_tools);
+    let cli_exclusions = if let Some(selected) = selected_builtin_tools.as_deref() {
+        let disabled = disabled_builtin_tools_from_selected(selected);
+        merge_tool_exclusions(&mut pi_args, &disabled)
+    } else {
+        cli_tool_exclusions(&pi_args)
+    };
+    let tools_extension = f2_tools_enabled
         .then(|| write_tools_extension())
         .transpose()
         .context("failed to create Pi tools extension")?;
-    let selected_builtin_tools = tools_extension.as_ref().map(|_| configured_builtin_tools());
+    let bash_bridge_runtime_enabled =
+        bash_bridge_enabled && tool_name_allowed_by_cli(&pi_args, "bash");
     // Tree file rollback checkpoint extension: injected last so it can verify
     // that write/edit are still Pi builtin (not overridden by user extensions).
     // Only when F2 enabled and CLI hasn't disabled write/edit tools.
@@ -650,6 +689,12 @@ async fn run(mut args: Args) -> Result<()> {
             .map(|extension| extension.path().to_path_buf()),
     );
     add_subagent_extension(
+        "grok-pi: todo",
+        todo_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
         "grok-pi: workflows",
         workflow_extension
             .as_ref()
@@ -710,7 +755,7 @@ async fn run(mut args: Args) -> Result<()> {
             .map(|extension| extension.path().to_path_buf()),
     );
     add_subagent_extension(
-        "grok-pi: bash",
+        "grok-pi: Bash/Eval",
         bash_extension
             .as_ref()
             .map(|extension| extension.source_path().to_path_buf()),
@@ -742,6 +787,7 @@ async fn run(mut args: Args) -> Result<()> {
         subagent_extension
             .as_ref()
             .map(|extension| extension.path()),
+        todo_extension.as_ref().map(|extension| extension.path()),
         workflow_extension
             .as_ref()
             .map(|extension| extension.path()),
@@ -887,10 +933,23 @@ async fn run(mut args: Args) -> Result<()> {
         ));
     }
     if let Some(extension) = bash_extension.as_ref() {
-        env.push(("PI_GROK_BASH".to_string(), "1".to_string()));
+        env.push((
+            "PI_GROK_BASH".to_string(),
+            if bash_bridge_runtime_enabled {
+                "1"
+            } else {
+                "0"
+            }
+            .to_string(),
+        ));
+        env.push(("PI_GROK_EVAL_VERSION".to_string(), eval_version.to_string()));
         env.push((
             "PI_GROK_BASH_CONTROL_META".to_string(),
-            extension.control_meta_path().to_string_lossy().into_owned(),
+            if bash_bridge_runtime_enabled {
+                extension.control_meta_path().to_string_lossy().into_owned()
+            } else {
+                String::new()
+            },
         ));
     }
     if remote_tui_enabled {
@@ -962,9 +1021,8 @@ async fn run(mut args: Args) -> Result<()> {
             std::env::remove_var("PI_GROK_BTW");
         }
     }
-    let bash_control_meta = bash_extension
-        .as_ref()
-        .map(|extension| extension.control_meta_path().to_path_buf());
+    let bash_control_meta =
+        bash_control_meta_for_adapter(bash_bridge_runtime_enabled, bash_extension.as_ref());
     let context_breakdown = context_extension
         .as_ref()
         .map(|extension| extension.breakdown_path().to_path_buf());
@@ -1506,6 +1564,89 @@ fn herdr_enabled_from_config(config: Option<&toml::Value>) -> bool {
         .unwrap_or(false)
 }
 
+/// `[ui].pi_bash` — switch for grok-pi's enhanced Bash bridge only.
+/// Eval version/visibility are independent. An explicitly-set `PI_GROK_BASH`
+/// environment variable remains a process-local override; otherwise F2/TOML is
+/// authoritative. Missing/invalid config defaults on.
+fn bash_bridge_enabled() -> bool {
+    if std::env::var_os("PI_GROK_BASH").is_some() {
+        return env_flag_default_on("PI_GROK_BASH");
+    }
+    let config = xai_grok_shell::config::load_effective_config().ok();
+    bash_bridge_enabled_from_config(config.as_ref())
+}
+
+fn bash_bridge_enabled_from_config(config: Option<&toml::Value>) -> bool {
+    config
+        .and_then(|root| root.get("ui"))
+        .and_then(|ui| ui.get("pi_bash"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(true)
+}
+
+/// Adapter background/kill RPC is valid only while the enhanced Bash half of
+/// the shared Bash/Eval extension is active. Eval-only sessions still inject
+/// the bundle, but must expose no Bash control metadata to the host adapter.
+fn bash_control_meta_for_adapter(
+    bash_enabled: bool,
+    extension: Option<&bash_extension::BashExtension>,
+) -> Option<std::path::PathBuf> {
+    extension
+        .filter(|_| bash_enabled)
+        .map(|extension| extension.control_meta_path().to_path_buf())
+}
+
+/// `[ui].pi_eval` — select the mutually exclusive Eval bridge generation.
+/// Only an explicit `"v2"` opts into Eval Bridge v2; missing/invalid values preserve v1.
+fn eval_version() -> &'static str {
+    let config = xai_grok_shell::config::load_effective_config().ok();
+    eval_version_from_config(config.as_ref())
+}
+
+fn eval_version_from_config(config: Option<&toml::Value>) -> &'static str {
+    match config
+        .and_then(|root| root.get("ui"))
+        .and_then(|ui| ui.get("pi_eval"))
+        .and_then(toml::Value::as_str)
+    {
+        Some("v2") => "v2",
+        _ => "v1",
+    }
+}
+
+/// `[ui].pi_eval_v2_only` — force Eval v2 and isolate the Pi tool registry to Eval.
+fn eval_v2_only_enabled() -> bool {
+    let config = xai_grok_shell::config::load_effective_config().ok();
+    eval_v2_only_enabled_from_config(config.as_ref())
+}
+
+fn eval_v2_only_enabled_from_config(config: Option<&toml::Value>) -> bool {
+    config
+        .and_then(|root| root.get("ui"))
+        .and_then(|ui| ui.get("pi_eval_v2_only"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn apply_eval_v2_only_tool_policy(
+    pi_args: &mut Vec<String>,
+    bridge_extensions_enabled: bool,
+    eval_v2_only: bool,
+) -> bool {
+    if !bridge_extensions_enabled
+        || !eval_v2_only
+        || has_explicit_tools_arg(pi_args)
+        || pi_args
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--no-tools" | "-nt"))
+    {
+        return false;
+    }
+
+    pi_args.extend(["--tools".to_string(), "eval".to_string()]);
+    true
+}
+
 /// F2 `[ui].pi_subagents` — enable built-in Pi child-session subagents.
 /// Missing/invalid config preserves the product's existing default-on behavior.
 fn subagents_enabled() -> bool {
@@ -1517,6 +1658,21 @@ fn subagents_enabled_from_config(config: Option<&toml::Value>) -> bool {
     config
         .and_then(|root| root.get("ui"))
         .and_then(|ui| ui.get("pi_subagents"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(true)
+}
+
+/// F2 `[ui].pi_todo` — enable the built-in structured todo tool.
+/// Missing/invalid config preserves the default-on behavior.
+fn todo_enabled() -> bool {
+    let config = xai_grok_shell::config::load_effective_config().ok();
+    todo_enabled_from_config(config.as_ref())
+}
+
+fn todo_enabled_from_config(config: Option<&toml::Value>) -> bool {
+    config
+        .and_then(|root| root.get("ui"))
+        .and_then(|ui| ui.get("pi_todo"))
         .and_then(toml::Value::as_bool)
         .unwrap_or(true)
 }
@@ -1704,9 +1860,11 @@ async fn probe_extensions_ok(
 #[cfg(test)]
 mod env_flag_tests {
     use super::{
-        Args, PI_GROK_NATIVE_COMMANDS, bootstrap_with_deadline, disable_all_extensions,
-        env_flag_default_off, env_flag_default_on, herdr_enabled_from_config,
-        subagents_enabled_from_config,
+        Args, PI_GROK_NATIVE_COMMANDS, apply_eval_v2_only_tool_policy,
+        bash_bridge_enabled_from_config, bash_control_meta_for_adapter, bootstrap_with_deadline,
+        disable_all_extensions, env_flag_default_off, env_flag_default_on,
+        eval_v2_only_enabled_from_config, eval_version_from_config, herdr_enabled_from_config,
+        subagents_enabled_from_config, todo_enabled_from_config,
     };
     use clap::Parser;
 
@@ -1739,6 +1897,96 @@ mod env_flag_tests {
     }
 
     #[test]
+    fn bash_bridge_defaults_on_and_honors_explicit_off() {
+        assert!(bash_bridge_enabled_from_config(None));
+
+        let missing: toml::Value = toml::from_str("[ui]\n").expect("parse missing config");
+        assert!(bash_bridge_enabled_from_config(Some(&missing)));
+
+        let enabled: toml::Value =
+            toml::from_str("[ui]\npi_bash = true\n").expect("parse enabled config");
+        assert!(bash_bridge_enabled_from_config(Some(&enabled)));
+
+        let disabled: toml::Value =
+            toml::from_str("[ui]\npi_bash = false\n").expect("parse disabled config");
+        assert!(!bash_bridge_enabled_from_config(Some(&disabled)));
+    }
+
+    #[test]
+    fn bash_control_meta_is_hidden_when_bash_bridge_is_off() {
+        let extension = super::write_bash_extension().expect("write Bash/Eval extension");
+        assert!(bash_control_meta_for_adapter(false, Some(&extension)).is_none());
+        assert_eq!(
+            bash_control_meta_for_adapter(true, Some(&extension)).as_deref(),
+            Some(extension.control_meta_path()),
+        );
+        assert!(bash_control_meta_for_adapter(true, None).is_none());
+    }
+
+    #[test]
+    fn eval_bridge_defaults_v1_and_only_explicit_v2_opts_in() {
+        assert_eq!(eval_version_from_config(None), "v1");
+
+        let missing: toml::Value = toml::from_str("[ui]\n").expect("parse missing config");
+        assert_eq!(eval_version_from_config(Some(&missing)), "v1");
+
+        let v1: toml::Value = toml::from_str("[ui]\npi_eval = \"v1\"\n").expect("parse v1 config");
+        assert_eq!(eval_version_from_config(Some(&v1)), "v1");
+
+        let v2: toml::Value = toml::from_str("[ui]\npi_eval = \"v2\"\n").expect("parse v2 config");
+        assert_eq!(eval_version_from_config(Some(&v2)), "v2");
+
+        let invalid: toml::Value =
+            toml::from_str("[ui]\npi_eval = \"both\"\n").expect("parse invalid config");
+        assert_eq!(eval_version_from_config(Some(&invalid)), "v1");
+    }
+
+    #[test]
+    fn eval_v2_only_defaults_off_and_honors_explicit_true() {
+        assert!(!eval_v2_only_enabled_from_config(None));
+
+        let missing: toml::Value = toml::from_str("[ui]\n").expect("parse missing config");
+        assert!(!eval_v2_only_enabled_from_config(Some(&missing)));
+
+        let enabled: toml::Value =
+            toml::from_str("[ui]\npi_eval_v2_only = true\n").expect("parse enabled config");
+        assert!(eval_v2_only_enabled_from_config(Some(&enabled)));
+
+        let disabled: toml::Value =
+            toml::from_str("[ui]\npi_eval_v2_only = false\n").expect("parse disabled config");
+        assert!(!eval_v2_only_enabled_from_config(Some(&disabled)));
+    }
+
+    #[test]
+    fn eval_v2_only_tool_policy_isolates_eval_without_overriding_explicit_cli() {
+        let mut args = Vec::new();
+        assert!(apply_eval_v2_only_tool_policy(&mut args, true, true));
+        assert_eq!(args, ["--tools", "eval"]);
+
+        let mut disabled = Vec::new();
+        assert!(!apply_eval_v2_only_tool_policy(&mut disabled, true, false));
+        assert!(disabled.is_empty());
+
+        let mut no_bridge = Vec::new();
+        assert!(!apply_eval_v2_only_tool_policy(&mut no_bridge, false, true));
+        assert!(no_bridge.is_empty());
+
+        let mut explicit = vec!["--tools".to_string(), "read,eval".to_string()];
+        let explicit_before = explicit.clone();
+        assert!(!apply_eval_v2_only_tool_policy(&mut explicit, true, true));
+        assert_eq!(explicit, explicit_before);
+
+        let mut no_tools = vec!["--no-tools".to_string()];
+        let no_tools_before = no_tools.clone();
+        assert!(!apply_eval_v2_only_tool_policy(&mut no_tools, true, true));
+        assert_eq!(no_tools, no_tools_before);
+
+        let mut no_builtins = vec!["--no-builtin-tools".to_string()];
+        assert!(apply_eval_v2_only_tool_policy(&mut no_builtins, true, true));
+        assert_eq!(no_builtins, ["--no-builtin-tools", "--tools", "eval"]);
+    }
+
+    #[test]
     fn subagents_default_on_and_honor_explicit_off() {
         assert!(subagents_enabled_from_config(None));
 
@@ -1752,6 +2000,22 @@ mod env_flag_tests {
         let disabled: toml::Value =
             toml::from_str("[ui]\npi_subagents = false\n").expect("parse disabled config");
         assert!(!subagents_enabled_from_config(Some(&disabled)));
+    }
+
+    #[test]
+    fn todo_default_on_and_honors_explicit_off() {
+        assert!(todo_enabled_from_config(None));
+
+        let missing: toml::Value = toml::from_str("[ui]\n").expect("parse missing config");
+        assert!(todo_enabled_from_config(Some(&missing)));
+
+        let enabled: toml::Value =
+            toml::from_str("[ui]\npi_todo = true\n").expect("parse enabled config");
+        assert!(todo_enabled_from_config(Some(&enabled)));
+
+        let disabled: toml::Value =
+            toml::from_str("[ui]\npi_todo = false\n").expect("parse disabled config");
+        assert!(!todo_enabled_from_config(Some(&disabled)));
     }
 
     #[test]

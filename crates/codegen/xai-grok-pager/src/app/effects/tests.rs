@@ -758,6 +758,17 @@ async fn persist_setting_unknown_key_returns_err() {
 }
 /// Type-mismatch returns Err (not panic) for spawned-task safety.
 #[tokio::test]
+async fn persist_setting_type_mismatch_errors_pi_todo() {
+    use crate::settings::SettingValue;
+    let r = persist_setting("pi_todo", SettingValue::String("nope".into())).await;
+    let err = r.expect_err("pi_todo with String payload must return Err");
+    assert!(
+        err.contains("persist_setting(pi_todo) expected Bool"),
+        "Pi todo setting must reach its typed persist arm, got: {err}",
+    );
+}
+
+#[tokio::test]
 async fn persist_setting_type_mismatch_errors_pi_subagents() {
     use crate::settings::SettingValue;
     let r = persist_setting("pi_subagents", SettingValue::String("nope".into())).await;
