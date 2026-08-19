@@ -2788,6 +2788,26 @@ impl AppView {
     pub fn remote_tui_key_sequence(key: &crossterm::event::KeyEvent) -> Option<String> {
         use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 
+        // Pi's native TUI treats navigation as discrete key presses. Forwarding
+        // host-side repeat events over the remote bridge makes a short arrow tap
+        // advance several items once SSH/PTY buffering is involved. Keep repeat
+        // for text-editing keys, but make remote navigation one press = one step.
+        if key.kind == KeyEventKind::Repeat
+            && matches!(
+                key.code,
+                KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Home
+                    | KeyCode::End
+                    | KeyCode::PageUp
+                    | KeyCode::PageDown
+            )
+        {
+            return None;
+        }
+
         fn kitty_modifier_value(modifiers: KeyModifiers) -> u8 {
             let mut value = 1;
             if modifiers.contains(KeyModifiers::SHIFT) {

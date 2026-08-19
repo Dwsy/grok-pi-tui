@@ -430,6 +430,36 @@ fn remote_tui_key_sequence_maps_arrows_enter_esc() {
 }
 
 #[test]
+fn remote_tui_key_sequence_drops_navigation_repeat_but_keeps_text_repeat() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    for code in [
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+    ] {
+        let mut repeat = KeyEvent::new(code, KeyModifiers::NONE);
+        repeat.kind = KeyEventKind::Repeat;
+        assert_eq!(
+            AppView::remote_tui_key_sequence(&repeat),
+            None,
+            "remote navigation repeat must not advance multiple Pi-TUI items"
+        );
+    }
+
+    let mut text_repeat = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
+    text_repeat.kind = KeyEventKind::Repeat;
+    assert_eq!(
+        AppView::remote_tui_key_sequence(&text_repeat).as_deref(),
+        Some("\u{1b}[119;1:2u")
+    );
+}
+
+#[test]
 fn remote_tui_key_sequence_preserves_key_release_for_pi_tui() {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     let mut release = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
