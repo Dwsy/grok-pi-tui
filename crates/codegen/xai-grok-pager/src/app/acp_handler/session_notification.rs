@@ -363,11 +363,21 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 subagent_type = %subagent_type,
                 "Subagent spawned"
             );
-            let is_background = agent
+            // Pi's bridge sends task metadata and lifecycle over different ACP
+            // message types, so their receiver order is not guaranteed. Prefer
+            // the lifecycle's explicit background bit and retain the tracker
+            // map as a compatibility fallback for stock/older producers.
+            let tracked_background = agent
                 .session
                 .tracker
                 .task_tool_background
-                .remove(&subagent_id)
+                .remove(&subagent_id);
+            let is_background = session_notif
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("subagentBackground"))
+                .and_then(serde_json::Value::as_bool)
+                .or(tracked_background)
                 .unwrap_or(false);
             let persona_display = persona.clone();
             let role_display = role.clone();

@@ -109,6 +109,14 @@ pub(crate) fn parse_bridge_message(
                     update[target] = value.clone();
                 }
             }
+            let mut lifecycle = session_update_envelope(
+                root_session_id,
+                update,
+                replay,
+                &subagent_id,
+                sequence,
+            );
+            lifecycle["_meta"]["subagentBackground"] = Value::Bool(background);
             vec![
                 BridgeOperation::ParentTaskMetadata {
                     tool_call_id: parent_tool_call_id,
@@ -118,13 +126,7 @@ pub(crate) fn parse_bridge_message(
                         "run_in_background": background,
                     }),
                 },
-                BridgeOperation::ParentLifecycle(session_update_envelope(
-                    root_session_id,
-                    update,
-                    replay,
-                    &subagent_id,
-                    sequence,
-                )),
+                BridgeOperation::ParentLifecycle(lifecycle),
             ]
         }
         "progress" => {
@@ -378,6 +380,7 @@ mod tests {
         assert_eq!(lifecycle["sessionId"], "parent-1");
         assert_eq!(lifecycle["update"]["sessionUpdate"], "subagent_spawned");
         assert_eq!(lifecycle["update"]["child_session_id"], "child-1");
+        assert_eq!(lifecycle["_meta"]["subagentBackground"], true);
     }
 
     #[test]

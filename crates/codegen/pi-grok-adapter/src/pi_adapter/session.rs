@@ -703,9 +703,12 @@ impl PiAgent {
         }
         let busy = {
             let state = self.state.borrow();
-            state.agent_running
-                || state.bootstrap.state.is_streaming
-                || !state.active_prompts.is_empty()
+            // `bootstrap.state.is_streaming` is a refresh-time snapshot and is
+            // not cleared by the live `agent_settled` event. Using it here can
+            // therefore leave tree navigation permanently blocked after the
+            // response has finished. The live lifecycle flags below are the
+            // authoritative idle barrier.
+            state.agent_running || !state.active_prompts.is_empty()
         };
         if busy {
             return Err(acp::Error::invalid_params()
