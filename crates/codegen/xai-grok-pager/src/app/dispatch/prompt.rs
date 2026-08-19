@@ -451,6 +451,10 @@ pub(super) fn dispatch_send_prompt_inner(
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
+    let active_child_sid = app
+        .agents
+        .get(&id)
+        .and_then(|agent| agent.active_subagent.clone());
     // Capture app-level fields before the mut-borrow on `agent`.
     let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
     let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
@@ -467,8 +471,16 @@ pub(super) fn dispatch_send_prompt_inner(
     let scheduler_background_loops_seed = app.scheduler_background_loops_seed;
     let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
     let leader_mode = app.leader_mode;
-    let Some(agent) = app.agents.get_mut(&id) else {
+    let Some(root_agent) = app.agents.get_mut(&id) else {
         return vec![];
+    };
+    let agent = if let Some(child_sid) = active_child_sid.as_deref() {
+        let Some(child) = root_agent.subagent_views.get_mut(child_sid) else {
+            return vec![];
+        };
+        &mut **child
+    } else {
+        root_agent
     };
 
     // Paste-then-immediate-send: an image probe from a just-pasted Cmd+V is
@@ -800,8 +812,12 @@ pub(super) fn dispatch_send_prompt_inner(
             .slash_controller
             .recognized_token_ranges(&text, &agent.session.models);
 
-        let immediate_server_send =
-            immediate_server_send_eligible(agent, leader_mode) && agent.prompt.images.is_empty();
+        // Child sessions reuse the same ACP prompt path, but do not participate
+        // in the root AgentId-keyed shared-queue/adoption bookkeeping. Keep
+        // their sends on the local queue/drain path, which is session-scoped.
+        let immediate_server_send = active_child_sid.is_none()
+            && immediate_server_send_eligible(agent, leader_mode)
+            && agent.prompt.images.is_empty();
         tracing::debug!(
             target: "qtrace",
             pid = std::process::id(),
@@ -823,6 +839,7 @@ pub(super) fn dispatch_send_prompt_inner(
 
         // Images can't ride immediate server-send; empty-held park still send-nows.
         if !immediate_server_send
+            && active_child_sid.is_none()
             && immediate_server_send_eligible(agent, leader_mode)
             && !agent.prompt.images.is_empty()
             && parked_sendable_wait
@@ -915,7 +932,7 @@ pub(super) fn dispatch_send_prompt_inner(
 
     // Mid-turn local queue: advertise send-now via the ephemeral tip (skip during
     // a sendable wait — the inline hint already says it).
-    if tip_send_now_after_queue {
+    if tip_send_now_after_queue && active_child_sid.is_none() {
         let inline_hint_shown = app
             .agents
             .get(&id)
@@ -926,8 +943,16 @@ pub(super) fn dispatch_send_prompt_inner(
     }
 
     let drain = {
-        let Some(agent) = app.agents.get_mut(&id) else {
+        let Some(root_agent) = app.agents.get_mut(&id) else {
             return effects;
+        };
+        let agent = if let Some(child_sid) = active_child_sid.as_deref() {
+            let Some(child) = root_agent.subagent_views.get_mut(child_sid) else {
+                return effects;
+            };
+            &mut **child
+        } else {
+            root_agent
         };
 
         // Insert into local prompt history (move-to-front dedup, cap at 200).
@@ -948,7 +973,30 @@ pub(super) fn dispatch_send_prompt_inner(
         }
         maybe_drain_queue(agent)
     };
-    effects.extend(drain.effects);
+    let drain_effects = if active_child_sid.is_some() {
+        drain.effects
+            .into_iter()
+            .map(|effect| match effect {
+                Effect::SendPrompt {
+                    session_id,
+                    text,
+                    prompt_id,
+                    skill_token_ranges,
+                    ..
+                } => Effect::SendSubagentPrompt {
+                    parent_agent_id: id,
+                    child_session_id: session_id,
+                    text,
+                    prompt_id,
+                    skill_token_ranges,
+                },
+                other => other,
+            })
+            .collect()
+    } else {
+        drain.effects
+    };
+    effects.extend(drain_effects);
     note_peek_page_flip(app, id, drain.page_flip_entry);
     effects
 }
@@ -1090,6 +1138,93 @@ pub(super) fn supersede_open_reload_window(
 }
 
 // TaskResult handlers.
+
+pub(super) fn handle_subagent_prompt_response(
+    app: &mut AppView,
+    parent_agent_id: AgentId,
+    child_session_id: acp::SessionId,
+    result: Result<acp::PromptResponse, String>,
+    _http_status: Option<u16>,
+    prompt_id: Option<String>,
+) -> Vec<Effect> {
+    let Some(child) = app
+        .agents
+        .get_mut(&parent_agent_id)
+        .and_then(|root| root.subagent_views.get_mut(child_session_id.0.as_ref()))
+        .map(|child| &mut **child)
+    else {
+        return vec![];
+    };
+    let response_pid = match &result {
+        Ok(pr) => pr
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("promptId"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        Err(_) => prompt_id.clone(),
+    };
+    if let Some(response_pid) = response_pid.as_deref()
+        && child.session.current_prompt_id.as_deref() != Some(response_pid)
+    {
+        return vec![];
+    }
+    let was_cancelling = child.session.state.is_cancelling()
+        || matches!(&result, Ok(pr) if pr.stop_reason == acp::StopReason::Cancelled);
+    let elapsed = child.turn_elapsed();
+    let ending_prompt_id = child
+        .session
+        .current_prompt_id
+        .clone()
+        .or(response_pid);
+    child.session.finish_turn(&mut child.scrollback);
+    let event = match &result {
+        Ok(_) if was_cancelling => Some(SessionEvent::TurnCancelled {
+            elapsed: elapsed.unwrap_or_default(),
+        }),
+        Ok(_) => Some(SessionEvent::TurnCompleted {
+            elapsed: Some(elapsed.unwrap_or_default()),
+        }),
+        Err(err) => Some(SessionEvent::TurnFailed {
+            error: err.clone(),
+            elapsed,
+        }),
+    };
+    crate::app::turn_completion::push_turn_terminal_marker(
+        child,
+        event,
+        ending_prompt_id.as_deref(),
+    );
+    child.mark_turn_finished();
+    child.activity_started_at = None;
+    child.last_activity = None;
+    child.cancel_turn_view = None;
+    child.cancel_turn_buttons.clear();
+    child.prompt.prompt_suggestion.clear();
+    if let Err(ref err) = result {
+        tracing::error!(parent_agent = ?parent_agent_id, child_session = %child_session_id.0, error = %err, "Subagent prompt failed");
+    }
+    let drain = maybe_drain_queue(child);
+    drain.effects
+        .into_iter()
+        .map(|effect| match effect {
+            Effect::SendPrompt {
+                session_id,
+                text,
+                prompt_id,
+                skill_token_ranges,
+                ..
+            } => Effect::SendSubagentPrompt {
+                parent_agent_id,
+                child_session_id: session_id,
+                text,
+                prompt_id,
+                skill_token_ranges,
+            },
+            other => other,
+        })
+        .collect()
+}
 
 pub(super) fn handle_prompt_response(
     app: &mut AppView,

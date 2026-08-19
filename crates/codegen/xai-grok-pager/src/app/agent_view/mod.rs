@@ -1472,10 +1472,11 @@ pub struct AgentView {
     /// Currently open subagent view (child_session_id). When Some, the
     /// scrollback area is replaced by the subagent's framed view.
     pub active_subagent: Option<String>,
-    /// When true, this AgentView is rendering as a subagent (read-only):
-    /// - Prompt is hidden
-    /// - Cancel turn / demote to bg shortcuts are disabled
-    /// - Shortcuts bar shows subagent-specific hints
+    /// When true, this AgentView is rendering as a persistent subagent session:
+    /// - Prompt remains interactive so the child can be reused for later turns
+    /// - Turn cancellation targets the child session directly
+    /// - Demote-to-background remains disabled for nested child execution
+    /// - Shortcuts bar shows subagent-specific navigation hints
     pub is_subagent_view: bool,
     /// Hit area for the [✗] close button in the subagent frame title bar.
     pub hit_subagent_frame_close: HitArea,

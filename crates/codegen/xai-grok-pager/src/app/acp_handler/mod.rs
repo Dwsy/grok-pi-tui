@@ -540,11 +540,24 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         if let Some(ts) = meta.turn_start_ms {
                             child_view.turn_start_ms = Some(ts);
                         }
+                        let had_activity_before = child_view.session.tracker.activity().is_some();
                         child_view.session.handle_update(
                             notif.request.update,
                             &meta,
                             &mut child_view.scrollback,
                         );
+                        if !had_activity_before && child_view.session.tracker.activity().is_some() {
+                            note_first_turn_activity(child_view);
+                        }
+                        if let Some(commands) =
+                            child_view.session.tracker.take_pending_acp_commands()
+                        {
+                            child_view.session.available_commands = commands;
+                            child_view.session.available_commands_generation += 1;
+                        }
+                        if let Some(tools) = child_view.session.tracker.take_pending_acp_tools() {
+                            child_view.session.available_tools = Some(tools.into_iter().collect());
+                        }
                         for entry_id in child_view.session.tracker.take_pending_edit_hl() {
                             child_view.submit_edit_highlight(entry_id);
                         }

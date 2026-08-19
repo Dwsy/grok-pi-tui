@@ -371,11 +371,14 @@ impl AgentView {
         view.set_input_mode(mode);
         view
     }
-    /// Establish read-only child identity before a view is stored or opened.
+    /// Establish child-session identity before a view is stored or opened.
+    ///
+    /// Child sessions are persistent, interactive sessions: the flag is used
+    /// for subagent-specific chrome/affordances, not to make the view read-only.
     pub(crate) fn mark_as_subagent_view(&mut self) {
         self.is_subagent_view = true;
     }
-    /// Register a child view and establish its read-only subagent identity.
+    /// Register a child view and establish its subagent identity.
     pub(crate) fn insert_subagent_view(
         &mut self,
         child_sid: String,

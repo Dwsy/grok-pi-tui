@@ -1067,11 +1067,14 @@ impl RenderBlock {
             RenderBlock::AgentMessage(_)
             | RenderBlock::Thinking(_)
             | RenderBlock::ToolCall(ToolCallBlock::Execute(_))
+            | RenderBlock::ToolCall(ToolCallBlock::Eval(_))
             | RenderBlock::ToolCall(ToolCallBlock::Edit(_))
             | RenderBlock::ToolCall(ToolCallBlock::WebFetch(_))
             | RenderBlock::ToolCall(ToolCallBlock::WebSearch(_))
             | RenderBlock::ToolCall(ToolCallBlock::IntegrationSearch(_))
             | RenderBlock::ToolCall(ToolCallBlock::UseTool(_))
+            | RenderBlock::ToolCall(ToolCallBlock::Other(_))
+            | RenderBlock::ToolCall(ToolCallBlock::Skill(_))
             | RenderBlock::BgTask(_) => true,
             RenderBlock::ToolCall(ToolCallBlock::Read(b)) => b.has_content(),
             RenderBlock::ToolCall(ToolCallBlock::Search(b)) => b.error.is_none(),
@@ -1397,6 +1400,17 @@ mod tests {
     fn test_tool_call_with_output_is_foldable() {
         let block = RenderBlock::execute_with_output("cargo test", "test output", None::<String>);
         assert!(block.is_foldable());
+    }
+
+    #[test]
+    fn test_generic_tool_has_fullscreen_viewer() {
+        use crate::scrollback::blocks::tool::OtherToolCallBlock;
+        let block = RenderBlock::ToolCall(ToolCallBlock::Other(
+            OtherToolCallBlock::new("custom_tool", "")
+                .with_input_json("{\n  \"query\": \"needle\"\n}"),
+        ));
+        assert!(block.has_normal_fullscreen_viewer());
+        assert!(block.supports_fullscreen());
     }
 
     #[test]

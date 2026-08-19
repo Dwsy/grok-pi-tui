@@ -310,6 +310,14 @@ pub(super) fn find_agent_by_session_id<'a>(
     agents: &'a mut indexmap::IndexMap<AgentId, AgentView>,
     session_id: &str,
 ) -> Option<&'a mut AgentView> {
-    let id = find_agent_id_by_session_id(agents, session_id)?;
-    agents.get_mut(&id)
+    let root_id = find_agent_id_by_session_id(agents, session_id);
+    if let Some(id) = root_id {
+        return agents.get_mut(&id);
+    }
+    for agent in agents.values_mut() {
+        if agent.subagent_views.contains_key(session_id) {
+            return agent.subagent_views.get_mut(session_id).map(|child| &mut **child);
+        }
+    }
+    None
 }

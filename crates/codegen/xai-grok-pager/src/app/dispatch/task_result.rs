@@ -17,7 +17,7 @@ use super::ctx::{find_agent_by_session_id, get_active_agent_mut};
 use super::notes::{handle_btw_response, handle_memory_note_saved};
 use super::prompt::{
     defer_to_open_reload_window, handle_compact_complete, handle_prompt_response,
-    handle_suggestion_debounce_expired,
+    handle_subagent_prompt_response, handle_suggestion_debounce_expired,
 };
 use super::queue::push_and_page_flip;
 use super::rewind::{
@@ -589,6 +589,20 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             http_status,
             prompt_id,
         } => handle_prompt_response(app, agent_id, result, http_status, prompt_id),
+        TaskResult::SubagentPromptResponse {
+            parent_agent_id,
+            child_session_id,
+            result,
+            http_status,
+            prompt_id,
+        } => handle_subagent_prompt_response(
+            app,
+            parent_agent_id,
+            child_session_id,
+            result,
+            http_status,
+            prompt_id,
+        ),
         TaskResult::SendPromptNowFailed {
             agent_id,
             session_id,

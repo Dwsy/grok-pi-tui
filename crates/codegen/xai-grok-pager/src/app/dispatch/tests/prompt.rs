@@ -1,6 +1,77 @@
 //! Tests for prompt and bash submission, queueing, and interject shims.
 
 use super::*;
+use crate::app::dispatch::queue::maybe_drain_queue;
+
+#[test]
+fn active_subagent_prompt_reuses_child_session() {
+    let mut app = test_app_with_agent();
+    let parent_id = AgentId(0);
+    let child_sid = "child-reuse".to_string();
+    let child_session = make_test_agent_session(&app, AgentId(99), &child_sid);
+    let mut child = AgentView::new(child_session, ScrollbackState::new());
+    child.session.state = AgentState::Idle;
+    app.agents
+        .get_mut(&parent_id)
+        .unwrap()
+        .insert_subagent_view(child_sid.clone(), Box::new(child));
+    app.agents.get_mut(&parent_id).unwrap().active_subagent = Some(child_sid.clone());
+
+    let effects = dispatch(Action::SendPrompt("continue here".into()), &mut app);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::SendSubagentPrompt {
+            parent_agent_id,
+            child_session_id,
+            text,
+            ..
+        }] if *parent_agent_id == parent_id
+            && child_session_id.0.as_ref() == child_sid
+            && text == "continue here"
+    ));
+    let child = &app.agents[&parent_id].subagent_views[&child_sid];
+    assert!(child.session.state.is_turn_running());
+    assert_eq!(child.session.queue_len(), 0);
+}
+
+#[test]
+fn subagent_prompt_response_finishes_child_without_touching_parent() {
+    let mut app = test_app_with_agent();
+    let parent_id = AgentId(0);
+    let child_sid = "child-finish".to_string();
+    let child_session = make_test_agent_session(&app, AgentId(99), &child_sid);
+    let mut child = AgentView::new(child_session, ScrollbackState::new());
+    child.session.enqueue_prompt("again".into());
+    let drain = maybe_drain_queue(&mut child);
+    let prompt_id = match drain.effects.as_slice() {
+        [Effect::SendPrompt { prompt_id, .. }] => prompt_id.clone(),
+        other => panic!("expected child prompt effect, got {other:?}"),
+    };
+    app.agents
+        .get_mut(&parent_id)
+        .unwrap()
+        .insert_subagent_view(child_sid.clone(), Box::new(child));
+
+    let response = acp::PromptResponse::new(acp::StopReason::EndTurn).meta(Some(
+        serde_json::json!({"promptId": prompt_id}).as_object().unwrap().clone(),
+    ));
+    let effects = dispatch_task_result(
+        TaskResult::SubagentPromptResponse {
+            parent_agent_id: parent_id,
+            child_session_id: acp::SessionId::new(child_sid.clone()),
+            result: Ok(response),
+            http_status: None,
+            prompt_id: Some(prompt_id),
+        },
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    assert!(app.agents[&parent_id].session.state.is_idle());
+    assert!(app.agents[&parent_id].subagent_views[&child_sid]
+        .session
+        .state
+        .is_idle());
+}
 
 /// Sending a prompt is a submit: it retires the active ephemeral tip.
 #[test]

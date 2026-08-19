@@ -157,6 +157,8 @@ pub enum ViewerKind {
     IntegrationSearch,
     /// Integration tool dispatch (use_tool).
     UseTool,
+    /// Generic/unknown tool call (raw input + output/error).
+    OtherTool,
     /// Read file tool call (file content).
     Read,
     Grep,
@@ -536,6 +538,19 @@ impl BlockViewerPane {
             .collect()
     }
 
+    pub fn for_eval(entry_id: EntryId, entry: &ScrollbackEntry) -> Option<Self> {
+        let RenderBlock::ToolCall(ToolCallBlock::Eval(eval)) = &entry.block else {
+            return None;
+        };
+
+        let lines = Self::static_lines_from_block(entry, eval);
+        Some(Self::for_static_content(
+            entry_id,
+            ViewerKind::PlainText,
+            lines,
+        ))
+    }
+
     pub fn for_grep(entry_id: EntryId, entry: &ScrollbackEntry) -> Option<Self> {
         let RenderBlock::ToolCall(ToolCallBlock::Search(search)) = &entry.block else {
             return None;
@@ -705,6 +720,43 @@ impl BlockViewerPane {
             ViewerKind::UseTool,
             lines,
         ))
+    }
+
+    /// Create a viewer for a generic/unknown tool block.
+    pub fn for_other_tool(entry_id: EntryId, entry: &ScrollbackEntry) -> Option<Self> {
+        let block = match &entry.block {
+            RenderBlock::ToolCall(ToolCallBlock::Other(block))
+            | RenderBlock::ToolCall(ToolCallBlock::Skill(block)) => block,
+            _ => return None,
+        };
+        let theme = Theme::current();
+        let label = Style::default().fg(theme.text_secondary);
+        let value = Style::default().fg(theme.text_primary);
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        if let Some(input) = block.input_json.as_deref() {
+            lines.push(Line::from(Span::styled("Input", label)));
+            for line in input.lines() {
+                lines.push(Line::from(Span::styled(line.to_string(), value)));
+            }
+        }
+        if let Some(text) = block.output.as_deref().or(block.error.as_deref()) {
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(Span::styled(
+                if block.error.is_some() { "Error" } else { "Output" },
+                label,
+            )));
+            let style = if block.error.is_some() {
+                Style::default().fg(theme.accent_error)
+            } else {
+                value
+            };
+            for line in text.lines() {
+                lines.push(Line::from(Span::styled(line.to_string(), style)));
+            }
+        }
+        Some(Self::for_static_content(entry_id, ViewerKind::OtherTool, lines))
     }
 
     /// Create a viewer for a background task (stdout from central store).
@@ -1053,6 +1105,7 @@ impl BlockViewerPane {
             | ViewerKind::WebSearch
             | ViewerKind::IntegrationSearch
             | ViewerKind::UseTool
+            | ViewerKind::OtherTool
             | ViewerKind::PlainText => {}
         }
     }
@@ -1146,7 +1199,10 @@ impl BlockViewerPane {
                 hints.push(HintItem::new(crate::key!('Y'), "copy pattern"));
             }
             ViewerKind::BgTask => {}
-            ViewerKind::IntegrationSearch | ViewerKind::UseTool | ViewerKind::PlainText => {}
+            ViewerKind::IntegrationSearch
+            | ViewerKind::UseTool
+            | ViewerKind::OtherTool
+            | ViewerKind::PlainText => {}
         }
         hints
     }

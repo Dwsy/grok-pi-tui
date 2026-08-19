@@ -1689,6 +1689,35 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::SendSubagentPrompt {
+            parent_agent_id,
+            child_session_id,
+            text,
+            prompt_id,
+            skill_token_ranges,
+        } => {
+            let tx = acp_tx.clone();
+            let screen_mode = session_flags.screen_mode_label;
+            let is_api_key_auth = session_flags.is_api_key_auth;
+            tasks.spawn(async move {
+                let prompt = vec![plain_prompt_content_block(text, &skill_token_ranges)];
+                let req = acp::PromptRequest::new(child_session_id.clone(), prompt).meta(
+                    prompt_request_meta(&prompt_id, screen_mode)
+                        .as_object()
+                        .cloned(),
+                );
+                let result = acp_send(req, &tx).await;
+                log_prompt_result(&child_session_id, &result);
+                let http_status = result.as_ref().err().and_then(http_status_from_error);
+                TaskResult::SubagentPromptResponse {
+                    parent_agent_id,
+                    child_session_id,
+                    result: result.map_err(|e| format_acp_error(&e, is_api_key_auth)),
+                    http_status,
+                    prompt_id: Some(prompt_id),
+                }
+            });
+        }
         Effect::SendPromptBlocks { agent_id, session_id, blocks, prompt_id }
         | Effect::SendPromptNow { agent_id, session_id, blocks, prompt_id } => {
             let send_now = effect_is_send_now;

@@ -407,6 +407,7 @@ impl AgentView {
     pub(crate) fn open_subagent_fullscreen(&mut self, child_sid: String) {
         if let Some(child) = self.subagent_views.get_mut(&child_sid) {
             child.mark_as_subagent_view();
+            child.set_active_pane(AgentPane::Scrollback, true);
         } else {
             return;
         }
@@ -1582,11 +1583,6 @@ impl AgentView {
         };
         let prompt_height =
             prompt_height.max(prompt_style.vpad_top + 1 + prompt_style.info_block(true));
-        let prompt_height = if self.is_subagent_view {
-            0
-        } else {
-            prompt_height
-        };
         let prompt_height = if question_view_h > 0 {
             let reserved = 1 + 5 + 1 + 3;
             prompt_height.min(area.height.saturating_sub(reserved))

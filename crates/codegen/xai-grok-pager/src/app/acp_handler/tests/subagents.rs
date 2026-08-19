@@ -292,6 +292,36 @@
         );
     }
 
+    /// Regression: Pi bridge task metadata and lifecycle use different ACP
+    /// message types, so lifecycle can arrive first. Its explicit meta must be
+    /// sufficient to render the child as a background SubagentBlock.
+    #[test]
+    fn subagent_spawned_meta_marks_background_without_task_metadata() {
+        let mut app = make_app_with_agent("sess-parent");
+        let child_sid = "child-background-meta";
+
+        let affected = handle(
+            make_ext_session_notification_with_method_and_meta(
+                "sess-parent",
+                "x.ai/session/update",
+                test_subagent_spawned("sess-parent", child_sid),
+                Some(serde_json::json!({ "subagentBackground": true })),
+            ),
+            &mut app,
+        );
+        assert!(affected);
+
+        let agent = app.agents.get(&AgentId(0)).unwrap();
+        let info = agent.subagent_sessions.get(child_sid).unwrap();
+        assert!(info.is_background);
+        let entry_id = info.scrollback_entry_id.unwrap();
+        let entry = agent.scrollback.get_by_id(entry_id).unwrap();
+        let RenderBlock::Subagent(block) = &entry.block else {
+            panic!("expected background SubagentBlock");
+        };
+        assert!(block.is_background);
+    }
+
     /// The live activity label fans out to `SubagentInfo` (tasks pane /
     /// dashboard rows) alongside the scrollback block — from both the child
     /// session/update path and the `SubagentProgress` path — and
@@ -367,6 +397,75 @@
         assert!(
             sb.activity_label.is_none(),
             "finish must clear the block label"
+        );
+    }
+
+    #[test]
+    fn child_generic_tool_update_preserves_raw_input_for_fullscreen_details() {
+        let child_sid = "child-tool-details";
+        let mut app = make_app_with_parent_and_child("sess-parent", child_sid);
+        app.appearance.show_other_tool_args = true;
+        let appearance = app.appearance.clone();
+        app.agents
+            .get_mut(&AgentId(0))
+            .unwrap()
+            .subagent_views
+            .get_mut(child_sid)
+            .unwrap()
+            .scrollback
+            .set_appearance(appearance);
+
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let request = acp::SessionNotification::new(
+            acp::SessionId::new(child_sid),
+            acp::SessionUpdate::ToolCall(
+                acp::ToolCall::new(acp::ToolCallId::new("call-child"), "custom_tool")
+                    .kind(acp::ToolKind::Other)
+                    .status(acp::ToolCallStatus::Pending),
+            ),
+        );
+        assert!(handle(
+            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+                request,
+                response_tx: tx,
+            }),
+            &mut app,
+        ));
+
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let request = acp::SessionNotification::new(
+            acp::SessionId::new(child_sid),
+            acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                acp::ToolCallId::new("call-child"),
+                acp::ToolCallUpdateFields::new()
+                    .status(Some(acp::ToolCallStatus::InProgress))
+                    .raw_input(Some(serde_json::json!({
+                        "query": "needle",
+                        "limit": 7
+                    }))),
+            )),
+        );
+        assert!(handle(
+            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+                request,
+                response_tx: tx,
+            }),
+            &mut app,
+        ));
+
+        let child = &app.agents[&AgentId(0)].subagent_views[child_sid];
+        let entry = child.scrollback.entry(0).expect("child tool block");
+        let RenderBlock::ToolCall(crate::scrollback::blocks::tool::ToolCallBlock::Other(block)) =
+            &entry.block
+        else {
+            panic!("expected generic child tool block, got {:?}", entry.block);
+        };
+        let input = block.input_json.as_deref().expect("raw input retained");
+        assert!(input.contains("needle"));
+        assert!(input.contains("limit"));
+        assert!(
+            entry.block.supports_fullscreen(),
+            "child generic tool must expose the same detail viewer as root tools"
         );
     }
 

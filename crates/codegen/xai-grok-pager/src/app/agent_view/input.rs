@@ -222,7 +222,6 @@ impl AgentView {
         pane_clear
             && matches!(self.prompt_mode, crate::app::queue_edit::PromptMode::Normal)
             && self.inline_edit.is_none()
-            && !self.is_subagent_view
             && self.agents_modal.is_none()
             && self.persona_detail.is_none()
             && self.no_esc_consumer_pending()
@@ -494,7 +493,7 @@ impl AgentView {
             if child_in_scrollback
                 && let Event::Key(key) = ev
                 && key.kind != KeyEventKind::Release
-                && (key!('q').matches(key) || key.code == KeyCode::Esc)
+                && key!('q').matches(key)
             {
                 self.active_subagent = None;
                 return InputOutcome::Changed;
@@ -1748,6 +1747,42 @@ mod background_and_tasks_shortcut_tests {
         }
     }
     #[test]
+    fn fullscreen_child_open_focuses_scrollback_shortcuts() {
+        let registry = ActionRegistry::defaults();
+        let child_sid = "child-sid".to_string();
+        let mut parent = make_agent();
+        let mut child = make_agent();
+        child.set_active_pane(AgentPane::Prompt, true);
+        parent
+            .subagent_views
+            .insert(child_sid.clone(), Box::new(child));
+
+        parent.open_subagent_fullscreen(child_sid.clone());
+
+        assert_eq!(
+            parent.subagent_views[&child_sid].active_pane,
+            AgentPane::Scrollback
+        );
+        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        assert!(matches!(
+            parent.handle_input(&key(KeyCode::Left), &registry),
+            InputOutcome::Action(Action::Collapse)
+        ));
+        assert!(matches!(
+            parent.handle_input(&key(KeyCode::Right), &registry),
+            InputOutcome::Action(Action::Expand)
+        ));
+        assert!(matches!(
+            parent.handle_input(&key(KeyCode::Char('e')), &registry),
+            InputOutcome::Action(Action::ToggleFold)
+        ));
+        assert!(matches!(
+            parent.handle_input(&key(KeyCode::Enter), &registry),
+            InputOutcome::Action(Action::OpenBlockViewer)
+        ));
+    }
+
+    #[test]
     fn fullscreen_child_ctrl_b_never_demotes_child_or_parent() {
         let registry = ActionRegistry::defaults();
         let child_sid = "child-sid".to_string();
@@ -2360,13 +2395,13 @@ mod esc_would_cancel_turn_tests {
         );
     }
     #[test]
-    fn subagent_fullscreen_view_owns_esc() {
+    fn subagent_fullscreen_view_can_cancel_its_turn() {
         let mut agent = running_agent(false);
         agent.is_subagent_view = true;
         agent.active_pane = AgentPane::Scrollback;
         assert!(
-            !agent.esc_would_cancel_turn(false),
-            "Esc in a fullscreen subagent view closes the child, not cancel"
+            agent.esc_would_cancel_turn(false),
+            "interactive subagent sessions use the normal turn-cancel policy"
         );
     }
     #[test]

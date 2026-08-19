@@ -758,6 +758,12 @@ pub enum Action {
         tool: PiBuiltinTool,
         enabled: bool,
     },
+    /// Enable grok-pi's private Bash/Eval bridge (restart required).
+    SetPiBash(bool),
+    /// Select Eval bridge generation (`v1` or `v2`; restart required).
+    SetPiEval(String),
+    /// Force Eval v2 and hide every other Pi tool (restart required).
+    SetPiEvalV2Only(bool),
     /// Enable PSM's optional SQLite catalog source for Pi `/resume`.
     SetPsmResumeIndex(bool),
     /// Enable Pi tree file rollback checkpoint tracking.
@@ -770,6 +776,8 @@ pub enum Action {
     SetPiSubagents(bool),
     /// Enable upstream Rhai workflows for grok-pi (restart required).
     SetPiWorkflows(bool),
+    /// Enable grok-pi's built-in structured todo tool (restart required).
+    SetPiTodo(bool),
     /// Enable Grok-style /goal for grok-pi (restart required).
     SetPiGoal(bool),
     SetPiLoop(bool),
@@ -1840,6 +1848,16 @@ pub enum Effect {
         /// combined with a `displayText` override.
         skill_token_ranges: Vec<std::ops::Range<usize>>,
     },
+    /// Send a prompt to an already-existing persistent subagent session.
+    /// Async completion is routed by `(parent_agent_id, child_session_id)`
+    /// rather than the child's synthetic `AgentId`.
+    SendSubagentPrompt {
+        parent_agent_id: AgentId,
+        child_session_id: acp::SessionId,
+        text: String,
+        prompt_id: String,
+        skill_token_ranges: Vec<std::ops::Range<usize>>,
+    },
     /// Invoke a Pi extension command without creating a Pager turn or queue row.
     /// Pi owns the command handler and any nested agent work it starts.
     RunPiExtensionCommand {
@@ -2908,6 +2926,15 @@ pub enum TaskResult {
         /// uses it to discard errors from queued/stale prompts instead of
         /// painting them onto the running turn. `None` for synthetic/test
         /// constructions that don't need gating.
+        prompt_id: Option<String>,
+    },
+    /// Prompt response for a persistent child/subagent session. Kept separate
+    /// from `PromptResponse` so root-session result routing remains AgentId-based.
+    SubagentPromptResponse {
+        parent_agent_id: AgentId,
+        child_session_id: acp::SessionId,
+        result: Result<acp::PromptResponse, String>,
+        http_status: Option<u16>,
         prompt_id: Option<String>,
     },
     /// A send-now `session/prompt` RPC failed before the shell accepted it.

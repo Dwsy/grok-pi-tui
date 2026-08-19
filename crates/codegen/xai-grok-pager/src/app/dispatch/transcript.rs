@@ -322,6 +322,9 @@ pub(super) fn dispatch_open_block_viewer(app: &mut AppView) {
             RenderBlock::ToolCall(ToolCallBlock::Execute(_)) => {
                 BlockViewerPane::for_execute(entry.id, entry)
             }
+            RenderBlock::ToolCall(ToolCallBlock::Eval(_)) => {
+                BlockViewerPane::for_eval(entry.id, entry)
+            }
             RenderBlock::ToolCall(ToolCallBlock::Edit(_)) => {
                 BlockViewerPane::for_edit(entry.id, entry)
             }
@@ -345,6 +348,10 @@ pub(super) fn dispatch_open_block_viewer(app: &mut AppView) {
             }
             RenderBlock::ToolCall(ToolCallBlock::UseTool(_)) => {
                 BlockViewerPane::for_use_tool(entry.id, entry)
+            }
+            RenderBlock::ToolCall(ToolCallBlock::Other(_))
+            | RenderBlock::ToolCall(ToolCallBlock::Skill(_)) => {
+                BlockViewerPane::for_other_tool(entry.id, entry)
             }
             RenderBlock::BgTask(block) => {
                 let stdout = agent
