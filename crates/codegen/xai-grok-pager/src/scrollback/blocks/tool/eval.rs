@@ -75,9 +75,9 @@ impl EvalToolCallBlock {
         let mut highlighter = eval_syntax_token(&self.language)
             .and_then(|token| syntect.highlight_lines_for_token(token));
         let fallback = theme.fg(theme.md_code);
+        let code = self.display_code();
 
-        self.code
-            .lines()
+        code.lines()
             .map(|line| {
                 Line::from(crate::syntax::highlight_line(
                     line,
@@ -87,6 +87,15 @@ impl EvalToolCallBlock {
                 ))
             })
             .collect()
+    }
+
+    fn display_code(&self) -> String {
+        let code = prepare_eval_display_text(&self.code);
+        if crate::appearance::cache::load_pi_bash_command_format() {
+            format_eval_code_for_display(&code)
+        } else {
+            code
+        }
     }
 
     fn header_line(&self, theme: &Theme, muted: bool) -> Line<'static> {
@@ -146,6 +155,191 @@ impl EvalToolCallBlock {
     }
 }
 
+fn prepare_eval_display_text(code: &str) -> String {
+    let normalized = code.replace("\r\n", "\n").replace('\r', "\n");
+    let mut out = String::with_capacity(normalized.len());
+    for (i, line) in normalized.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(line.trim_end());
+    }
+    while out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EvalFormatMode {
+    Normal,
+    SingleQuoted,
+    DoubleQuoted,
+    Template,
+    LineComment,
+    BlockComment,
+}
+
+fn format_eval_code_for_display(code: &str) -> String {
+    if code.contains('\n') || code.trim().is_empty() {
+        return code.to_string();
+    }
+
+    let chars: Vec<char> = code.chars().collect();
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut mode = EvalFormatMode::Normal;
+    let mut escaped = false;
+    let mut indent = 0usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut skip_spaces = false;
+    let mut i = 0usize;
+
+    while i < chars.len() {
+        let ch = chars[i];
+        match mode {
+            EvalFormatMode::Normal => {
+                if skip_spaces && ch.is_whitespace() {
+                    i += 1;
+                    continue;
+                }
+                skip_spaces = false;
+
+                if ch.is_whitespace() {
+                    if !current.trim().is_empty() && !current.ends_with(' ') {
+                        current.push(' ');
+                    }
+                } else if ch == '/' && chars.get(i + 1) == Some(&'/') {
+                    push_eval_char(&mut current, indent, '/');
+                    push_eval_char(&mut current, indent, '/');
+                    mode = EvalFormatMode::LineComment;
+                    i += 1;
+                } else if ch == '/' && chars.get(i + 1) == Some(&'*') {
+                    push_eval_char(&mut current, indent, '/');
+                    push_eval_char(&mut current, indent, '*');
+                    mode = EvalFormatMode::BlockComment;
+                    i += 1;
+                } else if ch == '\'' {
+                    push_eval_char(&mut current, indent, ch);
+                    mode = EvalFormatMode::SingleQuoted;
+                    escaped = false;
+                } else if ch == '"' {
+                    push_eval_char(&mut current, indent, ch);
+                    mode = EvalFormatMode::DoubleQuoted;
+                    escaped = false;
+                } else if ch == '`' {
+                    push_eval_char(&mut current, indent, ch);
+                    mode = EvalFormatMode::Template;
+                    escaped = false;
+                } else {
+                    match ch {
+                        '{' => {
+                            push_eval_char(&mut current, indent, ch);
+                            flush_eval_line(&mut lines, &mut current);
+                            indent += 1;
+                            brace_depth += 1;
+                            skip_spaces = true;
+                        }
+                        '}' => {
+                            flush_eval_line(&mut lines, &mut current);
+                            indent = indent.saturating_sub(1);
+                            brace_depth = brace_depth.saturating_sub(1);
+                            push_eval_char(&mut current, indent, ch);
+                        }
+                        ';' => {
+                            push_eval_char(&mut current, indent, ch);
+                            flush_eval_line(&mut lines, &mut current);
+                            skip_spaces = true;
+                        }
+                        ',' if brace_depth > 0 || bracket_depth > 0 => {
+                            push_eval_char(&mut current, indent, ch);
+                            flush_eval_line(&mut lines, &mut current);
+                            skip_spaces = true;
+                        }
+                        '[' => {
+                            bracket_depth += 1;
+                            push_eval_char(&mut current, indent, ch);
+                        }
+                        ']' => {
+                            bracket_depth = bracket_depth.saturating_sub(1);
+                            push_eval_char(&mut current, indent, ch);
+                        }
+                        _ => push_eval_char(&mut current, indent, ch),
+                    }
+                }
+            }
+            EvalFormatMode::SingleQuoted => {
+                push_eval_char(&mut current, indent, ch);
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '\'' {
+                    mode = EvalFormatMode::Normal;
+                }
+            }
+            EvalFormatMode::DoubleQuoted => {
+                push_eval_char(&mut current, indent, ch);
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    mode = EvalFormatMode::Normal;
+                }
+            }
+            EvalFormatMode::Template => {
+                push_eval_char(&mut current, indent, ch);
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '`' {
+                    mode = EvalFormatMode::Normal;
+                }
+            }
+            EvalFormatMode::LineComment => {
+                push_eval_char(&mut current, indent, ch);
+            }
+            EvalFormatMode::BlockComment => {
+                push_eval_char(&mut current, indent, ch);
+                if ch == '*' && chars.get(i + 1) == Some(&'/') {
+                    push_eval_char(&mut current, indent, '/');
+                    mode = EvalFormatMode::Normal;
+                    i += 1;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    flush_eval_line(&mut lines, &mut current);
+    if lines.len() <= 1 {
+        code.to_string()
+    } else {
+        lines.join("\n")
+    }
+}
+
+fn push_eval_char(line: &mut String, indent: usize, ch: char) {
+    if line.is_empty() {
+        if ch.is_whitespace() {
+            return;
+        }
+        line.extend(std::iter::repeat(' ').take(indent.saturating_mul(2)));
+    }
+    line.push(ch);
+}
+
+fn flush_eval_line(lines: &mut Vec<String>, line: &mut String) {
+    let trimmed = line.trim_end();
+    if !trimmed.trim().is_empty() {
+        lines.push(trimmed.to_string());
+    }
+    line.clear();
+}
+
 fn eval_syntax_token(language: &str) -> Option<&'static str> {
     let language = language.trim();
     if language.eq_ignore_ascii_case("py") || language.eq_ignore_ascii_case("python") {
@@ -176,6 +370,30 @@ mod tests {
             is_selected: false,
             cwd: None,
         }
+    }
+
+    #[test]
+    fn eval_display_format_breaks_statement_chain() {
+        assert_eq!(
+            format_eval_code_for_display("const x = 1; const y = 2;"),
+            "const x = 1;\nconst y = 2;"
+        );
+    }
+
+    #[test]
+    fn eval_display_format_preserves_quoted_delimiters() {
+        assert_eq!(
+            format_eval_code_for_display("const s = '{;,'; console.log(s);"),
+            "const s = '{;,';\nconsole.log(s);"
+        );
+    }
+
+    #[test]
+    fn eval_display_format_indents_object_literals() {
+        assert_eq!(
+            format_eval_code_for_display("const x = {a: 1, b: 2}; console.log(x);"),
+            "const x = {\n  a: 1,\n  b: 2\n};\nconsole.log(x);"
+        );
     }
 
     #[test]

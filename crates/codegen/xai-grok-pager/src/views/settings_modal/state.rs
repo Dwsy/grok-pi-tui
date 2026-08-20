@@ -66,12 +66,41 @@ pub enum SettingsKeyOutcome {
 // Types
 // ---------------------------------------------------------------------------
 
-/// One row in the visible flat list — either a category header (non-
-/// selectable) or a setting row (selectable, dispatchable).
+/// One row in the flat row table. `rows` holds every tab's rows; which
+/// ones are visible is decided by [`compute_filtered`].
 #[derive(Debug, Clone)]
 pub enum RowEntry {
+    /// Tab heading. Hidden while browsing a tab (the tab bar names it) and
+    /// rendered only in global-search results, where matches from several
+    /// tabs share one list.
     Header { category: SettingCategory },
-    Setting { key: SettingKey, meta_index: usize },
+    /// Sidebar section heading, also drawn inline above the section's first
+    /// row in the settings pane. Hidden in global-search results.
+    Section {
+        category: SettingCategory,
+        name: &'static str,
+    },
+    Setting {
+        key: SettingKey,
+        meta_index: usize,
+    },
+}
+
+impl RowEntry {
+    /// The tab this row belongs to.
+    pub fn category(&self, registry: &SettingsRegistry) -> Option<SettingCategory> {
+        match self {
+            Self::Header { category } | Self::Section { category, .. } => Some(*category),
+            Self::Setting { meta_index, .. } => {
+                registry.all().get(*meta_index).map(|meta| meta.category)
+            }
+        }
+    }
+
+    /// Whether the cursor can land on this row.
+    pub fn is_selectable(&self) -> bool {
+        matches!(self, Self::Setting { .. })
+    }
 }
 
 /// Read-only projection of the modal's private discriminated state.
@@ -175,8 +204,17 @@ pub struct SettingsModalState {
     /// `UiConfig` snapshot, refreshed by the dispatcher on mutations.
     pub ui_snapshot: UiConfig,
     pub pager_snapshot: PagerLocalSnapshot,
-    /// Computed row layout (headers + settings, in render order).
+    /// Every tab's rows (tab heading + section headings + settings), in
+    /// render order. Which subset is on screen is `filtered_cache`.
     pub rows: Vec<RowEntry>,
+    /// Tabs with at least one visible row, in `SettingCategory::ALL` order.
+    /// Parallel to the modal chrome's tab bar.
+    pub tabs: Vec<SettingCategory>,
+    /// Index into `tabs` of the tab being browsed.
+    pub active_tab: usize,
+    /// True while the keyboard drives the section sidebar instead of the
+    /// setting rows: Up/Down then jump whole sections.
+    pub section_focus: bool,
     /// Index into `rows` of the focused row.
     pub selected: usize,
     /// Vertical scroll offset (line-granular).
@@ -205,9 +243,9 @@ pub struct SettingsModalState {
     pub settings_breadcrumb_rect: Option<Rect>,
     /// Hover flag for the breadcrumb — adds underline affordance.
     pub breadcrumb_hovered: bool,
-    /// Keys whose description is expanded (Right/l to expand, Left/h
-    /// to collapse). Multiple rows can be expanded simultaneously.
-    pub expanded_keys: std::collections::HashSet<&'static str>,
+    /// Click-hit rect per sidebar section, parallel to [`Self::sections`].
+    /// Clicking one jumps to that section's first row.
+    pub sidebar_rects: Vec<Rect>,
     /// Row under the mouse cursor for hover highlighting. Indexes
     /// `rows` in Browse, `picker_choice_rects` in PickingEnum,
     /// always `None` in EditingValue.
@@ -226,18 +264,22 @@ impl SettingsModalState {
         pager_snapshot: PagerLocalSnapshot,
     ) -> Self {
         let rows = build_rows(&registry);
+        let tabs = build_tabs(&rows);
         // Start on the first selectable (non-header) row.
         let selected = rows
             .iter()
             .position(|r| matches!(r, RowEntry::Setting { .. }))
             .unwrap_or(0);
-        let filtered_cache = compute_filtered(&rows, &registry, "");
+        let filtered_cache = compute_filtered(&rows, &registry, "", tabs.first().copied());
         Self {
-            window: ModalWindowState::new(),
+            window: ModalWindowState::with_tabs(tabs.len()),
             registry,
             ui_snapshot,
             pager_snapshot,
             rows,
+            tabs,
+            active_tab: 0,
+            section_focus: false,
             selected,
             scroll_offset: 0,
             state: SettingsState {
@@ -252,7 +294,7 @@ impl SettingsModalState {
             picker_choice_rects: Vec::new(),
             settings_breadcrumb_rect: None,
             breadcrumb_hovered: false,
-            expanded_keys: std::collections::HashSet::new(),
+            sidebar_rects: Vec::new(),
             hover_row: None,
             close_on_picker_exit: false,
         }
@@ -275,28 +317,176 @@ impl SettingsModalState {
                 let meta = self.registry.all().get(*meta_index)?;
                 Some((*key, meta))
             }
-            RowEntry::Header { .. } => None,
+            RowEntry::Header { .. } | RowEntry::Section { .. } => None,
         }
     }
 
-    /// Focus a setting by registry key (Browse mode). Returns whether the
-    /// key was found; no-op if missing.
+    /// Focus a setting by registry key (Browse mode), switching to the tab
+    /// that owns it. Returns whether the key was found; no-op if missing.
     pub fn focus_key(&mut self, key: &str) -> bool {
-        if let Some(idx) = self
+        let Some(idx) = self
             .rows
             .iter()
             .position(|r| matches!(r, RowEntry::Setting { key: k, .. } if *k == key))
+        else {
+            return false;
+        };
+        self.selected = idx;
+        // Deep links can target any tab; bring it forward before clamping,
+        // otherwise the row is filtered out and the clamp snaps away from it.
+        if let Some(category) = self.rows[idx].category(&self.registry)
+            && let Some(tab) = self.tabs.iter().position(|t| *t == category)
+            && tab != self.active_tab
         {
-            self.selected = idx;
-            self.clamp_selected_to_visible();
-            return true;
+            self.active_tab = tab;
+            self.window.active_tab = tab;
+            self.section_focus = false;
+            self.scroll_offset = 0;
+            self.invalidate_filter();
         }
-        false
+        self.clamp_selected_to_visible();
+        true
     }
 
     /// Filtered row indices in render order.
     pub fn filtered_indices(&self) -> &[usize] {
         &self.filtered_cache
+    }
+
+    // -- Tabs ---------------------------------------------------------------
+
+    /// The category being browsed, or `None` when the registry is empty.
+    pub fn active_tab_category(&self) -> Option<SettingCategory> {
+        self.tabs.get(self.active_tab).copied()
+    }
+
+    /// Tab-bar labels, parallel to [`Self::tabs`].
+    pub fn tab_labels(&self) -> Vec<&'static str> {
+        self.tabs.iter().map(|cat| cat.tab_label()).collect()
+    }
+
+    /// Focus tab `idx`, snapping the selection to its first setting row.
+    /// A no-op (returning `false`) when already there or out of range.
+    pub fn set_active_tab(&mut self, idx: usize) -> bool {
+        if idx >= self.tabs.len() || idx == self.active_tab {
+            return false;
+        }
+        self.active_tab = idx;
+        self.window.active_tab = idx;
+        self.section_focus = false;
+        self.scroll_offset = 0;
+        self.hover_row = None;
+        // Leaving search behind: tab switching is a browse-mode gesture.
+        if !self.query().is_empty() {
+            self.state.filter.reset();
+        }
+        self.invalidate_filter();
+        self.select_first_visible();
+        true
+    }
+
+    /// Step the active tab by `delta`, wrapping at both ends.
+    pub fn cycle_tab(&mut self, delta: isize) -> bool {
+        if self.tabs.len() < 2 {
+            return false;
+        }
+        let len = self.tabs.len() as isize;
+        let next = (self.active_tab as isize + delta).rem_euclid(len) as usize;
+        self.set_active_tab(next)
+    }
+
+    /// Point the active tab at whichever tab owns the focused row. Used in
+    /// search mode, where results from several tabs share one list.
+    pub fn sync_tab_to_selection(&mut self) -> bool {
+        let Some(category) = self
+            .rows
+            .get(self.selected)
+            .and_then(|row| row.category(&self.registry))
+        else {
+            return false;
+        };
+        let Some(idx) = self.tabs.iter().position(|tab| *tab == category) else {
+            return false;
+        };
+        if idx == self.active_tab {
+            return false;
+        }
+        self.active_tab = idx;
+        self.window.active_tab = idx;
+        true
+    }
+
+    // -- Sections -----------------------------------------------------------
+
+    /// Sidebar sections of the current view as `(name, first row index)`,
+    /// in render order. Empty while searching (results are tab-grouped).
+    pub fn sections(&self) -> Vec<(&'static str, usize)> {
+        if !self.query().is_empty() {
+            return Vec::new();
+        }
+        let mut sections: Vec<(&'static str, usize)> = Vec::new();
+        let mut pending: Option<&'static str> = None;
+        for &row_idx in &self.filtered_cache {
+            match self.rows.get(row_idx) {
+                Some(RowEntry::Section { name, .. }) => pending = Some(name),
+                Some(RowEntry::Setting { .. }) => {
+                    if let Some(name) = pending.take() {
+                        sections.push((name, row_idx));
+                    }
+                }
+                _ => {}
+            }
+        }
+        sections
+    }
+
+    /// Index into [`Self::sections`] of the section containing the focused
+    /// row. Falls back to the first section when the selection precedes all
+    /// of them.
+    pub fn active_section_index(&self) -> usize {
+        let sections = self.sections();
+        sections
+            .iter()
+            .rposition(|(_, first)| *first <= self.selected)
+            .unwrap_or(0)
+    }
+
+    /// Move the selection to the first row of the section `delta` steps away,
+    /// wrapping at both ends.
+    pub fn jump_section(&mut self, delta: isize) -> bool {
+        let sections = self.sections();
+        if sections.len() < 2 {
+            return false;
+        }
+        let len = sections.len() as isize;
+        let next = (self.active_section_index() as isize + delta).rem_euclid(len) as usize;
+        let target = sections[next].1;
+        if target == self.selected {
+            return false;
+        }
+        self.selected = target;
+        true
+    }
+
+    /// Toggle keyboard focus between the section sidebar and the setting
+    /// rows. Engages only when there are ≥2 sections to jump between.
+    pub fn toggle_section_focus(&mut self) -> bool {
+        let engage = !self.section_focus && self.sections().len() >= 2;
+        if engage == self.section_focus {
+            return false;
+        }
+        self.section_focus = engage;
+        true
+    }
+
+    /// Snap the selection to the first selectable row currently visible.
+    pub(super) fn select_first_visible(&mut self) {
+        for &row_idx in &self.filtered_cache {
+            if self.rows[row_idx].is_selectable() {
+                self.selected = row_idx;
+                return;
+            }
+        }
     }
 
     /// Rebuild rows from current process gates (voice / kitty / minimal).
@@ -312,6 +502,17 @@ impl SettingsModalState {
         };
 
         self.rows = build_rows(&self.registry);
+        // Gates can retire a tab wholesale (e.g. voice rows in the Editor
+        // tab); keep the same category focused when it survives.
+        let prev_tab = self.active_tab_category();
+        self.tabs = build_tabs(&self.rows);
+        self.window.tab_count = self.tabs.len();
+        self.window.tab_rects = vec![None; self.tabs.len()];
+        self.active_tab = prev_tab
+            .and_then(|cat| self.tabs.iter().position(|t| *t == cat))
+            .unwrap_or(0)
+            .min(self.tabs.len().saturating_sub(1));
+        self.window.active_tab = self.active_tab;
         self.invalidate_filter();
 
         if let Some(key) = subpane_key {
@@ -324,22 +525,19 @@ impl SettingsModalState {
             }
         }
 
-        if let Some(key) = prev_key {
-            if let Some(idx) = self
+        if let Some(key) = prev_key
+            && let Some(idx) = self
                 .rows
                 .iter()
                 .position(|r| matches!(r, RowEntry::Setting { key: k, .. } if *k == key))
-            {
-                self.selected = idx;
-            } else {
-                self.selected = self
-                    .rows
-                    .iter()
-                    .position(|r| matches!(r, RowEntry::Setting { .. }))
-                    .unwrap_or(0);
-            }
+        {
+            self.selected = idx;
         } else {
-            self.clamp_selected_to_visible();
+            self.select_first_visible();
+        }
+        self.clamp_selected_to_visible();
+        if self.section_focus && self.sections().len() < 2 {
+            self.section_focus = false;
         }
     }
 
@@ -406,10 +604,14 @@ impl SettingsModalState {
         }
     }
 
-    /// Recompute `filtered_cache` from the current `query`.
+    /// Recompute `filtered_cache` from the current query and active tab.
     pub(super) fn invalidate_filter(&mut self) {
-        self.filtered_cache =
-            compute_filtered(&self.rows, &self.registry, self.state.filter.text());
+        self.filtered_cache = compute_filtered(
+            &self.rows,
+            &self.registry,
+            self.state.filter.text(),
+            self.tabs.get(self.active_tab).copied(),
+        );
     }
 
     /// Snap `selected` to the first visible setting if filtered out.
@@ -420,13 +622,7 @@ impl SettingsModalState {
         if self.filtered_cache.contains(&self.selected) {
             return;
         }
-        // Snap to first selectable row in the visible filter.
-        for &row_idx in &self.filtered_cache {
-            if matches!(self.rows[row_idx], RowEntry::Setting { .. }) {
-                self.selected = row_idx;
-                return;
-            }
-        }
+        self.select_first_visible();
     }
 
     /// Read the current value for a setting key.
@@ -505,6 +701,7 @@ impl SettingsModalState {
         self.picker_choice_rects.clear();
         self.settings_breadcrumb_rect = None;
         self.breadcrumb_hovered = false;
+        self.sidebar_rects.clear();
     }
 
     /// Transition to Browse, clearing sub-pane hover/breadcrumb state
@@ -788,26 +985,39 @@ impl SettingsModalState {
     }
 }
 
-/// Compute filtered row indices for a query. Headers are emitted only
-/// when ≥1 setting in their section matches. Returns all indices when
-/// `query` is empty.
+/// Compute the visible row indices.
+///
+/// Empty query = browsing: the active tab's section headings and settings,
+/// tab headings suppressed (the tab bar already names the tab). Non-empty
+/// query = global search across every tab: matching settings only, each
+/// tab's block introduced by its heading, section headings suppressed.
 pub(super) fn compute_filtered(
     rows: &[RowEntry],
     registry: &SettingsRegistry,
     query: &str,
+    active_tab: Option<SettingCategory>,
 ) -> Vec<usize> {
     if query.is_empty() {
-        return (0..rows.len()).collect();
+        let Some(tab) = active_tab else {
+            return Vec::new();
+        };
+        return rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                !matches!(row, RowEntry::Header { .. }) && row.category(registry) == Some(tab)
+            })
+            .map(|(i, _)| i)
+            .collect();
     }
     let matched_keys: Vec<SettingKey> = registry.search(query).iter().map(|m| m.key).collect();
     let mut result = Vec::new();
     let mut pending_header: Option<usize> = None;
     for (i, row) in rows.iter().enumerate() {
         match row {
-            RowEntry::Header { .. } => {
-                // Emit header only when section has a match.
-                pending_header = Some(i);
-            }
+            // Emit the tab heading lazily — only once its tab has a match.
+            RowEntry::Header { .. } => pending_header = Some(i),
+            RowEntry::Section { .. } => {}
             RowEntry::Setting { key, .. } => {
                 if matched_keys.contains(key) {
                     if let Some(h) = pending_header.take() {
@@ -871,28 +1081,53 @@ fn build_rows(registry: &SettingsRegistry) -> Vec<RowEntry> {
         .collect();
     let mut rows = Vec::new();
     for cat in SettingCategory::ALL {
-        let mut emitted_header = false;
-        for (meta_index, meta) in registry.all().iter().enumerate() {
-            if meta.category != *cat {
-                continue;
+        let visible: Vec<(usize, &SettingMeta)> = registry
+            .all()
+            .iter()
+            .enumerate()
+            .filter(|(_, meta)| meta.category == *cat)
+            .filter(|(_, meta)| {
+                setting_row_visible(meta, kitty_releases, minimal, voice_mode, external_agent)
+            })
+            .filter(|(_, meta)| !group_children.contains(meta.key))
+            .collect();
+        if visible.is_empty() {
+            continue;
+        }
+        rows.push(RowEntry::Header { category: *cat });
+        // Sidebar order comes from the layout table; within a section the
+        // registry's declaration order is preserved.
+        for section in crate::settings::sections_for(*cat) {
+            let mut emitted_section = false;
+            for (meta_index, meta) in &visible {
+                if crate::settings::section_for(meta.key) != *section {
+                    continue;
+                }
+                if !emitted_section {
+                    rows.push(RowEntry::Section {
+                        category: *cat,
+                        name: section,
+                    });
+                    emitted_section = true;
+                }
+                rows.push(RowEntry::Setting {
+                    key: meta.key,
+                    meta_index: *meta_index,
+                });
             }
-            if !setting_row_visible(meta, kitty_releases, minimal, voice_mode, external_agent) {
-                continue;
-            }
-            if group_children.contains(meta.key) {
-                continue;
-            }
-            if !emitted_header {
-                rows.push(RowEntry::Header { category: *cat });
-                emitted_header = true;
-            }
-            rows.push(RowEntry::Setting {
-                key: meta.key,
-                meta_index,
-            });
         }
     }
     rows
+}
+
+/// Tabs with at least one visible row, in `SettingCategory::ALL` order.
+fn build_tabs(rows: &[RowEntry]) -> Vec<SettingCategory> {
+    rows.iter()
+        .filter_map(|row| match row {
+            RowEntry::Header { category } => Some(*category),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Construct the typed `Action::Set*` for a Bool setting.
@@ -951,6 +1186,8 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "pi_btw" => Some(Action::SetPiBtw(new)),
         "pi_cache_graph" => Some(Action::SetPiCacheGraph(new)),
         "pi_user_markdown" => Some(Action::SetPiUserMarkdown(new)),
+        "pi_keep_multi_agent" => Some(Action::SetPiKeepMultiAgent(new)),
+        "pi_bash_command_format" => Some(Action::SetPiBashCommandFormat(new)),
         "show_other_tool_args" => Some(Action::SetShowOtherToolArgs(new)),
         "review_file_tree" => Some(Action::SetReviewFileTree(new)),
         "review_include_reads" => Some(Action::SetReviewIncludeReads(new)),

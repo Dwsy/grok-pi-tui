@@ -63,6 +63,8 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "pi_btw" => Action::SetPiBtw(new),
         "pi_cache_graph" => Action::SetPiCacheGraph(new),
         "pi_user_markdown" => Action::SetPiUserMarkdown(new),
+        "pi_keep_multi_agent" => Action::SetPiKeepMultiAgent(new),
+        "pi_bash_command_format" => Action::SetPiBashCommandFormat(new),
         "show_other_tool_args" => Action::SetShowOtherToolArgs(new),
         "review_file_tree" => Action::SetReviewFileTree(new),
         "review_include_reads" => Action::SetReviewIncludeReads(new),

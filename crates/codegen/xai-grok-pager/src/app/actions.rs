@@ -634,6 +634,8 @@ pub enum Action {
     SetCtrlOToolExpansion(String),
     /// Set which fields grok-pi Bash/run headers render.
     SetPiBashRunDisplay(crate::appearance::ExecuteHeaderContent),
+    /// Set whether Bash commands are formatted for display only.
+    SetPiBashCommandFormat(bool),
     /// Set whether the predicted-next-prompt ghost text (tab autocomplete)
     /// is offered after each turn. SHELL-owned: updates the process-wide
     /// cache mirror and persists to `[ui].prompt_suggestions` via
@@ -791,6 +793,9 @@ pub enum Action {
     /// Render grok-pi user prompts with the agent markdown renderer
     /// (`[ui].pi_user_markdown`, default on).
     SetPiUserMarkdown(bool),
+    /// Keep previous agent tabs alive on `/new` so the dashboard can switch
+    /// back (`[ui].pi_keep_multi_agent`, default off → full replacement).
+    SetPiKeepMultiAgent(bool),
     /// Show raw_input JSON on Other/generic tool cards when expanded (`[ui].show_other_tool_args`, default off).
     SetShowOtherToolArgs(bool),
     /// Default tree layout for `/review-*` left pane (`[ui].review_file_tree`).

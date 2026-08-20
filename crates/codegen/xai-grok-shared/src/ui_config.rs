@@ -23,6 +23,11 @@ pub struct UiConfig {
     /// Default on; takes effect for new grok-pi sessions only.
     #[serde(default = "default_true")]
     pub pi_bash: bool,
+    /// Format Bash commands and Eval code for display in detail/popup views.
+    /// Display-only; executed inputs remain unchanged.
+    /// Default off; F2 can enable without restart.
+    #[serde(default)]
+    pub pi_bash_command_format: bool,
     /// Select the Eval bridge generation independently of `pi_bash`.
     /// `v1` keeps Python + JavaScript; `v2` is JavaScript-only.
     /// Default v1; takes effect for new grok-pi sessions only.
@@ -91,6 +96,13 @@ pub struct UiConfig {
     /// plain-text prompts. Applies immediately.
     #[serde(default = "default_true")]
     pub pi_user_markdown: bool,
+    /// Keep previous agent tabs alive when `/new` starts a fresh session.
+    /// Default off: `/new` fully replaces the current session (old agent tabs
+    /// are dropped). When on, `/new` preserves old agents so the dashboard can
+    /// switch back to them (Pi re-loads their session on demand). Applies
+    /// immediately — no restart required.
+    #[serde(default)]
+    pub pi_keep_multi_agent: bool,
     /// Show `raw_input` args on Other/generic tool cards when expanded.
     /// Default off; F2 can enable without restart. Not fabric-only.
     #[serde(default)]
@@ -445,6 +457,7 @@ impl Default for UiConfig {
             max_thoughts_width: DEFAULT_MAX_THOUGHTS_WIDTH,
             pi_builtin_tools: PiBuiltinTools::default(),
             pi_bash: true,
+            pi_bash_command_format: false,
             pi_eval: default_pi_eval(),
             pi_eval_v2_only: false,
             psm_resume_index: false,
@@ -461,6 +474,7 @@ impl Default for UiConfig {
             pi_btw: false,
             pi_cache_graph: true,
             pi_user_markdown: true,
+            pi_keep_multi_agent: false,
             show_other_tool_args: false,
             review_file_tree: false,
             review_include_reads: false,

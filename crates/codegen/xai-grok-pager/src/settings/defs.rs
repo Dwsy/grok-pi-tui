@@ -1230,6 +1230,34 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
             external_only: true,
         },
+        // SHELL-owned: `[ui].pi_bash_command_format`; display-only.
+        SettingMeta {
+            key: "pi_bash_command_format",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Shell,
+            label: "Format Bash/Eval display",
+            description: "Display Bash commands and Eval code with readable line breaks in permission, run-detail, and Eval popup views. Executed inputs are unchanged. Default off.",
+            keywords: &[
+                "bash",
+                "eval",
+                "command",
+                "code",
+                "format",
+                "pretty",
+                "operator",
+                "line",
+                "break",
+                "permission",
+                "popup",
+                "pi",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_bash_command_format,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
         // SHELL-owned: `[ui.display_refresh].auto_cadence_enabled`. Restart-
         // required (cadence pinned at startup); hidden in minimal.
         SettingMeta {
@@ -2336,6 +2364,30 @@ pub fn default_settings() -> Vec<SettingMeta> {
             keywords: &["pi", "user", "markdown", "prompt", "message"],
             kind: SettingKind::Bool {
                 default: ui_default.pi_user_markdown,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
+        SettingMeta {
+            key: "pi_keep_multi_agent",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Keep multi-agent on /new",
+            description: "When on, `/new` keeps the current agent tab alive so the dashboard can switch back to it (Pi re-loads its session on demand). Default off: `/new` drops the current agent tab and starts fresh — other idle agent tabs in the dashboard are left untouched.",
+            keywords: &[
+                "pi",
+                "new",
+                "session",
+                "multi",
+                "agent",
+                "dashboard",
+                "replace",
+                "keep",
+                "preserve",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_keep_multi_agent,
             },
             restart_required: false,
             hidden_in_minimal: false,

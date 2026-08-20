@@ -306,6 +306,11 @@ pub async fn set_pi_btw(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_btw = value).await
 }
 
+/// Persist `[ui].pi_keep_multi_agent` via `update_config`.
+pub async fn set_pi_keep_multi_agent(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_keep_multi_agent = value).await
+}
+
 /// Persist `[ui].pi_cache_graph` via `update_config`.
 pub async fn set_pi_cache_graph(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_cache_graph = value).await
@@ -423,6 +428,11 @@ pub async fn set_ctrl_o_tool_expansion(value: String) -> Result<()> {
 /// Persist `[ui].pi_bash_run_display`.
 pub async fn set_pi_bash_run_display(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_bash_run_display = Some(value)).await
+}
+
+/// Persist `[ui].pi_bash_command_format` via `update_config`.
+pub async fn set_pi_bash_command_format(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_bash_command_format = value).await
 }
 
 /// Persist `[ui].keep_text_selection` (`flash` | `hold` | `word_select`).

@@ -705,6 +705,31 @@ pub fn set_execute_header_content(value: ExecuteHeaderContent) {
     EXECUTE_HEADER_CONTENT_LOADED.with(|l| l.set(true));
 }
 
+// -- Bash command display formatting ----------------------------------------
+
+thread_local! {
+    static PI_BASH_COMMAND_FORMAT_CURRENT: Cell<bool> = const { Cell::new(false) };
+    static PI_BASH_COMMAND_FORMAT_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read the cached grok-pi Bash display-format preference.
+pub fn load_pi_bash_command_format() -> bool {
+    PI_BASH_COMMAND_FORMAT_LOADED.with(|loaded| {
+        if !loaded.get() {
+            let value = load_bool_from_effective_config("pi_bash_command_format", false);
+            PI_BASH_COMMAND_FORMAT_CURRENT.with(|c| c.set(value));
+            loaded.set(true);
+        }
+    });
+    PI_BASH_COMMAND_FORMAT_CURRENT.with(|c| c.get())
+}
+
+/// Replace the cached Bash display-format preference.
+pub fn set_pi_bash_command_format(value: bool) {
+    PI_BASH_COMMAND_FORMAT_CURRENT.with(|c| c.set(value));
+    PI_BASH_COMMAND_FORMAT_LOADED.with(|l| l.set(true));
+}
+
 // -- Render mermaid (auto | on | off) ---------------------------------------
 
 thread_local! {
@@ -777,6 +802,7 @@ pub fn prime(ui: &UiConfig) {
             .and_then(ExecuteHeaderContent::from_canonical)
             .unwrap_or_default(),
     );
+    set_pi_bash_command_format(ui.pi_bash_command_format);
     let _ = load_render_mermaid();
     let _ = load_show_thinking_blocks();
     let _ = load_thinking_border_colors();

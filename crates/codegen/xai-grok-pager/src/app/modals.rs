@@ -2388,6 +2388,10 @@ impl AgentView {
                     self.active_modal = None;
                     return InputOutcome::Changed;
                 }
+                ModalWindowOutcome::TabChanged(index) => {
+                    state.set_active_tab(index);
+                    return InputOutcome::Changed;
+                }
                 ModalWindowOutcome::Handled => {
                     if matches!(mouse.kind, MouseEventKind::Moved) {
                         state.hover_row = None;
@@ -4423,8 +4427,8 @@ fn split_model_picker_content(content: Rect, detail_line_count: usize) -> (Rect,
     if detail_line_count == 0 || content.height < 6 {
         return (content, None);
     }
-    // Separator row + detail lines (capped so the list keeps breathing room).
-    let detail_h = (detail_line_count as u16).saturating_add(1).min(5);
+    // Border rows + detail lines (capped so the list keeps breathing room).
+    let detail_h = (detail_line_count as u16).saturating_add(2).min(6);
     let max_detail = content.height.saturating_sub(4);
     let detail_h = detail_h.min(max_detail);
     if detail_h < 2 {
@@ -5088,13 +5092,15 @@ fn render_session_preview_pane(
 fn render_model_picker_detail(buf: &mut Buffer, area: Rect, lines: &[String], theme: &Theme) {
     use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line as TuiLine, Span};
-    use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+    use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
     if area.width == 0 || area.height == 0 || lines.is_empty() {
         return;
     }
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(" Model details ")
         .border_style(Style::default().fg(theme.selection_border));
     let inner = block.inner(area);
     block.render(area, buf);

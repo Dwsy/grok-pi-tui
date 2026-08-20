@@ -71,6 +71,16 @@ impl SettingCategory {
             Self::Advanced => "Advanced",
         }
     }
+
+    /// Short label for the modal's tab bar. Tabs share one row, so these
+    /// drop the `&`-conjunctions that [`Self::label`] carries.
+    pub fn tab_label(&self) -> &'static str {
+        match self {
+            Self::Editor => "Editor",
+            Self::Agent => "Agent",
+            other => other.label(),
+        }
+    }
 }
 
 /// One choice in an `Enum` setting.
@@ -554,6 +564,7 @@ pub fn current_value_for(
         "pi_user_markdown" => Some(SettingValue::Bool(
             crate::appearance::cache::load_pi_user_markdown(),
         )),
+        "pi_keep_multi_agent" => Some(SettingValue::Bool(ui.pi_keep_multi_agent)),
         "show_other_tool_args" => Some(SettingValue::Bool(ui.show_other_tool_args)),
         "review_file_tree" => Some(SettingValue::Bool(ui.review_file_tree)),
         "review_include_reads" => Some(SettingValue::Bool(ui.review_include_reads)),
@@ -644,6 +655,9 @@ pub fn current_value_for(
         )),
         "pi_bash_run_display" => Some(SettingValue::Enum(
             crate::appearance::cache::load_execute_header_content().as_canonical(),
+        )),
+        "pi_bash_command_format" => Some(SettingValue::Bool(
+            crate::appearance::cache::load_pi_bash_command_format(),
         )),
         // Live cache; `GROK_PROMPT_SUGGESTIONS` env overrides at the gate.
         "prompt_suggestions" => Some(SettingValue::Bool(
@@ -1455,6 +1469,20 @@ mod tests {
                         "pi_user_markdown default drifts from UiConfig::default()"
                     );
                     assert!(*default, "pi_user_markdown must default ON");
+                }
+                ("pi_keep_multi_agent", SettingKind::Bool { default }) => {
+                    assert_eq!(
+                        *default, ui.pi_keep_multi_agent,
+                        "pi_keep_multi_agent default drifts from UiConfig::default()"
+                    );
+                    assert!(!*default, "pi_keep_multi_agent must default OFF");
+                }
+                ("pi_bash_command_format", SettingKind::Bool { default }) => {
+                    assert_eq!(
+                        *default, ui.pi_bash_command_format,
+                        "pi_bash_command_format default drifts from UiConfig::default()"
+                    );
+                    assert!(!*default, "pi_bash_command_format must default OFF");
                 }
                 ("show_other_tool_args", SettingKind::Bool { default }) => {
                     assert_eq!(

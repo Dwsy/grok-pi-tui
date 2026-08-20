@@ -1479,6 +1479,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "pi_bash_command_format" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_bash_command_format", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_bash_command_format(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
         "prompt_cursor" => {
             let SettingValue::String(s) = value else {
                 return Err(kind_mismatch("prompt_cursor", "String", &value));
@@ -1673,6 +1681,14 @@ pub(crate) async fn persist_setting(
                 return Err(kind_mismatch("pi_user_markdown", "Bool", &value));
             };
             xai_grok_shell::util::config::set_pi_user_markdown(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_keep_multi_agent" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_keep_multi_agent", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_keep_multi_agent(b)
                 .await
                 .map_err(|e| e.to_string())
         }

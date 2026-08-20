@@ -663,6 +663,37 @@ pub(in crate::app::dispatch) fn set_pi_bash_run_display(
     }]
 }
 
+pub(super) fn set_pi_bash_command_format_inner(app: &mut AppView, enabled: bool) {
+    crate::appearance::cache::set_pi_bash_command_format(enabled);
+    app.current_ui.pi_bash_command_format = enabled;
+    for agent in app.agents.values_mut() {
+        agent.scrollback.invalidate_heights();
+        for child in agent.subagent_views.values_mut() {
+            child.scrollback.invalidate_heights();
+        }
+    }
+}
+
+/// Set display-only Bash/Eval formatting and persist it to `[ui]`.
+pub(in crate::app::dispatch) fn set_pi_bash_command_format(
+    app: &mut AppView,
+    enabled: bool,
+) -> Vec<Effect> {
+    let previous = crate::appearance::cache::load_pi_bash_command_format();
+    if previous == enabled {
+        return vec![];
+    }
+    set_pi_bash_command_format_inner(app, enabled);
+    refresh_open_settings_modals(app);
+    let value = if enabled { "on" } else { "off" };
+    app.show_toast(&format!("✓ Bash/Eval format: {value}"));
+    vec![Effect::PersistSetting {
+        key: "pi_bash_command_format",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
 pub(super) fn set_prompt_suggestions_inner(app: &mut AppView, new: bool) {
     crate::appearance::cache::set_prompt_suggestions(new);
     app.current_ui.prompt_suggestions = Some(new);
@@ -2640,6 +2671,27 @@ pub(in crate::app::dispatch) fn set_pi_user_markdown(
     app.show_toast(&format!("\u{2713} Markdown user messages: {value}"));
     vec![Effect::PersistSetting {
         key: "pi_user_markdown",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
+pub(in crate::app::dispatch) fn set_pi_keep_multi_agent(
+    app: &mut AppView,
+    enabled: bool,
+) -> Vec<Effect> {
+    let previous = app.current_ui.pi_keep_multi_agent;
+    if previous == enabled {
+        return vec![];
+    }
+    app.current_ui.pi_keep_multi_agent = enabled;
+    refresh_open_settings_modals(app);
+    let value = if enabled { "on" } else { "off" };
+    app.show_toast(&format!(
+        "\u{2713} Keep multi-agent on /new: {value}"
+    ));
+    vec![Effect::PersistSetting {
+        key: "pi_keep_multi_agent",
         value: crate::settings::SettingValue::Bool(enabled),
         rollback_value: crate::settings::SettingValue::Bool(previous),
     }]
