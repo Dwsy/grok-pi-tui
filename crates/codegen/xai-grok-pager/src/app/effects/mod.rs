@@ -5458,6 +5458,24 @@ fn format_session_count(value: u64) -> String {
     }
     out
 }
+
+fn format_session_k(value: u64) -> String {
+    if value < 1_000 {
+        return format_session_count(value);
+    }
+    if value >= 100_000 {
+        let rounded_k = (value + 500) / 1_000;
+        return format!("{}k", format_session_count(rounded_k));
+    }
+    let rounded_tenths = (value * 10 + 500) / 1_000;
+    let whole = rounded_tenths / 10;
+    let frac = rounded_tenths % 10;
+    if frac == 0 {
+        format!("{whole}k")
+    } else {
+        format!("{whole}.{frac}k")
+    }
+}
 /// Format session info into a human-readable string.
 ///
 /// Structured `/session-info` rows — the single source of truth for both the
@@ -5535,7 +5553,12 @@ pub(crate) fn session_info_fields(
     let ctx = &info.data.context;
     push(
         "Context",
-        format!("{} / {} tokens ({}%)", ctx.used, ctx.total, ctx.usage_pct),
+        format!(
+            "{} / {} tokens ({}%)",
+            format_session_k(ctx.used),
+            format_session_k(ctx.total),
+            ctx.usage_pct
+        ),
         true,
     );
     if let Some(stats) = info.session_stats.as_ref() {
@@ -5560,22 +5583,22 @@ pub(crate) fn session_info_fields(
             .input
             .saturating_add(tokens.cache_read)
             .saturating_add(tokens.cache_write);
-        push("Tokens — Input", format_session_count(prompt_tokens), false);
+        push("Tokens — Input", format_session_k(prompt_tokens), false);
         if prompt_tokens > 0 && (tokens.cache_read > 0 || tokens.cache_write > 0) {
             let hit_rate = (tokens.cache_read as f64 / prompt_tokens as f64) * 100.0;
             push(
                 "Tokens — Cached",
-                format!("{} ({hit_rate:.1}%)", format_session_count(tokens.cache_read)),
+                format!("{} ({hit_rate:.1}%)", format_session_k(tokens.cache_read)),
                 false,
             );
             push(
                 "Tokens — Uncached",
-                format_session_count(tokens.input.saturating_add(tokens.cache_write)),
+                format_session_k(tokens.input.saturating_add(tokens.cache_write)),
                 false,
             );
         }
-        push("Tokens — Output", format_session_count(tokens.output), false);
-        push("Tokens — Total", format_session_count(tokens.total), false);
+        push("Tokens — Output", format_session_k(tokens.output), false);
+        push("Tokens — Total", format_session_k(tokens.total), false);
         push("Cost — Total", format!("${:.3}", stats.cost), false);
     } else if ctx.message_count > 0 || ctx.tool_call_count > 0 || ctx.turn_count > 0 {
         // Older agents lack `sessionStats`; keep their compact count surface.

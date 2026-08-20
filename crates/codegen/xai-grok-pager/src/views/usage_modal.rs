@@ -11,6 +11,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::scrollback::blocks::ContextInfoBlock;
 use crate::theme::Theme;
@@ -463,7 +464,7 @@ fn tab_lines(
         UsageInfoTab::UsageLimit => {
             TabContent::from_lines(usage_limit_lines(state, balance, theme))
         }
-        UsageInfoTab::SessionInfo => session_info_content(state, theme),
+        UsageInfoTab::SessionInfo => session_info_content(state, theme, width),
     }
 }
 
@@ -602,7 +603,7 @@ fn allowance_lines(
     lines
 }
 
-fn session_info_content(state: &UsageInfoModalState, theme: &Theme) -> TabContent {
+fn session_info_content(state: &UsageInfoModalState, theme: &Theme, width: u16) -> TabContent {
     if let Some(error) = &state.session_error {
         return TabContent::from_lines(vec![muted_line(
             theme,
@@ -616,7 +617,6 @@ fn session_info_content(state: &UsageInfoModalState, theme: &Theme) -> TabConten
         return TabContent::from_lines(vec![muted_line(theme, "Loading session info\u{2026}")]);
     };
 
-    // The title carries a dim inline hint for the row click-to-copy affordance.
     let mut lines = vec![Line::from(vec![
         Span::styled("Session info", header_style(theme)),
         Span::styled(
@@ -625,52 +625,224 @@ fn session_info_content(state: &UsageInfoModalState, theme: &Theme) -> TabConten
         ),
     ])];
     let mut copy_targets: Vec<CopyTarget> = Vec::new();
-    let mut prev_compact = false;
-    for field in fields {
-        let compact = field.compact;
-        if !(compact && prev_compact) {
-            lines.push(Line::default());
-        }
-        if compact {
-            // Dense `Label: value` on one row: label and value read as a unit,
-            // so the whole row highlights on hover and copies as `Label: value`.
-            let value_idx = lines.len();
-            let hovered = state.hovered_copy_line == Some(value_idx);
-            let label_style = if hovered {
-                theme.muted().bg(theme.bg_hover)
-            } else {
-                theme.muted()
-            };
-            lines.push(Line::from(vec![
-                Span::styled(format!("{}: ", field.label), label_style),
-                Span::styled(field.value.clone(), copy_value_style(theme, hovered)),
-            ]));
-            copy_targets.push(CopyTarget {
-                line_idx: value_idx,
-                value: format!("{}: {}", field.label, field.value),
-            });
+    let card_width = session_info_card_width(width);
+    let mut i = 0;
+    while i < fields.len() {
+        lines.push(Line::default());
+        if fields[i].compact {
+            let start = i;
+            while i < fields.len() && fields[i].compact {
+                i += 1;
+            }
+            push_session_runtime_card(
+                &mut lines,
+                &mut copy_targets,
+                &fields[start..i],
+                card_width,
+                state.hovered_copy_line,
+                theme,
+            );
         } else {
-            lines.push(Line::from(Span::styled(
-                format!("{}:", field.label),
-                theme.muted(),
-            )));
-            let value_idx = lines.len();
-            let hovered = state.hovered_copy_line == Some(value_idx);
-            lines.push(Line::from(Span::styled(
-                field.value.clone(),
-                copy_value_style(theme, hovered),
-            )));
-            copy_targets.push(CopyTarget {
-                line_idx: value_idx,
-                value: field.value.clone(),
-            });
+            push_session_value_card(
+                &mut lines,
+                &mut copy_targets,
+                &fields[i],
+                card_width,
+                state.hovered_copy_line,
+                theme,
+            );
+            i += 1;
         }
-        prev_compact = compact;
     }
     TabContent {
         lines,
         copy_targets,
     }
+}
+
+fn session_info_card_width(width: u16) -> usize {
+    (width as usize).saturating_sub(1).clamp(36, 72)
+}
+
+fn push_session_value_card(
+    lines: &mut Vec<Line<'static>>,
+    copy_targets: &mut Vec<CopyTarget>,
+    field: &SessionInfoField,
+    card_width: usize,
+    hovered_copy_line: Option<usize>,
+    theme: &Theme,
+) {
+    let title = format!("{} {}", session_flow_marker(field.label), field.label);
+    lines.push(session_card_border(
+        theme,
+        "╭",
+        "╮",
+        Some(&title),
+        card_width,
+    ));
+    let value_idx = lines.len();
+    let hovered = hovered_copy_line == Some(value_idx);
+    lines.push(session_value_card_body(
+        theme,
+        &field.value,
+        card_width,
+        hovered,
+    ));
+    copy_targets.push(CopyTarget {
+        line_idx: value_idx,
+        value: field.value.clone(),
+    });
+    lines.push(session_card_border(theme, "╰", "╯", None, card_width));
+}
+
+fn push_session_runtime_card(
+    lines: &mut Vec<Line<'static>>,
+    copy_targets: &mut Vec<CopyTarget>,
+    fields: &[SessionInfoField],
+    card_width: usize,
+    hovered_copy_line: Option<usize>,
+    theme: &Theme,
+) {
+    lines.push(session_card_border(
+        theme,
+        "╭",
+        "╮",
+        Some("↔ Runtime flow"),
+        card_width,
+    ));
+    for field in fields {
+        let value_idx = lines.len();
+        let hovered = hovered_copy_line == Some(value_idx);
+        lines.push(session_runtime_card_body(theme, field, card_width, hovered));
+        copy_targets.push(CopyTarget {
+            line_idx: value_idx,
+            value: format!("{}: {}", field.label, field.value),
+        });
+    }
+    lines.push(session_card_border(theme, "╰", "╯", None, card_width));
+}
+
+fn session_card_border(
+    theme: &Theme,
+    left: &'static str,
+    right: &'static str,
+    title: Option<&str>,
+    card_width: usize,
+) -> Line<'static> {
+    let mut text = String::from(left);
+    if let Some(title) = title {
+        let title = fit_to_width(title, card_width.saturating_sub(5));
+        text.push('─');
+        text.push(' ');
+        text.push_str(&title);
+        text.push(' ');
+        let used = visual_width(&text) + visual_width(right);
+        text.push_str(&"─".repeat(card_width.saturating_sub(used)));
+    } else {
+        text.push_str(&"─".repeat(card_width.saturating_sub(2)));
+    }
+    text.push_str(right);
+    Line::from(Span::styled(text, theme.muted()))
+}
+
+fn session_value_card_body(
+    theme: &Theme,
+    value: &str,
+    card_width: usize,
+    hovered: bool,
+) -> Line<'static> {
+    let inner_width = card_width.saturating_sub(4);
+    let value = fit_to_width(value, inner_width);
+    let pad = " ".repeat(inner_width.saturating_sub(visual_width(&value)));
+    let value_style = copy_value_style(theme, hovered);
+    Line::from(vec![
+        Span::styled("│ ", theme.muted()),
+        Span::styled(value, value_style),
+        Span::styled(pad, value_style),
+        Span::styled(" │", theme.muted()),
+    ])
+}
+
+fn session_runtime_card_body(
+    theme: &Theme,
+    field: &SessionInfoField,
+    card_width: usize,
+    hovered: bool,
+) -> Line<'static> {
+    let inner_width = card_width.saturating_sub(4);
+    let label_col = inner_width.saturating_sub(8).clamp(12, 18);
+    let label = fit_to_width(
+        &format!("{} {}", session_flow_marker(field.label), field.label),
+        label_col,
+    );
+    let label_pad = " ".repeat(label_col.saturating_sub(visual_width(&label)));
+    let value_width = inner_width.saturating_sub(label_col + 2);
+    let value = fit_to_width(&field.value, value_width);
+    let value_pad = " ".repeat(value_width.saturating_sub(visual_width(&value)));
+    let label_style = if hovered {
+        theme.muted().bg(theme.bg_hover)
+    } else {
+        theme.muted()
+    };
+    let value_style = copy_value_style(theme, hovered);
+    Line::from(vec![
+        Span::styled("│ ", theme.muted()),
+        Span::styled(label, label_style),
+        Span::styled(label_pad, label_style),
+        Span::styled("  ", label_style),
+        Span::styled(value, value_style),
+        Span::styled(value_pad, value_style),
+        Span::styled(" │", theme.muted()),
+    ])
+}
+
+fn session_flow_marker(label: &str) -> &'static str {
+    let label = label.to_ascii_lowercase();
+    if label.contains("input") || label.contains("prompt") {
+        "→"
+    } else if label.contains("output")
+        || label.contains("received")
+        || label.contains("response")
+        || label.contains("completion")
+    {
+        "←"
+    } else if label.contains("context") || label.contains("cache") || label.contains("token") {
+        "↔"
+    } else if label.contains("file") || label.contains("directory") || label.contains("path") {
+        "↳"
+    } else {
+        "→"
+    }
+}
+
+fn visual_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
+
+fn fit_to_width(text: &str, max_width: usize) -> String {
+    if visual_width(text) <= max_width {
+        return text.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    let ellipsis = "…";
+    if max_width <= visual_width(ellipsis) {
+        return ellipsis.to_string();
+    }
+    let limit = max_width - visual_width(ellipsis);
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + width > limit {
+            break;
+        }
+        out.push(ch);
+        used += width;
+    }
+    out.push_str(ellipsis);
+    out
 }
 
 /// Style for a copyable value: a `bg_hover` background highlight while the
@@ -961,17 +1133,17 @@ mod tests {
         // Turn is a compact row: the whole line highlights (label + value) and
         // it copies as "Turn: 3".
         assert_eq!(hit.value, "Turn: 3");
-        let tab = session_info_content(&state, &theme);
+        let tab = session_info_content(&state, &theme, 64);
         let row = &tab.lines[hit.line_idx];
-        assert_eq!(
-            row.spans[0].style.bg,
-            Some(theme.bg_hover),
-            "compact label must be highlighted"
+        assert!(
+            row.to_string().contains("→ Turn"),
+            "compact card row keeps an arrowed label: {row:?}"
         );
-        assert_eq!(
-            row.spans[1].style.bg,
-            Some(theme.bg_hover),
-            "value must be highlighted"
+        assert!(
+            row.spans
+                .iter()
+                .any(|span| span.style.bg == Some(theme.bg_hover)),
+            "copyable card row must highlight on hover"
         );
         // Moving off the row clears the hover.
         assert_eq!(
@@ -1027,43 +1199,38 @@ mod tests {
             field("Context", "1 / 2", true),
         ]);
         let theme = Theme::current();
-        let tab = session_info_content(&state, &theme);
+        let tab = session_info_content(&state, &theme, 64);
         let text: Vec<String> = tab.lines.iter().map(|l| l.to_string()).collect();
-        assert_eq!(
-            text,
-            [
-                "Session info   click values to copy",
-                "",
-                "Title:",
-                "t",
-                "",
-                "Session ID:",
-                "sid-123",
-                "",
-                "Working directory:",
-                "/tmp",
-                "",
-                "Model: Grok",
-                "Context: 1 / 2",
-            ]
-        );
-        // Each copy target is (value line index, copied text). Non-compact rows
-        // copy just the value; the compact model/runtime rows copy the whole
-        // `Label: value` line.
-        let targets: Vec<(usize, &str)> = tab
-            .copy_targets
-            .iter()
-            .map(|t| (t.line_idx, t.value.as_str()))
-            .collect();
+        assert!(text[0].contains("Session info"));
+        for needle in [
+            "╭─ → Title",
+            "│ t",
+            "╭─ → Session ID",
+            "│ sid-123",
+            "╭─ ↳ Working directory",
+            "│ /tmp",
+            "╭─ ↔ Runtime flow",
+            "│ → Model",
+            "│ ↔ Context",
+        ] {
+            assert!(
+                text.iter().any(|line| line.contains(needle)),
+                "missing {needle:?} in {text:?}"
+            );
+        }
+        // Non-compact cards still copy just the value; compact runtime rows copy
+        // the whole `Label: value` line. Line indices may shift with card chrome,
+        // but target order remains stable and strictly increasing.
+        let targets: Vec<&str> = tab.copy_targets.iter().map(|t| t.value.as_str()).collect();
         assert_eq!(
             targets,
-            [
-                (3, "t"),
-                (6, "sid-123"),
-                (9, "/tmp"),
-                (11, "Model: Grok"),
-                (12, "Context: 1 / 2"),
-            ]
+            ["t", "sid-123", "/tmp", "Model: Grok", "Context: 1 / 2"]
+        );
+        assert!(
+            tab.copy_targets
+                .windows(2)
+                .all(|pair| pair[0].line_idx < pair[1].line_idx),
+            "copy target lines must preserve visual order"
         );
     }
 }

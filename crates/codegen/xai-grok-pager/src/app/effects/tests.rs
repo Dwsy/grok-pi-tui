@@ -2396,6 +2396,20 @@ fn make_session_info(
     }
 }
 #[test]
+fn session_info_context_uses_k_units() {
+    let info = make_session_info("auto", None, 12_345, 200_000);
+    let fields = session_info_fields(&info, None, false);
+    let context = fields
+        .iter()
+        .find(|field| field.label == "Context")
+        .expect("context row");
+    assert!(
+        context.value.starts_with("12.3k / 200k tokens"),
+        "{}",
+        context.value
+    );
+}
+#[test]
 fn format_session_info_session_auth_ignores_api_key_env() {
     let info = make_session_info("auto", None, 1000, 10000);
     let text = format_session_info(&info, None, false, false, true);
