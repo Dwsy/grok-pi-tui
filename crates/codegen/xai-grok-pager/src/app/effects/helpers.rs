@@ -1487,6 +1487,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "write_edit_hover_popups" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("write_edit_hover_popups", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_write_edit_hover_popups(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
         "prompt_cursor" => {
             let SettingValue::String(s) = value else {
                 return Err(kind_mismatch("prompt_cursor", "String", &value));
@@ -1676,11 +1684,27 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "pi_config_skill" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_config_skill", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_config_skill(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
         "pi_user_markdown" => {
             let SettingValue::Bool(b) = value else {
                 return Err(kind_mismatch("pi_user_markdown", "Bool", &value));
             };
             xai_grok_shell::util::config::set_pi_user_markdown(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_at_search_hidden" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_at_search_hidden", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_at_search_hidden(b)
                 .await
                 .map_err(|e| e.to_string())
         }

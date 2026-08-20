@@ -987,34 +987,38 @@ impl EditToolCallBlock {
         // their headers stay bare. Diffstat counts keep their diff colors
         // even when the header is muted; untrusted summaries (multi-file,
         // title-fallback path) never show counts that would only describe
-        // the first diff.
+        // the first diff. Trusted multi-region edits prefer diffstat over the
+        // generic "(N edits)" fallback so collapsed rows still show +/- totals.
         let collapsed = matches!(
             surface,
             crate::render::tool_paths::ToolPathSurface::Collapsed
         );
-        let suffix_spans: Vec<Span<'static>> =
-            if collapsed && show_summary && !self.hunks.is_empty() && !self.summary_untrusted {
-                let (ins, del) = self.count_changes();
-                if ins > 0 || del > 0 {
-                    vec![
-                        Span::styled(
-                            format!(" +{ins}"),
-                            Style::default().fg(theme.diff_insert_fg),
-                        ),
-                        Span::styled("/", detail_style),
-                        Span::styled(format!("-{del}"), Style::default().fg(theme.diff_delete_fg)),
-                    ]
-                } else {
-                    Vec::new()
-                }
-            } else if collapsed && self.edit_count > 1 {
-                vec![Span::styled(
-                    format!(" ({} edits)", self.edit_count),
-                    detail_style,
-                )]
+        let show_diffstat = collapsed
+            && !self.hunks.is_empty()
+            && !self.summary_untrusted
+            && (show_summary || self.edit_count > 1);
+        let suffix_spans: Vec<Span<'static>> = if show_diffstat {
+            let (ins, del) = self.count_changes();
+            if ins > 0 || del > 0 {
+                vec![
+                    Span::styled(
+                        format!(" +{ins}"),
+                        Style::default().fg(theme.diff_insert_fg),
+                    ),
+                    Span::styled("/", detail_style),
+                    Span::styled(format!("-{del}"), Style::default().fg(theme.diff_delete_fg)),
+                ]
             } else {
                 Vec::new()
-            };
+            }
+        } else if collapsed && self.edit_count > 1 {
+            vec![Span::styled(
+                format!(" ({} edits)", self.edit_count),
+                detail_style,
+            )]
+        } else {
+            Vec::new()
+        };
         let suffix_width: usize = suffix_spans
             .iter()
             .map(|span| unicode_width::UnicodeWidthStr::width(span.content.as_ref()))
@@ -1718,6 +1722,26 @@ mod tests {
         assert_eq!(header.spans[3].content.as_ref(), "/");
         assert_eq!(header.spans[4].content.as_ref(), "-1");
         assert_eq!(header.spans[4].style.fg, Some(theme.diff_delete_fg));
+
+        // Trusted multi-region edits show diffstat even when the generic
+        // one-line summary is disabled; otherwise users only saw "(N edits)"
+        // and lost the +/- totals.
+        let multi_hunk = EditToolCallBlock::new(
+            "/Users/me/project/src/foo.rs",
+            vec![make_hunk(), make_hunk()],
+        )
+        .with_edit_count(2);
+        let header = multi_hunk.header_line(
+            &theme,
+            false,
+            false,
+            false,
+            ToolPathSurface::Collapsed,
+            None,
+            Some(80),
+        );
+        let text: String = header.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "Edit foo.rs +2/-2");
 
         // The suffix is collapsed-only: expanded and fullscreen headers stay
         // bare — the hunks/body carry the information there. Both suffix

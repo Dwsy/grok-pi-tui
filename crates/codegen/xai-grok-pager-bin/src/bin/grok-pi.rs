@@ -14,6 +14,8 @@ mod bash_extension;
 mod btw_extension;
 #[path = "grok_pi/cli.rs"]
 mod cli;
+#[path = "grok_pi/config_skill.rs"]
+mod config_skill;
 #[path = "grok_pi/context_extension.rs"]
 mod context_extension;
 #[path = "grok_pi/export_extension.rs"]
@@ -84,6 +86,7 @@ use auth_extension::write_auth_extension;
 use bash_extension::write_bash_extension;
 use btw_extension::write_btw_extension;
 use cli::{Args, Command, normalize_compound_short_flags, pi_args_with_startup_flags};
+use config_skill::{config_skill_enabled, sync_config_skill_cache};
 use context_extension::write_context_extension;
 use export_extension::write_export_extension;
 use goal_extension::write_goal_extension;
@@ -297,6 +300,17 @@ async fn run(mut args: Args) -> Result<()> {
     // Resource discovery adapts when cwd is Pi agent home (see PiResourceCatalog).
     let _theme_report = xai_grok_pager::theme::pi::init_discovery(&cwd);
 
+    let config_skill_path = match sync_config_skill_cache(config_skill_enabled()) {
+        Ok(path) => path,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "failed to sync grok-pi config skill; continuing without managed config skill"
+            );
+            None
+        }
+    };
+
     // Pi's --no-extensions controls auto-discovery only. Bundled host bridges
     // have a separate kill switch because they are passed as explicit paths.
     let bridge_extensions_enabled = !args.no_bridge_extensions;
@@ -436,6 +450,20 @@ async fn run(mut args: Args) -> Result<()> {
             .map(|extension| extension.path()),
     );
     let pi_session_dir = pi_session_dir(&pi_args, &cwd);
+
+    // The embedded config skill lives outside Pi's native auto-discovery tree,
+    // so load it explicitly. Respect an explicit --no-skills from either the
+    // first-class CLI or passthrough args; F2 pi_config_skill remains the
+    // default-on source of truth otherwise.
+    let skills_disabled = args.no_skills || pi_args.iter().any(|arg| arg == "--no-skills");
+    if !skills_disabled
+        && let Some(path) = config_skill_path.as_ref()
+    {
+        pi_args.extend([
+            "--skill".to_string(),
+            path.to_string_lossy().into_owned(),
+        ]);
+    }
 
     // ── Resource admission policy ────────────────────────────────────────────
     // Disable Pi's auto-discovery and load only policy-approved resources.

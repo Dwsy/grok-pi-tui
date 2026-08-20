@@ -45,6 +45,8 @@ const SHOW_THINKING_BLOCKS_DEFAULT: bool = true;
 /// Prompt border follows the selected thinking/reasoning effort by default.
 const THINKING_BORDER_COLORS_DEFAULT: bool = true;
 const GROUP_TOOL_VERBS_DEFAULT: bool = true;
+/// Hover popups for collapsed Write/Edit details default ON.
+const WRITE_EDIT_HOVER_POPUPS_DEFAULT: bool = true;
 /// Collapsed-Edit-blocks rollout flag defaults OFF (legacy expanded diffs).
 const COLLAPSED_EDIT_BLOCKS_DEFAULT: bool = false;
 /// grok-pi user prompts use the agent markdown renderer by default.
@@ -730,6 +732,34 @@ pub fn set_pi_bash_command_format(value: bool) {
     PI_BASH_COMMAND_FORMAT_LOADED.with(|l| l.set(true));
 }
 
+// -- Write/Edit hover popups ------------------------------------------------
+
+thread_local! {
+    static WRITE_EDIT_HOVER_POPUPS_CURRENT: Cell<bool> = const { Cell::new(WRITE_EDIT_HOVER_POPUPS_DEFAULT) };
+    static WRITE_EDIT_HOVER_POPUPS_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read the cached Write/Edit hover-popup preference.
+pub fn load_write_edit_hover_popups() -> bool {
+    WRITE_EDIT_HOVER_POPUPS_LOADED.with(|loaded| {
+        if !loaded.get() {
+            let value = load_bool_from_effective_config(
+                "write_edit_hover_popups",
+                WRITE_EDIT_HOVER_POPUPS_DEFAULT,
+            );
+            WRITE_EDIT_HOVER_POPUPS_CURRENT.with(|c| c.set(value));
+            loaded.set(true);
+        }
+    });
+    WRITE_EDIT_HOVER_POPUPS_CURRENT.with(|c| c.get())
+}
+
+/// Replace the cached Write/Edit hover-popup preference.
+pub fn set_write_edit_hover_popups(value: bool) {
+    WRITE_EDIT_HOVER_POPUPS_CURRENT.with(|c| c.set(value));
+    WRITE_EDIT_HOVER_POPUPS_LOADED.with(|l| l.set(true));
+}
+
 // -- Render mermaid (auto | on | off) ---------------------------------------
 
 thread_local! {
@@ -803,6 +833,7 @@ pub fn prime(ui: &UiConfig) {
             .unwrap_or_default(),
     );
     set_pi_bash_command_format(ui.pi_bash_command_format);
+    set_write_edit_hover_popups(ui.write_edit_hover_popups);
     let _ = load_render_mermaid();
     let _ = load_show_thinking_blocks();
     let _ = load_thinking_border_colors();

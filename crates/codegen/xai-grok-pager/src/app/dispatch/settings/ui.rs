@@ -8,8 +8,9 @@ use super::setters::{
     set_default_selected_permission_inner, set_display_refresh_auto_cadence_inner,
     set_fork_secondary_model_inner, set_group_tool_verbs_inner, set_hunk_tracker_mode_inner,
     set_invert_scroll_inner, set_keep_text_selection_inner, set_max_thoughts_width_inner,
-    set_multiline_mode, set_page_flip_on_send_inner, set_pi_bash_command_format_inner,
-    set_pi_bash_run_display_inner, set_progress_bar_inner, set_prompt_cursor_inner,
+    set_multiline_mode, set_page_flip_on_send_inner, set_pi_at_search_hidden_inner,
+    set_pi_bash_command_format_inner, set_pi_bash_run_display_inner, set_progress_bar_inner,
+    set_prompt_cursor_inner,
     set_prompt_suggestions_inner, set_recap_mermaid_inner, set_recap_model_inner,
     set_remember_tool_approvals_inner, set_render_mermaid_inner, set_respect_manual_folds_inner,
     set_screen_mode_inner, set_scroll_lines_inner, set_scroll_mode_inner, set_scroll_speed_inner,
@@ -17,7 +18,7 @@ use super::setters::{
     set_side_by_side_edit_inner, set_simple_mode_inner, set_theme_inner,
     set_thinking_border_colors_inner, set_timeline_inner, set_timestamps, set_timestamps_inner,
     set_vim_mode_inner, set_voice_capture_mode_inner, set_voice_keybind_enabled_inner,
-    set_voice_stt_language_inner,
+    set_voice_stt_language_inner, set_write_edit_hover_popups_inner,
 };
 use crate::app::actions::{Action, Effect};
 use crate::app::app_view::{ActiveView, AppView};
@@ -1126,7 +1127,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
         }
         ("pi_btw", SettingValue::Bool(b)) => Some(Action::SetPiBtw(*b)),
         ("pi_cache_graph", SettingValue::Bool(b)) => Some(Action::SetPiCacheGraph(*b)),
+        ("pi_config_skill", SettingValue::Bool(b)) => Some(Action::SetPiConfigSkill(*b)),
         ("pi_user_markdown", SettingValue::Bool(b)) => Some(Action::SetPiUserMarkdown(*b)),
+        ("pi_at_search_hidden", SettingValue::Bool(b)) => Some(Action::SetPiAtSearchHidden(*b)),
         ("pi_keep_multi_agent", SettingValue::Bool(b)) => Some(Action::SetPiKeepMultiAgent(*b)),
         ("show_other_tool_args", SettingValue::Bool(b)) => Some(Action::SetShowOtherToolArgs(*b)),
         ("review_file_tree", SettingValue::Bool(b)) => Some(Action::SetReviewFileTree(*b)),
@@ -1200,6 +1203,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
         }
         ("pi_bash_command_format", SettingValue::Bool(b)) => {
             Some(Action::SetPiBashCommandFormat(*b))
+        }
+        ("write_edit_hover_popups", SettingValue::Bool(b)) => {
+            Some(Action::SetWriteEditHoverPopups(*b))
         }
         ("prompt_suggestions", SettingValue::Bool(b)) => Some(Action::SetPromptSuggestions(*b)),
         ("prompt_cursor", SettingValue::String(s)) => Some(Action::SetPromptCursor(s.clone())),
@@ -1385,9 +1391,13 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         }
         ("pi_btw", SettingValue::Bool(b)) => app.current_ui.pi_btw = *b,
         ("pi_cache_graph", SettingValue::Bool(b)) => app.current_ui.pi_cache_graph = *b,
+        ("pi_config_skill", SettingValue::Bool(b)) => app.current_ui.pi_config_skill = *b,
         ("pi_user_markdown", SettingValue::Bool(b)) => {
             app.current_ui.pi_user_markdown = *b;
             crate::appearance::cache::set_pi_user_markdown(*b);
+        }
+        ("pi_at_search_hidden", SettingValue::Bool(b)) => {
+            set_pi_at_search_hidden_inner(app, *b)
         }
         ("pi_keep_multi_agent", SettingValue::Bool(b)) => {
             app.current_ui.pi_keep_multi_agent = *b;
@@ -1613,6 +1623,9 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         }
         ("pi_bash_command_format", SettingValue::Bool(b)) => {
             set_pi_bash_command_format_inner(app, *b)
+        }
+        ("write_edit_hover_popups", SettingValue::Bool(b)) => {
+            set_write_edit_hover_popups_inner(app, *b)
         }
         ("prompt_suggestions", SettingValue::Bool(b)) => set_prompt_suggestions_inner(app, *b),
         // keep_text_selection: restore the cache mirror to the canonical value.

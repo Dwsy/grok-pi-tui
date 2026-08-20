@@ -21,10 +21,10 @@ const MATCHER_TOP_K: usize = 1000;
 
 /// Whether a new query should restart the daemon's directory walk.
 enum RestartWalk {
-    /// Reuse the current walk (query changed but hidden mode did not).
+    /// Reuse the current walk (query changed but walker policy did not).
     Keep,
-    /// Restart the walk, including or excluding hidden entries.
-    Restart { hidden: bool },
+    /// Restart with independent hidden-entry and ignore-rule policy.
+    Restart { hidden: bool, ignored: bool },
 }
 
 /// Replacement to apply to the prompt text after accepting a fuzzy result.
@@ -57,6 +57,11 @@ pub struct FileSearchState {
     /// otherwise moved into its worker thread) so callers can introspect
     /// where `@`-completion is currently pointed.
     root: PathBuf,
+    /// Whether hidden/dotfile entries are shown by default (no `@!` marker).
+    /// Mirrors `[ui].pi_at_search_hidden`. The default only relaxes the hidden
+    /// filter; ignore rules stay enabled. Explicit `@!` still requests hidden
+    /// plus ignored files, preserving its existing behavior.
+    default_hidden: bool,
     /// Background fuzzy matcher daemon, built lazily on first @-use. Eager
     /// construction spawns the nucleo pool and walker threads even in sessions
     /// that never open @-search; deferring it moves that thread spawn, and its
@@ -92,8 +97,17 @@ pub struct FileSearchState {
 impl FileSearchState {
     /// Create a new file search state rooted at the given path.
     pub fn new(root: &Path) -> Self {
+        Self::new_with_default_hidden(root, true)
+    }
+
+    /// Create a new file search state with an explicit default-hidden policy.
+    ///
+    /// `default_hidden` mirrors `[ui].pi_at_search_hidden`: when true, `@`
+    /// shows dotfiles without needing the `@!` marker (fd `--hidden` parity).
+    pub fn new_with_default_hidden(root: &Path, default_hidden: bool) -> Self {
         Self {
             root: root.to_owned(),
+            default_hidden,
             daemon: None,
             #[cfg(test)]
             daemon_builds: 0,
@@ -107,16 +121,51 @@ impl FileSearchState {
         }
     }
 
+    /// Update the default-hidden policy from the live F2 config. If it changed
+    /// and a daemon walk is active, restart the walk so the new policy takes
+    /// effect immediately (rather than only on the next `@`-token).
+    pub fn set_default_hidden(&mut self, default_hidden: bool) {
+        if self.default_hidden == default_hidden {
+            return;
+        }
+        self.default_hidden = default_hidden;
+        // If a daemon is already walking, restart it under the new policy.
+        if let Some(daemon) = self.daemon.as_ref() {
+            let (hidden, ignored) = self
+                .context
+                .as_ref()
+                .map(|ctx| self.walk_policy(ctx))
+                .unwrap_or((default_hidden, false));
+            daemon.restart_walk_with_policy(hidden, ignored);
+        }
+    }
+
+    /// Effective walker policy for this context.
+    ///
+    /// The F2 default reveals dotfiles while preserving ignore filters. The
+    /// explicit `@!` marker keeps its stronger legacy meaning: reveal hidden
+    /// entries and disable local/git ignore filtering.
+    fn walk_policy(&self, ctx: &AtContext) -> (bool, bool) {
+        let explicit = ctx.is_hidden_mode();
+        (self.default_hidden || explicit, explicit)
+    }
+
     /// Point @-completion at a new tree (e.g. after worktree creation).
     ///
     /// Drops any built daemon; the next @-use rebuilds it lazily against `root`.
     pub fn retarget(&mut self, root: &Path) {
-        *self = Self::new(root);
+        let default_hidden = self.default_hidden;
+        *self = Self::new_with_default_hidden(root, default_hidden);
     }
 
     /// The directory the matcher currently walks (the `@`-completion root).
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Whether plain `@` reveals hidden/dotfile entries by default.
+    pub fn default_hidden(&self) -> bool {
+        self.default_hidden
     }
 
     /// The fuzzy matcher daemon, built lazily on first use.
@@ -143,8 +192,8 @@ impl FileSearchState {
     /// query to a folder without hiding that folder's files.
     fn start_query(&mut self, restart: RestartWalk, query: &str) {
         let daemon = self.ensure_daemon();
-        if let RestartWalk::Restart { hidden } = restart {
-            daemon.restart_walk(hidden);
+        if let RestartWalk::Restart { hidden, ignored } = restart {
+            daemon.restart_walk_with_policy(hidden, ignored);
         }
         daemon.set_query(query, false);
         // Advance the stale-result fence past the prior query (see `min_generation`).
@@ -217,10 +266,9 @@ impl FileSearchState {
                 // Fresh `@` token is never a drill — drop any stale anchor.
                 self.drill_prefix = None;
                 // Entering @-mode always restarts the walk.
+                let (hidden, ignored) = self.walk_policy(ctx);
                 self.start_query(
-                    RestartWalk::Restart {
-                        hidden: ctx.is_hidden_mode(),
-                    },
+                    RestartWalk::Restart { hidden, ignored },
                     ctx.matcher_query(),
                 );
             }
@@ -236,10 +284,14 @@ impl FileSearchState {
                 if anchor_stale {
                     self.drill_prefix = None;
                 }
-                // Staying in @-mode only re-walks when hidden mode toggled.
-                let restart = if old.is_hidden_mode() != new.is_hidden_mode() {
+                // Staying in @-mode only re-walks when the effective walker
+                // policy changes (for example plain `@` ↔ explicit `@!`).
+                let old_policy = self.walk_policy(old);
+                let new_policy = self.walk_policy(new);
+                let restart = if old_policy != new_policy {
                     RestartWalk::Restart {
-                        hidden: new.is_hidden_mode(),
+                        hidden: new_policy.0,
+                        ignored: new_policy.1,
                     }
                 } else {
                     RestartWalk::Keep
@@ -497,14 +549,29 @@ mod tests {
     }
 
     #[test]
-    fn retarget_drops_built_daemon() {
+    fn walk_policy_distinguishes_plain_at_from_explicit_bang() {
+        let plain = context::detect("@foo", 4).expect("plain @ context");
+        let bang = context::detect("@!foo", 5).expect("@! context");
+
+        let off = FileSearchState::new_with_default_hidden(Path::new("."), false);
+        assert_eq!(off.walk_policy(&plain), (false, false));
+        assert_eq!(off.walk_policy(&bang), (true, true));
+
+        let on = FileSearchState::new_with_default_hidden(Path::new("."), true);
+        assert_eq!(on.walk_policy(&plain), (true, false));
+        assert_eq!(on.walk_policy(&bang), (true, true));
+    }
+
+    #[test]
+    fn retarget_drops_built_daemon_and_preserves_default_hidden() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let mut state = FileSearchState::new(dir.path());
+        let mut state = FileSearchState::new_with_default_hidden(dir.path(), false);
         state.update_context("@alpha", "@alpha".len());
         assert!(state.daemon_is_built());
 
         state.retarget(Path::new(".."));
         assert_eq!(state.root(), Path::new(".."));
+        assert!(!state.default_hidden());
         assert!(!state.daemon_is_built());
     }
 

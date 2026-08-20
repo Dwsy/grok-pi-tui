@@ -1026,8 +1026,8 @@ impl AgentView {
                 if old_mouse_pos != self.last_mouse_pos {
                     self.last_mouse_moved_at = Some(Instant::now());
                 }
-                let mut changed =
-                    new_hover != self.hovered_entry || new_prompt_hover != self.hovered_prompt;
+                let hover_changed = new_hover != self.hovered_entry;
+                let mut changed = hover_changed || new_prompt_hover != self.hovered_prompt;
                 if new_hover.is_some()
                     && old_mouse_pos != self.last_mouse_pos
                     && let Some(idx) = new_hover
@@ -1041,6 +1041,11 @@ impl AgentView {
                         || entry.hook_data.as_ref().is_some_and(|hd| hd.has_content()))
                 {
                     changed = true;
+                }
+                if hover_changed {
+                    self.write_edit_hover_popup_entry = new_hover;
+                    self.write_edit_hover_started_at = new_hover.map(|_| Instant::now());
+                    self.write_edit_hover_popup_scroll = 0;
                 }
                 self.hovered_entry = new_hover;
                 self.hovered_prompt = new_prompt_hover;

@@ -492,6 +492,91 @@ impl AgentView {
             InputOutcome::Unchanged
         }
     }
+    const WRITE_EDIT_HOVER_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+
+    pub(crate) fn write_edit_hover_popup_ready(&self) -> bool {
+        self.write_edit_hover_started_at
+            .is_some_and(|started_at| started_at.elapsed() >= Self::WRITE_EDIT_HOVER_DELAY)
+    }
+
+    pub(crate) fn needs_write_edit_hover_popup_tick(&self) -> bool {
+        if !crate::appearance::cache::load_write_edit_hover_popups() {
+            return false;
+        }
+        let Some(started_at) = self.write_edit_hover_started_at else {
+            return false;
+        };
+        if started_at.elapsed() >= Self::WRITE_EDIT_HOVER_DELAY {
+            return false;
+        }
+        let Some(hover_idx) = self.hovered_entry else {
+            return false;
+        };
+        let Some(entry) = self.scrollback.get(hover_idx) else {
+            return false;
+        };
+        entry.display_mode == crate::scrollback::types::DisplayMode::Collapsed
+            && matches!(
+                &entry.block,
+                crate::scrollback::block::RenderBlock::ToolCall(
+                    crate::scrollback::blocks::tool::ToolCallBlock::Edit(_)
+                )
+            )
+    }
+
+    fn handle_write_edit_hover_popup_scroll(&mut self, lines: i32, col: u16, row: u16) -> bool {
+        if lines == 0
+            || !crate::appearance::cache::load_write_edit_hover_popups()
+            || !self.write_edit_hover_popup_ready()
+        {
+            return false;
+        }
+        if !self.pane_areas.scrollback.contains((col, row).into()) {
+            return false;
+        }
+        let Some(hover_idx) = self.hovered_entry else {
+            return false;
+        };
+        let Some(entry) = self.scrollback.get(hover_idx) else {
+            return false;
+        };
+        if entry.display_mode != crate::scrollback::types::DisplayMode::Collapsed {
+            return false;
+        }
+        if !matches!(
+            &entry.block,
+            crate::scrollback::block::RenderBlock::ToolCall(
+                crate::scrollback::blocks::tool::ToolCallBlock::Edit(_)
+            )
+        ) {
+            return false;
+        }
+        let Some((entry_area, _, _)) = self
+            .scrollback
+            .entry_screen_area(hover_idx, self.pane_areas.scrollback)
+        else {
+            return false;
+        };
+        if !entry_area.contains((col, row).into()) {
+            return false;
+        }
+        if self.write_edit_hover_popup_entry != Some(hover_idx) {
+            self.write_edit_hover_popup_entry = Some(hover_idx);
+            self.write_edit_hover_popup_scroll = 0;
+        }
+        let amount = lines.unsigned_abs() as usize;
+        if lines > 0 {
+            self.write_edit_hover_popup_scroll = self
+                .write_edit_hover_popup_scroll
+                .saturating_add(amount)
+                .min(u16::MAX as usize);
+        } else {
+            self.write_edit_hover_popup_scroll =
+                self.write_edit_hover_popup_scroll.saturating_sub(amount);
+        }
+        true
+    }
+
     /// Handle a normalized scroll event at a screen position.
     ///
     /// Hit-tests against pane areas to decide what to scroll:
@@ -699,6 +784,9 @@ impl AgentView {
             }
             return;
         }
+        if self.handle_write_edit_hover_popup_scroll(lines, col, row) {
+            return;
+        }
         let target = self
             .pane_areas
             .hit_test(col, row)
@@ -750,6 +838,21 @@ mod scroll_granularity_tests {
         CompletionDropdownState, CompletionItemParsed, SuggestionSource,
     };
     use ratatui::layout::Rect;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn write_edit_hover_popup_waits_for_300ms_dwell() {
+        let mut agent = make_agent();
+        agent.write_edit_hover_started_at = Some(Instant::now());
+        assert!(!agent.write_edit_hover_popup_ready());
+
+        agent.write_edit_hover_started_at = Some(Instant::now() - Duration::from_millis(350));
+        assert!(agent.write_edit_hover_popup_ready());
+
+        agent.write_edit_hover_started_at = None;
+        assert!(!agent.write_edit_hover_popup_ready());
+    }
+
     /// Selection dropdowns step exactly one item per wheel dispatch: a
     /// 3-line notch (or accelerated trackpad flush) must not skip items.
     #[test]

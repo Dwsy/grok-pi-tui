@@ -780,6 +780,17 @@ async fn persist_setting_type_mismatch_errors_pi_subagents() {
 }
 
 #[tokio::test]
+async fn persist_setting_type_mismatch_errors_pi_config_skill() {
+    use crate::settings::SettingValue;
+    let r = persist_setting("pi_config_skill", SettingValue::String("nope".into())).await;
+    let err = r.expect_err("pi_config_skill with String payload must return Err");
+    assert!(
+        err.contains("persist_setting(pi_config_skill) expected Bool"),
+        "Pi config skill setting must reach its typed persist arm, got: {err}",
+    );
+}
+
+#[tokio::test]
 async fn persist_setting_theme_keeps_pi_string_variant() {
     use crate::settings::SettingValue;
     let r = persist_setting("theme", SettingValue::Bool(true)).await;

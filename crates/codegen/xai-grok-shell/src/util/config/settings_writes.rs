@@ -316,9 +316,19 @@ pub async fn set_pi_cache_graph(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_cache_graph = value).await
 }
 
+/// Persist `[ui].pi_config_skill` via `update_config`.
+pub async fn set_pi_config_skill(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_config_skill = value).await
+}
+
 /// Persist `[ui].pi_user_markdown` via `update_config`.
 pub async fn set_pi_user_markdown(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_user_markdown = value).await
+}
+
+/// Persist `[ui].pi_at_search_hidden` via `update_config`.
+pub async fn set_pi_at_search_hidden(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_at_search_hidden = value).await
 }
 
 /// Persist `[ui].show_other_tool_args` via `update_config`.
@@ -433,6 +443,11 @@ pub async fn set_pi_bash_run_display(value: String) -> Result<()> {
 /// Persist `[ui].pi_bash_command_format` via `update_config`.
 pub async fn set_pi_bash_command_format(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_bash_command_format = value).await
+}
+
+/// Persist `[ui].write_edit_hover_popups` via `update_config`.
+pub async fn set_write_edit_hover_popups(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.write_edit_hover_popups = value).await
 }
 
 /// Persist `[ui].keep_text_selection` (`flash` | `hold` | `word_select`).

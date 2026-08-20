@@ -1258,6 +1258,23 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
             external_only: true,
         },
+        // SHELL-owned: `[ui].write_edit_hover_popups`; display-only.
+        SettingMeta {
+            key: "write_edit_hover_popups",
+            category: SettingCategory::Popups,
+            owner: SettingOwner::Shell,
+            label: "Write/Edit hover popups",
+            description: "Show a bounded hover popup with expanded Write and Edit details from collapsed tool rows. Default on.",
+            keywords: &[
+                "write", "edit", "popup", "hover", "tool", "diff", "preview", "details",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.write_edit_hover_popups,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: false,
+        },
         // SHELL-owned: `[ui.display_refresh].auto_cadence_enabled`. Restart-
         // required (cadence pinned at startup); hidden in minimal.
         SettingMeta {
@@ -2356,6 +2373,33 @@ pub fn default_settings() -> Vec<SettingMeta> {
             external_only: true,
         },
         SettingMeta {
+            key: "pi_config_skill",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Pi config skill",
+            description: "Load grok-pi's embedded configuration skill by default so the agent can explain F2 settings, config.toml, skills, themes, and feature flags. Restart required.",
+            keywords: &[
+                "pi",
+                "grok-pi",
+                "config",
+                "configuration",
+                "skill",
+                "skills",
+                "f2",
+                "settings",
+                "docs",
+                "guide",
+                "default",
+                "disable",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_config_skill,
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+            external_only: false,
+        },
+        SettingMeta {
             key: "pi_user_markdown",
             category: SettingCategory::Agent,
             owner: SettingOwner::Shell,
@@ -2364,6 +2408,20 @@ pub fn default_settings() -> Vec<SettingMeta> {
             keywords: &["pi", "user", "markdown", "prompt", "message"],
             kind: SettingKind::Bool {
                 default: ui_default.pi_user_markdown,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
+        SettingMeta {
+            key: "pi_at_search_hidden",
+            category: SettingCategory::Editor,
+            owner: SettingOwner::Shell,
+            label: "Hidden files in @ search",
+            description: "Include hidden/dotfile entries in plain `@` file search while still respecting ignore rules, matching pi-main's fd `--hidden` behavior. `@!` additionally reveals gitignored project files while `.git`, `node_modules`, and common dependency/package stores remain excluded. Default on.",
+            keywords: &["pi", "at", "file", "search", "hidden", "dotfile", "gitignore"],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_at_search_hidden,
             },
             restart_required: false,
             hidden_in_minimal: false,

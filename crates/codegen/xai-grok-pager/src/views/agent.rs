@@ -692,6 +692,157 @@ pub fn render_hook_hover_popup(
         buf.set_line_safe(inner.x, y, &line.content, inner.width);
     }
 }
+
+/// Render a floating popup with expanded Write/Edit details for collapsed tool rows.
+pub fn render_write_edit_hover_popup(
+    buf: &mut Buffer,
+    scrollback_area: Rect,
+    scrollback: &ScrollbackState,
+    hovered_entry: Option<usize>,
+    mouse_pos: (u16, u16),
+    scroll_offset: usize,
+    theme: &Theme,
+) {
+    const MAX_POPUP_HEIGHT: u16 = 24;
+
+    if !crate::appearance::cache::load_write_edit_hover_popups() {
+        return;
+    }
+    if scrollback_area.width < 12 || scrollback_area.height < 3 {
+        return;
+    }
+    let Some(hover_idx) = hovered_entry else {
+        return;
+    };
+    let Some(entry) = scrollback.get(hover_idx) else {
+        return;
+    };
+    let layout_info = scrollback
+        .get_cached_entry_layouts()
+        .and_then(|layouts| layouts.get(hover_idx));
+    if layout_info.is_some_and(|info| {
+        info.verb_group_header && !info.is_expanded_verb_header() && info.group_header_count > 1
+    }) {
+        return;
+    }
+    if entry.display_mode != crate::scrollback::types::DisplayMode::Collapsed {
+        return;
+    }
+    if !matches!(
+        &entry.block,
+        crate::scrollback::block::RenderBlock::ToolCall(
+            crate::scrollback::blocks::tool::ToolCallBlock::Edit(_)
+        )
+    ) {
+        return;
+    }
+
+    let Some((entry_area, _, _)) = scrollback.entry_screen_area(hover_idx, scrollback_area) else {
+        return;
+    };
+    let (mouse_col, mouse_row) = mouse_pos;
+    if mouse_row < entry_area.y
+        || mouse_row >= entry_area.y.saturating_add(entry_area.height)
+        || mouse_col < entry_area.x
+        || mouse_col >= entry_area.x.saturating_add(entry_area.width)
+    {
+        return;
+    }
+
+    let buf_height = buf.area.height;
+    let buf_width = buf.area.width;
+    let popup_height = MAX_POPUP_HEIGHT.min(scrollback_area.height).min(buf_height);
+    if popup_height < 3 {
+        return;
+    }
+    let popup_width = scrollback_area
+        .width
+        .saturating_sub(4)
+        .min(100)
+        .max(24)
+        .min(scrollback_area.width)
+        .min(buf_width);
+    if popup_width < 8 {
+        return;
+    }
+    let body_budget = popup_height.saturating_sub(2).max(1);
+    let inner_width = popup_width.saturating_sub(2);
+    let requested_budget = scroll_offset
+        .saturating_add(body_budget as usize)
+        .saturating_add(1)
+        .min(u16::MAX as usize) as u16;
+    let ctx = entry.context_with_mode_and_budget(
+        inner_width,
+        crate::scrollback::types::DisplayMode::Expanded,
+        requested_budget,
+        scrollback.appearance(),
+        false,
+        scrollback.cwd(),
+    );
+    let lines = entry.output_with_hooks(&ctx).lines;
+    if lines.is_empty() {
+        return;
+    }
+    let body_len = body_budget as usize;
+    let start = scroll_offset.min(lines.len().saturating_sub(body_len));
+    let end = start.saturating_add(body_len).min(lines.len());
+    let visible_lines = &lines[start..end];
+    if visible_lines.is_empty() {
+        return;
+    }
+
+    let popup_height = (visible_lines.len() as u16 + 2).min(popup_height);
+    let area_bottom = scrollback_area.y.saturating_add(scrollback_area.height);
+    let entry_bottom = entry_area.y.saturating_add(entry_area.height);
+    let popup_y = if entry_bottom.saturating_add(popup_height) <= area_bottom {
+        entry_bottom
+    } else {
+        entry_area
+            .y
+            .saturating_sub(popup_height)
+            .max(scrollback_area.y)
+    };
+    let max_x = scrollback_area
+        .x
+        .saturating_add(scrollback_area.width.saturating_sub(popup_width));
+    let popup_x = mouse_col.saturating_sub(4).clamp(scrollback_area.x, max_x);
+    let popup_area = Rect::new(
+        popup_x,
+        popup_y,
+        popup_width,
+        popup_height.min(buf_height.saturating_sub(popup_y)),
+    );
+    if popup_area.height < 3 || popup_area.width < 8 {
+        return;
+    }
+
+    let bg = theme.bg_base;
+    let clear_style = Style::default().bg(bg);
+    for y in popup_area.y..popup_area.y + popup_area.height {
+        for x in popup_area.x..popup_area.x + popup_area.width {
+            if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, y)) {
+                cell.reset();
+                cell.set_style(clear_style);
+            }
+        }
+    }
+    let border_style = Style::default().fg(theme.gray);
+    let block = Block::default()
+        .title(" Write/Edit details ")
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(border_style)
+        .style(Style::default().bg(bg));
+    let inner = block.inner(popup_area);
+    Widget::render(block, popup_area, buf);
+    for (i, line) in visible_lines.iter().enumerate() {
+        let y = inner.y + i as u16;
+        if y >= inner.y + inner.height {
+            break;
+        }
+        buf.set_line_safe(inner.x, y, &line.content, inner.width);
+    }
+}
 /// Selection/hover chrome for a side pane (todo / queue / tasks). Focused panes get a dismiss control.
 pub fn render_todo_chrome(
     buf: &mut Buffer,

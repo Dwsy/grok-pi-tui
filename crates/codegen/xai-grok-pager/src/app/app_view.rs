@@ -6915,6 +6915,14 @@ impl AppView {
                 if fast {
                     return TickDemand::Fast;
                 }
+                if agent.needs_write_edit_hover_popup_tick()
+                    || agent
+                        .subagent_views
+                        .values()
+                        .any(|child| child.needs_write_edit_hover_popup_tick())
+                {
+                    return TickDemand::Slow;
+                }
                 if cfg!(target_os = "macos")
                     && (agent.needs_link_modifier_poll()
                         || agent

@@ -694,6 +694,31 @@ pub(in crate::app::dispatch) fn set_pi_bash_command_format(
     }]
 }
 
+pub(super) fn set_write_edit_hover_popups_inner(app: &mut AppView, enabled: bool) {
+    crate::appearance::cache::set_write_edit_hover_popups(enabled);
+    app.current_ui.write_edit_hover_popups = enabled;
+}
+
+/// Set display-only Write/Edit hover popups and persist it to `[ui]`.
+pub(in crate::app::dispatch) fn set_write_edit_hover_popups(
+    app: &mut AppView,
+    enabled: bool,
+) -> Vec<Effect> {
+    let previous = crate::appearance::cache::load_write_edit_hover_popups();
+    if previous == enabled {
+        return vec![];
+    }
+    set_write_edit_hover_popups_inner(app, enabled);
+    refresh_open_settings_modals(app);
+    let value = if enabled { "on" } else { "off" };
+    app.show_toast(&format!("✓ Write/Edit hover popups: {value}"));
+    vec![Effect::PersistSetting {
+        key: "write_edit_hover_popups",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
 pub(super) fn set_prompt_suggestions_inner(app: &mut AppView, new: bool) {
     crate::appearance::cache::set_prompt_suggestions(new);
     app.current_ui.prompt_suggestions = Some(new);
@@ -2646,6 +2671,27 @@ pub(in crate::app::dispatch) fn set_pi_cache_graph(
     }]
 }
 
+pub(in crate::app::dispatch) fn set_pi_config_skill(
+    app: &mut AppView,
+    enabled: bool,
+) -> Vec<Effect> {
+    let previous = app.current_ui.pi_config_skill;
+    if previous == enabled {
+        return vec![];
+    }
+    app.current_ui.pi_config_skill = enabled;
+    refresh_open_settings_modals(app);
+    let value = if enabled { "on" } else { "off" };
+    app.show_toast(&format!(
+        "\u{2713} Pi config skill: {value} \u{2014} restart grok-pi to apply"
+    ));
+    vec![Effect::PersistSetting {
+        key: "pi_config_skill",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
 pub(super) fn set_pi_user_markdown_inner(app: &mut AppView, enabled: bool) {
     crate::appearance::cache::set_pi_user_markdown(enabled);
     app.current_ui.pi_user_markdown = enabled;
@@ -2671,6 +2717,35 @@ pub(in crate::app::dispatch) fn set_pi_user_markdown(
     app.show_toast(&format!("\u{2713} Markdown user messages: {value}"));
     vec![Effect::PersistSetting {
         key: "pi_user_markdown",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
+pub(super) fn set_pi_at_search_hidden_inner(app: &mut AppView, enabled: bool) {
+    app.current_ui.pi_at_search_hidden = enabled;
+    for agent in app.agents.values_mut() {
+        agent.prompt.file_search.set_default_hidden(enabled);
+        for child in agent.subagent_views.values_mut() {
+            child.prompt.file_search.set_default_hidden(enabled);
+        }
+    }
+}
+
+pub(in crate::app::dispatch) fn set_pi_at_search_hidden(
+    app: &mut AppView,
+    enabled: bool,
+) -> Vec<Effect> {
+    let previous = app.current_ui.pi_at_search_hidden;
+    if previous == enabled {
+        return vec![];
+    }
+    set_pi_at_search_hidden_inner(app, enabled);
+    refresh_open_settings_modals(app);
+    let value = if enabled { "on" } else { "off" };
+    app.show_toast(&format!("\u{2713} Hidden files in @ search: {value}"));
+    vec![Effect::PersistSetting {
+        key: "pi_at_search_hidden",
         value: crate::settings::SettingValue::Bool(enabled),
         rollback_value: crate::settings::SettingValue::Bool(previous),
     }]

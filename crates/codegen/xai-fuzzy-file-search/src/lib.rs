@@ -28,6 +28,32 @@ use serde::Serialize;
 const NUM_NUCLEO_THREADS: usize = 2;
 const NUM_IGNORE_THREADS: usize = 8;
 
+/// Dependency/package-manager trees that stay excluded even for the explicit
+/// "show gitignored" walk. These directories are both noisy and potentially
+/// enormous; `@!` is for reaching useful ignored project files, not dependency
+/// stores. Keep project-facing dotfiles such as `.env`, `.vscode`, and `.idea`
+/// selectable.
+const HARD_EXCLUDED_WALK_PATTERNS: &[&str] = &[
+    "!.git",
+    "!node_modules",
+    "!.pnpm-store",
+    "!.yarn/cache",
+    "!.yarn/unplugged",
+    "!__pycache__",
+    "!.venv",
+    "!venv",
+    "!target",
+    "!vendor",
+    "!bower_components",
+    "!.tox",
+    "!.nox",
+    "!.eggs",
+    "!.gradle",
+    "!.dart_tool",
+    "!Pods",
+    "!.build",
+];
+
 /// What a fuzzy matcher can serve. Browsing is a serial depth-1 walk that needs
 /// no thread pool; only keyed matching needs the nucleo pool, and only the
 /// daemon needs its worker thread.
@@ -294,6 +320,16 @@ impl FuzzyFileMatcher {
     /// `threads` only affects `build_parallel()`; the serial `build()` fallback
     /// ignores it and spawns no threads.
     fn base_walker(&self) -> WalkBuilder {
+        let mut overrides = OverrideBuilder::new(&self.root);
+        for pattern in HARD_EXCLUDED_WALK_PATTERNS {
+            overrides
+                .add(pattern)
+                .unwrap_or_else(|_| panic!("static hard-exclude override must parse: {pattern}"));
+        }
+        let overrides = overrides
+            .build()
+            .expect("static hard-exclude overrides must build");
+
         let mut builder = WalkBuilder::new(&self.root);
         builder
             .threads(NUM_IGNORE_THREADS)
@@ -304,13 +340,7 @@ impl FuzzyFileMatcher {
             .ignore(true)
             .hidden(true)
             .require_git(false)
-            .overrides(
-                OverrideBuilder::new(&self.root)
-                    .add("!.git")
-                    .expect("static \"!.git\" override must parse")
-                    .build()
-                    .expect("static \"!.git\" override must build"),
-            );
+            .overrides(overrides);
         builder
     }
 
@@ -587,7 +617,7 @@ impl AsRef<[FuzzyMatchResult]> for FuzzyMatcherDaemonResults {
 
 #[derive(Debug, Clone)]
 enum FuzzyMatcherDaemonMessage {
-    RestartWalk { hidden: bool },
+    RestartWalk { hidden: bool, ignored: bool },
     SetQuery { query: String, dirs: bool },
     Stop,
 }
@@ -623,15 +653,26 @@ impl FuzzyFileMatcherDaemon {
                         rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
                     };
                     match msg {
-                        Ok(FuzzyMatcherDaemonMessage::RestartWalk { hidden }) => {
-                            if !hidden {
-                                tracing::trace!("restarting normal walk");
-                                matcher.restart_walk();
-                            } else {
-                                tracing::trace!("restarting hidden walk");
-                                matcher.restart_walk_with(|w| {
-                                    w.hidden(false).ignore(false).git_ignore(false)
-                                });
+                        Ok(FuzzyMatcherDaemonMessage::RestartWalk { hidden, ignored }) => {
+                            match (hidden, ignored) {
+                                (false, false) => {
+                                    tracing::trace!("restarting normal walk");
+                                    matcher.restart_walk();
+                                }
+                                (true, false) => {
+                                    tracing::trace!("restarting hidden, ignore-respecting walk");
+                                    matcher.restart_walk_with(|w| w.hidden(false));
+                                }
+                                (true, true) => {
+                                    tracing::trace!("restarting hidden + ignored walk");
+                                    matcher.restart_walk_with(|w| {
+                                        w.hidden(false).ignore(false).git_ignore(false)
+                                    });
+                                }
+                                (false, true) => {
+                                    tracing::trace!("restarting ignored, hidden-filtered walk");
+                                    matcher.restart_walk_with(|w| w.ignore(false).git_ignore(false));
+                                }
                             }
                             generation += 1;
                             *results.lock().unwrap() = FuzzyMatcherDaemonResults::default();
@@ -713,10 +754,21 @@ impl FuzzyFileMatcherDaemon {
             .send(FuzzyMatcherDaemonMessage::SetQuery { query, dirs });
     }
 
+    /// Restart using the legacy two-mode policy: `hidden = false` keeps the
+    /// normal ignore filters; `hidden = true` includes hidden and ignored files.
     pub fn restart_walk(&self, hidden: bool) {
+        self.restart_walk_with_policy(hidden, hidden);
+    }
+
+    /// Restart with independent hidden and ignore controls.
+    ///
+    /// This lets callers match `fd --hidden`: show dotfiles while still honoring
+    /// `.ignore`/`.gitignore`, without changing the legacy `restart_walk(true)`
+    /// behavior used by explicit "show ignored" surfaces.
+    pub fn restart_walk_with_policy(&self, hidden: bool, ignored: bool) {
         let _ = self
             .tx
-            .send(FuzzyMatcherDaemonMessage::RestartWalk { hidden });
+            .send(FuzzyMatcherDaemonMessage::RestartWalk { hidden, ignored });
     }
 }
 
@@ -791,6 +843,58 @@ mod tests {
                     .any(|h| h.path.to_string().contains("alpha")),
                 "walk (mode={mode:?}) should feed the matcher"
             );
+        }
+    }
+
+    #[test]
+    fn walker_modes_keep_dependency_stores_hard_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(".gitignore"), "ignored.txt\nnode_modules/\n").unwrap();
+        std::fs::write(root.join("ignored.txt"), "ignored").unwrap();
+        std::fs::write(root.join(".hidden"), "hidden").unwrap();
+        std::fs::create_dir_all(root.join(".config")).unwrap();
+        std::fs::write(root.join(".config/app.toml"), "ok").unwrap();
+        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+        std::fs::write(root.join(".git/config"), "git").unwrap();
+        std::fs::create_dir_all(root.join("packages/web/node_modules/pkg")).unwrap();
+        std::fs::write(
+            root.join("packages/web/node_modules/pkg/index.js"),
+            "dependency",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join(".pnpm-store/v3")).unwrap();
+        std::fs::write(root.join(".pnpm-store/v3/meta.json"), "store").unwrap();
+
+        let matcher = FuzzyFileMatcher::new_inner(root, false);
+        let collect = |show_ignored: bool| {
+            let mut builder = matcher.base_walker();
+            builder.hidden(false);
+            if show_ignored {
+                builder.ignore(false).git_ignore(false);
+            }
+            builder
+                .build()
+                .filter_map(Result::ok)
+                .filter_map(|entry| entry.path().strip_prefix(root).ok().map(Path::to_path_buf))
+                .collect::<Vec<_>>()
+        };
+
+        let hidden_only = collect(false);
+        assert!(hidden_only.iter().any(|p| p == Path::new(".hidden")));
+        assert!(
+            hidden_only
+                .iter()
+                .any(|p| p == Path::new(".config/app.toml"))
+        );
+        assert!(!hidden_only.iter().any(|p| p == Path::new("ignored.txt")));
+
+        let with_ignored = collect(true);
+        assert!(with_ignored.iter().any(|p| p == Path::new("ignored.txt")));
+        for paths in [&hidden_only, &with_ignored] {
+            assert!(!paths.iter().any(|p| p.starts_with(".git")));
+            assert!(!paths.iter().any(|p| p.components().any(|c| c.as_os_str() == "node_modules")));
+            assert!(!paths.iter().any(|p| p.starts_with(".pnpm-store")));
         }
     }
 

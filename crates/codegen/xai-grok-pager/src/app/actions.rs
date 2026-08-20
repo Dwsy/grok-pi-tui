@@ -636,6 +636,8 @@ pub enum Action {
     SetPiBashRunDisplay(crate::appearance::ExecuteHeaderContent),
     /// Set whether Bash commands are formatted for display only.
     SetPiBashCommandFormat(bool),
+    /// Set whether collapsed Write/Edit rows show expanded hover popups.
+    SetWriteEditHoverPopups(bool),
     /// Set whether the predicted-next-prompt ghost text (tab autocomplete)
     /// is offered after each turn. SHELL-owned: updates the process-wide
     /// cache mirror and persists to `[ui].prompt_suggestions` via
@@ -790,9 +792,14 @@ pub enum Action {
     /// Enable native /btw for grok-pi (restart required).
     SetPiBtw(bool),
     SetPiCacheGraph(bool),
+    /// Load the bundled grok-pi configuration skill (restart required).
+    SetPiConfigSkill(bool),
     /// Render grok-pi user prompts with the agent markdown renderer
     /// (`[ui].pi_user_markdown`, default on).
     SetPiUserMarkdown(bool),
+    /// Include hidden/dotfile entries in plain `@` file search while keeping
+    /// ignore rules enabled (`[ui].pi_at_search_hidden`, default on).
+    SetPiAtSearchHidden(bool),
     /// Keep previous agent tabs alive on `/new` so the dashboard can switch
     /// back (`[ui].pi_keep_multi_agent`, default off → full replacement).
     SetPiKeepMultiAgent(bool),

@@ -28,6 +28,10 @@ pub struct UiConfig {
     /// Default off; F2 can enable without restart.
     #[serde(default)]
     pub pi_bash_command_format: bool,
+    /// Show hover popups with expanded Write/Edit details from collapsed tool rows.
+    /// Default on; display-only and live-applied.
+    #[serde(default = "default_true")]
+    pub write_edit_hover_popups: bool,
     /// Select the Eval bridge generation independently of `pi_bash`.
     /// `v1` keeps Python + JavaScript; `v2` is JavaScript-only.
     /// Default v1; takes effect for new grok-pi sessions only.
@@ -91,11 +95,23 @@ pub struct UiConfig {
     /// Default on for grok-pi; F2 can disable without restart.
     #[serde(default = "default_true")]
     pub pi_cache_graph: bool,
+    /// Load the bundled grok-pi configuration skill so the agent can answer
+    /// questions about grok-pi settings, F2 toggles, and config files.
+    /// Default on; takes effect for new grok-pi sessions only.
+    #[serde(default = "default_true")]
+    pub pi_config_skill: bool,
     /// Render grok-pi user prompts with the agent markdown renderer (no
     /// collapse). Default on; F2 can disable to restore classic collapsible
     /// plain-text prompts. Applies immediately.
     #[serde(default = "default_true")]
     pub pi_user_markdown: bool,
+    /// Include hidden (dotfile) entries in plain `@` file search by default,
+    /// aligning with pi-main's fd `--hidden` behavior: dotfiles are listed while
+    /// ignore rules stay active. `@!` additionally reveals gitignored project
+    /// files, but dependency/package stores such as `.git` and `node_modules`
+    /// remain hard-excluded. Default on; applies live to the current @ walker.
+    #[serde(default = "default_true")]
+    pub pi_at_search_hidden: bool,
     /// Keep previous agent tabs alive when `/new` starts a fresh session.
     /// Default off: `/new` fully replaces the current session (old agent tabs
     /// are dropped). When on, `/new` preserves old agents so the dashboard can
@@ -458,6 +474,7 @@ impl Default for UiConfig {
             pi_builtin_tools: PiBuiltinTools::default(),
             pi_bash: true,
             pi_bash_command_format: false,
+            write_edit_hover_popups: true,
             pi_eval: default_pi_eval(),
             pi_eval_v2_only: false,
             psm_resume_index: false,
@@ -473,7 +490,9 @@ impl Default for UiConfig {
             pi_ask_user_question_notifications: true,
             pi_btw: false,
             pi_cache_graph: true,
+            pi_config_skill: true,
             pi_user_markdown: true,
+            pi_at_search_hidden: true,
             pi_keep_multi_agent: false,
             show_other_tool_args: false,
             review_file_tree: false,

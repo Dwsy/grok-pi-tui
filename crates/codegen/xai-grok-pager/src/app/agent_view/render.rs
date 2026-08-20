@@ -2186,6 +2186,17 @@ impl AgentView {
                     buf,
                 );
             }
+            if self.write_edit_hover_popup_ready() {
+                agent::render_write_edit_hover_popup(
+                    buf,
+                    layout.scrollback,
+                    &self.scrollback,
+                    self.hovered_entry,
+                    self.last_mouse_pos,
+                    self.write_edit_hover_popup_scroll,
+                    &theme,
+                );
+            }
             agent::render_hook_hover_popup(
                 buf,
                 layout.scrollback,

@@ -235,6 +235,10 @@ fn dispatch_load_session_ungated(
     agent_mut
         .prompt
         .set_contextual_hints(app.contextual_hints.undo, app.contextual_hints.plan_mode);
+    agent_mut
+        .prompt
+        .file_search
+        .set_default_hidden(app.current_ui.pi_at_search_hidden);
     agent_mut.set_session_recap_available(app.session_recap_available);
     agent_mut.set_voice_mode_available(app.voice_mode_enabled);
     agent_mut.scrollback.begin_batch();
@@ -1052,6 +1056,10 @@ pub(in crate::app::dispatch) fn dispatch_load_session_with_restore(
         agent
             .prompt
             .set_contextual_hints(app.contextual_hints.undo, app.contextual_hints.plan_mode);
+        agent
+            .prompt
+            .file_search
+            .set_default_hidden(app.current_ui.pi_at_search_hidden);
         agent.set_session_recap_available(app.session_recap_available);
         agent.set_voice_mode_available(app.voice_mode_enabled);
         agent.apply_app_scoped_gates(

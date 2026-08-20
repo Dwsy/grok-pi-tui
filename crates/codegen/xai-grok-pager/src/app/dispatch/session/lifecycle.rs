@@ -429,6 +429,10 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
         agent
             .prompt
             .set_contextual_hints(app.contextual_hints.undo, app.contextual_hints.plan_mode);
+        agent
+            .prompt
+            .file_search
+            .set_default_hidden(app.current_ui.pi_at_search_hidden);
         agent.set_session_recap_available(app.session_recap_available);
         agent.set_voice_mode_available(app.voice_mode_enabled);
         agent.apply_app_scoped_gates(
@@ -993,6 +997,10 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
         agent
             .prompt
             .set_contextual_hints(app.contextual_hints.undo, app.contextual_hints.plan_mode);
+        agent
+            .prompt
+            .file_search
+            .set_default_hidden(app.current_ui.pi_at_search_hidden);
         agent.set_session_recap_available(app.session_recap_available);
         agent.set_voice_mode_available(app.voice_mode_enabled);
         agent.apply_app_scoped_gates(

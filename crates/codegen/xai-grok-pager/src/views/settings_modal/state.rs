@@ -1185,9 +1185,12 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         }
         "pi_btw" => Some(Action::SetPiBtw(new)),
         "pi_cache_graph" => Some(Action::SetPiCacheGraph(new)),
+        "pi_config_skill" => Some(Action::SetPiConfigSkill(new)),
         "pi_user_markdown" => Some(Action::SetPiUserMarkdown(new)),
+        "pi_at_search_hidden" => Some(Action::SetPiAtSearchHidden(new)),
         "pi_keep_multi_agent" => Some(Action::SetPiKeepMultiAgent(new)),
         "pi_bash_command_format" => Some(Action::SetPiBashCommandFormat(new)),
+        "write_edit_hover_popups" => Some(Action::SetWriteEditHoverPopups(new)),
         "show_other_tool_args" => Some(Action::SetShowOtherToolArgs(new)),
         "review_file_tree" => Some(Action::SetReviewFileTree(new)),
         "review_include_reads" => Some(Action::SetReviewIncludeReads(new)),

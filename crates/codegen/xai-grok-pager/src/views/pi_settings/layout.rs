@@ -31,6 +31,7 @@ pub fn tab_label(category: SettingCategory) -> &'static str {
 pub fn sections_for(category: SettingCategory) -> &'static [&'static str] {
     match category {
         SettingCategory::Appearance => &["Theme", "Display", "Thinking", "Tool output", "Prompt"],
+        SettingCategory::Popups => &["Tool details"],
         SettingCategory::Mouse => &["Scrolling", "Selection"],
         SettingCategory::Editor => &["Input", "Voice"],
         SettingCategory::Agent => &[
@@ -71,12 +72,15 @@ pub fn section_for(key: SettingKey) -> &'static str {
         | "respect_manual_folds" => "Tool output",
         "prompt_cursor" | "simple_mode" | "vim_mode" => "Prompt",
 
+        // -- Popups ----------------------------------------------------------
+        "write_edit_hover_popups" => "Tool details",
+
         // -- Mouse -----------------------------------------------------------
         "scroll_speed" | "scroll_mode" | "scroll_lines" | "invert_scroll" => "Scrolling",
         "keep_text_selection" => "Selection",
 
         // -- Editor ----------------------------------------------------------
-        "combine_queued_prompts" | "multiline_mode" | "prompt_suggestions" => "Input",
+        "combine_queued_prompts" | "multiline_mode" | "prompt_suggestions" | "pi_at_search_hidden" => "Input",
         "voice_keybind_enabled" | "voice_capture_mode" | "voice_stt_language" => "Voice",
 
         // -- Agent -----------------------------------------------------------
@@ -104,6 +108,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
         | "pi_loop"
         | "pi_btw"
         | "pi_cache_graph"
+        | "pi_config_skill"
         | "pi_config"
         | "pi_user_markdown"
         | "pi_ask_user_question"

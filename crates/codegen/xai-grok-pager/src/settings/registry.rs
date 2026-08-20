@@ -36,6 +36,7 @@ pub enum SettingOwner {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingCategory {
     Appearance,
+    Popups,
     Mouse,
     Editor,
     Agent,
@@ -49,6 +50,7 @@ impl SettingCategory {
     /// Render order — Appearance first (most-touched), then Mouse, then the rest.
     pub const ALL: &'static [Self] = &[
         Self::Appearance,
+        Self::Popups,
         Self::Mouse,
         Self::Editor,
         Self::Agent,
@@ -62,6 +64,7 @@ impl SettingCategory {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
+            Self::Popups => "Popups",
             Self::Mouse => "Mouse",
             Self::Editor => "Editor & Input",
             Self::Agent => "Agent & Approval",
@@ -561,9 +564,11 @@ pub fn current_value_for(
         }
         "pi_btw" => Some(SettingValue::Bool(ui.pi_btw)),
         "pi_cache_graph" => Some(SettingValue::Bool(ui.pi_cache_graph)),
+        "pi_config_skill" => Some(SettingValue::Bool(ui.pi_config_skill)),
         "pi_user_markdown" => Some(SettingValue::Bool(
             crate::appearance::cache::load_pi_user_markdown(),
         )),
+        "pi_at_search_hidden" => Some(SettingValue::Bool(ui.pi_at_search_hidden)),
         "pi_keep_multi_agent" => Some(SettingValue::Bool(ui.pi_keep_multi_agent)),
         "show_other_tool_args" => Some(SettingValue::Bool(ui.show_other_tool_args)),
         "review_file_tree" => Some(SettingValue::Bool(ui.review_file_tree)),
@@ -658,6 +663,9 @@ pub fn current_value_for(
         )),
         "pi_bash_command_format" => Some(SettingValue::Bool(
             crate::appearance::cache::load_pi_bash_command_format(),
+        )),
+        "write_edit_hover_popups" => Some(SettingValue::Bool(
+            crate::appearance::cache::load_write_edit_hover_popups(),
         )),
         // Live cache; `GROK_PROMPT_SUGGESTIONS` env overrides at the gate.
         "prompt_suggestions" => Some(SettingValue::Bool(
@@ -1463,12 +1471,26 @@ mod tests {
                     );
                     assert!(*default, "pi_cache_graph must default ON");
                 }
+                ("pi_config_skill", SettingKind::Bool { default }) => {
+                    assert_eq!(
+                        *default, ui.pi_config_skill,
+                        "pi_config_skill default drifts from UiConfig::default()"
+                    );
+                    assert!(*default, "pi_config_skill must default ON");
+                }
                 ("pi_user_markdown", SettingKind::Bool { default }) => {
                     assert_eq!(
                         *default, ui.pi_user_markdown,
                         "pi_user_markdown default drifts from UiConfig::default()"
                     );
                     assert!(*default, "pi_user_markdown must default ON");
+                }
+                ("pi_at_search_hidden", SettingKind::Bool { default }) => {
+                    assert_eq!(
+                        *default, ui.pi_at_search_hidden,
+                        "pi_at_search_hidden default drifts from UiConfig::default()"
+                    );
+                    assert!(*default, "pi_at_search_hidden must default ON");
                 }
                 ("pi_keep_multi_agent", SettingKind::Bool { default }) => {
                     assert_eq!(
@@ -1483,6 +1505,13 @@ mod tests {
                         "pi_bash_command_format default drifts from UiConfig::default()"
                     );
                     assert!(!*default, "pi_bash_command_format must default OFF");
+                }
+                ("write_edit_hover_popups", SettingKind::Bool { default }) => {
+                    assert_eq!(
+                        *default, ui.write_edit_hover_popups,
+                        "write_edit_hover_popups default drifts from UiConfig::default()"
+                    );
+                    assert!(*default, "write_edit_hover_popups must default ON");
                 }
                 ("show_other_tool_args", SettingKind::Bool { default }) => {
                     assert_eq!(

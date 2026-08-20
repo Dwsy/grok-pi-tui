@@ -1021,6 +1021,14 @@ pub struct AgentView {
     pub pane_areas: PaneAreas,
     /// Entry index currently hovered by the mouse (for dimmed selection box).
     pub hovered_entry: Option<usize>,
+    /// Entry currently backing the Write/Edit hover popup scroll offset.
+    pub write_edit_hover_popup_entry: Option<usize>,
+    /// When the pointer first entered the current Write/Edit hover candidate.
+    /// Used to enforce the tooltip dwell delay without resetting on small
+    /// movements that stay inside the same row.
+    pub write_edit_hover_started_at: Option<Instant>,
+    /// Independent scroll offset inside the Write/Edit hover popup.
+    pub write_edit_hover_popup_scroll: usize,
     /// Pending markdown text drag before the pointer crosses the drag threshold.
     pub pending_text_drag: Option<PendingTextDrag>,
     /// Active markdown text drag selection.
