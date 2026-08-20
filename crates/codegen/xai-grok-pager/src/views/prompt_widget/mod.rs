@@ -1206,6 +1206,22 @@ impl PromptWidget {
             .move_selection(&self.slash_state, delta);
     }
 
+    /// Absolute path to the selected slash row's `SKILL.md`, if it is a skill.
+    ///
+    /// Resolves the current slash dropdown's command token (`snap.query`, valid
+    /// in both the command and args phase) back to its `SlashCommand` and
+    /// returns [`SlashCommand::skill_path`]. `None` for non-skill rows, unknown
+    /// commands, or when the dropdown is closed. Used by the `Ctrl-L` preview
+    /// affordance to open a read-only popup of the skill definition.
+    pub fn selected_skill_path(&self) -> Option<String> {
+        let snap = self.slash_state.snapshot();
+        if !snap.open || snap.query.is_empty() {
+            return None;
+        }
+        let command = self.slash_controller.registry().get(&snap.query)?;
+        command.skill_path().map(str::to_string)
+    }
+
     /// Scroll the slash dropdown selection by `delta`, clamping at the ends
     /// (no wrap-around). Used for mouse-wheel and page-key scrolling.
     pub fn slash_scroll_selection(&mut self, delta: isize) {

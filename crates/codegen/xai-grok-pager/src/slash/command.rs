@@ -324,6 +324,15 @@ pub trait SlashCommand: Send + Sync {
         false
     }
 
+    /// Absolute path to the skill's `SKILL.md`, if this command is a skill.
+    ///
+    /// Used to open a read-only preview popup of the skill definition. The
+    /// default (`None`) suits non-skill commands; `AcpSlashCommand` overrides
+    /// it to return the `path` from ACP `_meta`.
+    fn skill_path(&self) -> Option<&str> {
+        None
+    }
+
     /// Tool names the agent must have registered for this command to work.
     ///
     /// Default is empty (no tool dependency). Override for commands that

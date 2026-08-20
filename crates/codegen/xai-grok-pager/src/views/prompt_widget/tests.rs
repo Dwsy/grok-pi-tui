@@ -4623,3 +4623,48 @@
             "without the remap the chip keeps its own background"
         );
     }
+
+    #[test]
+    fn selected_skill_path_returns_none_for_builtin_command() {
+        let mut pw = PromptWidget::new();
+        let models = crate::acp::model_state::ModelState::default();
+
+        pw.textarea.insert_str("/mod");
+        pw.refresh_slash(&models);
+        assert!(pw.slash_snapshot().open);
+
+        // /model is a builtin, not a skill — no SKILL.md path.
+        assert!(
+            pw.selected_skill_path().is_none(),
+            "builtin commands have no skill path"
+        );
+    }
+
+    #[test]
+    fn selected_skill_path_returns_path_for_acp_skill_command() {
+        use agent_client_protocol::AvailableCommand;
+
+        let mut pw = PromptWidget::new();
+        let models = crate::acp::model_state::ModelState::default();
+
+        // Register an ACP skill command with a SKILL.md path.
+        let skill_path = "/home/user/.grok/skills/commit/SKILL.md";
+        let meta = serde_json::json!({
+            "scope": "local",
+            "path": skill_path,
+        });
+        let mut cmd = AvailableCommand::new("commit".to_string(), "commit skill".to_string());
+        cmd = cmd.meta(meta.as_object().unwrap().clone());
+        pw.slash_controller
+            .registry_mut()
+            .set_acp_commands(&[cmd]);
+
+        // Type the skill command name so the dropdown resolves it.
+        pw.textarea.insert_str("/commit");
+        pw.refresh_slash(&models);
+        assert!(pw.slash_snapshot().open);
+
+        let path = pw.selected_skill_path().expect("skill should expose its path");
+        assert_eq!(path, skill_path);
+    }
+

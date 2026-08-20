@@ -210,6 +210,28 @@ impl AgentView {
                     self.prompt.accept_slash_completion(&self.session.models);
                     return InputOutcome::Changed;
                 }
+                // Ctrl-L: preview the selected skill's SKILL.md in a read-only
+                // popup (mirrors the agents-modal ViewAgent path). The line
+                // viewer has higher input priority than the prompt, so it takes
+                // focus until Esc closes it; the slash dropdown stays open
+                // underneath. Non-skill rows are a no-op.
+                KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(path) = self.prompt.selected_skill_path() {
+                        let title = self
+                            .prompt
+                            .slash_snapshot()
+                            .selection()
+                            .map(|r| r.display.clone());
+                        if let Some(mut v) = crate::views::file_search::line_viewer::LineViewerState::open_markdown(
+                            std::path::Path::new(&path),
+                            None,
+                        ) {
+                            v.title_override = title;
+                            self.line_viewer = Some(v);
+                        }
+                    }
+                    return InputOutcome::Changed;
+                }
                 // Esc: close dropdown, revert any live preview.
                 KeyCode::Esc => {
                     self.prompt.slash_cancel_preview();

@@ -140,6 +140,13 @@ impl SlashCommand for AcpSlashCommand {
         matches!(self.skill, SkillMeta::Skill(_))
     }
 
+    fn skill_path(&self) -> Option<&str> {
+        match &self.skill {
+            SkillMeta::Skill(identity) => Some(&identity.path),
+            _ => None,
+        }
+    }
+
     fn suggest_args(&self, _ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
         if self.argument_completions.is_empty() {
             return None;
