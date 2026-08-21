@@ -47,6 +47,7 @@ async function createHarness(register, version, options = {}) {
   const registeredTools = new Map();
   const handlers = new Map();
   const previousVersion = process.env.PI_GROK_EVAL_VERSION;
+  const previousEvalV2Language = process.env.PI_GROK_EVAL_V2_LANGUAGE;
   const previousBash = process.env.PI_GROK_BASH;
   const previousBuiltinTools = process.env.PI_GROK_BUILTIN_TOOLS;
   const previousExcludedTools = process.env.PI_GROK_EXCLUDE_TOOLS;
@@ -54,6 +55,8 @@ async function createHarness(register, version, options = {}) {
   const previousEvalV2Only = process.env.PI_GROK_EVAL_V2_ONLY;
   const previousBashMaxWaitMins = process.env.PI_GROK_BASH_MAX_WAIT_MINS;
   process.env.PI_GROK_EVAL_VERSION = version;
+  if (options.evalV2Language === undefined) delete process.env.PI_GROK_EVAL_V2_LANGUAGE;
+  else process.env.PI_GROK_EVAL_V2_LANGUAGE = options.evalV2Language;
   process.env.PI_GROK_BASH = options.bashEnabled === false ? "0" : "1";
   if (options.builtinTools === undefined) delete process.env.PI_GROK_BUILTIN_TOOLS;
   else process.env.PI_GROK_BUILTIN_TOOLS = options.builtinTools;
@@ -121,6 +124,8 @@ async function createHarness(register, version, options = {}) {
       for (const handler of handlers.get("session_shutdown") ?? []) await handler();
       if (previousVersion === undefined) delete process.env.PI_GROK_EVAL_VERSION;
       else process.env.PI_GROK_EVAL_VERSION = previousVersion;
+      if (previousEvalV2Language === undefined) delete process.env.PI_GROK_EVAL_V2_LANGUAGE;
+      else process.env.PI_GROK_EVAL_V2_LANGUAGE = previousEvalV2Language;
       if (previousBash === undefined) delete process.env.PI_GROK_BASH;
       else process.env.PI_GROK_BASH = previousBash;
       if (previousBuiltinTools === undefined) delete process.env.PI_GROK_BUILTIN_TOOLS;
@@ -327,6 +332,16 @@ console.log(JSON.stringify({
     assert.match(discovery.content[0].text, /"sourcePath":"\/test\/json-tool.ts"/);
     console.log("PASS 4  Eval v2 exposes enumerable active-tool discovery and real schema metadata");
 
+    const describedBare = await v2.run({
+      language: "js",
+      code: 'tools.describe("json_tool")',
+      timeout: 2,
+    });
+    assert.match(describedBare.content[0].text, /properties:/);
+    assert.match(describedBare.content[0].text, /input:/);
+    assert.doesNotMatch(describedBare.content[0].text, /\[Object\]/);
+    console.log("PASS 4a bare tools.describe() deeply renders nested schema metadata without [Object]");
+
     const skillPath = join(tempDir, "eval-search-skill.md");
     await writeFile(skillPath, "# Eval Search Skill\n\ntrusted skill body\n", "utf8");
     await v2.emit("before_agent_start", {
@@ -458,16 +473,15 @@ console.log(JSON.stringify({
     assert.match(afterOrphan.content[0].text, /42/);
     console.log("PASS 9  Cell settlement aborts orphan host work without poisoning the next cell");
 
-    await v2.run({ language: "js", code: 'await agent("background", {background:true, model:"demo"})', timeout: 1 });
-    const backgroundArgs = state.spawnCalls.at(-1);
-    assert(backgroundArgs);
-    assert.equal(backgroundArgs.background, true);
-    assert.equal(backgroundArgs.model, "demo");
+    await assert.rejects(
+      v2.run({ language: "js", code: 'await agent("background", {background:true, model:"demo"})', timeout: 1 }),
+      /agent\(\) is blocking/,
+    );
 
     await v2.run({ language: "js", code: 'await agent("foreground", {background:false, model:"demo"})', timeout: 1 });
     const foregroundArgs = state.spawnCalls.at(-1);
     assert(foregroundArgs);
-    assert.equal(foregroundArgs.background, false);
+    assert.equal(Object.hasOwn(foregroundArgs, "background"), false);
     assert.equal(foregroundArgs.model, "demo");
 
     state.agentMax = 0;
@@ -477,7 +491,7 @@ console.log(JSON.stringify({
       timeout: 2,
     });
     assert.equal(state.agentMax, 2);
-    console.log("PASS 10 agent() forwards background handles and remains parallelizable in foreground mode");
+    console.log("PASS 10 agent() rejects background handles and remains parallelizable as a blocking leaf");
 
     const completion = await v2.run({
       language: "js",
@@ -491,6 +505,16 @@ console.log(JSON.stringify({
     const bashWaitTool = v2.registeredTools.get("wait_tasks");
     const bashOutputTool = v2.registeredTools.get("get_task_output");
     assert(bashTool && bashWaitTool && bashOutputTool);
+    const zeroTimeoutBash = await bashTool.execute(
+      "zero-timeout-bash",
+      { command: "printf 'zero-timeout-ok\\n'", task_name: "zero timeout bash", timeout: 0 },
+      new AbortController().signal,
+      undefined,
+      { cwd: repoRoot },
+    );
+    assert.match(zeroTimeoutBash.content[0].text, /zero-timeout-ok/);
+    console.log("PASS 11a Bash timeout=0 disables the timeout instead of failing validation");
+
     const bashBackground = await bashTool.execute(
       "long-background-bash",
       { command: "for i in $(seq 1 3000); do printf 'x\\n'; done", task_name: "long background output", is_background: true },
@@ -519,6 +543,63 @@ console.log(JSON.stringify({
     console.log("PASS 11b background Bash truncates model output by Pi limits while preserving full temp output");
   } finally {
     await v2.close();
+  }
+
+  const v2All = await createHarness(register, "v2", {
+    evalV2Language: "all",
+    bashEnabled: false,
+    activeToolNames: ["py_echo"],
+    toolInfo: [{
+      name: "py_echo",
+      description: "Echo a Python bridge value",
+      parameters: { type: "object", properties: { value: { type: "number" } } },
+      executionMode: "parallel",
+    }],
+    async invokeTool(toolName, args) {
+      assert.equal(toolName, "py_echo");
+      return success(String(Number(args.value) + 1));
+    },
+    async complete(prompt) {
+      return { text: `py-completion:${prompt}`, stopReason: "stop", usage: {} };
+    },
+  });
+  try {
+    assert.deepEqual(v2All.evalTool.parameters?.properties?.language?.enum, ["py", "js"]);
+    const pyPlain = await v2All.run({ language: "py", code: "6 * 7", timeout: 2 });
+    assert.match(pyPlain.content[0].text, /42/);
+    const pyTool = await v2All.run({
+      language: "py",
+      code: 'r = await tool.py_echo({"value": 41})\nprint(r["text"])\ntools.describe("py_echo")',
+      timeout: 2,
+    });
+    assert.match(pyTool.content[0].text, /42/);
+    assert.match(pyTool.content[0].text, /properties/);
+    await v2All.run({ language: "py", code: 'store("shared", {"answer": 42})', timeout: 2 });
+    const pyStored = await v2All.run({ language: "py", code: 'load("shared")["answer"]', timeout: 2 });
+    assert.match(pyStored.content[0].text, /42/);
+    const pyCompletion = await v2All.run({ language: "py", code: 'r = await completion("probe")\nr["text"]', timeout: 2 });
+    assert.match(pyCompletion.content[0].text, /py-completion:probe/);
+    const jsStillAvailable = await v2All.run({ language: "js", code: "6 * 7", timeout: 2 });
+    assert.match(jsStillAvailable.content[0].text, /42/);
+
+    const pyBackground = await v2All.run({
+      language: "py",
+      code: 'await asyncio.sleep(0.05)\nprint("py-background-done")',
+      is_background: true,
+      timeout: 2,
+    });
+    const pyBackgroundStarted = JSON.parse(pyBackground.content[0].text);
+    const waitTool = v2All.registeredTools.get("wait_tasks");
+    assert(waitTool);
+    const pyWaited = await waitTool.execute(
+      "wait-py-background",
+      { task_ids: [pyBackgroundStarted.task_id], mode: "wait_all", timeout_ms: 2000 },
+      new AbortController().signal,
+    );
+    assert.match(JSON.parse(pyWaited.content[0].text).results[0].output, /py-background-done/);
+    console.log("PASS 4c Eval v2 all-mode runs Python + JavaScript with the same host RPC/store/task contract");
+  } finally {
+    await v2All.close();
   }
 
   const autoBackground = await createHarness(register, "v2", { bashMaxWaitMins: "0.005" });
@@ -569,6 +650,39 @@ console.log(JSON.stringify({
     );
     assert.match(JSON.parse(completed.content[0].text).output, /auto-background-done/);
     console.log("PASS 11c foreground Bash auto-backgrounds once and both blocking task APIs return at the shared max-wait cap");
+
+    const evalTool = autoBackground.registeredTools.get("eval");
+    assert(evalTool);
+    const promotedEval = await evalTool.execute(
+      "auto-background-eval",
+      { language: "js", code: 'await new Promise(resolve => setTimeout(resolve, 900)); console.log("auto-eval-done")', title: "auto background eval", timeout: 2 },
+      new AbortController().signal,
+      undefined,
+      { cwd: repoRoot },
+    );
+    assert.equal(promotedEval.details.background, true);
+    assert.match(promotedEval.details.taskId, /^eval-/);
+    const foregroundAfterPromotion = await evalTool.execute(
+      "foreground-after-auto-eval",
+      { language: "js", code: "20 + 22", timeout: 1 },
+      new AbortController().signal,
+      undefined,
+      { cwd: repoRoot },
+    );
+    assert.match(foregroundAfterPromotion.content[0].text, /42/);
+    let evalWaitedBody;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const evalWaited = await waitTool.execute(
+        `wait-auto-background-eval-${attempt}`,
+        { task_ids: [promotedEval.details.taskId], mode: "wait_all", timeout_ms: 3000 },
+        new AbortController().signal,
+      );
+      evalWaitedBody = JSON.parse(evalWaited.content[0].text).results[0];
+      if (evalWaitedBody.status !== "running") break;
+    }
+    assert.equal(evalWaitedBody?.status, "completed");
+    assert.match(evalWaitedBody.output, /auto-eval-done/);
+    console.log("PASS 11d foreground Eval v2 auto-backgrounds in place and immediately frees a fresh foreground kernel");
   } finally {
     await autoBackground.close();
   }

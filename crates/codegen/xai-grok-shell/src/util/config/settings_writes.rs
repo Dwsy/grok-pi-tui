@@ -246,6 +246,11 @@ pub async fn set_pi_eval(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_eval = value).await
 }
 
+/// Persist the Eval v2 language selector (`js`, `py`, or `all`).
+pub async fn set_pi_eval_v2_language(value: String) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_eval_v2_language = value).await
+}
+
 /// Persist the grok-pi Eval v2 isolation mode.
 pub async fn set_pi_eval_v2_only(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_eval_v2_only = value).await

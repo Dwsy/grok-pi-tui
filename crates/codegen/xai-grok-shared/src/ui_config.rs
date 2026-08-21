@@ -9,6 +9,10 @@ fn default_pi_eval() -> String {
     "v1".to_string()
 }
 
+fn default_pi_eval_v2_language() -> String {
+    "js".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
@@ -33,10 +37,14 @@ pub struct UiConfig {
     #[serde(default = "default_true")]
     pub write_edit_hover_popups: bool,
     /// Select the Eval bridge generation independently of `pi_bash`.
-    /// `v1` keeps Python + JavaScript; `v2` is JavaScript-only.
+    /// `v1` keeps the legacy Python + JavaScript runtime; `v2` uses the host-RPC runtime.
     /// Default v1; takes effect for new grok-pi sessions only.
     #[serde(default = "default_pi_eval")]
     pub pi_eval: String,
+    /// Select Eval v2 languages: `js`, `py`, or `all`.
+    /// Default `js` preserves the pre-selector v2 behavior.
+    #[serde(default = "default_pi_eval_v2_language")]
+    pub pi_eval_v2_language: String,
     /// Force Eval Bridge v2 and allow only the Eval tool in the Pi registry.
     /// This is a restart-required grok-pi isolation mode; it does not mutate
     /// the stored `pi_eval` or per-tool preferences underneath it.
@@ -476,6 +484,7 @@ impl Default for UiConfig {
             pi_bash_command_format: false,
             write_edit_hover_popups: true,
             pi_eval: default_pi_eval(),
+            pi_eval_v2_language: default_pi_eval_v2_language(),
             pi_eval_v2_only: false,
             psm_resume_index: false,
             pi_tree_file_rollback: false,

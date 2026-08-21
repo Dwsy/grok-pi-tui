@@ -4,6 +4,78 @@ All notable changes to **grok-pi** (Pi agent core in Grok Build's production TUI
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Eval Bridge v2 language selector: `[ui].pi_eval_v2_language = "js" | "py" | "all"` (default `js`, restart required), with Python and JavaScript sharing the same host-RPC, skills, completion, store/load, and task contracts.
+- Eval v2 background-task parity with Bash: explicit background mode, automatic foreground-to-background promotion at the shared max-wait cap, `get_task_output` / `wait_tasks` / `kill_task`, bounded model output, and full-output spill files.
+
+### Fixed
+
+- `tools.describe(name)` now renders nested tool schemas deeply instead of collapsing `properties` to `[Object]` in the JavaScript REPL.
+- Bash `timeout: 0` now consistently means “no timeout”, matching the Eval v2 escape-hatch semantics and avoiding task validation failures from nested `tool.bash(...)` calls.
+- Eval v2 background promotion immediately replaces the foreground kernel so subsequent cells are not blocked by the promoted task.
+
+### Changed
+
+- Eval v2 `agent()` is explicitly a blocking leaf; `background=true` fails fast and concurrent leaf agents use `parallel([...])`.
+- Eval v2 task status uses the same Pager-native task channel and shared wait/output limits as enhanced Bash.
+
+## [0.1.0] - 2026-08-21
+
+Range: `v0.0.18` → `v0.1.0` (2026-08-18 → 2026-08-21). Tag `v0.1` points to the same release commit.
+
+> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+
+### Highlights
+
+- **Pi built-in tool orchestration** — F2 and resource policy now coordinate Bash, Eval, Eval v2, Todo, and related injected tool surfaces instead of relying on ad-hoc extension admission.
+- **Eval Bridge v2 foundation** — landed the host-RPC design, bundle verification harness, managed Bash/Eval task runtime, and native Eval display improvements.
+- **Interactive subagents** — Pager subagent rows gained richer lifecycle projection and interactive session behavior while preserving Pi-owned execution.
+- **Sharper file and skill workflows** — file search/preview, inline `SKILL.md` viewing, prompt/paste handling, and related Pi file interactions were expanded.
+
+### Added
+
+- Eval Bridge v2 design record, bundled runtime modules, demo/verification harness, host-tool bridge, task management, prompt helpers, and documentation.
+- F2 controls and startup wiring for Pi built-in Bash/Eval/Todo/tool policies.
+- Native Todo extension and grok-pi config skill support.
+- Interactive subagent session surfaces, lifecycle metadata, and background/idle-barrier handling.
+- Inline `SKILL.md` preview via Ctrl-L and additional file-search/paste interaction paths.
+
+### Fixed
+
+- Pi Bash extension injection now materializes the complete module dependency closure, preventing startup failures such as missing `./eval-tasks.ts`.
+- Remote-TUI navigation no longer repeats held navigation keys over the bridge.
+- Session/subagent projection, prompt dispatch, and tool rendering were hardened for the expanded Pi-owned runtime surfaces.
+
+### Changed
+
+- Bash and Eval cards use clearer native Pager formatting and status presentation.
+- Session-info usage presentation and several settings/modal surfaces were polished alongside the new tool runtime controls.
+- Repository guidance documents the authoritative Pi RPC bootstrap/extension-failure diagnosis flow.
+
+## [0.0.18] - 2026-08-18
+
+Range: `v0.0.17` → `v0.0.18` (2026-08-16 → 2026-08-18).
+
+> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+
+### Added
+
+- Richer adapter cache metrics and session information used by the Context/Usage surfaces.
+- Goal-host state and notification handling needed for more complete native goal/status projection.
+- Release automation support for tag monitoring.
+
+### Fixed
+
+- Context/Usage modal rendering, cache-graph interaction, and session-event presentation were hardened across Pager and adapter boundaries.
+- User/session event blocks and scrollback state handling were refined for the newer session metadata projections.
+
+### Changed
+
+- Context cache graph, usage modal, ACP session metadata, and goal/status plumbing were expanded together to keep native Pager surfaces aligned with Pi-owned session state.
+
 ## [0.0.17] - 2026-08-16
 
 Range: `v0.0.16` → `v0.0.17` (2026-08-15 → 2026-08-16).

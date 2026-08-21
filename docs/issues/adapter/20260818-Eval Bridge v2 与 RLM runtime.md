@@ -129,7 +129,7 @@ const r = await tool.read({ path: "README.md" })
 
 Eval Bridge v2 不提供 Python worker；Python 仅由 v1 保留。
 
-返回标准化为 `{text, data?, content}`；若 text 是 JSON，则附带 parsed `data`。host call 必须 await；tool 必须 active；`tool.eval` 显式禁止，防止直接自递归；tool failure 会回到当前 cell 成为 Eval error。不直接序列化任意 tool details，避免 circular/huge payload。
+返回标准化为固定 `{text, content}` envelope；不再根据 text 内容自动 `JSON.parse` 猜测 programmatic value。host call 必须 await；tool 必须 active；`tool.eval` 显式禁止，防止直接自递归；tool failure 会回到当前 cell 成为 Eval error。不直接序列化任意 tool details，避免 circular/huge payload。
 
 ### completion(prompt, options)
 
@@ -139,7 +139,7 @@ Eval Bridge v2 不提供 Python worker；Python 仅由 v1 保留。
 
 ### agent(prompt, options)
 
-`agent()` 是 active `spawn_subagent` tool 的 convenience wrapper。当前可转发 description/label、subagent_type、background、model、max_turns、capability_mode。只有 `spawn_subagent` active 时可用。
+`agent()` 是 active `spawn_subagent` tool 的 blocking-leaf convenience wrapper。当前可转发 description/label、subagent_type、model、max_turns、capability_mode；`background=true` 明确 fail fast，多 agent 并发只通过 `parallel([() => agent(...), ...])`。只有 `spawn_subagent` active 时可用。
 
 它更接近 multi-agent delegation，不应和 RLM recursive completion 混为一谈。
 
@@ -867,3 +867,4 @@ git diff --check
 - **2026-08-19**: 新增 F2 `pi_eval_v2_only` 覆盖层：强制 v2 + Pi 原生 registry `--tools eval`，显式 `--tools`/`--no-tools` 优先且关闭后恢复底层偏好。真实 Pi 0.84.2 + `3838-completions/ark-code-latest` 独立 tmux 验证：仅设置该开关即可进入 v2，Eval 内 `Object.keys(tool) == []`，`skills.search("models")` 命中 session skills，`skills.read("models-config")` 成功；测试 tmux/临时目录已清理。`./build.sh` 仍被 `pi-main` 既有 3 个 TS2554 阻断，受保护 Cargo binary build、focused Rust tests 与 `git diff --check` 均通过。
 - **2026-08-19**: 修复 eval-v2-only 的 host-tool 空目录：不再用 `--tools eval` 过滤 Pi registry；grok-pi 只在 host-owned eval-only policy 生效时向 bridge 标记模式，并由 extension 在 `session_start` 将顶层 active set 收敛到 `eval`。普通 v2 与显式 CLI tool policy 继续只允许 active tools；eval-only 下 Eval catalog 可见 registry 中仍被允许的工具，inactive nested call 绕过原生 `invokeTool` 的 active gate，改走 captured wrapped extension/core 路径并保留 Pi tool lifecycle hooks。
 - **2026-08-19**: 完成 eval-v2-only host-tool 修复的真实 Pi 运行时验证：Pi `0.84.x` + `3838-completions/ark-code-latest` 下，`session_start` 后顶层 `getActiveTools()` 为 `["eval"]`；Eval 内 `Object.keys(tool)` 可见 registry 中仍允许的 `read` 等工具，`await tool.read({path:"README.md", ...})` 成功返回文件内容。另以 `--exclude-tools read` 做反向探针，Eval catalog 不再包含 `read`，确认显式 CLI registry policy 仍保持权威。
+- **2026-08-21**: 按新需求扩展 Eval v2：新增 F2 单值 `pi_eval_v2_language = "js" | "py" | "all"`（默认 `js`、restart-required），恢复 v2 Python worker 并与 JS 共享 host RPC / store-load / skills / completion / task contract；`tools.describe(name)` 在 JS REPL 裸输出时深层展开 schema，不再出现 `[Object]`；Eval v2 复用 Bash 的统一 task API 与 Pager 原生 task status channel，支持显式 `is_background:true`、前台超过统一 max-wait 后原地自动转后台、`get_task_output` / `wait_tasks` / `kill_task`、output spill/truncation。`agent()` 仍保持 blocking leaf，`background=true` fail fast。

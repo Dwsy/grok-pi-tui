@@ -39,7 +39,25 @@ const PI_EVAL_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "v2",
         display: "v2",
-        description: "Eval Bridge v2: JavaScript-only host RPC runtime.",
+        description: "Eval Bridge v2: host-RPC runtime with selectable Python/JavaScript support.",
+    },
+];
+
+const PI_EVAL_V2_LANGUAGE_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        canonical: "js",
+        display: "js",
+        description: "Expose JavaScript only in Eval Bridge v2.",
+    },
+    EnumChoice {
+        canonical: "py",
+        display: "py",
+        description: "Expose Python only in Eval Bridge v2.",
+    },
+    EnumChoice {
+        canonical: "all",
+        display: "all",
+        description: "Expose both Python and JavaScript in Eval Bridge v2.",
     },
 ];
 
@@ -1915,7 +1933,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Agent,
             owner: SettingOwner::Shell,
             label: "Eval bridge version",
-            description: "Choose the Eval runtime for the next grok-pi session. v1 supports Python + JavaScript; v2 is JavaScript-only.",
+            description: "Choose the Eval runtime for the next grok-pi session. v1 is the legacy Python + JavaScript runtime; v2 uses the host-RPC runtime and the separate language selector.",
             keywords: &[
                 "pi",
                 "eval",
@@ -1929,6 +1947,22 @@ pub fn default_settings() -> Vec<SettingMeta> {
             kind: SettingKind::Enum {
                 default: "v1",
                 choices: PI_EVAL_CHOICES,
+                supports_preview: false,
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
+        SettingMeta {
+            key: "pi_eval_v2_language",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Eval v2 language",
+            description: "Choose which language(s) Eval Bridge v2 exposes next session: js, py, or all.",
+            keywords: &["pi", "eval", "v2", "language", "javascript", "python", "all"],
+            kind: SettingKind::Enum {
+                default: "js",
+                choices: PI_EVAL_V2_LANGUAGE_CHOICES,
                 supports_preview: false,
             },
             restart_required: true,

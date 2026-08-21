@@ -766,6 +766,8 @@ pub enum Action {
     SetPiBash(bool),
     /// Select Eval bridge generation (`v1` or `v2`; restart required).
     SetPiEval(String),
+    /// Select Eval v2 language exposure (`js`, `py`, or `all`; restart required).
+    SetPiEvalV2Language(String),
     /// Force Eval v2 and hide every other Pi tool (restart required).
     SetPiEvalV2Only(bool),
     /// Enable PSM's optional SQLite catalog source for Pi `/resume`.

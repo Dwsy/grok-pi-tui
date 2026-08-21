@@ -15,6 +15,7 @@ export type EvalSkillMetadata = {
 
 export type EvalLanguage = "py" | "js";
 export type EvalVersion = "v1" | "v2";
+export type EvalV2LanguageSelection = "js" | "py" | "all";
 
 export type EvalParams = {
 	language: EvalLanguage;
@@ -305,6 +306,300 @@ async def main():
 asyncio.run(main())
 `;
 
+const PYTHON_EVAL_WORKER_V2 = String.raw`
+import ast
+import asyncio
+import inspect
+import json
+import os
+import sys
+import traceback
+
+protocol = os.fdopen(3, "w", buffering=1)
+pending_host = {}
+stored_values = {}
+current_eval_id = None
+active_tool_catalog = {}
+active_skill_catalog = {}
+
+
+def reply(message):
+    protocol.write(json.dumps(message, ensure_ascii=False) + "\n")
+    protocol.flush()
+
+
+def clone_stored_value(value, key):
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False))
+    except BaseException as error:
+        raise TypeError(f"Unable to store {key!r}. Only JSON-serializable values can be stored: {error}") from error
+
+
+async def host_call(method, payload):
+    if not current_eval_id:
+        raise RuntimeError("host calls require an active eval cell")
+    call_id = os.urandom(16).hex()
+    future = asyncio.get_running_loop().create_future()
+    pending_host[call_id] = future
+    reply({"type": "host_call", "id": call_id, "evalId": current_eval_id, "method": method, **payload})
+    try:
+        return await future
+    finally:
+        pending_host.pop(call_id, None)
+
+
+class ToolFunction:
+    def __init__(self, name):
+        self.name = name
+
+    @property
+    def meta(self):
+        return active_tool_catalog.get(self.name)
+
+    @property
+    def schema(self):
+        meta = self.meta or {}
+        return meta.get("schema")
+
+    @property
+    def description(self):
+        meta = self.meta or {}
+        return meta.get("description")
+
+    async def __call__(self, args=None, **kwargs):
+        if args is None:
+            payload = dict(kwargs)
+        elif isinstance(args, dict) and not kwargs:
+            payload = args
+        else:
+            raise TypeError("tool.<name>(args) expects one dict or keyword arguments")
+        return await host_call("tool", {"tool": self.name, "args": payload})
+
+
+class ToolProxy:
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return ToolFunction(name)
+
+    def keys(self):
+        return list(active_tool_catalog.keys())
+
+
+class ToolsHelper:
+    def list(self):
+        return list(active_tool_catalog.values())
+
+    def describe(self, name):
+        if not isinstance(name, str) or not name.strip():
+            raise TypeError("tools.describe(name) requires a non-empty tool name")
+        return active_tool_catalog.get(name)
+
+    def search(self, query):
+        if not isinstance(query, str):
+            raise TypeError("tools.search(query) requires a string")
+        needle = query.strip().lower()
+        if not needle:
+            return self.list()
+        return [item for item in active_tool_catalog.values() if needle in item.get("name", "").lower() or needle in str(item.get("description", "")).lower()]
+
+
+class SkillsHelper:
+    def list(self):
+        return list(active_skill_catalog.values())
+
+    def describe(self, name):
+        if not isinstance(name, str) or not name.strip():
+            raise TypeError("skills.describe(name) requires a non-empty skill name")
+        return active_skill_catalog.get(name)
+
+    def search(self, query):
+        if not isinstance(query, str):
+            raise TypeError("skills.search(query) requires a string")
+        needle = query.strip().lower()
+        if not needle:
+            return self.list()
+        return [item for item in active_skill_catalog.values() if needle in item.get("name", "").lower() or needle in str(item.get("description", "")).lower()]
+
+    async def read(self, name):
+        if not isinstance(name, str) or not name.strip():
+            raise TypeError("skills.read(name) requires a non-empty skill name")
+        if name not in active_skill_catalog:
+            raise RuntimeError(f"Skill {name!r} is not available in this session")
+        return await host_call("skill", {"operation": "read", "name": name})
+
+
+tool = ToolProxy()
+tools = ToolsHelper()
+skills = SkillsHelper()
+
+
+def display(value):
+    print(repr(value))
+
+
+output = display
+
+
+def store(key, value):
+    name = str(key)
+    stored_values[name] = clone_stored_value(value, name)
+    return value
+
+
+def load(key):
+    name = str(key)
+    if name not in stored_values:
+        return None
+    return clone_stored_value(stored_values[name], name)
+
+
+async def completion(prompt, options=None):
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise TypeError("completion(prompt) requires a non-empty prompt")
+    if options is None:
+        options = {}
+    if not isinstance(options, dict):
+        raise TypeError("completion options must be a dict")
+    return await host_call("completion", {"prompt": prompt, "options": options})
+
+
+async def agent(prompt, options=None):
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise TypeError("agent(prompt) requires a non-empty prompt")
+    if options is None:
+        options = {}
+    if not isinstance(options, dict):
+        raise TypeError("agent options must be a dict")
+    if options.get("background") is True:
+        raise RuntimeError("Eval v2 agent() is blocking; use parallel([...]) for concurrency")
+    args = {
+        "prompt": prompt,
+        "description": options.get("description") or options.get("label") or "Eval v2 subagent",
+    }
+    for key in ["subagent_type", "model", "max_turns", "capability_mode"]:
+        if key in options:
+            args[key] = options[key]
+    return await host_call("tool", {"tool": "spawn_subagent", "args": args})
+
+
+async def parallel(items):
+    if not isinstance(items, (list, tuple)):
+        raise TypeError("parallel(items) expects a list or tuple")
+    awaitables = []
+    for index, item in enumerate(items):
+        value = item() if callable(item) else item
+        if not inspect.isawaitable(value):
+            raise TypeError(f"parallel item {index} is not awaitable")
+        awaitables.append(value)
+    return await asyncio.gather(*awaitables)
+
+
+async def pipeline(items, *stages):
+    current = list(items or [])
+    for stage in stages:
+        if not callable(stage):
+            raise TypeError("pipeline stages must be callables")
+        current = await parallel([lambda item=item, stage=stage: stage(item) for item in current])
+    return current
+
+
+def make_namespace():
+    return {
+        "__name__": "__eval__",
+        "tool": tool,
+        "tools": tools,
+        "skills": skills,
+        "display": display,
+        "output": output,
+        "store": store,
+        "load": load,
+        "completion": completion,
+        "agent": agent,
+        "parallel": parallel,
+        "pipeline": pipeline,
+        "asyncio": asyncio,
+    }
+
+
+async def evaluate(code):
+    namespace = make_namespace()
+    tree = ast.parse(code, filename="<eval>", mode="exec")
+    last_expression = None
+    if tree.body and isinstance(tree.body[-1], ast.Expr):
+        last_expression = tree.body.pop()
+    if tree.body:
+        ast.fix_missing_locations(tree)
+        compiled = compile(tree, "<eval>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+        result = eval(compiled, namespace)
+        if inspect.isawaitable(result):
+            await result
+    if last_expression is None:
+        return None
+    expression = ast.Expression(last_expression.value)
+    ast.fix_missing_locations(expression)
+    compiled = compile(expression, "<eval>", "eval", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+    result = eval(compiled, namespace)
+    if inspect.isawaitable(result):
+        result = await result
+    return result
+
+
+async def run_eval(message):
+    global current_eval_id, active_tool_catalog, active_skill_catalog
+    eval_id = message.get("id", "")
+    current_eval_id = eval_id
+    active_tool_catalog = {item["name"]: item for item in message.get("tools", []) if isinstance(item, dict) and isinstance(item.get("name"), str)}
+    active_skill_catalog = {item["name"]: item for item in message.get("skills", []) if isinstance(item, dict) and isinstance(item.get("name"), str)}
+    try:
+        value = await evaluate(message.get("code", ""))
+        reply({"type": "eval_result", "id": eval_id, "ok": True, "value": "" if value is None else repr(value)})
+    except BaseException:
+        reply({"type": "eval_result", "id": eval_id, "ok": False, "error": traceback.format_exc()})
+    finally:
+        for future in list(pending_host.values()):
+            if not future.done():
+                future.cancel()
+        pending_host.clear()
+        current_eval_id = None
+
+
+async def main():
+    global current_eval_id
+    loop = asyncio.get_running_loop()
+    active_task = None
+    while True:
+        line = await loop.run_in_executor(None, sys.stdin.readline)
+        if not line:
+            if active_task is not None:
+                active_task.cancel()
+            return
+        try:
+            message = json.loads(line)
+        except BaseException as error:
+            reply({"type": "eval_result", "id": "", "ok": False, "error": str(error)})
+            continue
+        if message.get("type") == "host_result":
+            future = pending_host.get(message.get("id"))
+            if future is None or future.done():
+                continue
+            if message.get("ok"):
+                future.set_result(message.get("value"))
+            else:
+                future.set_exception(RuntimeError(message.get("error") or "host call failed"))
+            continue
+        if message.get("type") != "eval":
+            reply({"type": "eval_result", "id": message.get("id", ""), "ok": False, "error": "unsupported eval v2 message"})
+            continue
+        if active_task is not None and not active_task.done():
+            reply({"type": "eval_result", "id": message.get("id", ""), "ok": False, "error": "eval v2 kernel is already executing a cell"})
+            continue
+        active_task = asyncio.create_task(run_eval(message))
+
+
+asyncio.run(main())
+`;
+
 const JS_EVAL_WORKER_V2 = String.raw`
 const fs = require("node:fs");
 const repl = require("node:repl");
@@ -342,6 +637,22 @@ const server = repl.start({
 let activeToolCatalog = new Map();
 let activeSkillCatalog = new Map();
 const toolFunctionCache = new Map();
+const inspectSymbol = util.inspect.custom;
+function withDeepInspect(value) {
+  if (!value || typeof value !== "object") return value;
+  if (!Object.prototype.hasOwnProperty.call(value, inspectSymbol)) {
+    Object.defineProperty(value, inspectSymbol, {
+      configurable: true,
+      enumerable: false,
+      value(_depth, options) {
+        const plain = Array.isArray(value) ? [...value] : { ...value };
+        return util.inspect(plain, { ...options, depth: Infinity });
+      },
+    });
+  }
+  if (value.schema && typeof value.schema === "object") withDeepInspect(value.schema);
+  return value;
+}
 function toolMetadata(name) {
   return activeToolCatalog.get(String(name));
 }
@@ -462,11 +773,12 @@ function installContextGlobals() {
   context.agent = async (prompt, options = {}) => {
     if (typeof prompt !== "string" || !prompt.trim()) throw new TypeError("agent(prompt) requires a non-empty prompt");
     if (!options || typeof options !== "object" || Array.isArray(options)) throw new TypeError("agent options must be an object");
+    if (options.background === true) throw new Error("Eval v2 agent() is blocking; use parallel([...]) for concurrency");
     const args = {
       prompt,
       description: options.description || options.label || "Eval v2 subagent",
     };
-    for (const key of ["subagent_type", "model", "max_turns", "capability_mode", "background"]) {
+    for (const key of ["subagent_type", "model", "max_turns", "capability_mode"]) {
       if (Object.prototype.hasOwnProperty.call(options, key)) args[key] = options[key];
     }
     return hostCall("tool", { tool: "spawn_subagent", args });
@@ -536,7 +848,7 @@ lines.on("line", line => {
   activeToolCatalog = new Map(
     (Array.isArray(message.tools) ? message.tools : [])
       .filter(item => item && typeof item === "object" && typeof item.name === "string")
-      .map(item => [item.name, item]),
+      .map(item => [item.name, withDeepInspect(item)]),
   );
   activeSkillCatalog = new Map(
     (Array.isArray(message.skills) ? message.skills : [])
@@ -568,6 +880,12 @@ export function resolveEvalVersion(): EvalVersion {
 	const raw = (process.env.PI_GROK_EVAL_VERSION ?? "v1").trim().toLowerCase();
 	if (raw === "v1" || raw === "v2") return raw;
 	throw new Error(`Invalid PI_GROK_EVAL_VERSION=${JSON.stringify(raw)}; expected "v1" or "v2"`);
+}
+
+export function resolveEvalV2LanguageSelection(): EvalV2LanguageSelection {
+	const raw = (process.env.PI_GROK_EVAL_V2_LANGUAGE ?? "js").trim().toLowerCase();
+	if (raw === "js" || raw === "py" || raw === "all") return raw;
+	throw new Error(`Invalid PI_GROK_EVAL_V2_LANGUAGE=${JSON.stringify(raw)}; expected "js", "py", or "all"`);
 }
 
 function validateEvalTimeout(timeout: number) {
@@ -665,16 +983,15 @@ export class PersistentEvalKernel {
 
 	private ensureStarted(cwd: string) {
 		if (this.child) return;
-		if (this.version === "v2" && this.language !== "js") {
-			throw new Error("Eval Bridge v2 supports JavaScript only");
-		}
 		const command =
 			this.language === "js"
 				? process.execPath
 				: process.env.PI_GROK_PYTHON || (process.platform === "win32" ? "python" : "python3");
 		const worker =
 			this.version === "v2"
-				? JS_EVAL_WORKER_V2
+				? this.language === "js"
+					? JS_EVAL_WORKER_V2
+					: PYTHON_EVAL_WORKER_V2
 				: this.language === "js"
 					? JS_EVAL_WORKER_V1
 					: PYTHON_EVAL_WORKER_V1;

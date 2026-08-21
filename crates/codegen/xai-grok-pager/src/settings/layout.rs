@@ -91,6 +91,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
         | "pi_builtin_tools.eval" => "Built-in tools",
         "pi_bash"
         | "pi_eval"
+        | "pi_eval_v2_language"
         | "pi_eval_v2_only"
         | "pi_herdr"
         | "pi_subagents"

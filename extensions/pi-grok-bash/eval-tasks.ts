@@ -25,11 +25,17 @@ export type EvalBackgroundTask = {
 	output: string;
 	truncated: boolean;
 	completed: boolean;
+	backgrounded: boolean;
+	ownsKernel: boolean;
 	explicitlyKilled: boolean;
 	error?: string;
+	result?: EvalExecution;
 	controller: AbortController;
 	kernel: PersistentEvalKernel;
 	waiters: Set<() => void>;
+	autoBackgroundHandle?: ReturnType<typeof setTimeout>;
+	foregroundSettler?: (outcome: "completed" | "backgrounded") => void;
+	promote?: () => void;
 	ui?: TaskStatusChannel;
 };
 
@@ -103,6 +109,8 @@ export async function startEvalBackgroundTask(params: {
 	kernel: PersistentEvalKernel;
 	tools: Parameters<PersistentEvalKernel["execute"]>[5];
 	skills: EvalSkillMetadata[];
+	backgrounded?: boolean;
+	ownsKernel?: boolean;
 	onSettled?: () => void;
 }): Promise<EvalBackgroundTask> {
 	const taskId = `eval-${randomUUID()}`;
@@ -119,6 +127,8 @@ export async function startEvalBackgroundTask(params: {
 		output: "",
 		truncated: false,
 		completed: false,
+		backgrounded: params.backgrounded ?? true,
+		ownsKernel: params.ownsKernel ?? true,
 		explicitlyKilled: false,
 		controller: new AbortController(),
 		kernel: params.kernel,
@@ -127,7 +137,7 @@ export async function startEvalBackgroundTask(params: {
 	};
 	await writeFile(task.outputFile, "", "utf8");
 	const log = createWriteStream(task.outputFile, { flags: "a" });
-	publish(task, "started");
+	if (task.backgrounded) publish(task, "started");
 
 	void params.kernel
 		.execute(
@@ -141,6 +151,7 @@ export async function startEvalBackgroundTask(params: {
 			(chunk) => log.write(chunk),
 		)
 		.then((result: EvalExecution) => {
+			task.result = result;
 			task.output = result.output;
 			task.truncated = result.truncated;
 		})
@@ -150,17 +161,39 @@ export async function startEvalBackgroundTask(params: {
 		.finally(async () => {
 			task.completed = true;
 			task.endedAt = Date.now();
-			params.kernel.close();
+			if (task.autoBackgroundHandle) clearTimeout(task.autoBackgroundHandle);
+			if (task.ownsKernel) params.kernel.close();
 			const rendered = task.error ? [task.output, task.error].filter(Boolean).join("\n") : task.output;
 			task.output = rendered;
 			await new Promise<void>((resolve) => log.end(resolve));
-			publish(task, "completed");
+			if (task.backgrounded) publish(task, "completed");
+			const settleForeground = task.foregroundSettler;
+			task.foregroundSettler = undefined;
+			settleForeground?.("completed");
 			for (const waiter of task.waiters) waiter();
 			task.waiters.clear();
 			params.onSettled?.();
 		});
 
 	return task;
+}
+
+export function promoteEvalTask(task: EvalBackgroundTask) {
+	if (task.completed || task.backgrounded) return false;
+	if (task.autoBackgroundHandle) clearTimeout(task.autoBackgroundHandle);
+	task.autoBackgroundHandle = undefined;
+	task.backgrounded = true;
+	task.ownsKernel = true;
+	publish(task, "started");
+	const settleForeground = task.foregroundSettler;
+	task.foregroundSettler = undefined;
+	settleForeground?.("backgrounded");
+	return true;
+}
+
+export function armEvalAutoBackground(task: EvalBackgroundTask, timeoutMs: number | undefined) {
+	if (timeoutMs === undefined || task.backgrounded || task.completed) return;
+	task.autoBackgroundHandle = setTimeout(() => task.promote?.(), timeoutMs);
 }
 
 export function evalTaskResult(task: EvalBackgroundTask) {

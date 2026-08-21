@@ -282,8 +282,8 @@ function launchShell(command: string, cwd: string, env: NodeJS.ProcessEnv) {
 
 function validateTimeout(timeout: number | undefined) {
 	if (timeout === undefined) return;
-	if (!Number.isFinite(timeout) || timeout <= 0 || timeout > MAX_TIMEOUT_SECONDS) {
-		throw new Error(`Invalid timeout: must be a finite number of seconds up to ${MAX_TIMEOUT_SECONDS}`);
+	if (!Number.isFinite(timeout) || timeout < 0 || timeout > MAX_TIMEOUT_SECONDS) {
+		throw new Error(`Invalid timeout: must be between 0 and ${MAX_TIMEOUT_SECONDS} seconds`);
 	}
 }
 

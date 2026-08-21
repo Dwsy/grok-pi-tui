@@ -1109,6 +1109,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
         }),
         ("pi_bash", SettingValue::Bool(b)) => Some(Action::SetPiBash(*b)),
         ("pi_eval", SettingValue::Enum(s)) => Some(Action::SetPiEval((*s).to_string())),
+        ("pi_eval_v2_language", SettingValue::Enum(s)) => {
+            Some(Action::SetPiEvalV2Language((*s).to_string()))
+        }
         ("pi_eval_v2_only", SettingValue::Bool(b)) => Some(Action::SetPiEvalV2Only(*b)),
         ("psm_resume_index", SettingValue::Bool(b)) => Some(Action::SetPsmResumeIndex(*b)),
         ("pi_tree_file_rollback", SettingValue::Bool(b)) => Some(Action::SetPiTreeFileRollback(*b)),
@@ -1373,6 +1376,9 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         }
         ("pi_bash", SettingValue::Bool(b)) => app.current_ui.pi_bash = *b,
         ("pi_eval", SettingValue::Enum(s)) => app.current_ui.pi_eval = (*s).to_string(),
+        ("pi_eval_v2_language", SettingValue::Enum(s)) => {
+            app.current_ui.pi_eval_v2_language = (*s).to_string()
+        }
         ("pi_eval_v2_only", SettingValue::Bool(b)) => app.current_ui.pi_eval_v2_only = *b,
         ("psm_resume_index", SettingValue::Bool(b)) => app.current_ui.psm_resume_index = *b,
         ("pi_tree_file_rollback", SettingValue::Bool(b)) => {

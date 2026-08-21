@@ -2367,6 +2367,35 @@ pub(in crate::app::dispatch) fn set_pi_eval(app: &mut AppView, requested: String
     }]
 }
 
+pub(in crate::app::dispatch) fn set_pi_eval_v2_language(
+    app: &mut AppView,
+    requested: String,
+) -> Vec<Effect> {
+    let canonical = match requested.as_str() {
+        "py" => "py",
+        "all" => "all",
+        _ => "js",
+    };
+    let previous = match app.current_ui.pi_eval_v2_language.as_str() {
+        "py" => "py",
+        "all" => "all",
+        _ => "js",
+    };
+    if previous == canonical {
+        return vec![];
+    }
+    app.current_ui.pi_eval_v2_language = canonical.to_string();
+    refresh_open_settings_modals(app);
+    app.show_toast(&format!(
+        "\u{2713} Eval v2 language: {canonical} \u{2014} restart grok-pi to apply"
+    ));
+    vec![Effect::PersistSetting {
+        key: "pi_eval_v2_language",
+        value: crate::settings::SettingValue::Enum(canonical),
+        rollback_value: crate::settings::SettingValue::Enum(previous),
+    }]
+}
+
 pub(in crate::app::dispatch) fn set_pi_eval_v2_only(
     app: &mut AppView,
     enabled: bool,

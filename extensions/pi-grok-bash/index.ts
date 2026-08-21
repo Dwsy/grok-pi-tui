@@ -35,12 +35,15 @@ import {
 	HostCallGate,
 	PersistentEvalKernel,
 	evalHostToolValue,
+	resolveEvalV2LanguageSelection,
 	resolveEvalVersion,
 } from "./eval.ts";
 import {
 	type EvalBackgroundTask,
+	armEvalAutoBackground,
 	evalTaskResult,
 	killEvalTask,
+	promoteEvalTask,
 	startEvalBackgroundTask,
 	waitForEvalTask,
 } from "./eval-tasks.ts";
@@ -88,6 +91,9 @@ export default async function (pi: ExtensionAPI) {
 	if (bashEnabled) pi.on("session_start", publishTodoBacking);
 	const nativeBash = createBashToolDefinition(process.cwd());
 	const evalVersion = resolveEvalVersion();
+	const evalV2Language = evalVersion === "v2" ? resolveEvalV2LanguageSelection() : "all";
+	const evalV2Languages: EvalLanguage[] =
+		evalV2Language === "all" ? ["js", "py"] : [evalV2Language];
 	const evalV2Only = evalVersion === "v2" && process.env.PI_GROK_EVAL_V2_ONLY === "1";
 	if (evalV2Only) {
 		pi.on("session_start", () => pi.setActiveTools(["eval"]));
@@ -108,7 +114,7 @@ export default async function (pi: ExtensionAPI) {
 		});
 	}
 	const completionAvailable = typeof (pi as ExtensionAPI & { complete?: unknown }).complete === "function";
-	const evalPrompts = buildEvalPrompts(evalVersion, completionAvailable);
+	const evalPrompts = buildEvalPrompts(evalVersion, completionAvailable, evalV2Language);
 	const evalHostCallGate = evalVersion === "v2" ? new HostCallGate(EVAL_V2_PARALLEL_HOST_CALL_LIMIT) : undefined;
 	const invokeEvalHostCall: EvalHostCallHandler | undefined =
 		evalVersion === "v2"
@@ -143,9 +149,16 @@ export default async function (pi: ExtensionAPI) {
 					});
 				}
 			: undefined;
-	const evalKernels: Partial<Record<EvalLanguage, PersistentEvalKernel>> =
+	let evalKernels: Partial<Record<EvalLanguage, PersistentEvalKernel>> =
 		evalVersion === "v2"
-			? { js: new PersistentEvalKernel("js", evalVersion, invokeEvalHostCall) }
+			? evalV2Language === "js"
+				? { js: new PersistentEvalKernel("js", evalVersion, invokeEvalHostCall) }
+				: evalV2Language === "py"
+					? { py: new PersistentEvalKernel("py", evalVersion, invokeEvalHostCall) }
+					: {
+							py: new PersistentEvalKernel("py", evalVersion, invokeEvalHostCall),
+							js: new PersistentEvalKernel("js", evalVersion, invokeEvalHostCall),
+						}
 			: {
 					py: new PersistentEvalKernel("py", evalVersion, invokeEvalHostCall),
 					js: new PersistentEvalKernel("js", evalVersion, invokeEvalHostCall),
@@ -153,7 +166,11 @@ export default async function (pi: ExtensionAPI) {
 	const EvalParameters = Type.Object({
 		language:
 			evalVersion === "v2"
-				? StringEnum(["js"] as const)
+				? evalV2Language === "js"
+					? StringEnum(["js"] as const)
+					: evalV2Language === "py"
+						? StringEnum(["py"] as const)
+						: StringEnum(["py", "js"] as const)
 				: StringEnum(["py", "js"] as const),
 		code: Type.String({
 			minLength: 1,
@@ -205,10 +222,10 @@ export default async function (pi: ExtensionAPI) {
 		) {
 			if (!params.code.trim()) throw new Error("eval code must not be empty");
 			if (params.is_background) {
-				if (evalVersion !== "v2" || params.language !== "js") {
-					throw new Error("background eval is supported only by Eval v2 JavaScript");
+				if (evalVersion !== "v2" || !evalV2Languages.includes(params.language)) {
+					throw new Error(`background eval is unavailable for language ${JSON.stringify(params.language)} in this Eval configuration`);
 				}
-				const kernel = new PersistentEvalKernel("js", "v2", invokeEvalHostCall);
+				const kernel = new PersistentEvalKernel(params.language, "v2", invokeEvalHostCall);
 				const task = await startEvalBackgroundTask({
 					toolCallId,
 					code: params.code,
@@ -239,15 +256,70 @@ export default async function (pi: ExtensionAPI) {
 			if (!kernel) {
 				throw new Error(`Eval ${evalVersion} does not support language ${JSON.stringify(params.language)}`);
 			}
-			const result = await kernel.execute(
-				params.code,
-				ctx.cwd,
-				params.timeout ?? 30,
-				signal,
-				params.reset ?? false,
-				evalToolBridge?.catalog() ?? [],
-				evalSkills,
-			);
+			let result;
+			if (evalVersion === "v2") {
+				if (params.reset) kernel.close();
+				const task = await startEvalBackgroundTask({
+					toolCallId,
+					code: params.code,
+					description: params.title,
+					cwd: ctx.cwd,
+					timeout: params.timeout ?? 30,
+					ui: ctx.ui,
+					kernel,
+					tools: evalToolBridge?.catalog() ?? [],
+					skills: evalSkills,
+					backgrounded: false,
+					ownsKernel: false,
+				});
+				const promoted = () => {
+					if (task.completed || task.backgrounded) return;
+					evalKernels = {
+						...evalKernels,
+						[params.language]: new PersistentEvalKernel(params.language, "v2", invokeEvalHostCall),
+					};
+					if (promoteEvalTask(task)) evalTasks.set(task.taskId, task);
+				};
+				task.promote = promoted;
+				armEvalAutoBackground(task, maxWaitMs);
+				const aborted = () => {
+					if (!task.backgrounded && !task.completed) task.controller.abort(new Error("aborted"));
+				};
+				if (signal?.aborted) aborted();
+				else signal?.addEventListener("abort", aborted, { once: true });
+				await new Promise<void>((resolve) => {
+					task.foregroundSettler = () => resolve();
+					if (task.completed || task.backgrounded) resolve();
+				});
+				signal?.removeEventListener("abort", aborted);
+				if (task.backgrounded) {
+					return {
+						content: jsonContent({ task_id: task.taskId, status: "running", output_file: task.outputFile }),
+						details: {
+							taskId: task.taskId,
+							background: true,
+							command: task.code,
+							cwd: task.cwd,
+							outputFile: task.outputFile,
+							description: task.description,
+							kind: "eval",
+						},
+					};
+				}
+				if (task.error) throw new Error(task.error);
+				if (!task.result) throw new Error("Eval v2 foreground task settled without a result");
+				result = task.result;
+			} else {
+				result = await kernel.execute(
+					params.code,
+					ctx.cwd,
+					params.timeout ?? 30,
+					signal,
+					params.reset ?? false,
+					evalToolBridge?.catalog() ?? [],
+					evalSkills,
+				);
+			}
 			const language = params.language === "py" ? "python" : "js";
 			return {
 				content: [
@@ -280,7 +352,13 @@ export default async function (pi: ExtensionAPI) {
 			description:
 				"Exact bash to run. No trailing comments (# ...). Put the human-readable UI label in task_name instead.",
 		}),
-		timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+		timeout: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: MAX_TIMEOUT_SECONDS,
+				description: "Timeout in seconds; omit or set 0 to disable the timeout",
+			}),
+		),
 		is_background: Type.Optional(
 			Type.Boolean({ description: "true = background task (returns task_id); false/omit = foreground" }),
 		),
@@ -298,6 +376,7 @@ export default async function (pi: ExtensionAPI) {
 		evalVersion,
 		nativeBash.description,
 		nativeBash.promptGuidelines ?? [],
+		evalV2Language,
 	);
 	if (bashEnabled) pi.registerTool({
 		...nativeBash,

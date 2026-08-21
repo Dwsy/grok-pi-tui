@@ -548,6 +548,11 @@ pub fn current_value_for(
             "v2" => "v2",
             _ => "v1",
         })),
+        "pi_eval_v2_language" => Some(SettingValue::Enum(match ui.pi_eval_v2_language.as_str() {
+            "py" => "py",
+            "all" => "all",
+            _ => "js",
+        })),
         "pi_eval_v2_only" => Some(SettingValue::Bool(ui.pi_eval_v2_only)),
         "psm_resume_index" => Some(SettingValue::Bool(ui.psm_resume_index)),
         "pi_tree_file_rollback" => Some(SettingValue::Bool(ui.pi_tree_file_rollback)),
@@ -964,6 +969,14 @@ mod tests {
                 }
                 ("pi_eval", SettingKind::Enum { default, .. }) => {
                     let expected = if ui.pi_eval == "v2" { "v2" } else { "v1" };
+                    assert_eq!(*default, expected);
+                }
+                ("pi_eval_v2_language", SettingKind::Enum { default, .. }) => {
+                    let expected = match ui.pi_eval_v2_language.as_str() {
+                        "py" => "py",
+                        "all" => "all",
+                        _ => "js",
+                    };
                     assert_eq!(*default, expected);
                 }
                 ("pi_eval_v2_only", SettingKind::Bool { default }) => {

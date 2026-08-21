@@ -334,6 +334,7 @@ async fn run(mut args: Args) -> Result<()> {
         .context("failed to create Pi Bash/Eval extension")?;
     let eval_v2_only = eval_v2_only_enabled();
     let eval_version = if eval_v2_only { "v2" } else { eval_version() };
+    let eval_v2_language = eval_v2_language();
     // F2 `[ui].pi_subagents` (default on). Restart required — inject at startup only.
     let subagent_extension = if bridge_extensions_enabled && subagents_enabled() {
         Some(write_subagent_extension().context("failed to create Pi subagent extension")?)
@@ -993,6 +994,10 @@ async fn run(mut args: Args) -> Result<()> {
             .to_string(),
         ));
         env.push(("PI_GROK_EVAL_VERSION".to_string(), eval_version.to_string()));
+        env.push((
+            "PI_GROK_EVAL_V2_LANGUAGE".to_string(),
+            eval_v2_language.to_string(),
+        ));
         env.push((
             "PI_GROK_BASH_MAX_WAIT_MINS".to_string(),
             bash_max_wait_mins,
@@ -1673,6 +1678,25 @@ fn eval_version_from_config(config: Option<&toml::Value>) -> &'static str {
     {
         Some("v2") => "v2",
         _ => "v1",
+    }
+}
+
+/// `[ui].pi_eval_v2_language` — select Eval v2 language exposure.
+/// Missing or invalid values preserve the pre-selector JavaScript-only default.
+fn eval_v2_language() -> &'static str {
+    let config = xai_grok_shell::config::load_effective_config().ok();
+    eval_v2_language_from_config(config.as_ref())
+}
+
+fn eval_v2_language_from_config(config: Option<&toml::Value>) -> &'static str {
+    match config
+        .and_then(|root| root.get("ui"))
+        .and_then(|ui| ui.get("pi_eval_v2_language"))
+        .and_then(toml::Value::as_str)
+    {
+        Some("py") => "py",
+        Some("all") => "all",
+        _ => "js",
     }
 }
 
