@@ -203,14 +203,15 @@ flowchart LR
 | **`/btw`** (`pi_btw`) | F2 → Agent → Pi /btw (restart); saved answers are viewable with `/btw-history` | off | `pi-btw`, `@narumitw/pi-btw`, `@juicesharp/rpiv-btw` |
 | **Markdown user messages** (`pi_user_markdown`) | F2 → Agent → Markdown user messages | on | — |
 
-Eval bridge generations are mutually exclusive and selected at process start. Eval v1 remains the default. To opt into Eval Bridge v2, set:
+Eval bridge generations are mutually exclusive and selected at process start. Eval v1 remains the default. Eval Bridge v2 can expose JavaScript, Python, or both:
 
 ```toml
 [ui]
 pi_eval = "v2"
+pi_eval_v2_language = "all" # "js" (default), "py", or "all"
 ```
 
-Use `pi_eval = "v1"` (or omit the key) for legacy Eval. Eval v1 supports persistent Python and JavaScript kernels; Eval Bridge v2 is JavaScript-only. Because this is a single version selector rather than two booleans, v1 and v2 cannot run concurrently. Restart `grok-pi` after changing it.
+Use `pi_eval = "v1"` (or omit the key) for legacy Eval. Eval v1 keeps persistent Python and JavaScript kernels; Eval Bridge v2 uses isolated cells with explicit `store/load` persistence and the selected language set. Because `pi_eval` is a single version selector, v1 and v2 cannot run concurrently. Both settings are restart-required.
 
 Turning Pi subagents off omits the bundled bridge, forces `PI_GROK_SUBAGENTS=0`, and admits conflicting third-party packages again for the next process.
 

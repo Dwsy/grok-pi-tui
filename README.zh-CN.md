@@ -199,6 +199,16 @@ flowchart LR
 | **`/btw`**（`pi_btw`） | F2 → Agent → Pi /btw（需重启）；已保存答案可用 `/btw-history` 查看 | 关 | `pi-btw`、`@narumitw/pi-btw`、`@juicesharp/rpiv-btw` |
 | **用户消息 Markdown**（`pi_user_markdown`） | F2 → Agent → Markdown user messages | 开 | — |
 
+Eval bridge 的版本在进程启动时互斥选择，默认仍为 Eval v1。Eval Bridge v2 可启用 JavaScript、Python 或两者：
+
+```toml
+[ui]
+pi_eval = "v2"
+pi_eval_v2_language = "all" # "js"（默认）、"py" 或 "all"
+```
+
+使用 `pi_eval = "v1"`（或省略该键）即为 legacy Eval。Eval v1 保留持久化 Python/JavaScript kernel；Eval Bridge v2 使用隔离 cell，并通过显式 `store/load` 跨 cell 持久化，同时按 `pi_eval_v2_language` 暴露语言。`pi_eval` 是单值版本 selector，因此 v1/v2 不会双活；这两个设置都需重启 `grok-pi` 生效。
+
 关闭 Pi subagents 后，下次启动会省略内置桥接、强制 `PI_GROK_SUBAGENTS=0`，并重新放行与其冲突的第三方包。
 
 对应 F2 项的说明文案会附带 **When on, blocks: …**（与同一张表同步）。

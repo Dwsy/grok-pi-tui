@@ -7,6 +7,82 @@
 
 ---
 
+## [Unreleased]
+
+### 新增
+
+- Eval Bridge v2 新增语言选择器：`[ui].pi_eval_v2_language = "js" | "py" | "all"`（默认 `js`，需重启）；Python 与 JavaScript 共用同一套 host-RPC、skills、completion、store/load 与 task 契约。
+- Eval v2 后台任务与 Bash 对齐：支持显式后台、达到共享最大等待阈值后自动由前台转后台、`get_task_output` / `wait_tasks` / `kill_task`、模型输出限长与完整输出临时文件。
+
+### 修复
+
+- `tools.describe(name)` 在 JavaScript REPL 中会深层展示嵌套 tool schema，不再把 `properties` 折叠为 `[Object]`。
+- Bash `timeout: 0` 现在统一表示“不设置超时”，与 Eval v2 的 escape hatch 语义一致；嵌套 `tool.bash(...)` 不再因 0 值触发校验失败。
+- Eval v2 前台任务自动转后台后会立即补充新的前台 kernel，后续 cell 不再被已转后台任务阻塞。
+
+### 变更
+
+- Eval v2 `agent()` 明确为 blocking leaf；`background=true` 会快速失败，并发 leaf agent 通过 `parallel([...])` 执行。
+- Eval v2 任务状态复用增强 Bash 相同的 Pager 原生 task channel 与统一等待/输出限制。
+
+## [0.1.0] - 2026-08-21
+
+范围：`v0.0.18` → `v0.1.0`（2026-08-18 → 2026-08-21）。Tag `v0.1` 与 `v0.1.0` 指向同一发布提交。
+
+### 亮点
+
+- **Pi 内置工具编排** — F2 与 resource policy 统一协调 Bash、Eval、Eval v2、Todo 及相关注入工具，不再依赖零散扩展准入。
+- **Eval Bridge v2 基础能力** — 落地 host-RPC 设计、bundle 验证 harness、Bash/Eval 托管任务 runtime 与原生 Eval 展示改进。
+- **可交互子代理** — Pager 子代理行补充生命周期投影与交互式 session 行为，同时继续由 Pi 拥有执行语义。
+- **文件与 Skill 工作流增强** — 扩展文件搜索/预览、Ctrl-L 行内查看 `SKILL.md`、prompt/paste 处理及相关 Pi 文件交互。
+
+### 新增
+
+- Eval Bridge v2 设计记录、runtime 模块、demo/验证 harness、host-tool bridge、任务管理、prompt helpers 与文档。
+- Pi 内置 Bash/Eval/Todo/tool policy 的 F2 控制与启动接线。
+- 原生 Todo extension 与 grok-pi config skill 支持。
+- 交互式子代理 session 表面、生命周期 metadata 与 background/idle-barrier 处理。
+- Ctrl-L 行内 `SKILL.md` 预览以及更多文件搜索/粘贴交互路径。
+
+### 修复
+
+- Pi Bash 扩展注入现在会完整物化模块依赖闭包，避免 `Cannot find module './eval-tasks.ts'` 一类启动失败。
+- Remote TUI 导航键不再通过 bridge 重复发送长按事件。
+- Session/subagent 投影、prompt dispatch 与工具渲染针对扩展后的 Pi runtime 表面进一步加固。
+
+### 变更
+
+- Bash 与 Eval 卡片采用更清晰的 Pager 原生格式和状态展示。
+- Session-info usage 与多处 settings/modal 表面随新工具 runtime 控制一起打磨。
+- 仓库指南补充 Pi RPC bootstrap / extension failure 的权威诊断流程。
+
+## [0.0.18] - 2026-08-18
+
+范围：`v0.0.17` → `v0.0.18`（2026-08-16 → 2026-08-18）。
+
+### 新增
+
+- 扩展 adapter cache metrics 与 session 信息，供 Context / Usage 原生表面使用。
+- 补充 GoalHost 状态与 notification 处理，使原生 goal/status 投影更完整。
+- 新增 tag 监控相关 release automation。
+
+### 修复
+
+- 加固 Pager ↔ adapter 边界上的 Context/Usage modal、cache graph 交互与 session-event 展示。
+- 调整 user/session event block 与 scrollback state，以适配更新后的 session metadata 投影。
+
+### 变更
+
+- Context cache graph、usage modal、ACP session metadata 与 goal/status plumbing 同步扩展，保持 Pager 原生表面与 Pi 所有的 session state 对齐。
+
+## [0.0.17] - 2026-08-16
+
+范围：`v0.0.16` → `v0.0.17`（2026-08-15 → 2026-08-16）。
+
+### 修复
+
+- Linux ARM64 release 改为在 arm64 runner 上原生编译，不再从共享 16 GB x64 runner 交叉编译。此前大型 `release-dist` profile（`codegen-units=1` + thin LTO）会因 OOM 以 exit 143 终止，导致 `v0.0.16` 缺少 Linux ARM64 asset。
+
 ## [0.0.16] - 2026-08-15
 
 范围：`v0.0.15` → `v0.0.16`（2026-08-09 → 2026-08-15）。
@@ -257,6 +333,254 @@
 
 ---
 
-## 更早版本
+## [0.0.8] - 2026-07-22
 
-`0.0.8` 及更早的完整英文条目见 [CHANGELOG.MD](CHANGELOG.MD)。
+范围：`v0.0.7` → `v0.0.8`（2026-07-21 → 2026-07-22）。
+
+### 新增
+
+#### 产品状态隔离
+
+- 默认用户目录改为 **`~/.grok-pi`**（`$GROK_HOME`），不再与 stock Grok 的 `~/.grok` 共用。
+- 默认项目配置树改为 **`<repo>/.grok-pi`**（`$GROK_PROJECT_DIR`）；统一通过 `xai_grok_config::project_config_dirname()` / `project_config_dir` 解析。
+- 启动时在任何库通过 `OnceLock` 固定 `grok_home()` 前注入 home 与项目目录名。
+- **`grok-pi migrate-home`**：从旧 `~/.grok`（或 `$GROK_LEGACY_HOME`）复制 allowlist 文件，支持 `--status` / `--dry-run` / `--force` / `--from` / `--into` / 可选 `--include-auth`。
+- 目标 home 为空且 legacy 有数据时安全执行一次 **自动迁移**，并写入 `.migrated-from-legacy` 标记。
+- 默认**不双扫描** stock `~/.grok` / `<repo>/.grok`，保持真正的产品隔离。
+- 无环境变量的单元测试仍保持 stock `.grok` 默认值，避免破坏上游风格测试。
+
+#### Pi Workflows（Rhai，F2 默认关闭）
+
+- 复用上游 **`xai-workflow`** 引擎与 shell orchestration；**SpawnBackend** 可插拔（默认 `Grok`，grok-pi 使用 `Pi` bridge）。
+- Adapter 提供 `WorkflowHost`、`pi_workflow_backend`、ACP `x.ai/workflow/{launch,pause,stop}`、`x.ai/workflows/list` 与 `workflow_updated` 通知。
+- 注入 extension + slash：`/workflow`、`/workflows`、`/create-workflow`（及命名脚本）；`__pi_workflow_*` bridge command 从目录中过滤。
+- F2 **`[ui].pi_workflows`** 默认**关闭**，开启后需重启才能注入 extension。
+- 项目 workflow 位于 `<repo>/.grok-pi/workflows`，用户 workflow 位于 `~/.grok-pi/workflows`。
+- `/create-workflow` 是 Pager PassThrough 用户 prompt，不是 Pi skill。
+
+#### Goal 模式（F2 默认关闭）
+
+- F2 **`[ui].pi_goal`** 默认**关闭**，开启后需重启。
+- 注入 extension：`/goal` + `update_goal` 工具 + control file。
+- Adapter **`GoalHost`** 状态机投影为原生 `GoalUpdated`（`goal_detail` / status bar）。
+- Active goal 通过 `agent_settled` follow-up 继续执行，不等同于 shell 的完整 multi-agent classifier/planner/strategist 栈。
+
+#### 导出 / 分享
+
+- 默认开启 **`pi-grok-export`**：`/export-html`（Pi HTML 或 `.jsonl` 路径）与 `/pi-share`（private gh gist + pi.dev viewer）。
+- Grok `/export` 继续导出 Markdown transcript，不引入第二套 TUI。
+
+#### Website & CI
+
+- `website/` 新增营销站与文档站（Next.js 15，中英双语 landing + docs）。
+- GitHub Actions **`Website`** workflow 仅支持 `workflow_dispatch`；执行 `npm ci` + `npm run build`，上传 standalone/static/public artifacts。
+- Release workflow 引入 **Swatinem/rust-cache**，加速多平台构建。
+
+#### Session picker 与主题
+
+- External Pi session picker 增加 **全文搜索**（`Ctrl+F`），搜索页独立于 catalog，每次切换都会重置状态。
+- 透明主题 `pi:transparent` / `pi:transparent-light`：代码块使用终端默认背景（`Color::Reset`）；canvas 背景为 Reset 时用户消息增加**左侧 accent bar**。
+- 更新透明主题 JSON 与 Pi theme map（`theme/pi/map.rs`）的 code/user surface 映射。
+- 同步补齐 session load、jump、modal、welcome 与 overlay list 相关 Pager app/view/dispatch 接线。
+
+#### Adapter / Queue（隔离波次前）
+
+- `pi-grok-adapter` 更新 model/RPC/session/queue bridge：扩展 session catalog 字段、让 queue mirror 对齐 Pager optimistic dequeue，并加固后续 workflow/goal host 所需的 RPC client/session 路径。
+
+#### 上游与工具链
+
+- 同步 Grok Build **`3af4d5d`**（`SOURCE_REV` `0f4d7c91`）：包含新 **`xai-workflow`** crate、workspace permission/security 重构（exec-risk、auto-mode、hardened shell）、shell 工作目录迁移、doctor/terminal-setup 表面与 prompt-queue batching；完整列表见 `docs/upstream/UPSTREAM_CHANGELOG.md`。
+- 新增 **`upstream-changelog`** skill（`.pi/skills/upstream-changelog/`）并写入 3af4d5d 首条结构化记录；AGENTS.md 明确“两阶段同步：先 changelog，再 merge”。
+- `pi-main` 子模块推进至 earendil-works/pi `main` 的 `a5afc3f1`；拒绝子模块中的本地 dirty RPC 修改，只允许干净 pin。
+- Release CI 使用 **Swatinem/rust-cache**；release notes 由 `scripts/extract-changelog-section.py` 从 `CHANGELOG.MD` 生成（strict，可选 `--since 0.0.6` 累计段 + 安装 footer），再追加 GitHub 自动 commit 列表。
+
+#### 文档 / 法务
+
+- 新增 queue architecture redesign 研究：`docs/issues/queue-architecture-redesign.md`、`queue-redesign-feasibility.md`（Pager-owned queue / 消除多层 reconcile，仅研究，未交付）。
+- Isolation/workflow/goal Issue 归档到 `docs/issues/架构/` 与 `docs/issues/adapter/`。
+- LICENSE 保留 SpaceXAI 上游 Apache-2.0，同时注明 Dwsy fork 修改版权。
+- README / FEATURE_MATRIX / AGENTS 中英同步产品隔离、workflow、goal 与 export 行为。
+
+### 变更
+
+- Adapter model/RPC/session/queue bridge 对齐上游，并支持 workflow/goal host。
+- Pager app logic、jump/session picker、views、dispatch、effects 与 `grok-pi` binary 接线加入 `pi_workflows` / `pi_goal` F2 gate 与 extension 注入顺序。
+- `install.sh` / path helper 在相关路径上遵循产品隔离 home。
+- Slash command registration 统一 external profile gate；`/doctor` 作为 Pager 原生 terminal diagnostics。
+
+### 修复
+
+- `pi-grok-bash` extension 与后台任务 kill 控制路径 `x.ai/task/kill` 对齐。
+
+### 说明
+
+- **`pi-main`** 源码不允许本地 dirty 修改；子模块只保留干净 pin。
+- F2 **Pi workflows** / **Pi goal** 改动后需完全退出并重启，因为 extension 在进程启动时注入。
+- 未提交 WIP（例如 `/review-session` polish）不属于该 tag，除非 cut tag 前已经落地。
+- 从 **0.0.6** 升级时也应阅读 **[0.0.7]**（Plan mode、`/jump`、`/fork`/`/clone`/`/reload`、resource policy、Remote TUI、tree rollback、update proxy）；0.0.8 的 GitHub Release notes 默认包含两段。
+
+---
+
+## [0.0.7] - 2026-07-21
+
+范围：`v0.0.6` → `v0.0.7`。（该版本曾从 changelog 中遗漏，后按 Git 历史重建。）
+
+### 新增
+
+#### Plan 模式（原生 Pager ↔ Pi）
+
+- Pager 原生 Plan toggle 桥接到 adapter 所有的 `Inactive` / `Pending` / `Active` / `ExitPending` 状态机。
+- Session 私有 `.plan.md` sidecar 与 `.plan-mode.json` 持久化。
+- Active 时注入 tool gate，除 plan file 外阻止 `edit` / `write` / `bash`。
+- Pi `exit_plan_mode` 映射到原生 `x.ai/exit_plan_mode` 审批表面。
+- 按模式阶段使用 full/sparse system-reminder 前缀。
+- **Ctrl+Shift+T** 切换 Plan mode；向 `/view-plan` 发布 plan file path。
+
+#### Session 导航与树
+
+- **`/jump`**：原生 turn picker，含 timeline preview、紧凑 `HH:MM` 时间与 viewport 恢复。
+- External profile 下，空输入时 **double-Esc** 与 **`/rewind`** 打开 **SessionTree**（Pi tree navigation，不是 Grok destructive rewind）。
+- SessionTree 选中行高亮对齐 Pi selection 语义。
+- **Tree file rollback**（F2 `pi_tree_file_rollback`，external-only，需重启）：SessionTree `r` 预览、`R` 执行；write/edit checkpoint preimage 经 `pi-grok-rollback` + adapter `pi/session/rollback_preview|execute` 完成。
+
+#### Pi Session 分支操作
+
+- **`/fork`**（external）：RPC `get_fork_messages` → jump 风格 `ListOverlay`；`fork` 创建分支 session file；同一 agent 重新绑定 `sessionId` + `session/load` 回放；所选文本预填 prompt。
+- **`/clone`**（external）：RPC `clone` 复制当前 leaf；同一 agent 重绑并 replay，prompt 清空以对齐 Pi。
+- 非 external profile 保持 Grok peer-agent `/fork` 不变。
+
+#### Reload、Hotkeys 与 Session 别名
+
+- **`/reload`**：`__pi_reload` → `ctx.reload()`；streaming 或 compacting 时禁止；adapter 刷新 command/model catalog；Pager 重新发现 Pi theme 并重应用当前 `pi:*` 主题；toast 文案对齐 Pi interactive。
+- **`/hotkeys`**（别名 `shortcuts` / `keys`）：打开原生 ShortcutsHelp modal，与 Ctrl+. 相同。
+- **`/session`** 作为 `/session-info` 别名；payload 可包含 `session_file` + message/turn/tool-call 计数。
+
+#### Resource Policy 与 CLI
+
+- **Pi resource admission policy**（`ResourcePolicy`）：allow/block list + heuristic（例如阻止 `pi-tool-display`、custom header/footer），在 `grok-pi` 启动时执行。
+- 启动按需关闭 Pi auto-discovery（`--no-extensions/skills/prompt-templates/themes`），仅通过显式 flag 注入 policy 允许的资源。
+- Catalog discovery 对齐 Pi package auto-entry 规则；package dir 只展开声明的 entry，不扫描嵌套私有模块。
+- `/pi-config` modal：All/Enabled/Disabled filter、policy view（`a`）、refresh（`r`）、Tab scope、扩展快捷键；F2 在 `pi_config` 上 Enter 可打开。
+- CLI tool flags：`--no-tools` / `-nt` / `--no-builtin-tools` / `-nbt`、`--exclude-tools` / `-xt`，以及 `PI_GROK_EXCLUDE_TOOLS`。
+- 一等转发 Pi 的 model、session、prompt、resource、tools、trust/network flags；`--` 后参数继续透传。
+
+#### Remote TUI、Auth 与 Recap
+
+- Remote TUI host 使用官方 Pi **`rpc-entry.js`** + extension mode facade（extension 看到 `ctx.mode=tui`，底层 transport 仍为 RPC），**不 fork Pi 源码**。
+- `pi-grok-remote-tui` 增加 multi-select capability lab（header/footer widget、status、title、editor text）与 overlay stacking/restore。
+- `pi-grok-auth` 修复 nested `openCustom` 导致 LoginDialog 被拆除的问题，补齐 `showOverlay` / `showAuthPrompt` / `prompt.signal`。
+- `pi-grok-recap` 可通过 F2 `recap_mermaid` 启用 **Mermaid**；markdown cleaner 保留内部 mermaid fence，recap 正文用 Markdown 渲染。
+
+#### Settings（external-only gate）
+
+- `SettingMeta.external_only`：仅在 grok-pi / external profile 活跃时显示对应行。
+- F2 新增 `pi_tree_file_rollback`（需重启）、`recap_mermaid`、`remote_tui_footer`。
+- `EXTERNAL_AGENT_ACTIVE` atomic 在启动时根据 UI profile 设置一次。
+
+#### Timeline / Theme Render
+
+- Timeline rail glyph（chevron、粗/细横线、active/hover tick）提供 ConHost fallback；横向 stroke 对齐 Pi 视觉。
+- `/reload` 后 Pi theme registry 执行 **`rediscover()`**。
+
+#### 更新通道
+
+- GitHub release discovery 增加 **JSP proxy** fallback（`jsp.dwsy.link`）以规避未认证 API rate limit，失败再回退 `api.github.com`。
+
+### 修复
+
+- 展开 Edit 卡片：仅在 viewport 内节流 redraw；优化 sticky-header cache 与 edit gutter 高度估算。
+- Live-turn sticky suppress 与 Pi 对齐 spinner。
+- 版本比较忽略 dirty prerelease，改用 `+dirty` build metadata，避免本地构建误报“有更新”。
+- Package extension discovery 只展开 Pi auto-entry（manifest entry）。
+- Bash task kill：`x.ai/task/kill` 通过 `runningTaskIds` 校验（`KillOutcome`）到达 Pi Bash extension。
+- Widget 渲染对齐与 picker `label_color` 打磨。
+
+### 变更
+
+- Adapter：Pi RPC stderr ring buffer diagnostics 与 rustfmt 清理。
+- 精简双语 README，更新 Remote TUI 文档/流程 demo。
+- 吸收该时间窗内上游 monorepo 同步（见 Git 的 `Synced from monorepo` commits）。
+
+### 文档
+
+- FEATURE_MATRIX 增加 `/fork`、`/clone`、`/reload`、`/hotkeys`、`/session` 行。
+- 增加 Resume preview 与 search 对齐 Issue 规范。
+
+---
+
+## [0.0.6] - 2026-07-20
+
+### 新增
+
+- Adapter 增加 PSM session catalog、丰富 metadata 与 tree editor text 支持。
+- Session picker 支持排序、全部展开、丰富 metadata 展示与 tree navigation。
+
+### 修复
+
+- Model picker 高度限制在可用 viewport 内。
+- Remote TUI paste event 正确转发。
+- Subagent live traffic 改用 `appendEntry`，并简化 recap emit。
+
+## [0.0.5] - 2026-07-18
+
+### 新增
+
+- 为 extensions、skills、prompts、themes 提供原生 Pi resource manager。
+- Context visualization bridge 进入 Pager 原生渲染。
+- 改进 session recap、timeline 与 Pi model selection 集成。
+
+### 变更
+
+- Welcome hero card 使用 `grok-pi` 名称、产品版本与 Pi 描述。
+- Release build、update check 与 update install 只使用 `GROK_PI_VERSION`。
+
+### 修复
+
+- 上游 Grok `GROK_VERSION` 与 workspace version 不再影响 `grok-pi` 版本显示或更新比较。
+
+## [0.0.4] - 2026-07-17
+
+### 新增
+
+- 点击 Context / `/context`：adapter 基于 Pi `get_session_stats` + message estimate 实现 `x.ai/session/info`，进入原生 `ContextInfoBlock`。
+- Queue pane bridge：Pi `queue_update` 完整数组 → `x.ai/queue/changed`，使 optimistic dequeue 生效。
+- 通过 `GROK_PI_VERSION` / git describe 注入产品版本，`--version` 不再显示上游 `0.1.220-alpha.*`。
+
+### 修复
+
+- message estimate 为空时 Context breakdown 不再把整个窗口计入 Reasoning/overhead，而是回退到 Messages。
+- Session-info payload 省略 null Option 字段，降低 Pager 反序列化风险。
+- 修复 Welcome / dashboard / session load 路径上的 Pi catalog 连续性。
+
+## [0.0.3] - 2026-07-17
+
+### 变更
+
+- Update check/install 改为**仅 GitHub**（`Dwsy/grok-pi` release JSON + install.sh/ps1）。
+- 删除 npm registry fallback（未 scope 的 `grok-pi` 是外部包，scope 包当时也尚未发布）。
+
+## [0.0.2] - 2026-07-17
+
+### 新增
+
+- 原生 Welcome screen + Pi π block logo（默认启动；`-c/--continue` 继续会话）。
+- Agent Dashboard 适配：`/dashboard` · Ctrl+\\ · Pi session catalog → dormant roster。
+- 更新检查与安装：
+  - 来源：GitHub `Dwsy/grok-pi` release JSON（npm fallback 在 0.0.3 移除）。
+  - CLI：`grok-pi update`、`grok-pi update --check`、`grok-pi update --to 0.0.2`。
+  - Welcome **Ctrl+U** 在 quit-for-update 后运行同一安装器。
+- Welcome **Changelog** 在 GitHub 打开本文件。
+- Welcome **Resume session** 使用原生 SessionPicker（Pi catalog）。
+
+### 变更
+
+- Welcome 对 Pi 隐藏 **New worktree**（没有 Grok worktree 产品路径）。
+- Canonical GitHub repo 为 `Dwsy/grok-pi`。
+- Release workflow 用 git tag 注入 `GROK_VERSION`。
+
+## [0.0.1] - 2026-07-17
+
+### 新增
+
+- 初始 `grok-pi` composition：Pi JSONL RPC ↔ ACP adapter + Grok Pager TUI。
+- 安装脚本与多平台 GitHub release packaging。

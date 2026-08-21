@@ -411,9 +411,13 @@ The task APIs remain registered for Eval v2 even when enhanced Bash itself is di
 Selects Eval implementation:
 
 - `v1` — default; JavaScript + Python persistent-state compatibility runtime;
-- `v2` — JavaScript-only isolated cells, explicit `store/load`, host-tool bridge, helpers, and background Eval tasks.
+- `v2` — isolated cells with explicit `store/load`, host-tool bridge, helpers, background Eval tasks, and configurable JavaScript/Python exposure.
 
 Any other value is rejected during extension initialization.
+
+### `PI_GROK_EVAL_V2_LANGUAGE`
+
+Selects the language set exposed by Eval v2: `js` (default), `py`, or `all`. The selector is used only when `PI_GROK_EVAL_VERSION=v2`; invalid values fail during extension initialization.
 
 ### `PI_GROK_BASH`
 
@@ -460,7 +464,7 @@ Used by `EvalSessionToolBridge` as an optional host-package discovery root when 
 
 ## Choosing Eval vs Bash
 
-Use Eval for computation that is naturally JavaScript (or Python in v1): calculations, parsing, transformations, collection analysis, experiments, and logic that benefits from tool calls or structured async composition.
+Use Eval for computation that is naturally JavaScript or Python when that language is enabled: calculations, parsing, transformations, collection analysis, experiments, and logic that benefits from tool calls or structured async composition.
 
 Use Bash for shell-native work: filesystem/process control, Git, builds, package managers, shell pipelines, command-line programs, and operations whose semantics are fundamentally shell/process oriented.
 
@@ -556,7 +560,7 @@ A block wrapper was tested as a lightweight way to isolate declarations. It was 
 `test-v2.1.mjs` is the focused production regression. The current suite covers at least:
 
 1. v1 JavaScript/Python foreground behavior and absence of a v1 background-Eval parameter;
-2. v2 JavaScript-only schema/runtime;
+2. v2 `js` / `py` / `all` language selection and runtime behavior;
 3. v2 per-cell lexical isolation plus explicit `store/load` persistence;
 4. exact host-tool return envelope `{ text, content }`;
 5. active-tool discovery and schema/metadata exposure;
@@ -584,7 +588,7 @@ Eval v2.1 focused production regression: PASS
 When changing this extension, verify all of the following rather than only the immediate feature:
 
 - v1/v2 schema boundaries remain intentional;
-- v2 remains JavaScript-only;
+- v2 exposes only the configured `js` / `py` / `all` language set;
 - v2 cell lexical scope is fresh on every call;
 - `store/load` remains the supported bridge-managed v2 cross-cell data API and prompts do not rely on implicit lexical persistence;
 - bare expression values and top-level await still work;
