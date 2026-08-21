@@ -52,7 +52,7 @@ pi_eval = "v2"
 
 ### Eval v2 only 隔离模式
 
-F2 `[ui].pi_eval_v2_only = true` 是独立覆盖层：不改用户保存的 `pi_eval` 版本选择或 built-in tool 偏好，但下次启动会强制 Eval v2，并在用户没有显式传 `--tools` / `--no-tools` 时向原生 Pi registry 注入 `--tools eval`。因此模型顶层只保留 `eval`；关闭该开关后恢复原有版本与工具偏好。显式 CLI tool policy 始终优先。
+F2 `[ui].pi_eval_v2_only = true` 是独立覆盖层：不改用户保存的 `pi_eval` 版本选择或 built-in tool 偏好，但下次启动会强制 Eval v2；当用户没有显式传 `--tools` / `--no-tools` 时保留 Pi registry，并由 host extension 在 `session_start` 把顶层 active tool 收敛为 `eval`。这样 Eval 内仍可程序化调用 registry 中被允许的工具，而顶层模型只看到 `eval`；本次进程会跳过保存的 F2 built-in tool 选择，避免它把 nested Eval 需要的工具从 registry 裁掉，但不会改写该配置。`--exclude-tools` / `--no-builtin-tools` 仍由 Pi 原生 registry policy 生效。关闭该开关后恢复原有版本与工具偏好，显式 CLI tool policy 始终优先。
 
 Eval v2 的 skill 目录来自当前 Pi session 实际加载的 `before_agent_start.systemPromptOptions.skills`，只暴露 `disableModelInvocation != true` 的条目。程序侧提供 `skills.list/search/describe/read`；`skills.read(name)` 仅能读取该 session 白名单中的 skill `filePath`，不做额外磁盘扫描。
 
@@ -865,3 +865,5 @@ git diff --check
 - **2026-08-18**: 完成 `pi-grok-bash` 纯结构拆分：1548 行单体入口收敛为 429 行 `index.ts`，Eval runtime 移至 `eval.ts`，background Bash lifecycle 移至 `bash-tasks.ts`，共享 process/limit helper 移至 `shared.ts`；Rust embedding 从单个 `NamedTempFile` 改为保活 `TempDir` 并 materialize 四个模块，避免引入 bundler/runtime build dependency。
 - **2026-08-19**: Eval v2 增加 session-loaded skill discovery/read：`skills.list/search/describe/read` 只投影 Pi 实际加载且允许模型调用的 skills；focused production regression 扩展到 14/14，通过 hidden-skill 与白名单读取覆盖。
 - **2026-08-19**: 新增 F2 `pi_eval_v2_only` 覆盖层：强制 v2 + Pi 原生 registry `--tools eval`，显式 `--tools`/`--no-tools` 优先且关闭后恢复底层偏好。真实 Pi 0.84.2 + `3838-completions/ark-code-latest` 独立 tmux 验证：仅设置该开关即可进入 v2，Eval 内 `Object.keys(tool) == []`，`skills.search("models")` 命中 session skills，`skills.read("models-config")` 成功；测试 tmux/临时目录已清理。`./build.sh` 仍被 `pi-main` 既有 3 个 TS2554 阻断，受保护 Cargo binary build、focused Rust tests 与 `git diff --check` 均通过。
+- **2026-08-19**: 修复 eval-v2-only 的 host-tool 空目录：不再用 `--tools eval` 过滤 Pi registry；grok-pi 只在 host-owned eval-only policy 生效时向 bridge 标记模式，并由 extension 在 `session_start` 将顶层 active set 收敛到 `eval`。普通 v2 与显式 CLI tool policy 继续只允许 active tools；eval-only 下 Eval catalog 可见 registry 中仍被允许的工具，inactive nested call 绕过原生 `invokeTool` 的 active gate，改走 captured wrapped extension/core 路径并保留 Pi tool lifecycle hooks。
+- **2026-08-19**: 完成 eval-v2-only host-tool 修复的真实 Pi 运行时验证：Pi `0.84.x` + `3838-completions/ark-code-latest` 下，`session_start` 后顶层 `getActiveTools()` 为 `["eval"]`；Eval 内 `Object.keys(tool)` 可见 registry 中仍允许的 `read` 等工具，`await tool.read({path:"README.md", ...})` 成功返回文件内容。另以 `--exclude-tools read` 做反向探针，Eval catalog 不再包含 `read`，确认显式 CLI registry policy 仍保持权威。

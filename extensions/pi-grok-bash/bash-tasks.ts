@@ -18,7 +18,13 @@ import { join } from "node:path";
 
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 
-import { MAX_OUTPUT_BYTES, MAX_TIMEOUT_SECONDS, killChildProcess } from "./shared.ts";
+import {
+	MAX_OUTPUT_BYTES,
+	MAX_TIMEOUT_SECONDS,
+	formatTaskOutput,
+	killChildProcess,
+	truncateTaskOutput,
+} from "./shared.ts";
 
 const BRIDGE_TYPE = "pi-grok-background-bash/v1";
 /**
@@ -65,6 +71,7 @@ export type BackgroundTask = {
 	explicitlyKilled: boolean;
 	timedOut: boolean;
 	timeoutHandle?: ReturnType<typeof setTimeout>;
+	autoBackgroundHandle?: ReturnType<typeof setTimeout>;
 	waiters: Set<() => void>;
 	foregroundSettler?: (outcome: "completed" | "backgrounded") => void;
 	promote?: () => void;
@@ -90,7 +97,12 @@ function taskState(task: BackgroundTask): string {
 	return task.exitCode === 0 && !task.signal ? "completed" : "failed";
 }
 
+function boundedTaskOutput(task: BackgroundTask) {
+	return truncateTaskOutput(task.output.toString("utf8"), task.truncated);
+}
+
 function taskSnapshot(task: BackgroundTask) {
+	const bounded = boundedTaskOutput(task);
 	return {
 		task_id: task.taskId,
 		command: task.command,
@@ -98,9 +110,9 @@ function taskSnapshot(task: BackgroundTask) {
 		cwd: task.cwd,
 		start_time: systemTime(task.startedAt),
 		end_time: task.endedAt === undefined ? undefined : systemTime(task.endedAt),
-		output: task.output.toString("utf8"),
+		output: bounded.output,
 		output_file: task.outputFile,
-		truncated: task.truncated,
+		truncated: bounded.truncated,
 		exit_code: task.exitCode,
 		signal: task.signal,
 		completed: task.completed,
@@ -120,6 +132,7 @@ function systemTime(milliseconds: number) {
 
 export function taskResult(task: BackgroundTask) {
 	const ended = task.endedAt === undefined ? undefined : new Date(task.endedAt).toISOString();
+	const bounded = boundedTaskOutput(task);
 	return {
 		task_id: task.taskId,
 		command: task.command,
@@ -128,9 +141,9 @@ export function taskResult(task: BackgroundTask) {
 		started: new Date(task.startedAt).toISOString(),
 		ended,
 		duration_secs: ((task.endedAt ?? Date.now()) - task.startedAt) / 1000,
-		output: task.output.toString("utf8"),
+		output: formatTaskOutput(bounded.output, bounded.truncated, task.outputFile),
 		output_file: task.outputFile,
-		truncated: task.truncated,
+		truncated: bounded.truncated,
 		raw_output_bytes: task.outputBytes,
 	};
 }
@@ -179,11 +192,12 @@ function emitCompleted(pi: ExtensionAPI, task: BackgroundTask) {
 	const snapshot = taskSnapshot(task);
 	const failed = !snapshot.explicitly_killed && (snapshot.exit_code !== 0 || Boolean(snapshot.signal));
 	const shouldWake = !snapshot.explicitly_killed;
+	const modelOutput = formatTaskOutput(snapshot.output, snapshot.truncated, snapshot.output_file);
 	const content = snapshot.explicitly_killed
 		? `Background Bash task cancelled: ${task.command}`
 		: failed
-			? `Background Bash task failed: ${task.command}\n\n${snapshot.output || "(no output)"}\n\nExit code: ${snapshot.exit_code ?? "none"}${snapshot.signal ? `; signal: ${snapshot.signal}` : ""}`
-			: `Background Bash task completed: ${task.command}\n\n${snapshot.output || "(no output)"}\n\nExit code: ${snapshot.exit_code ?? "none"}`;
+			? `Background Bash task failed: ${task.command}\n\n${modelOutput || "(no output)"}\n\nExit code: ${snapshot.exit_code ?? "none"}${snapshot.signal ? `; signal: ${snapshot.signal}` : ""}`
+			: `Background Bash task completed: ${task.command}\n\n${modelOutput || "(no output)"}\n\nExit code: ${snapshot.exit_code ?? "none"}`;
 	pi.sendMessage(
 		{
 			customType: BRIDGE_TYPE,
@@ -234,6 +248,7 @@ function finishTask(pi: ExtensionAPI, task: BackgroundTask, code: number | null,
 	task.exitCode = code ?? undefined;
 	task.signal ??= signal ?? undefined;
 	if (task.timeoutHandle) clearTimeout(task.timeoutHandle);
+	if (task.autoBackgroundHandle) clearTimeout(task.autoBackgroundHandle);
 	task.log.end(() => {
 		if (task.backgrounded) {
 			publishTerminalState(task);
@@ -280,6 +295,7 @@ export async function startTask(
 		description?: string;
 		cwd: string;
 		timeout?: number;
+		autoBackgroundMs?: number;
 		backgrounded: boolean;
 		env: NodeJS.ProcessEnv;
 		onData?: (chunk: Buffer) => void;
@@ -313,7 +329,7 @@ export async function startTask(
 	const recordOutput = (chunk: Buffer) => {
 		appendOutput(task, chunk);
 		task.log.write(chunk);
-		params.onData?.(chunk);
+		if (!task.backgrounded) params.onData?.(chunk);
 	};
 	task.child.stdout?.on("data", recordOutput);
 	task.child.stderr?.on("data", recordOutput);
@@ -331,6 +347,9 @@ export async function startTask(
 			task.signal = "timeout";
 			killProcessTree(task);
 		}, params.timeout * 1000);
+	}
+	if (!params.backgrounded && params.autoBackgroundMs !== undefined) {
+		task.autoBackgroundHandle = setTimeout(() => task.promote?.(), params.autoBackgroundMs);
 	}
 	return task;
 }

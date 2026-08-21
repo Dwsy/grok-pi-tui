@@ -48,6 +48,24 @@ impl ScrollbackState {
             .collect()
     }
 
+    /// Whether a turn contains a persisted compaction-summary block.
+    ///
+    /// Timeline navigation remains turn-based; this is display metadata only.
+    pub fn turn_has_compaction_summary(&self, turn_idx: usize) -> bool {
+        let Some(turn) = self.turns.get(turn_idx) else {
+            return false;
+        };
+        turn.range().any(|entry_idx| {
+            self.entries.get_index(entry_idx).is_some_and(|(_, entry)| {
+                matches!(
+                    &entry.block,
+                    RenderBlock::SessionEvent(block)
+                        if matches!(&block.event, crate::scrollback::blocks::SessionEvent::CompactionSummary { .. })
+                )
+            })
+        })
+    }
+
     /// Preview text for one turn, used by the timeline rail hover card.
     pub fn turn_preview(&self, turn_idx: usize) -> Option<String> {
         let turn = self.turns.get(turn_idx)?;
@@ -124,5 +142,27 @@ impl ScrollbackState {
                     }
                 })
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compaction_summary_marks_only_its_own_turn() {
+        let mut state = ScrollbackState::new();
+        state.push_block(RenderBlock::user_prompt("first prompt"));
+        state.push_block(RenderBlock::agent_message("first answer"));
+        state.push_block(RenderBlock::session_event(
+            crate::scrollback::blocks::SessionEvent::CompactionSummary {
+                summary: "preserved context".into(),
+            },
+        ));
+        state.push_block(RenderBlock::user_prompt("second prompt"));
+        state.push_block(RenderBlock::agent_message("second answer"));
+
+        assert!(state.turn_has_compaction_summary(0));
+        assert!(!state.turn_has_compaction_summary(1));
     }
 }

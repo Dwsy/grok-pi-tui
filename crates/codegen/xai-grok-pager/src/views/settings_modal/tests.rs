@@ -18,6 +18,17 @@ use crate::settings::{
 use crate::theme::Theme;
 use xai_grok_shell::agent::config::UiConfig;
 
+#[test]
+fn debug_print_row_order() {
+    let prev_voice = crate::app::voice_mode_enabled();
+    crate::app::set_voice_mode_enabled_for_test(false);
+    let s = make_state();
+    for (i, row) in s.rows.iter().enumerate() {
+        eprintln!("[{i}] {row:?}");
+    }
+    crate::app::set_voice_mode_enabled_for_test(prev_voice);
+}
+
 fn make_state() -> SettingsModalState {
     SettingsModalState::new(
         Arc::new(SettingsRegistry::defaults()),
@@ -562,13 +573,16 @@ fn render_setting_row_shows_full_label_when_one_line_fits() {
         &mut buf,
         area,
         &meta,
-        &SettingValue::Bool(false),
-        15, // max_label_w — kept for API compatibility, no longer used.
-        false,
-        &theme,
-        false, // is_expanded
-        false, // is_hovered
+        Some(&SettingValue::Bool(false)),
+        15,
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
+        // is_hovered
         None,
+        &theme,
     );
     let mut rendered = String::new();
     for x in 0..area.width {
@@ -747,7 +761,9 @@ fn initial_selection_skips_header() {
     let s = make_state();
     match &s.rows[s.selected] {
         RowEntry::Setting { key, .. } => assert_eq!(*key, "compact_mode"),
-        RowEntry::Header { .. } => panic!("selection landed on a header"),
+        RowEntry::Header { .. } | RowEntry::Section { .. } => {
+            panic!("selection landed on a non-setting row")
+        }
     }
 }
 
@@ -1010,13 +1026,15 @@ fn selected_browse_row_label_is_bold() {
         &mut buf,
         area,
         meta,
-        &SettingValue::Bool(false),
+        Some(&SettingValue::Bool(false)),
         40,
-        true,
-        &theme,
-        false,
-        false,
+        RowStyle {
+            selected: true,
+            hovered: false,
+            dimmed: false,
+        },
         None,
+        &theme,
     );
 
     assert!(
@@ -1469,13 +1487,17 @@ fn render_setting_row_emits_restart_pill_when_required() {
         &mut buf,
         area,
         &meta,
-        &SettingValue::Bool(false),
-        10,    // max_label_w
-        false, // is_selected
-        &theme,
-        true,  // is_expanded — gate on
-        false, // is_hovered
+        Some(&SettingValue::Bool(false)),
+        10,
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
+        // is_hovered
         None,
+        // is_selected
+        &theme,
     );
     let mut rendered = String::new();
     for x in 0..area.width {
@@ -1494,13 +1516,17 @@ fn render_setting_row_emits_restart_pill_when_required() {
         &mut buf,
         area,
         &meta,
-        &SettingValue::Bool(true), // edited from default `false`
+        Some(&SettingValue::Bool(true)),
+        // edited from default `false`
         10,
-        false,
-        &theme,
-        false, // is_expanded — off
-        false, // is_hovered
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
+        // is_hovered
         None,
+        &theme,
     );
     let mut rendered = String::new();
     for x in 0..area.width {
@@ -1544,13 +1570,16 @@ fn render_setting_row_hides_restart_pill_when_at_default_and_collapsed() {
         &mut buf,
         area,
         &meta,
-        &SettingValue::Bool(false),
+        Some(&SettingValue::Bool(false)),
         10,
-        false,
-        &theme,
-        false, // is_expanded
-        false, // is_hovered
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
+        // is_hovered
         None,
+        &theme,
     );
     let mut rendered = String::new();
     for x in 0..area.width {
@@ -4444,8 +4473,8 @@ fn compute_filtered_empty_query_returns_identity() {
         },
     ];
     let registry = SettingsRegistry::defaults();
-    let result = compute_filtered(&rows, &registry, "");
-    assert_eq!(result, vec![0, 1, 2]);
+    let result = compute_filtered(&rows, &registry, "", Some(SettingCategory::Appearance));
+    assert_eq!(result, vec![1, 2]);
 }
 
 #[test]
@@ -4463,7 +4492,12 @@ fn compute_filtered_excludes_header_when_no_children_match() {
         },
     ];
     let registry = SettingsRegistry::defaults();
-    let result = compute_filtered(&rows, &registry, "xyzzy-no-match");
+    let result = compute_filtered(
+        &rows,
+        &registry,
+        "xyzzy-no-match",
+        Some(SettingCategory::Appearance),
+    );
     assert!(
         result.is_empty(),
         "header must be excluded when no settings in its section match, got {result:?}"
@@ -4491,7 +4525,12 @@ fn compute_filtered_single_word_match_emits_header_then_setting() {
     ];
     let registry = SettingsRegistry::defaults();
     // "density" is a compact_mode keyword only.
-    let result = compute_filtered(&rows, &registry, "density");
+    let result = compute_filtered(
+        &rows,
+        &registry,
+        "density",
+        Some(SettingCategory::Appearance),
+    );
     assert_eq!(result, vec![0, 1], "header then compact_mode in order");
 }
 
@@ -4508,7 +4547,12 @@ fn compute_filtered_multi_word_and_match_narrows_further() {
     ];
     let registry = SettingsRegistry::defaults();
     // Both "compact" and "density" are compact_mode keywords.
-    let result = compute_filtered(&rows, &registry, "compact density");
+    let result = compute_filtered(
+        &rows,
+        &registry,
+        "compact density",
+        Some(SettingCategory::Appearance),
+    );
     assert_eq!(result, vec![0, 1]);
 }
 
@@ -4764,6 +4808,7 @@ fn row_rects_shift_down_for_blank_lines_above_headers() {
         let expected_substring = match r {
             RowEntry::Header { category } => category.label().to_string(),
             RowEntry::Setting { meta_index, .. } => s.registry.all()[*meta_index].label.to_string(),
+            RowEntry::Section { name, .. } => name.to_string(),
         };
         assert!(
             row_text.contains(&expected_substring),
@@ -4881,13 +4926,16 @@ fn narrow_terminal_drops_value_to_second_line() {
         &mut buf,
         area,
         &meta,
-        &SettingValue::Bool(false),
-        24, // max_label_w — ignored for layout.
-        false,
-        &theme,
-        false,
-        false, // is_hovered
+        Some(&SettingValue::Bool(false)),
+        24,
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
+        // is_hovered
         None,
+        &theme,
     );
     let line1 = buf_row_text(&buf, 0, area.x, area.width);
     let line2 = buf_row_text(&buf, 1, area.x, area.width);
@@ -4945,13 +4993,16 @@ fn wide_terminal_keeps_value_on_first_line() {
         &mut buf,
         area,
         &meta,
-        &SettingValue::Bool(false),
+        Some(&SettingValue::Bool(false)),
         24,
-        false,
-        &theme,
-        false,
-        false, // is_hovered
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
+        // is_hovered
         None,
+        &theme,
     );
     let line1 = buf_row_text(&buf, 0, area.x, area.width);
     let line2 = buf_row_text(&buf, 1, area.x, area.width);
@@ -4969,269 +5020,45 @@ fn wide_terminal_keeps_value_on_first_line() {
     );
 }
 
-/// `row_layout`'s pathological-truncation branch: when even the
-/// label alone exceeds the row width, the label gets truncated
-/// with `…` on line 1 and the value still drops to line 2.
+/// Current settings rows are fixed one-line rows; the renderer truncates the
+/// label to the computed label budget and keeps the value on that same row.
 #[test]
-fn pathologically_narrow_truncates_label_with_ellipsis() {
+fn render_setting_row_keeps_value_on_single_line() {
     let meta = synthetic_long_label_meta();
     let area = Rect {
         x: 0,
         y: 0,
-        width: 25,
+        width: 60,
         height: 2,
     };
     let mut buf = Buffer::empty(area);
     let theme = Theme::current();
-    render_setting_row(
+    let value_rect = render_setting_row(
         &mut buf,
         area,
         &meta,
-        &SettingValue::Bool(false),
+        Some(&SettingValue::Bool(false)),
         24,
-        false,
-        &theme,
-        false,
-        false, // is_hovered
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
         None,
+        &theme,
     );
     let line1 = buf_row_text(&buf, 0, area.x, area.width);
     let line2 = buf_row_text(&buf, 1, area.x, area.width);
     assert!(
-        line1.contains('\u{2026}'),
-        "line 1 must contain the `…` ellipsis when label is too wide: {line1:?}"
+        line1.contains("off"),
+        "value must render on the row line: {line1:?}"
     );
     assert!(
-        line2.contains("off"),
-        "value `off` must still drop to line 2 even when label is truncated: {line2:?}"
+        line2.chars().all(|c| c == ' '),
+        "fixed-height row must leave following line blank: {line2:?}"
     );
-}
-
-/// Two-line rows expand `state.row_rects` to span BOTH lines so
-/// mouse clicks on either line trigger the same default action.
-///
-/// `coding_data_sharing`'s label plus the value "Opt out", the chevron,
-/// and the row chrome are far wider than the width=28 we render at, so
-/// the row drops to two lines.
-#[test]
-fn two_line_row_hit_rect_spans_both_lines() {
-    let mut s = make_state();
-    let row_idx = s
-        .rows
-        .iter()
-        .position(|r| matches!(r, RowEntry::Setting { key, .. } if *key == "coding_data_sharing"))
-        .expect("coding_data_sharing must be registered");
-    // Render at a narrow width so coding_data_sharing forces a
-    // two-line layout.
-    let area = Rect {
-        x: 0,
-        y: 0,
-        width: 28,
-        height: 60,
-    };
-    let mut buf = Buffer::empty(area);
-    let theme = Theme::current();
-    s.selected = row_idx;
-    render_rows(&mut buf, area, &mut s, &theme);
-
-    let rect = s.row_rects[row_idx];
-    assert!(
-        rect.height >= 2,
-        "two-line row hit-rect must span ≥2 lines, got height={}",
-        rect.height
-    );
-
-    // Synthesize a click on line 2 of the row. The mouse handler
-    // should fire the default action (open the enum picker for
-    // coding_data_sharing).
-    s.list_area = area;
-    let click_y = rect.y + 1;
-    // Click somewhere in the middle of line 2.
-    let click_x = rect.x + rect.width / 2;
-    // First click: only selects (since selection might not match).
-    // Force selection on first to make it a direct activation.
-    let outcome = handle_settings_mouse(
-        &mut s,
-        MouseEventKind::Down(crossterm::event::MouseButton::Left),
-        click_x,
-        click_y,
-    );
-    // Selection already matches, so click activates: enum picker
-    // opens (mode flips to PickingEnum).
-    match outcome {
-        SettingsKeyOutcome::Changed => {
-            assert!(
-                matches!(s.mode(), SettingsModalMode::PickingEnum { .. }),
-                "click on line 2 of a two-line Enum row must open the picker, \
-                 got mode {:?}",
-                s.mode()
-            );
-        }
-        other => panic!(
-            "click on line 2 must produce Changed (selection or activation), \
-             got {other:?}"
-        ),
-    }
-}
-
-/// Expanded two-line rows render label (line 1), value (line 2),
-/// and the wrapped description on subsequent lines.
-#[test]
-fn two_line_row_with_expansion_renders_three_segments() {
-    let mut s = make_state();
-    // The coding-data row's label + value (with chevron) won't
-    // fit on a 28-col line, forcing two-line layout.
-    let row_idx = s
-        .rows
-        .iter()
-        .position(|r| matches!(r, RowEntry::Setting { key, .. } if *key == "coding_data_sharing"))
-        .expect("coding_data_sharing must be registered");
-    s.selected = row_idx;
-    s.expanded_keys.insert("coding_data_sharing");
-
-    let area = Rect {
-        x: 0,
-        y: 0,
-        width: 28,
-        height: 60,
-    };
-    let mut buf = Buffer::empty(area);
-    let theme = Theme::current();
-    render_rows(&mut buf, area, &mut s, &theme);
-
-    let rect = s.row_rects[row_idx];
-    assert!(
-        rect.height >= 2,
-        "expanded two-line row must allocate ≥2 lines for the row itself, got height={}",
-        rect.height
-    );
-    // The row label is on line 1. A 28-col row truncates a long label, so
-    // match the head of the live copy rather than the whole string.
-    let label_line = buf_row_text(&buf, rect.y, area.x, area.width);
-    let label = s
-        .registry
-        .find("coding_data_sharing")
-        .expect("registered")
-        .label;
-    let head: String = label
-        .split_whitespace()
-        .take(2)
-        .collect::<Vec<_>>()
-        .join(" ");
-    assert!(
-        label_line.contains(&head),
-        "line 1 must contain the row label (head {head:?}): {label_line:?}"
-    );
-    // The value (display: "Opt out" or similar) is on line 2.
-    let value_line = buf_row_text(&buf, rect.y + 1, area.x, area.width);
-    // Value comes from displaying the canonical → display mapping,
-    // which uses the synthetic enum's "Third Option" canonical of
-    // "opt-out". The display fallback returns the canonical when
-    // the lookup misses — registry has the real `CodingDataSharing`
-    // choices, so display should be "Opt out".
-    assert!(
-        value_line.contains("Opt") || value_line.contains("opt") || value_line.contains("out"),
-        "line 2 must contain the value text: {value_line:?}"
-    );
-    // The expanded description renders on line 3 and below.
-    let desc_line = buf_row_text(&buf, rect.y + 2, area.x, area.width);
-    assert!(
-        !desc_line.chars().all(|c| c == ' '),
-        "line 3 must contain wrapped description text (non-blank): {desc_line:?}"
-    );
-}
-
-/// The contextual-hints group row carries no value, but when its key is in
-/// `expanded_keys` (Right/l) it must still paint its description below the
-/// chevron row — mirroring how normal rows surface an expanded description.
-/// Regression guard: before the fix the group short-circuited out of both
-/// the height + render loops, so Right/l set `expanded_keys` but painted
-/// nothing.
-#[test]
-fn group_row_renders_expanded_description() {
-    let mut s = make_state();
-    let row_idx = s
-        .rows
-        .iter()
-        .position(|r| matches!(r, RowEntry::Setting { key, .. } if *key == "contextual_hints"))
-        .expect("contextual_hints group must be registered");
-    s.selected = row_idx;
-    s.expanded_keys.insert("contextual_hints");
-
-    let area = Rect {
-        x: 0,
-        y: 0,
-        width: 60,
-        height: 60,
-    };
-    let mut buf = Buffer::empty(area);
-    let theme = Theme::current();
-    render_rows(&mut buf, area, &mut s, &theme);
-
-    let rect = s.row_rects[row_idx];
-    // Line 1 is the group's chevron row (its label).
-    let label_line = buf_row_text(&buf, rect.y, area.x, area.width);
-    assert!(
-        label_line.contains("Show contextual hints"),
-        "line 1 must contain the group label: {label_line:?}"
-    );
-    // The description renders on the line below the chevron row (non-blank).
-    let desc_line = buf_row_text(&buf, rect.y + 1, area.x, area.width);
-    assert!(
-        !desc_line.chars().all(|c| c == ' '),
-        "expanded group must paint its description below the chevron row \
-         (non-blank): {desc_line:?}"
-    );
-    // The painted text matches the registered description (derive a token
-    // from the live copy so this stays green across description edits).
-    let desc = s
-        .registry
-        .find("contextual_hints")
-        .expect("group registered")
-        .description;
-    let token = desc
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or("")
-        .trim_matches(|c: char| !c.is_alphanumeric());
-    assert!(
-        !token.is_empty() && desc_line.contains(token),
-        "expanded group description must render its text (token `{token}`): {desc_line:?}"
-    );
-}
-
-/// `row_layout`'s width threshold: a label + value that exactly
-/// fits picks `OneLine`; one cell narrower picks `TwoLine`.
-#[test]
-fn row_layout_threshold_is_exact() {
-    let label = "Coding data sharing"; // 19 cells
-    let value = "Opt out"; // 7 cells
-    // chrome (triangle + gap + chevron + right pad) = 2 + 1 + 2 + 1 = 6
-    // total = 19 + 7 + 6 = 32 cells (chevron-enabled).
-    assert_eq!(row_layout(32, label, value, false), RowLayout::OneLine);
-    assert_eq!(row_layout(31, label, value, false), RowLayout::TwoLine);
-}
-
-/// Sanity: `row_layout` handles bool-without-chevron rows
-/// (Bool kind, no `›` suffix). The chevron
-/// column is reserved even for Bool rows, so the chrome cost
-/// is the same with and without the glyph.
-///
-/// The dead
-/// `has_chevron` parameter has been removed; `row_layout` now
-/// always reserves the chevron column. The Bool / Enum
-/// distinction at the renderer is purely whether to paint
-/// the `›` glyph in the (always-reserved) column.
-#[test]
-fn row_layout_bool_without_chevron() {
-    let label = "Disable vim mode (experimental)"; // 31 cells
-    let value = "off"; // 3 cells
-    // chrome (triangle + gap + reserved chevron col + right pad)
-    // = 2 + 1 + 2 + 1 = 6 cells, identical to the
-    // chevron-enabled case.
-    // total = 31 + 3 + 6 = 40 cells.
-    assert_eq!(row_layout(40, label, value, false), RowLayout::OneLine);
-    assert_eq!(row_layout(39, label, value, false), RowLayout::TwoLine);
+    assert_eq!(value_rect.y, area.y);
+    assert_eq!(value_rect.height, 1);
 }
 
 /// Sanity: `_ = synthetic_enum_chevron_meta` reference so the test
@@ -5700,7 +5527,7 @@ fn filter_search_bar_keeps_narrow_graphemes_and_cursor_aligned() {
     };
     let mut buffer = Buffer::empty(area);
     let theme = Theme::current();
-    render_row_list_with_search_bar(&mut buffer, area, &mut state, &theme);
+    render_browse(&mut buffer, area, &mut state, &theme);
 
     let mut row = String::new();
     for x in 0..area.width {
@@ -5748,13 +5575,15 @@ fn bool_off_value_renders_in_dim_color() {
         &mut buf_off,
         area,
         &meta,
-        &SettingValue::Bool(false),
+        Some(&SettingValue::Bool(false)),
         15,
-        false,
-        &theme,
-        false,
-        false,
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
         None,
+        &theme,
     );
     // Use `find_text_col` so the
     // column index is the actual buffer position, not a byte
@@ -5781,13 +5610,15 @@ fn bool_off_value_renders_in_dim_color() {
         &mut buf_on,
         area,
         &meta,
-        &SettingValue::Bool(true),
+        Some(&SettingValue::Bool(true)),
         15,
-        false,
-        &theme,
-        false,
-        false,
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
         None,
+        &theme,
     );
     let on_col = find_text_col(&buf_on, 0, "on").expect("must find `on` substring");
     let on_cell = buf_on.cell((on_col, 0)).expect("on cell");
@@ -5854,13 +5685,15 @@ fn chevron_column_is_at_constant_right_offset() {
         &mut buf_bool,
         area,
         &bool_meta,
-        &SettingValue::Bool(true),
+        Some(&SettingValue::Bool(true)),
         10,
-        false,
-        &theme,
-        false,
-        false,
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
         None,
+        &theme,
     );
 
     // Enum row — chevron column contains the `›` glyph.
@@ -5869,13 +5702,15 @@ fn chevron_column_is_at_constant_right_offset() {
         &mut buf_enum,
         area,
         &enum_meta,
-        &SettingValue::Enum("choice_a"),
+        Some(&SettingValue::Enum("choice_a")),
         10,
-        false,
-        &theme,
-        false,
-        false,
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
         None,
+        &theme,
     );
 
     // The chevron column is a 2-cell block at
@@ -5941,25 +5776,29 @@ fn chevron_column_is_at_constant_right_offset() {
         &mut buf_multi,
         bool_area,
         &bool_meta,
-        &SettingValue::Bool(false),
+        Some(&SettingValue::Bool(false)),
         10,
-        false,
-        &theme,
-        false,
-        false,
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
         None,
+        &theme,
     );
     let _ = render_setting_row(
         &mut buf_multi,
         enum_area,
         &enum_meta,
-        &SettingValue::Enum("choice_a"),
+        Some(&SettingValue::Enum("choice_a")),
         10,
-        false,
-        &theme,
-        false,
-        false,
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
         None,
+        &theme,
     );
     // Bool row's `off` ends at column N; Enum row's `›` glyph
     // lands at column M. The contract: N == M's column
@@ -6010,13 +5849,15 @@ fn chevron_column_aligns_across_one_and_two_line_layouts() {
         &mut buf_two,
         area_two,
         &synthetic_enum_chevron_meta(),
-        &SettingValue::Enum("choice_a"),
+        Some(&SettingValue::Enum("choice_a")),
         10,
-        false,
-        &theme,
-        false,
-        false,
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
         None,
+        &theme,
     );
     let area_one = Rect {
         x: 0,
@@ -6029,13 +5870,15 @@ fn chevron_column_aligns_across_one_and_two_line_layouts() {
         &mut buf_one,
         area_one,
         &synthetic_enum_chevron_meta(),
-        &SettingValue::Enum("choice_a"),
+        Some(&SettingValue::Enum("choice_a")),
         10,
-        false,
-        &theme,
-        false,
-        false,
+        RowStyle {
+            selected: false,
+            hovered: false,
+            dimmed: false,
+        },
         None,
+        &theme,
     );
     // The column offset from the area's right edge is constant:
     // `area.right - ROW_RIGHT_PAD_W - 1` is the `›` glyph
@@ -8228,7 +8071,6 @@ fn locked_coding_data_sharing_expanded_description_replaces_with_reason() {
     let mut s = make_locked_state(CodingDataSharingLock::TeamManaged);
     let idx = coding_data_sharing_row_idx(&s);
     s.selected = idx;
-    s.expanded_keys.insert("coding_data_sharing");
     let mut buf = Buffer::empty(area);
     render_rows(&mut buf, area, &mut s, &theme);
     let text = flatten(&buf);
@@ -8255,7 +8097,6 @@ fn locked_coding_data_sharing_expanded_description_replaces_with_reason() {
     // Control arm: unlocked expansion shows the description only.
     let mut s = make_state();
     s.selected = idx;
-    s.expanded_keys.insert("coding_data_sharing");
     let mut buf = Buffer::empty(area);
     render_rows(&mut buf, area, &mut s, &theme);
     let text = flatten(&buf);

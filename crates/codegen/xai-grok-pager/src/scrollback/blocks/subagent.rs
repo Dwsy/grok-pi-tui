@@ -71,6 +71,12 @@ pub struct SubagentBlock {
     /// "Running: cargo build") so the user sees interactive progress without
     /// opening the subagent view.
     pub activity_label: Option<String>,
+    /// Number of completed child turns, updated on each `SubagentProgress`
+    /// tick and stamped at `SubagentFinished`.
+    pub turn_count: Option<u32>,
+    /// Cumulative tokens used by the child session, updated on each
+    /// `SubagentProgress` tick and stamped at `SubagentFinished`.
+    pub tokens_used: Option<u64>,
 }
 
 impl SubagentBlock {
@@ -94,6 +100,8 @@ impl SubagentBlock {
             is_background,
             kind: SubagentBlockKind::Started,
             activity_label: None,
+            turn_count: None,
+            tokens_used: None,
         }
     }
 
@@ -113,6 +121,8 @@ impl SubagentBlock {
             is_background: true,
             kind: SubagentBlockKind::Completed { elapsed },
             activity_label: None,
+            turn_count: None,
+            tokens_used: None,
         }
     }
 
@@ -133,6 +143,8 @@ impl SubagentBlock {
             is_background: true,
             kind: SubagentBlockKind::Failed { elapsed, error },
             activity_label: None,
+            turn_count: None,
+            tokens_used: None,
         }
     }
 
@@ -152,6 +164,8 @@ impl SubagentBlock {
             is_background: true,
             kind: SubagentBlockKind::Cancelled { elapsed },
             activity_label: None,
+            turn_count: None,
+            tokens_used: None,
         }
     }
 
@@ -168,6 +182,44 @@ fn quoted_desc(desc: &str, max_width: usize) -> String {
     }
     let inner = truncate_str(desc, max_width - 2);
     format!("\u{201C}{inner}\u{201D}")
+}
+
+/// Compact token count for inline display: `1.2k`, `12k`, `130k`, `1.2M`.
+fn compact_tokens(n: u64) -> String {
+    if n < 1_000 {
+        return n.to_string();
+    }
+    if n < 1_000_000 {
+        let k = n as f64 / 1_000.0;
+        if k < 10.0 {
+            return format!("{k:.1}k");
+        }
+        return format!("{:.0}k", k);
+    }
+    let m = n as f64 / 1_000_000.0;
+    if m < 10.0 {
+        return format!("{m:.1}M");
+    }
+    format!("{:.0}M", m)
+}
+
+/// Build the `— N turns · M tokens` suffix shown after the description.
+///
+/// Returns an empty string when neither field is set, so callers can always
+/// append it. Uses `\u{2014}` (em dash) and `\u{00b7}` (middle dot) to match
+/// the existing meta separator style.
+fn format_stats(turn_count: Option<u32>, tokens_used: Option<u64>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(turns) = turn_count.filter(|&t| t > 0) {
+        parts.push(format!("{turns} turn{}", if turns == 1 { "" } else { "s" }));
+    }
+    if let Some(tokens) = tokens_used.filter(|&t| t > 0) {
+        parts.push(format!("{} tokens", compact_tokens(tokens)));
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!(" \u{2014} {}", parts.join(" \u{00b7} "))
 }
 
 impl BlockContent for SubagentBlock {
@@ -195,13 +247,14 @@ impl BlockContent for SubagentBlock {
                     .filter(|s| !s.is_empty())
                     .map(|a| format!(" \u{2014} {a}"))
                     .unwrap_or_default();
+                let stats = format_stats(self.turn_count, self.tokens_used);
                 let meta = format_subagent_meta(
                     self.persona.as_deref(),
                     self.role.as_deref(),
                     self.model.as_deref(),
                 );
                 // "Subagent running: " / "Subagent started: " = 18 chars
-                let overhead = 18 + meta.width() + activity_suffix.width();
+                let overhead = 18 + meta.width() + activity_suffix.width() + stats.width();
                 let desc = quoted_desc(&self.description, w.saturating_sub(overhead));
                 let mut spans = vec![
                     Span::styled("Subagent ", bold),
@@ -211,47 +264,65 @@ impl BlockContent for SubagentBlock {
                 if !activity_suffix.is_empty() {
                     spans.push(Span::styled(activity_suffix, muted));
                 }
+                if !stats.is_empty() {
+                    spans.push(Span::styled(stats, muted));
+                }
                 spans.push(Span::styled(meta, muted));
                 Line::from(spans)
             }
-            // Completed: Subagent completed in Xs: "description"
+            // Completed: Subagent completed in Xs: "description" — N turns · M tokens
             (SubagentBlockKind::Completed { elapsed }, _) => {
                 let time_str = format_duration(*elapsed);
+                let stats = format_stats(self.turn_count, self.tokens_used);
                 // "Subagent completed in Xs: " = 26 + time_str.len()
-                let prefix_len = 26 + time_str.len();
+                let prefix_len = 26 + time_str.len() + stats.len();
                 let desc = quoted_desc(&self.description, w.saturating_sub(prefix_len));
-                Line::from(vec![
+                let mut spans = vec![
                     Span::styled("Subagent ", bold),
                     Span::styled(format!("completed in {time_str}: "), muted),
                     Span::styled(desc, muted),
-                ])
+                ];
+                if !stats.is_empty() {
+                    spans.push(Span::styled(stats, muted));
+                }
+                Line::from(spans)
             }
-            // Failed: Subagent failed in Xs: "description"
+            // Failed: Subagent failed in Xs: "description" — N turns · M tokens
             (SubagentBlockKind::Failed { elapsed, error }, _) => {
                 let time_str = format_duration(*elapsed);
                 let detail = error
                     .as_deref()
                     .map(|e| format!(" ({e})"))
                     .unwrap_or_default();
-                let prefix_len = 21 + time_str.len() + detail.len();
+                let stats = format_stats(self.turn_count, self.tokens_used);
+                let prefix_len = 21 + time_str.len() + detail.len() + stats.len();
                 let desc = quoted_desc(&self.description, w.saturating_sub(prefix_len));
-                Line::from(vec![
+                let mut spans = vec![
                     Span::styled("Subagent ", bold),
                     Span::styled(format!("failed in {time_str}{detail}: "), muted),
                     Span::styled(desc, muted),
-                ])
+                ];
+                if !stats.is_empty() {
+                    spans.push(Span::styled(stats, muted));
+                }
+                Line::from(spans)
             }
-            // Cancelled: Subagent cancelled in Xs: "description"
+            // Cancelled: Subagent cancelled in Xs: "description" — N turns · M tokens
             (SubagentBlockKind::Cancelled { elapsed }, _) => {
                 let time_str = format_duration(*elapsed);
+                let stats = format_stats(self.turn_count, self.tokens_used);
                 // "Subagent cancelled in Xs: " = 26 + time_str.len()
-                let prefix_len = 26 + time_str.len();
+                let prefix_len = 26 + time_str.len() + stats.len();
                 let desc = quoted_desc(&self.description, w.saturating_sub(prefix_len));
-                Line::from(vec![
+                let mut spans = vec![
                     Span::styled("Subagent ", bold),
                     Span::styled(format!("cancelled in {time_str}: "), muted),
                     Span::styled(desc, muted),
-                ])
+                ];
+                if !stats.is_empty() {
+                    spans.push(Span::styled(stats, muted));
+                }
+                Line::from(spans)
             }
         };
 
@@ -319,5 +390,109 @@ impl BlockContent for SubagentBlock {
 
     fn is_groupable(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::appearance::AppearanceConfig;
+
+    fn test_ctx() -> BlockContext {
+        BlockContext {
+            mode: DisplayMode::Collapsed,
+            is_running: false,
+            width: 120,
+            raw: false,
+            max_lines: None,
+            appearance: AppearanceConfig::default(),
+            is_selected: false,
+            cwd: None,
+        }
+    }
+
+    fn line_text(block: &SubagentBlock) -> String {
+        block.output(&test_ctx()).lines[0]
+            .content
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn compact_tokens_scales_units() {
+        assert_eq!(compact_tokens(0), "0");
+        assert_eq!(compact_tokens(42), "42");
+        assert_eq!(compact_tokens(999), "999");
+        assert_eq!(compact_tokens(1_234), "1.2k");
+        assert_eq!(compact_tokens(12_345), "12k");
+        assert_eq!(compact_tokens(129_540), "130k");
+        assert_eq!(compact_tokens(1_234_567), "1.2M");
+        assert_eq!(compact_tokens(12_345_678), "12M");
+    }
+
+    #[test]
+    fn format_stats_combines_turns_and_tokens() {
+        // Neither field set - no suffix.
+        assert_eq!(format_stats(None, None), "");
+        // Zero values are treated as absent (matches Finished handler which
+        // uses `(turns > 0).then_some(turns)`).
+        assert_eq!(format_stats(Some(0), Some(0)), "");
+        assert_eq!(format_stats(Some(0), Some(1_500)), " \u{2014} 1.5k tokens");
+        assert_eq!(format_stats(Some(1), None), " \u{2014} 1 turn");
+        assert_eq!(format_stats(Some(2), None), " \u{2014} 2 turns");
+        assert_eq!(
+            format_stats(Some(3), Some(4_500)),
+            " \u{2014} 3 turns \u{00b7} 4.5k tokens"
+        );
+    }
+
+    #[test]
+    fn started_line_renders_stats_after_activity() {
+        let mut block = SubagentBlock::started(
+            "research the parser",
+            "child-1",
+            "general-purpose",
+            None,
+            None,
+            None,
+            false,
+        );
+        block.activity_label = Some("Thinking".into());
+        block.turn_count = Some(2);
+        block.tokens_used = Some(4_500);
+
+        let text = line_text(&block);
+        assert!(
+            text.contains("Subagent running: “research the parser”"),
+            "missing prefix, got: {text}"
+        );
+        assert!(
+            text.contains("Thinking"),
+            "missing activity label, got: {text}"
+        );
+        assert!(
+            text.contains("2 turns \u{00b7} 4.5k tokens"),
+            "missing stats suffix, got: {text}"
+        );
+    }
+
+    #[test]
+    fn completed_line_renders_stats_without_activity() {
+        let mut block =
+            SubagentBlock::completed("do the thing", "child-2", Duration::from_secs(43));
+        block.turn_count = Some(7);
+        block.tokens_used = Some(129_540);
+
+        let text = line_text(&block);
+        assert!(
+            text.contains("completed in 43s"),
+            "missing elapsed, got: {text}"
+        );
+        assert!(
+            text.contains("7 turns \u{00b7} 130k tokens"),
+            "missing stats suffix, got: {text}"
+        );
     }
 }

@@ -1583,6 +1583,8 @@ pub struct AgentView {
     /// paste-then-immediate-send never builds content blocks before the image
     /// attaches.
     pub(crate) paste_probe_in_flight: usize,
+    /// Raw text held only while the large-paste selector is open.
+    pending_large_paste: Option<paste::PendingLargePaste>,
     /// A prompt send / interject deferred until the in-flight paste probe(s)
     /// complete. Kind-only: the payload is re-derived from the widget on
     /// reissue so the freshly attached image chip travels with it.

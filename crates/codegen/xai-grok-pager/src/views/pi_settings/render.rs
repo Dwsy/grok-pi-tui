@@ -252,7 +252,15 @@ fn render_rows(buf: &mut Buffer, area: Rect, state: &mut PiSettingsState, theme:
     let sidebar_w = sidebar_width();
     let split = sections.len() >= 2 && area.width >= sidebar_w + SIDEBAR_SEPARATOR_W + MIN_PANE_W;
     let pane = if split {
-        render_sidebar(buf, area, sidebar_w, &sections, active_section, state, theme);
+        render_sidebar(
+            buf,
+            area,
+            sidebar_w,
+            &sections,
+            active_section,
+            state,
+            theme,
+        );
         Rect {
             x: area.x + sidebar_w + SIDEBAR_SEPARATOR_W,
             width: area.width - sidebar_w - SIDEBAR_SEPARATOR_W,
@@ -680,7 +688,11 @@ fn render_setting_row(
     }
     if show_chevron {
         let style = Style::default()
-            .fg(if row.dimmed { theme.gray_dim } else { theme.gray })
+            .fg(if row.dimmed {
+                theme.gray_dim
+            } else {
+                theme.gray
+            })
             .bg(bg);
         buf.set_span(
             chevron_x,
@@ -817,11 +829,7 @@ fn render_choice_list(
         }
         let is_selected = i == selected;
         let bg = row_bg(theme, is_selected, hover == Some(i));
-        let marker = if is_selected {
-            "\u{25CF}"
-        } else {
-            "\u{25CB}"
-        };
+        let marker = if is_selected { "\u{25CF}" } else { "\u{25CB}" };
         let marker_style = Style::default()
             .fg(if is_selected {
                 theme.accent_user
@@ -829,14 +837,15 @@ fn render_choice_list(
                 theme.gray
             })
             .bg(bg);
-        let label_style = Style::default()
-            .fg(theme.text_primary)
-            .bg(bg)
-            .add_modifier(if is_selected {
-                Modifier::BOLD
-            } else {
-                Modifier::empty()
-            });
+        let label_style =
+            Style::default()
+                .fg(theme.text_primary)
+                .bg(bg)
+                .add_modifier(if is_selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                });
 
         let description = wrap_text(&choice.description, area.width.saturating_sub(5));
         let height = (1 + description.len() as u16).min(end_y - y);

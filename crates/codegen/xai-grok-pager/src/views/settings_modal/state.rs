@@ -73,7 +73,9 @@ pub enum RowEntry {
     /// Tab heading. Hidden while browsing a tab (the tab bar names it) and
     /// rendered only in global-search results, where matches from several
     /// tabs share one list.
-    Header { category: SettingCategory },
+    Header {
+        category: SettingCategory,
+    },
     /// Sidebar section heading, also drawn inline above the section's first
     /// row in the settings pane. Hidden in global-search results.
     Section {

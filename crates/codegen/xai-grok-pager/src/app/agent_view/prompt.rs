@@ -222,10 +222,12 @@ impl AgentView {
                             .slash_snapshot()
                             .selection()
                             .map(|r| r.display.clone());
-                        if let Some(mut v) = crate::views::file_search::line_viewer::LineViewerState::open_markdown(
-                            std::path::Path::new(&path),
-                            None,
-                        ) {
+                        if let Some(mut v) =
+                            crate::views::file_search::line_viewer::LineViewerState::open_markdown(
+                                std::path::Path::new(&path),
+                                None,
+                            )
+                        {
                             v.title_override = title;
                             self.line_viewer = Some(v);
                         }

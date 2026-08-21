@@ -2762,9 +2762,7 @@ pub(in crate::app::dispatch) fn set_pi_keep_multi_agent(
     app.current_ui.pi_keep_multi_agent = enabled;
     refresh_open_settings_modals(app);
     let value = if enabled { "on" } else { "off" };
-    app.show_toast(&format!(
-        "\u{2713} Keep multi-agent on /new: {value}"
-    ));
+    app.show_toast(&format!("\u{2713} Keep multi-agent on /new: {value}"));
     vec![Effect::PersistSetting {
         key: "pi_keep_multi_agent",
         value: crate::settings::SettingValue::Bool(enabled),

@@ -288,23 +288,33 @@ export default function (pi: ExtensionAPI) {
     if (message.role === "assistant") lastAssistantText = textFromAssistantMessage(event.message);
   });
 
-  pi.on("tool_execution_end", (event, ctx) => {
+  pi.on("turn_end", (event, ctx) => {
+    if (event.toolResults.length === 0) return;
     completionReminderAwaitingProgress = false;
-    if (event.toolName === "todo") {
-      mutationsSinceLastTodo = 0;
-      return;
+
+    let nudgeDue = false;
+    for (const toolResult of event.toolResults) {
+      if (toolResult.toolName === "todo") {
+        mutationsSinceLastTodo = 0;
+        nudgeDue = false;
+        continue;
+      }
+      if (toolResult.isError || !MUTATING_TOOLS.has(toolResult.toolName)) continue;
+      mutationsSinceLastTodo += 1;
+      if (mutationsSinceLastTodo >= MID_RUN_NUDGE_MUTATION_THRESHOLD) nudgeDue = true;
     }
-    if (event.isError || !MUTATING_TOOLS.has(event.toolName)) return;
-    mutationsSinceLastTodo += 1;
-    if (mutationsSinceLastTodo < MID_RUN_NUDGE_MUTATION_THRESHOLD) return;
+
+    if (!nudgeDue) return;
     if (midRunNudgeCount >= MID_RUN_NUDGE_MAX_PER_CYCLE) return;
 
     const state = stateFromBranch(ctx);
     const incomplete = state.tasks.filter((task) => task.status === "pending" || task.status === "in_progress");
     if (incomplete.length === 0) return;
 
-    mutationsSinceLastTodo = 0;
+    mutationsSinceLastTodo -= MID_RUN_NUDGE_MUTATION_THRESHOLD;
     midRunNudgeCount += 1;
+    // Queue only after the entire tool batch is finalized. Steering from tool_execution_end can split
+    // assistant tool calls from their real tool results, causing Pi to synthesize duplicate outputs.
     pi.sendMessage(
       {
         customType: "pi-grok-todo-mid-run-nudge/v1",

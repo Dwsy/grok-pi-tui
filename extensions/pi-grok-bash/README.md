@@ -231,7 +231,7 @@ tool.grep.schema
 tool.grep.meta
 ```
 
-`EvalSessionToolBridge` observes Pi's registered tools and active-tool set. It prefers native `ExtensionAPI.invokeTool` when the host provides it. Otherwise it invokes captured wrapped extension tools, with a fallback for supported core tools. An inactive tool is rejected even if it exists in the broader registry.
+`EvalSessionToolBridge` observes Pi's registered tools and active-tool set. Normal v2 exposes and invokes only active tools. When grok-pi applies its host-owned eval-v2-only policy, the process skips the saved F2 built-in selection so the registry remains intact while the top-level active set is collapsed to `eval`; explicit CLI exclusions still apply, and the bridge exposes the remaining registered tools only inside Eval while keeping them hidden from the top-level model; those inactive nested calls use captured wrapped extension/core tools instead of native `ExtensionAPI.invokeTool`, so Pi tool lifecycle hooks still run. Explicit CLI tool policy does not enable this widening.
 
 Unknown or missing `executionMode` fails closed to `sequential`; only an explicit `parallel` declaration is treated as parallel-safe.
 
@@ -359,6 +359,7 @@ Important behavior:
 
 - every Bash child is owned by `bash-tasks.ts`;
 - foreground Bash can be promoted into the existing background task UI without rerunning the command;
+- a foreground Bash task still running at the configured max-wait threshold is automatically promoted through that same path;
 - explicit background Bash returns a task ID immediately;
 - output is retained in memory up to `MAX_OUTPUT_BYTES` and also written to a task output file;
 - process groups are killed when possible so cancellation terminates the command tree rather than only the direct child;
@@ -401,7 +402,7 @@ Terminate a running Bash or Eval v2 task by task ID.
 
 Task lookup is unified, but task-specific cancellation remains owned by the appropriate subsystem: process-tree termination for Bash and `AbortController` + kernel reset for Eval.
 
-The task APIs remain registered for Eval v2 even when enhanced Bash itself is disabled.
+The task APIs remain registered for Eval v2 even when enhanced Bash itself is disabled. When max-wait is enabled, each blocking wait call is capped independently; a still-running result is expected and the agent can re-call the wait tool in the next turn. No background heartbeat message is emitted.
 
 ## Configuration
 
@@ -419,6 +420,14 @@ Any other value is rejected during extension initialization.
 Enhanced Bash is enabled by default. Values `0`, `false`, `off`, or `no` disable it.
 
 Disabling Bash does **not** disable Eval v2 or its background task management.
+
+### `PI_GROK_BASH_MAX_WAIT_MINS`
+
+Controls both the foreground Bash auto-background threshold and the maximum duration of one blocking `wait_tasks` / `get_task_output` call. Default: `4.5` minutes. `0` or a negative value disables both behaviors and preserves the old manual-promotion / uncapped-wait behavior.
+
+When launched through `grok-pi`, `--bash-max-wait-mins <MIN>` has highest precedence, then an inherited `PI_GROK_BASH_MAX_WAIT_MINS`, then the `4.5` default. The Bash process `timeout` remains independent: whichever fires first, process timeout or auto-background, takes effect first.
+
+The 4.5-minute default leaves roughly 30 seconds of headroom against a 5-minute prompt-cache TTL; lower it if model/tool-turn latency regularly consumes that margin.
 
 ### `PI_GROK_BUILTIN_TOOLS`
 
@@ -579,7 +588,7 @@ When changing this extension, verify all of the following rather than only the i
 - v2 cell lexical scope is fresh on every call;
 - `store/load` remains the supported bridge-managed v2 cross-cell data API and prompts do not rely on implicit lexical persistence;
 - bare expression values and top-level await still work;
-- host tools remain restricted to active tools and cannot recurse into Eval;
+- host tools remain restricted to active tools in normal v2; host-owned eval-v2-only may expose registered tools only inside Eval, and Eval recursion remains blocked;
 - unknown execution modes fail closed to sequential;
 - parallel cap remains enforced against actually live work, including delayed aborts;
 - cell settlement aborts orphan host work;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -51,6 +51,8 @@ async function createHarness(register, version, options = {}) {
   const previousBuiltinTools = process.env.PI_GROK_BUILTIN_TOOLS;
   const previousExcludedTools = process.env.PI_GROK_EXCLUDE_TOOLS;
   const previousControlMeta = process.env.PI_GROK_BASH_CONTROL_META;
+  const previousEvalV2Only = process.env.PI_GROK_EVAL_V2_ONLY;
+  const previousBashMaxWaitMins = process.env.PI_GROK_BASH_MAX_WAIT_MINS;
   process.env.PI_GROK_EVAL_VERSION = version;
   process.env.PI_GROK_BASH = options.bashEnabled === false ? "0" : "1";
   if (options.builtinTools === undefined) delete process.env.PI_GROK_BUILTIN_TOOLS;
@@ -58,7 +60,12 @@ async function createHarness(register, version, options = {}) {
   if (options.excludedTools === undefined) delete process.env.PI_GROK_EXCLUDE_TOOLS;
   else process.env.PI_GROK_EXCLUDE_TOOLS = options.excludedTools;
   delete process.env.PI_GROK_BASH_CONTROL_META;
+  if (options.evalV2Only === true) process.env.PI_GROK_EVAL_V2_ONLY = "1";
+  else delete process.env.PI_GROK_EVAL_V2_ONLY;
+  if (options.bashMaxWaitMins === undefined) delete process.env.PI_GROK_BASH_MAX_WAIT_MINS;
+  else process.env.PI_GROK_BASH_MAX_WAIT_MINS = String(options.bashMaxWaitMins);
 
+  let activeToolNames = (options.activeToolNames ?? options.toolInfo?.map((tool) => tool.name) ?? []).slice();
   const pi = {
     events: { emit() {} },
     on(event, handler) {
@@ -70,7 +77,10 @@ async function createHarness(register, version, options = {}) {
       registeredTools.set(definition.name, definition);
     },
     getActiveTools() {
-      return (options.toolInfo ?? []).map((tool) => tool.name);
+      return activeToolNames;
+    },
+    setActiveTools(toolNames) {
+      activeToolNames = [...toolNames];
     },
     getAllTools() {
       return options.toolInfo ?? [];
@@ -92,6 +102,9 @@ async function createHarness(register, version, options = {}) {
   return {
     evalTool,
     registeredTools,
+    getActiveTools() {
+      return [...activeToolNames];
+    },
     async run(params, signal) {
       return evalTool.execute(
         `test-${Math.random().toString(16).slice(2)}`,
@@ -116,6 +129,10 @@ async function createHarness(register, version, options = {}) {
       else process.env.PI_GROK_EXCLUDE_TOOLS = previousExcludedTools;
       if (previousControlMeta === undefined) delete process.env.PI_GROK_BASH_CONTROL_META;
       else process.env.PI_GROK_BASH_CONTROL_META = previousControlMeta;
+      if (previousEvalV2Only === undefined) delete process.env.PI_GROK_EVAL_V2_ONLY;
+      else process.env.PI_GROK_EVAL_V2_ONLY = previousEvalV2Only;
+      if (previousBashMaxWaitMins === undefined) delete process.env.PI_GROK_BASH_MAX_WAIT_MINS;
+      else process.env.PI_GROK_BASH_MAX_WAIT_MINS = previousBashMaxWaitMins;
     },
   };
 }
@@ -469,8 +486,91 @@ console.log(JSON.stringify({
     });
     assert.match(completion.content[0].text, /completion:probe/);
     console.log("PASS 11 completion() remains a one-shot parallel-safe host leaf");
+
+    const bashTool = v2.registeredTools.get("bash");
+    const bashWaitTool = v2.registeredTools.get("wait_tasks");
+    const bashOutputTool = v2.registeredTools.get("get_task_output");
+    assert(bashTool && bashWaitTool && bashOutputTool);
+    const bashBackground = await bashTool.execute(
+      "long-background-bash",
+      { command: "for i in $(seq 1 3000); do printf 'x\\n'; done", task_name: "long background output", is_background: true },
+      new AbortController().signal,
+      undefined,
+      { cwd: repoRoot },
+    );
+    const bashStarted = JSON.parse(bashBackground.content[0].text);
+    await bashWaitTool.execute(
+      "wait-long-background-bash",
+      { task_ids: [bashStarted.task_id], mode: "wait_all", timeout_ms: 3000 },
+      new AbortController().signal,
+    );
+    const bashOutputResult = await bashOutputTool.execute(
+      "output-long-background-bash",
+      { task_ids: [bashStarted.task_id] },
+      new AbortController().signal,
+    );
+    const bashOutput = JSON.parse(bashOutputResult.content[0].text);
+    assert.equal(bashOutput.truncated, true);
+    assert.match(bashOutput.output, /Full output:/);
+    const bashReturnedLines = bashOutput.output.split("\n").filter((line) => line === "x").length;
+    assert(bashReturnedLines > 0 && bashReturnedLines <= 2000);
+    const bashFullOutput = await readFile(bashOutput.output_file, "utf8");
+    assert.equal(bashFullOutput.split("\n").filter((line) => line === "x").length, 3000);
+    console.log("PASS 11b background Bash truncates model output by Pi limits while preserving full temp output");
   } finally {
     await v2.close();
+  }
+
+  const autoBackground = await createHarness(register, "v2", { bashMaxWaitMins: "0.005" });
+  try {
+    const bashTool = autoBackground.registeredTools.get("bash");
+    const waitTool = autoBackground.registeredTools.get("wait_tasks");
+    const outputTool = autoBackground.registeredTools.get("get_task_output");
+    assert(bashTool && waitTool && outputTool);
+
+    const promoted = await bashTool.execute(
+      "auto-background-bash",
+      { command: "sleep 2; printf 'auto-background-done\\n'", task_name: "auto background threshold" },
+      new AbortController().signal,
+      undefined,
+      { cwd: repoRoot },
+    );
+    assert.equal(promoted.details.background, true);
+    assert.match(promoted.details.taskId, /^bash-/);
+
+    const outputCapped = await outputTool.execute(
+      "auto-background-output-cap",
+      { task_ids: [promoted.details.taskId], timeout_ms: 5000 },
+      new AbortController().signal,
+    );
+    assert.equal(JSON.parse(outputCapped.content[0].text).status, "running");
+
+    const waitCapped = await waitTool.execute(
+      "auto-background-wait-cap",
+      { task_ids: [promoted.details.taskId], mode: "wait_all", timeout_ms: 5000 },
+      new AbortController().signal,
+    );
+    assert.equal(JSON.parse(waitCapped.content[0].text).results[0].status, "running");
+
+    let finalStatus = "running";
+    for (let attempt = 0; attempt < 6 && finalStatus === "running"; attempt += 1) {
+      const waited = await waitTool.execute(
+        `auto-background-rewait-${attempt}`,
+        { task_ids: [promoted.details.taskId], mode: "wait_all", timeout_ms: 5000 },
+        new AbortController().signal,
+      );
+      finalStatus = JSON.parse(waited.content[0].text).results[0].status;
+    }
+    assert.equal(finalStatus, "completed");
+    const completed = await outputTool.execute(
+      "auto-background-completed",
+      { task_ids: [promoted.details.taskId] },
+      new AbortController().signal,
+    );
+    assert.match(JSON.parse(completed.content[0].text).output, /auto-background-done/);
+    console.log("PASS 11c foreground Bash auto-backgrounds once and both blocking task APIs return at the shared max-wait cap");
+  } finally {
+    await autoBackground.close();
   }
 
   const evalOnly = await createHarness(register, "v2", { bashEnabled: false });
@@ -503,6 +603,36 @@ console.log(JSON.stringify({
     assert.equal(waitedBody.results[0].status, "completed");
     assert.match(waitedBody.results[0].output, /background-done/);
     assert.equal(waitedBody.results[0].kind, "eval");
+
+    const largeEval = await evalOnly.run({
+      language: "js",
+      code: 'for (let i = 0; i < 3000; i++) console.log(String(i).padStart(4, "0") + ":" + "x".repeat(24)); "eval-tail"',
+      title: "large eval output",
+      is_background: true,
+      timeout: 2,
+    });
+    const largeEvalStarted = JSON.parse(largeEval.content[0].text);
+    await waitTool.execute(
+      "wait-large-eval-task",
+      { task_ids: [largeEvalStarted.task_id], mode: "wait_all", timeout_ms: 3000 },
+      new AbortController().signal,
+    );
+    const largeEvalOutputResult = await outputTool.execute(
+      "output-large-eval-task",
+      { task_ids: [largeEvalStarted.task_id] },
+      new AbortController().signal,
+    );
+    const largeEvalOutput = JSON.parse(largeEvalOutputResult.content[0].text);
+    assert.equal(largeEvalOutput.truncated, true);
+    assert.match(largeEvalOutput.output, /2999:/);
+    assert.match(largeEvalOutput.output, /Full output:/);
+    assert(Buffer.byteLength(largeEvalOutput.output, "utf8") < 60 * 1024);
+    const largeEvalFullOutput = await readFile(largeEvalOutput.output_file, "utf8");
+    assert.match(largeEvalFullOutput, /^0000:/);
+    assert.match(largeEvalFullOutput, /2999:/);
+    assert.match(largeEvalFullOutput, /eval-tail/);
+    assert(Buffer.byteLength(largeEvalFullOutput, "utf8") > 80 * 1024);
+    console.log("PASS 12b background Eval externalizes full output and returns only a bounded Pi-style tail");
 
     const longBackground = await evalOnly.run({
       language: "js",
@@ -540,9 +670,10 @@ console.log(JSON.stringify({
   }
 
   const lifecycle = [];
+  let fallbackActiveTools = ["notes_list", "eval"];
   const fallbackPi = {
     getActiveTools() {
-      return ["notes_list", "eval"];
+      return fallbackActiveTools;
     },
     getAllTools() {
       return [{ name: "notes_list", executionMode: "parallel" }];
@@ -592,6 +723,52 @@ console.log(JSON.stringify({
     "tool_execution_end",
   ]);
   console.log("PASS 14 Eval v2 invokes captured extension tools without ExtensionAPI.invokeTool");
+
+  const previousBridgeEvalV2Only = process.env.PI_GROK_EVAL_V2_ONLY;
+  try {
+    fallbackActiveTools = ["eval"];
+    delete process.env.PI_GROK_EVAL_V2_ONLY;
+    await assert.rejects(
+      () => bridge.invoke("notes_list", { limit: 1 }, new AbortController().signal),
+      /inactive tool "notes_list"/,
+    );
+
+    process.env.PI_GROK_EVAL_V2_ONLY = "1";
+    const evalOnlyPi = {
+      ...fallbackPi,
+      async invokeTool() {
+        throw new Error("eval-v2-only nested calls must bypass the native active-tool gate");
+      },
+    };
+    const evalOnlyBridge = new EvalSessionToolBridge(evalOnlyPi);
+    evalOnlyBridge.observeRegisteredTools([notesTool], runner);
+    assert.deepEqual(evalOnlyBridge.catalog().map((tool) => tool.name), ["notes_list"]);
+    const evalOnlyResult = await evalOnlyBridge.invoke(
+      "notes_list",
+      { limit: 1 },
+      new AbortController().signal,
+    );
+    assert.match(evalOnlyResult.content[0].text, /\"probe\"/);
+  } finally {
+    fallbackActiveTools = ["notes_list", "eval"];
+    if (previousBridgeEvalV2Only === undefined) delete process.env.PI_GROK_EVAL_V2_ONLY;
+    else process.env.PI_GROK_EVAL_V2_ONLY = previousBridgeEvalV2Only;
+  }
+  console.log("PASS 15 eval-v2-only exposes registered tools only inside Eval while normal v2 still rejects inactive tools");
+
+  const isolated = await createHarness(register, "v2", {
+    evalV2Only: true,
+    toolInfo: [{ name: "notes_list" }, { name: "eval" }],
+    activeToolNames: ["notes_list", "eval"],
+  });
+  try {
+    assert.deepEqual(isolated.getActiveTools(), ["notes_list", "eval"]);
+    await isolated.emit("session_start");
+    assert.deepEqual(isolated.getActiveTools(), ["eval"]);
+  } finally {
+    await isolated.close();
+  }
+  console.log("PASS 16 eval-v2-only collapses only the top-level active tool set at session start");
 } finally {
   await rm(tempDir, { recursive: true, force: true });
   if (previousPackageDir === undefined) delete process.env.PI_PACKAGE_DIR;

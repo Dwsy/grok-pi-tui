@@ -110,7 +110,9 @@ pub fn render_settings_modal(
         if widen_for_max_thoughts_width && widened_candidate > STANDARD_MAX_WIDTH {
             (widened_candidate, 1.0)
         } else {
-            (STANDARD_MAX_WIDTH, 0.70)
+            // The split sidebar + settings pane needs more room than the old
+            // single-column list did.
+            (STANDARD_MAX_WIDTH, 0.86)
         };
     let sizing = ModalSizing {
         width_pct,
@@ -138,9 +140,16 @@ pub fn render_settings_modal(
         ..sizing
     };
 
+    // The tab bar belongs to Browse; sub-panes take over the whole window and
+    // wear a breadcrumb title instead.
+    let tab_labels: Vec<&str> = state.tab_labels();
+    let browsing = matches!(
+        state.state.mode_kind(),
+        SettingsModeKind::Browse | SettingsModeKind::FilterFocused
+    ) && overlay.is_none();
     let modal_config = ModalWindowConfig {
         title,
-        tabs: None,
+        tabs: browsing.then_some(tab_labels.as_slice()),
         shortcuts,
         sizing,
         fold_info: None,
@@ -206,7 +215,7 @@ pub fn render_settings_modal(
             state.editor_adornment_rects = (Rect::default(), Rect::default());
             state.settings_breadcrumb_rect = None;
             state.list_area = inner_area;
-            render_row_list_with_search_bar(buf, inner_area, state, &theme);
+            render_browse(buf, inner_area, state, &theme);
         }
     }
 
@@ -358,80 +367,158 @@ fn build_reset_confirm_shortcuts() -> Vec<Shortcut<'static>> {
     ]
 }
 
-/// Render the row list with a search bar at the top (Browse/FilterFocused).
-pub(super) fn render_row_list_with_search_bar(
+// ---------------------------------------------------------------------------
+// Browse layout geometry
+// ---------------------------------------------------------------------------
+
+/// Longest sidebar section name we will render before truncating.
+const SIDEBAR_NAME_CAP: u16 = 22;
+/// Leading indent + trailing gap around a sidebar name.
+const SIDEBAR_INDENT: u16 = 2;
+const SIDEBAR_GAP: u16 = 2;
+const SIDEBAR_SEPARATOR: &str = "\u{2502} ";
+const SIDEBAR_SEPARATOR_W: u16 = 2;
+/// Below this the value column starves, so the sidebar is dropped and the
+/// section names render as inline headings instead.
+const MIN_PANE_W: u16 = 46;
+/// Fixed description rows under the list, plus the blank row above them.
+/// Constant so moving between rows with and without long descriptions never
+/// reflows the list.
+pub(super) const DESCRIPTION_ROWS: u16 = 3;
+const BROWSE_FOOTER_ROWS: u16 = DESCRIPTION_ROWS + 1;
+
+/// Sidebar column width, derived from every section name in the layout table
+/// rather than just the active tab's, so the divider column never shifts when
+/// switching tabs.
+fn sidebar_width() -> u16 {
+    let widest = crate::settings::SettingCategory::ALL
+        .iter()
+        .flat_map(|cat| crate::settings::sections_for(*cat))
+        .map(|name| name.width() as u16)
+        .max()
+        .unwrap_or(0);
+    widest.min(SIDEBAR_NAME_CAP) + SIDEBAR_INDENT + SIDEBAR_GAP
+}
+
+/// Render the Browse / FilterFocused surface: an optional search banner, the
+/// section sidebar beside the settings pane, and the focused row's
+/// description pinned to the bottom.
+pub(super) fn render_browse(
     buf: &mut Buffer,
     content_area: Rect,
     state: &mut SettingsModalState,
     theme: &Theme,
 ) {
-    let filter_focused = state.state.mode_kind() == SettingsModeKind::FilterFocused;
-    if content_area.height >= 3 {
-        // row 0: search bar, row 1: divider, row 2+: list.
-        let search_area = Rect {
-            x: content_area.x,
-            y: content_area.y,
-            width: content_area.width,
-            height: 1,
-        };
+    let mut area = content_area;
+
+    // The search banner only exists while a query is being typed or held —
+    // browsing is entered by typing, so an always-on empty search bar would
+    // just cost a row.
+    let searching =
+        state.state.mode_kind() == SettingsModeKind::FilterFocused || !state.query().is_empty();
+    if searching && area.height >= 3 {
         crate::views::picker::render_line_editor_search_bar(
             buf,
-            search_area.x,
-            search_area.y,
-            search_area.width,
+            area.x,
+            area.y,
+            area.width,
             theme,
             &state.state.filter,
-            filter_focused,
+            state.state.mode_kind() == SettingsModeKind::FilterFocused,
             true,
             Some(theme.bg_base),
         );
         crate::views::picker::render_divider(
             buf,
-            content_area.x,
-            content_area.y + 1,
-            content_area.width,
+            area.x,
+            area.y + 1,
+            area.width,
             theme,
             Some(theme.bg_base),
         );
-        let list_area = Rect {
-            x: content_area.x,
-            y: content_area.y + 2,
-            width: content_area.width,
-            height: content_area.height - 2,
+        area = Rect {
+            y: area.y + 2,
+            height: area.height - 2,
+            ..area
         };
+    }
 
-        state.list_area = list_area;
-        render_rows(buf, list_area, state, theme);
-    } else if content_area.height >= 2 {
-        // Tight: search bar only, no divider.
-        let search_area = Rect {
-            x: content_area.x,
-            y: content_area.y,
-            width: content_area.width,
-            height: 1,
-        };
-        crate::views::picker::render_line_editor_search_bar(
-            buf,
-            search_area.x,
-            search_area.y,
-            search_area.width,
-            theme,
-            &state.state.filter,
-            filter_focused,
-            true,
-            Some(theme.bg_base),
-        );
-        let list_area = Rect {
-            x: content_area.x,
-            y: content_area.y + 1,
-            width: content_area.width,
-            height: content_area.height - 1,
-        };
-        state.list_area = list_area;
-        render_rows(buf, list_area, state, theme);
+    // Reserve the description block at the bottom whenever there is room for
+    // it plus a usable list; otherwise the list takes everything.
+    let (list_area, description_area) = if area.height > BROWSE_FOOTER_ROWS + 1 {
+        (
+            Rect {
+                height: area.height - BROWSE_FOOTER_ROWS,
+                ..area
+            },
+            Some(Rect {
+                y: area.y + area.height - DESCRIPTION_ROWS,
+                height: DESCRIPTION_ROWS,
+                ..area
+            }),
+        )
     } else {
-        // Too narrow for a search bar; just render the rows.
-        render_rows(buf, content_area, state, theme);
+        (area, None)
+    };
+
+    state.list_area = list_area;
+    render_rows(buf, list_area, state, theme);
+    if let Some(description_area) = description_area {
+        render_focused_description(buf, description_area, state, theme);
+    }
+}
+
+/// Render the focused row's description into the fixed bottom block.
+fn render_focused_description(
+    buf: &mut Buffer,
+    area: Rect,
+    state: &SettingsModalState,
+    theme: &Theme,
+) {
+    buf.set_style(area, Style::default().bg(theme.bg_base));
+    let Some((key, meta)) = state.focused_setting() else {
+        return;
+    };
+    let indent = SIDEBAR_INDENT.min(area.width);
+    let wrap_w = area.width.saturating_sub(indent);
+    if wrap_w == 0 {
+        return;
+    }
+
+    // A locked row's reason replaces the description: it is the only thing
+    // the user can act on.
+    let owned;
+    let text: &str = match state.row_lock(key).map(CodingDataSharingLock::reason) {
+        Some(reason) => reason,
+        None if meta.restart_required => {
+            owned = format!("{} Takes effect on next start.", meta.description);
+            &owned
+        }
+        None => meta.description,
+    };
+
+    let style = Style::default()
+        .fg(theme.gray)
+        .bg(theme.bg_base)
+        .add_modifier(Modifier::ITALIC);
+    let wrapped = wrap_description(text, wrap_w);
+    for (i, line) in wrapped.iter().take(DESCRIPTION_ROWS as usize).enumerate() {
+        let is_last_visible = i + 1 == DESCRIPTION_ROWS as usize;
+        let overflows = wrapped.len() > DESCRIPTION_ROWS as usize;
+        let owned_line;
+        let text: &str = if is_last_visible && overflows {
+            owned_line = format!("{}\u{2026}", truncate_str(line, wrap_w as usize - 1));
+            &owned_line
+        } else {
+            line
+        };
+        let w = (text.width() as u16).min(wrap_w);
+        buf.set_span(
+            area.x + indent,
+            area.y + i as u16,
+            &Span::styled(text, style),
+            w,
+        );
     }
 }
 
@@ -443,430 +530,269 @@ pub(super) fn render_docs_footer(buf: &mut Buffer, area: Rect, theme: &Theme) {
     modal_window::render_centered_tip_footer(buf, area, theme, text.as_ref());
 }
 
+/// Render the settings pane, with the section sidebar beside it when the
+/// width allows. Every row is exactly one line high, so scroll math is a
+/// plain window over `filtered_cache`.
 pub(super) fn render_rows(
     buf: &mut Buffer,
     area: Rect,
     state: &mut SettingsModalState,
     theme: &Theme,
 ) {
-    let visible_h = area.height as usize;
-    if visible_h == 0 {
-        state.row_rects.clear();
-        state.row_rects.resize(state.rows.len(), Rect::default());
-        state.value_hit_rects.clear();
-        state
-            .value_hit_rects
-            .resize(state.rows.len(), Rect::default());
-        return;
-    }
-
     state.row_rects.clear();
     state.row_rects.resize(state.rows.len(), Rect::default());
     state.value_hit_rects.clear();
     state
         .value_hit_rects
         .resize(state.rows.len(), Rect::default());
+    state.sidebar_rects.clear();
 
-    let total_visible = state.filtered_cache.len();
-
-    // Empty filter — show "No matches for <query>".
-    if total_visible == 0 {
-        if !state.query().is_empty() {
-            let prefix = "No matches for ";
-            let suffix_quote_w = 2u16; // surrounding "" chars
-            let available_for_query = (area.width as usize)
-                .saturating_sub(prefix.width())
-                .saturating_sub(suffix_quote_w as usize);
-            let q_disp = if state.query().width() <= available_for_query {
-                state.query().to_owned()
-            } else {
-                truncate_str(state.query(), available_for_query)
-            };
-            let msg = format!("{prefix}\"{q_disp}\"");
-            let style = Style::default().fg(theme.gray_dim).bg(theme.bg_base);
-            let msg_w = (msg.width() as u16).min(area.width);
-            let cx = area.x + area.width.saturating_sub(msg_w) / 2;
-            let cy = area.y + area.height / 2;
-            buf.set_span(cx, cy, &Span::styled(&msg, style), msg_w);
-        }
+    let visible_h = area.height as usize;
+    if visible_h == 0 {
+        return;
+    }
+    if state.filtered_cache.is_empty() {
+        render_no_matches(buf, area, state, theme);
         return;
     }
 
-    // Translate `state.selected` (rows-space) → filtered position.
+    // Sidebar only in browse mode: search results are grouped by tab, not by
+    // section, so there is nothing for it to index.
+    let sections = state.sections();
+    let sidebar_w = sidebar_width();
+    let split = sections.len() >= 2
+        && area.width >= sidebar_w + SIDEBAR_SEPARATOR_W + MIN_PANE_W
+        && state.query().is_empty();
+    let pane = if split {
+        let pane_x = area.x + sidebar_w + SIDEBAR_SEPARATOR_W;
+        render_sidebar(buf, area, sidebar_w, &sections, state, theme);
+        Rect {
+            x: pane_x,
+            width: area.width - sidebar_w - SIDEBAR_SEPARATOR_W,
+            ..area
+        }
+    } else {
+        buf.set_style(area, Style::default().bg(theme.bg_base));
+        area
+    };
+
+    let active_range = split.then(|| active_section_range(state, &sections));
+    let max_label_w = compute_max_label_w(state, pane.width);
     let selected_fpos = state
         .filtered_cache
         .iter()
         .position(|&i| i == state.selected);
+    state.scroll_offset = clamp_scroll(state, selected_fpos, visible_h);
+    let end = state
+        .filtered_cache
+        .len()
+        .min(state.scroll_offset + visible_h);
+    let visible: Vec<usize> = state.filtered_cache[state.scroll_offset..end].to_vec();
+    let hover_row = state.hover_row;
+    let section_focus = state.section_focus;
 
-    // Clamp scroll so selection stays in view, keeping the preceding
-    // section header visible when scrolling up. Row heights are
-    // variable (expanded descriptions, header gaps).
-    let row_heights = compute_filtered_row_heights(state, area.width);
-    if let Some(fpos) = selected_fpos {
-        if fpos < state.scroll_offset {
-            let new_offset = if fpos > 0 {
-                let prev_idx = state.filtered_cache[fpos - 1];
-                if matches!(state.rows[prev_idx], RowEntry::Header { .. }) {
-                    fpos - 1
-                } else {
-                    fpos
-                }
-            } else {
-                fpos
-            };
-            state.scroll_offset = new_offset;
-        }
-
-        let min_offset_for_visibility = compute_min_scroll_offset_for_visibility(
-            &state.filtered_cache,
-            &state.rows,
-            &row_heights,
-            fpos,
-            visible_h,
-        );
-        if state.scroll_offset < min_offset_for_visibility {
-            state.scroll_offset = min_offset_for_visibility;
-        }
-    }
-    // Final clamp — don't let scroll_offset past the end.
-    if total_visible > 0 {
-        let max_offset = compute_min_scroll_offset_for_visibility(
-            &state.filtered_cache,
-            &state.rows,
-            &row_heights,
-            total_visible - 1,
-            visible_h,
-        );
-        if state.scroll_offset > max_offset {
-            state.scroll_offset = max_offset;
-        }
-    }
-
-    let end = total_visible.min(state.scroll_offset + visible_h);
-
-    let max_label_w = compute_settings_max_label_w(state.registry.all(), area.width);
-
-    // Snapshot visible rows to avoid borrow conflicts in the render loop.
-    let visible_filtered: Vec<usize> = state.filtered_cache[state.scroll_offset..end].to_vec();
-
-    let hover_row_snapshot = state.hover_row;
-    let mut values: Vec<Option<SettingValue>> = Vec::with_capacity(visible_filtered.len());
-    for &row_idx in &visible_filtered {
-        let v = match state.rows.get(row_idx) {
-            Some(RowEntry::Setting { key, .. }) => state.value_for(key),
-            _ => None,
-        };
-        values.push(v);
-    }
-    // Track y-cursor: rows consume variable height when expanded.
-    let mut y_cursor = area.y;
-    let area_end = area.y + area.height;
-    let expanded_snapshot: std::collections::HashSet<&'static str> = state.expanded_keys.clone();
-    // Insert a blank line above non-first section headers.
-    let mut rendered_any = false;
-
-    for (row_pos, &row_idx) in visible_filtered.iter().enumerate() {
-        if y_cursor >= area_end {
-            break;
-        }
-        let Some(row) = state.rows.get(row_idx) else {
-            continue;
-        };
-
-        if matches!(row, RowEntry::Header { .. })
-            && rendered_any
-            && y_cursor.saturating_add(1) < area_end
-        {
-            y_cursor = y_cursor.saturating_add(1);
-        }
-        if y_cursor >= area_end {
-            break;
-        }
-        let label_rect = Rect {
-            x: area.x,
-            y: y_cursor,
-            width: area.width,
+    for (offset, row_idx) in visible.into_iter().enumerate() {
+        let row_rect = Rect {
+            x: pane.x,
+            y: pane.y + offset as u16,
+            width: pane.width,
             height: 1,
         };
+        // Rows outside the section under the cursor recede so the active
+        // section reads as the foreground.
+        let dimmed = active_range.is_some_and(|(first, last)| row_idx < first || row_idx > last);
+        state.row_rects[row_idx] = row_rect;
 
-        state.row_rects[row_idx] = label_rect;
-
-        rendered_any = true;
-
-        match row {
+        match &state.rows[row_idx] {
             RowEntry::Header { category } => {
-                let label = category.label();
-                let header_style = Style::default()
-                    .fg(theme.gray)
-                    .bg(theme.bg_base)
-                    .add_modifier(Modifier::BOLD);
-                let sep_style = Style::default().fg(theme.gray_dim).bg(theme.bg_base);
-                let title = format!(" {label} ");
-                let title_w = title.width();
-                let remaining = (area.width as usize).saturating_sub(title_w);
-                let sep: String = std::iter::repeat_n('\u{2500}', remaining).collect();
-                let line = Line::from(vec![
-                    Span::styled(title, header_style),
-                    Span::styled(sep, sep_style),
-                ]);
-                buf.set_line(area.x, y_cursor, &line, area.width);
-                y_cursor = y_cursor.saturating_add(1);
+                render_heading_row(buf, row_rect, category.label(), false, theme);
             }
-            RowEntry::Setting {
-                meta_index, key, ..
-            } => {
+            RowEntry::Section { name, .. } => {
+                // The sidebar owns section names in the split layout; inline
+                // headings are the narrow-terminal fallback.
+                if !split {
+                    render_heading_row(buf, row_rect, name, dimmed, theme);
+                }
+            }
+            RowEntry::Setting { key, meta_index } => {
+                let key = *key;
                 let Some(meta) = state.registry.all().get(*meta_index) else {
                     continue;
                 };
-                let value_opt = values.get(row_pos).and_then(|v| v.as_ref());
-                let is_selected = row_idx == state.selected;
-                let is_expanded = expanded_snapshot.contains(key);
-
-                // Group rows carry no scalar value; render a chevron row that
-                // opens the sub-sheet (skips the value/edited machinery below).
-                if matches!(meta.kind, SettingKind::Group { .. }) {
-                    let is_hovered = hover_row_snapshot == Some(row_idx);
-                    let value_rect = render_setting_group_row(
-                        buf,
-                        label_rect,
-                        meta,
-                        is_selected,
-                        is_hovered,
-                        is_expanded,
-                        theme,
-                    );
-                    state.value_hit_rects[row_idx] = value_rect;
-                    y_cursor = y_cursor.saturating_add(1);
-                    // Mirror normal rows: render the description inline when the
-                    // group's key is expanded (Right/l). The group has no value,
-                    // so this is the only place its description can surface.
-                    if is_expanded && y_cursor < area_end {
-                        let desc_height = area_end - y_cursor;
-                        let desc_rect = Rect {
-                            x: area.x,
-                            y: y_cursor,
-                            width: area.width,
-                            height: desc_height.min(8),
-                        };
-                        render_expanded_description(buf, desc_rect, meta, None, theme);
-                        let consumed =
-                            wrapped_description_height(meta, None, area.width, desc_rect.height);
-                        y_cursor = y_cursor.saturating_add(consumed);
-                    }
-                    continue;
-                }
-
-                let value = match value_opt {
-                    Some(v) => v,
-                    None => {
-                        render_setting_row_no_value(
-                            buf,
-                            label_rect,
-                            meta,
-                            max_label_w,
-                            is_selected,
-                            theme,
-                        );
-                        y_cursor = y_cursor.saturating_add(1);
-                        continue;
-                    }
-                };
-
-                let lock = state.row_lock(key);
-
-                // Decide 1 vs 2 line layout; fall back to 1 if viewport is tight.
-                let value_display = value_display(meta, value, lock);
-                let show_restart_pill_for_layout = meta.restart_required && is_expanded;
-                let layout_decision = row_layout(
-                    area.width,
-                    meta.label,
-                    &value_display,
-                    show_restart_pill_for_layout,
-                );
-                let want_two_lines = !matches!(layout_decision, RowLayout::OneLine);
-                // Only allocate 2 lines if the viewport has room.
-                let row_height: u16 = if want_two_lines && y_cursor.saturating_add(2) <= area_end {
-                    2
-                } else {
-                    1
-                };
-
-                let render_area = Rect {
-                    x: area.x,
-                    y: y_cursor,
-                    width: area.width,
-                    height: row_height,
-                };
-                // Hit-rect spans both lines for two-line rows.
-                state.row_rects[row_idx] = render_area;
-
-                let is_hovered = hover_row_snapshot == Some(row_idx);
+                let selected = row_idx == state.selected && !section_focus;
+                let hovered = hover_row == Some(row_idx);
                 let value_rect = render_setting_row(
                     buf,
-                    render_area,
+                    row_rect,
                     meta,
-                    value,
+                    state.value_for(key).as_ref(),
                     max_label_w,
-                    is_selected,
+                    RowStyle {
+                        selected,
+                        hovered,
+                        dimmed: dimmed && !selected,
+                    },
+                    state.row_lock(key),
                     theme,
-                    is_expanded,
-                    is_hovered,
-                    lock,
                 );
                 state.value_hit_rects[row_idx] = value_rect;
-                y_cursor = y_cursor.saturating_add(row_height);
-
-                if is_expanded && y_cursor < area_end {
-                    let desc_height = area_end - y_cursor;
-                    let desc_rect = Rect {
-                        x: area.x,
-                        y: y_cursor,
-                        width: area.width,
-                        height: desc_height.min(8), // cap at 8 lines per row to keep scroll sane
-                    };
-                    let lock_reason = lock.map(CodingDataSharingLock::reason);
-                    render_expanded_description(buf, desc_rect, meta, lock_reason, theme);
-                    // Re-measure how many lines the wrapped description
-                    // actually consumed, so y_cursor advances precisely.
-                    let consumed =
-                        wrapped_description_height(meta, lock_reason, area.width, desc_rect.height);
-                    y_cursor = y_cursor.saturating_add(consumed);
-                }
             }
         }
     }
 }
 
-/// Compute the minimum scroll_offset that keeps filtered position
-/// `fpos` visible within `visible_h` lines. Walks backward,
-/// accounting for variable row heights and header gaps.
-fn compute_min_scroll_offset_for_visibility(
-    filtered_cache: &[usize],
-    rows: &[RowEntry],
-    row_heights: &[u16],
-    fpos: usize,
-    visible_h: usize,
-) -> usize {
-    if visible_h == 0 || fpos >= filtered_cache.len() {
-        return fpos;
+/// Centered "no results" notice for an empty filter.
+fn render_no_matches(buf: &mut Buffer, area: Rect, state: &SettingsModalState, theme: &Theme) {
+    if state.query().is_empty() {
+        return;
     }
-    // Visual lines consumed so far. `fpos` itself sits at the top of
-    // the viewport, so it doesn't earn a blank-above-header even if
-    // it IS a header.
-    let fpos_height = row_heights.get(fpos).copied().unwrap_or(1) as usize;
-    let mut lines_used: usize = fpos_height;
-    if lines_used > visible_h {
-        // Even the focused row alone doesn't fit; clamp to fpos so
-        // the down-stream renderer at least shows its label.
-        return fpos;
+    let prefix = "No matches for ";
+    let available = (area.width as usize)
+        .saturating_sub(prefix.width())
+        .saturating_sub(2); // surrounding quotes
+    let query = if state.query().width() <= available {
+        state.query().to_owned()
+    } else {
+        truncate_str(state.query(), available)
+    };
+    let msg = format!("{prefix}\"{query}\"");
+    let style = Style::default().fg(theme.gray_dim).bg(theme.bg_base);
+    let msg_w = (msg.width() as u16).min(area.width);
+    let x = area.x + area.width.saturating_sub(msg_w) / 2;
+    let y = area.y + area.height / 2;
+    buf.set_span(x, y, &Span::styled(&msg, style), msg_w);
+}
+
+/// Row index range `[first, last]` of the section under the cursor. Rows
+/// outside it render dimmed.
+fn active_section_range(
+    state: &SettingsModalState,
+    sections: &[(&'static str, usize)],
+) -> (usize, usize) {
+    let active = state.active_section_index();
+    let first = sections[active].1;
+    let last = sections
+        .get(active + 1)
+        .map(|(_, next_first)| next_first.saturating_sub(1))
+        .unwrap_or(usize::MAX);
+    // The section's own heading row sits directly above its first setting.
+    (first.saturating_sub(1), last)
+}
+
+/// Paint the section sidebar and the divider column between it and the pane.
+fn render_sidebar(
+    buf: &mut Buffer,
+    area: Rect,
+    sidebar_w: u16,
+    sections: &[(&'static str, usize)],
+    state: &mut SettingsModalState,
+    theme: &Theme,
+) {
+    buf.set_style(area, Style::default().bg(theme.bg_base));
+    let active = state.active_section_index();
+    let separator_style = Style::default().fg(theme.gray_dim).bg(theme.bg_base);
+    for row in 0..area.height {
+        buf.set_span(
+            area.x + sidebar_w,
+            area.y + row,
+            &Span::styled(SIDEBAR_SEPARATOR, separator_style),
+            SIDEBAR_SEPARATOR_W,
+        );
     }
-    let mut offset = fpos;
-    while offset > 0 {
-        let candidate = offset - 1;
-        let candidate_height = row_heights.get(candidate).copied().unwrap_or(1) as usize;
-        // Cost of including `candidate` as the new top of the
-        // viewport: its own visual height, plus 1 line for the
-        // blank-above-header that the OLD top (`offset`) now
-        // earns (since it's no longer the first row rendered).
-        let old_first_idx = filtered_cache[offset];
-        let old_first_is_header = matches!(rows[old_first_idx], RowEntry::Header { .. });
-        let cost: usize = candidate_height + usize::from(old_first_is_header);
-        if lines_used.saturating_add(cost) > visible_h {
+
+    let name_w = sidebar_w.saturating_sub(SIDEBAR_INDENT + SIDEBAR_GAP);
+    state.sidebar_rects.resize(sections.len(), Rect::default());
+    for (i, (name, _)) in sections.iter().enumerate() {
+        if i as u16 >= area.height {
             break;
         }
-        lines_used += cost;
-        offset = candidate;
-    }
-    offset
-}
-
-/// Precompute the visual height (in terminal rows) of each entry in
-/// `state.filtered_cache`, using the same `row_layout` /
-/// `wrapped_description_height` math the forward render loop uses.
-///
-/// The cost passed to [`compute_min_scroll_offset_for_visibility`]
-/// is the row's intrinsic height EXCLUDING the blank-line-above-
-/// header gap — that gap is accounted for inside the scroll helper's
-/// backward walk because it depends on the runtime position relative
-/// to the viewport top.
-///
-/// Cost: O(visible filtered rows) per render, bounded by the
-/// registry size (~15 entries today). Each row does at most one
-/// `word_wrap_line` call (for expanded descriptions). Allocations
-/// are confined to a single `Vec<u16>` per call; per-row layout
-/// math is on the stack.
-fn compute_filtered_row_heights(state: &SettingsModalState, area_width: u16) -> Vec<u16> {
-    let mut heights = Vec::with_capacity(state.filtered_cache.len());
-    for &row_idx in &state.filtered_cache {
-        let Some(row) = state.rows.get(row_idx) else {
-            heights.push(1);
-            continue;
+        let y = area.y + i as u16;
+        let is_active = i == active;
+        let rect = Rect {
+            x: area.x,
+            y,
+            width: sidebar_w,
+            height: 1,
         };
-        match row {
-            RowEntry::Header { .. } => heights.push(1),
-            RowEntry::Setting {
-                meta_index, key, ..
-            } => {
-                let Some(meta) = state.registry.all().get(*meta_index) else {
-                    heights.push(1);
-                    continue;
-                };
-                // Group rows carry no value; height = chevron row + the expanded
-                // description (cap 8), agreeing with the forward render loop.
-                if matches!(meta.kind, SettingKind::Group { .. }) {
-                    let mut h: u16 = 1;
-                    if state.expanded_keys.contains(key) {
-                        h = h.saturating_add(wrapped_description_height(meta, None, area_width, 8));
-                    }
-                    heights.push(h);
-                    continue;
-                }
-                let Some(value) = state.value_for(key) else {
-                    heights.push(1);
-                    continue;
-                };
-                let is_expanded = state.expanded_keys.contains(key);
-                let lock = state.row_lock(key);
-                let value_display = value_display(meta, &value, lock);
-                let show_restart_pill = meta.restart_required && is_expanded;
-                let layout = row_layout(area_width, meta.label, &value_display, show_restart_pill);
-                let mut h: u16 = match layout {
-                    RowLayout::OneLine => 1,
-                    RowLayout::TwoLine | RowLayout::TwoLineWithLabelTruncation => 2,
-                };
-                if is_expanded {
-                    // Cap matches the forward render loop at line
-                    // 2040 (`desc_rect.height = ... .min(8)`).
-                    h = h.saturating_add(wrapped_description_height(
-                        meta,
-                        lock.map(CodingDataSharingLock::reason),
-                        area_width,
-                        8,
-                    ));
-                }
-                heights.push(h);
-            }
+        state.sidebar_rects[i] = rect;
+
+        // With section focus the cursor parks here instead of on a row, so
+        // the sidebar is the single focus indicator.
+        let cursor = if state.section_focus && is_active {
+            format!("{} ", crate::glyphs::chevron())
+        } else {
+            " ".repeat(SIDEBAR_INDENT as usize)
+        };
+        let style = match (is_active, state.section_focus) {
+            (true, true) => Style::default()
+                .fg(theme.text_primary)
+                .bg(theme.bg_visual)
+                .add_modifier(Modifier::BOLD),
+            (true, false) => Style::default()
+                .fg(theme.accent_user)
+                .bg(theme.bg_base)
+                .add_modifier(Modifier::BOLD),
+            (false, _) => Style::default().fg(theme.gray).bg(theme.bg_base),
+        };
+        if is_active && state.section_focus {
+            buf.set_style(rect, Style::default().bg(theme.bg_visual));
         }
+        let label = truncate_str(name, name_w as usize);
+        let text = format!("{cursor}{label}");
+        let w = (text.width() as u16).min(sidebar_w);
+        buf.set_span(area.x, y, &Span::styled(&text, style), w);
     }
-    heights
 }
 
-/// Wrapped description height for scroll math (mirrors render path).
-fn wrapped_description_height(
-    meta: &SettingMeta,
-    lock_reason: Option<&'static str>,
-    area_width: u16,
-    cap: u16,
-) -> u16 {
-    let indent = 4u16.min(area_width);
-    let wrap_w = area_width.saturating_sub(indent);
-    if wrap_w == 0 {
-        return 0;
+/// Minimal scroll that keeps the focused row on screen, pulling in the
+/// section heading above it when the focus sits at the top of the window.
+fn clamp_scroll(
+    state: &SettingsModalState,
+    selected_fpos: Option<usize>,
+    visible_h: usize,
+) -> usize {
+    let len = state.filtered_cache.len();
+    let max_offset = len.saturating_sub(visible_h);
+    let Some(fpos) = selected_fpos else {
+        return state.scroll_offset.min(max_offset);
+    };
+    let mut offset = state.scroll_offset;
+    if fpos < offset {
+        offset = fpos;
     }
-    let text = lock_reason.unwrap_or(meta.description);
-    let line = Line::from(Span::raw(text));
-    let wrapped = crate::render::wrapping::word_wrap_line(&line, wrap_w as usize);
-    (wrapped.len() as u16).min(cap)
+    if fpos >= offset + visible_h {
+        offset = fpos + 1 - visible_h;
+    }
+    // Keep the owning heading visible when the focused row would otherwise
+    // be the first line of the window.
+    if offset == fpos
+        && fpos > 0
+        && matches!(
+            state.rows[state.filtered_cache[fpos - 1]],
+            RowEntry::Header { .. } | RowEntry::Section { .. }
+        )
+    {
+        offset = fpos - 1;
+    }
+    offset.min(max_offset)
+}
+
+/// Label column width for the current view, capped so one long label cannot
+/// push the value column off screen.
+fn compute_max_label_w(state: &SettingsModalState, pane_w: u16) -> u16 {
+    const CAP: u16 = 30;
+    let cap = CAP.min(pane_w / 2);
+    state
+        .filtered_cache
+        .iter()
+        .filter_map(|&i| match &state.rows[i] {
+            RowEntry::Setting { meta_index, .. } => state.registry.all().get(*meta_index),
+            _ => None,
+        })
+        .map(|meta| meta.label.width() as u16)
+        .max()
+        .unwrap_or(0)
+        .min(cap)
 }
 
 // Picker prefix width templates (glyphs are drawn separately).
@@ -2170,22 +2096,6 @@ fn render_preview_block(
     }
 }
 
-/// `compute_max_label_w` equivalent for settings rows. Caps the column
-/// at 24 cols (so a single outlier label can't push the value column
-/// off-screen) and never exceeds half the content area width.
-/// Mirrors `question_view::compute_max_label_w` semantics.
-fn compute_settings_max_label_w(metas: &[SettingMeta], content_w: u16) -> u16 {
-    const MAX_LABEL_W: u16 = 24;
-    let half = content_w / 2;
-    let cap = MAX_LABEL_W.min(half);
-    metas
-        .iter()
-        .map(|m| m.label.width() as u16)
-        .max()
-        .unwrap_or(0)
-        .min(cap)
-}
-
 /// Look up the user-friendly display string for an Enum canonical
 /// against the setting's own `EnumChoice` catalog. Falls back to the
 /// canonical verbatim if the lookup misses (defense-in-depth: a
@@ -2232,17 +2142,16 @@ pub(super) fn wrap_description(description: &str, width: u16) -> Vec<String> {
         .collect()
 }
 
-// Row layout: triangle on left, value right-aligned. Two-line
-// layout used when label + value exceed area width.
+// Row chrome: a 2-cell cursor gutter on the left, the label column, then the
+// value right-aligned against a reserved chevron column.
 
-// Row chrome dimensions.
-const ROW_TRIANGLE_PREFIX_W: u16 = 2;
-const ROW_GAP_MIN_W: u16 = 1;
+/// Cursor gutter — `› ` on the focused row, blank otherwise.
+pub(super) const ROW_CURSOR_W: u16 = 2;
 pub(super) const ROW_RIGHT_PAD_W: u16 = 1;
-const ROW_CHEVRON_W: u16 = 2;
 /// Chevron column width — reserved for all rows for alignment.
-pub(super) const ROW_CHEVRON_COL_W: u16 = ROW_CHEVRON_W;
-const ROW_RESTART_PILL_W: u16 = 10; // " · restart" — used for layout budgeting only.
+pub(super) const ROW_CHEVRON_COL_W: u16 = 2;
+/// Minimum blank columns between the label and the value.
+const ROW_GAP_W: u16 = 2;
 /// Appended to the value column of a locked row (see `SettingsModalState::row_lock`).
 pub(super) const ROW_ADMIN_MANAGED_SUFFIX: &str = " \u{00B7} Admin Managed";
 /// Value column for ZDR-locked rows — replaces the opt-in/out value entirely.
@@ -2276,54 +2185,6 @@ pub(super) fn value_display(
     display
 }
 
-/// Per-row layout decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RowLayout {
-    OneLine,
-    /// Value drops to line 2 (label too wide for single line).
-    TwoLine,
-    /// Even label alone exceeds width — truncate label, value on line 2.
-    TwoLineWithLabelTruncation,
-}
-
-/// Decide whether a setting row needs 1 or 2 logical lines.
-pub(super) fn row_layout(
-    area_width: u16,
-    label: &str,
-    value_display: &str,
-    show_restart_pill: bool,
-) -> RowLayout {
-    let restart_w = if show_restart_pill {
-        ROW_RESTART_PILL_W
-    } else {
-        0
-    };
-    let label_w = label.width() as u16;
-    let value_w = value_display.width() as u16;
-    let one_line_total = ROW_TRIANGLE_PREFIX_W
-        .saturating_add(label_w)
-        .saturating_add(ROW_GAP_MIN_W)
-        .saturating_add(value_w)
-        .saturating_add(ROW_CHEVRON_COL_W)
-        .saturating_add(restart_w)
-        .saturating_add(ROW_RIGHT_PAD_W);
-    if one_line_total <= area_width {
-        return RowLayout::OneLine;
-    }
-    // Two-line: line 1 hosts the label + (optional) restart pill +
-    // right pad. If even that doesn't fit, fall back to label
-    // truncation on line 1.
-    let line1_full = ROW_TRIANGLE_PREFIX_W
-        .saturating_add(label_w)
-        .saturating_add(restart_w)
-        .saturating_add(ROW_RIGHT_PAD_W);
-    if line1_full <= area_width {
-        RowLayout::TwoLine
-    } else {
-        RowLayout::TwoLineWithLabelTruncation
-    }
-}
-
 /// Terminal-native themes collapse selection tokens to `Reset`; use ANSI
 /// `DarkGray` (not silver `Gray`, which washes out default fg on dark profiles).
 pub(super) fn settings_list_row_bg(theme: &Theme, is_selected: bool, is_hovered: bool) -> Color {
@@ -2343,405 +2204,175 @@ pub(super) fn settings_list_row_bg(theme: &Theme, is_selected: bool, is_hovered:
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Visual state of a settings row for one frame.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RowStyle {
+    /// Keyboard focus is on this row.
+    pub selected: bool,
+    /// Pointer is over this row.
+    pub hovered: bool,
+    /// Row belongs to a section other than the one under the cursor.
+    pub dimmed: bool,
+}
+
+/// Render a tab or section heading row.
+fn render_heading_row(buf: &mut Buffer, area: Rect, label: &str, dimmed: bool, theme: &Theme) {
+    buf.set_style(area, Style::default().bg(theme.bg_base));
+    let style = Style::default()
+        .fg(if dimmed { theme.gray_dim } else { theme.gray })
+        .bg(theme.bg_base)
+        .add_modifier(Modifier::BOLD);
+    let text = truncate_str(label, area.width.saturating_sub(ROW_CURSOR_W) as usize);
+    let w = (text.width() as u16).min(area.width);
+    buf.set_span(
+        area.x + ROW_CURSOR_W.min(area.width),
+        area.y,
+        &Span::styled(&text, style),
+        w,
+    );
+}
+
+/// Render one setting row: cursor gutter, padded label column, then the value
+/// right-aligned against the reserved chevron column. Always exactly one line.
+/// Returns the value column's hit-rect.
 pub(super) fn render_setting_row(
     buf: &mut Buffer,
     area: Rect,
     meta: &SettingMeta,
-    value: &SettingValue,
+    value: Option<&SettingValue>,
     max_label_w: u16,
-    is_selected: bool,
-    theme: &Theme,
-    is_expanded: bool,
-    is_hovered: bool,
+    row: RowStyle,
     lock: Option<CodingDataSharingLock>,
+    theme: &Theme,
 ) -> Rect {
-    let bg = settings_list_row_bg(theme, is_selected, is_hovered);
-    // Paint the row bg across the full area (1 or 2 lines).
+    let bg = settings_list_row_bg(theme, row.selected, row.hovered);
     buf.set_style(area, Style::default().bg(bg));
 
-    let mut label_style = Style::default().fg(theme.text_primary).bg(bg);
-    if is_selected {
-        label_style = label_style.add_modifier(Modifier::BOLD);
-    }
-    // Bool(false) renders muted; all other values use accent.
-    let value_style = Style::default().fg(theme.accent_user).bg(bg);
-    let chevron_style = Style::default().fg(theme.gray).bg(bg);
-    let restart_style = Style::default()
-        .fg(theme.gray_dim)
-        .bg(bg)
-        .add_modifier(Modifier::ITALIC);
-    let desc_style = Style::default().fg(theme.gray).bg(bg);
-
+    // A row with no value carrier means registry/dispatch skew. Surface it in
+    // the value column rather than silently rendering a blank.
+    let Some(value) = value else {
+        return render_setting_row_unmapped(buf, area, meta, max_label_w, bg, theme);
+    };
     let value_text = value_display(meta, value, lock);
-    let value_text = value_text.as_str();
 
-    let value_style = if lock.is_some() || matches!(value, SettingValue::Bool(false)) {
-        Style::default().fg(theme.gray).bg(bg)
+    // Rows outside the active section collapse to one flat wash so inner
+    // label/value colors do not fight the dimming.
+    let (label_style, value_style) = if row.dimmed {
+        let dim = Style::default().fg(theme.gray_dim).bg(bg);
+        (dim, dim)
     } else {
-        value_style
+        let mut label = Style::default().fg(theme.text_primary).bg(bg);
+        if row.selected {
+            label = label.add_modifier(Modifier::BOLD);
+        }
+        // Off and locked values recede; everything else carries the accent.
+        let value = if lock.is_some() || matches!(value, SettingValue::Bool(false)) {
+            Style::default().fg(theme.gray).bg(bg)
+        } else {
+            Style::default().fg(theme.accent_user).bg(bg)
+        };
+        (label, value)
     };
 
-    // Chevron for Enum/String/DynamicEnum (opens picker/editor).
-    // Locked rows can't be entered, so they drop the affordance.
+    // Chevron marks rows that open a sub-pane. Locked rows cannot be entered,
+    // so they drop the affordance.
     let show_chevron = lock.is_none()
         && matches!(
-            (&meta.kind, value),
-            (SettingKind::Enum { .. }, _)
-                | (SettingKind::String { .. }, _)
-                | (SettingKind::DynamicEnum { .. }, _)
+            meta.kind,
+            SettingKind::Enum { .. }
+                | SettingKind::String { .. }
+                | SettingKind::DynamicEnum { .. }
+                | SettingKind::Int { .. }
+                | SettingKind::Group { .. }
         );
-    let chevron_str = format!(" {}", crate::glyphs::chevron()); // › → > on legacy ConHost
-    let chevron_w = if show_chevron {
-        chevron_str.width() as u16
+
+    // ── Cursor gutter ────────────────────────────────────────────────────
+    let cursor = if row.selected {
+        format!("{} ", crate::glyphs::chevron())
     } else {
-        0
+        " ".repeat(ROW_CURSOR_W as usize)
     };
-    let value_w = value_text.width() as u16;
-
-    // Pill only while expanded — change-time feedback is the toast's job, and
-    // a collapsed non-default row would misread as "restart pending" forever.
-    let show_restart_pill = meta.restart_required && is_expanded;
-    let restart_pill_text = " \u{00B7} restart";
-    let restart_w = if show_restart_pill {
-        restart_pill_text.width() as u16
-    } else {
-        0
-    };
-
-    // Triangle prefix: "▸" collapsed, "▾" expanded.
-    let triangle = if is_expanded { "\u{25BE}" } else { "\u{25B8}" };
-    debug_assert_eq!(
-        triangle.width(),
-        (ROW_TRIANGLE_PREFIX_W - 1) as usize,
-        "ROW_TRIANGLE_PREFIX_W = {ROW_TRIANGLE_PREFIX_W} assumes a 1-cell triangle; \
-         glyph `{triangle}` measures {} cells. A 2-cell triangle (e.g. ▶ / ▼ from \
-         fold_indicator_span) would shift the entire row column. Update the constant \
-         or pick a 1-cell glyph.",
-        triangle.width(),
-    );
-
-    // Fall back to one-line if only 1 line was allocated.
-    let layout_decision = row_layout(area.width, meta.label, value_text, show_restart_pill);
-    let layout = if area.height < 2 {
-        // Only 1 line available — collapse to a one-line render and
-        // accept that the label might collide with the value column.
-        RowLayout::OneLine
-    } else {
-        layout_decision
-    };
-    let _ = max_label_w;
-
-    // ── Compute right-side x positions (shared across layouts). ──
-    // Layout (right-to-left): [restart pill][space][chevron][space][value]
-    // The 1-cell right pad is baked into `restart_x`.
-    let restart_x_line1 = (area.x + area.width).saturating_sub(restart_w + 1);
-
-    match layout {
-        RowLayout::OneLine => {
-            // Chevron column reserved for all rows for alignment.
-            let chevron_x = restart_x_line1.saturating_sub(ROW_CHEVRON_COL_W);
-            let value_x = chevron_x.saturating_sub(value_w + 1);
-
-            let label_text = format!("{triangle} {}", meta.label);
-            let label_w = label_text.width() as u16;
-            let label_max_x = area.x.saturating_add(label_w);
-            // Cap label end at value_x to never collide with the value column.
-            let label_end = label_max_x.min(value_x.saturating_sub(1));
-            let label_used = label_end.saturating_sub(area.x);
-
-            if label_used > 0 {
-                buf.set_span(
-                    area.x,
-                    area.y,
-                    &Span::styled(&label_text, label_style),
-                    label_used,
-                );
-            }
-
-            if value_x > area.x.saturating_add(label_used) {
-                buf.set_span(
-                    value_x,
-                    area.y,
-                    &Span::styled(value_text, value_style),
-                    value_w,
-                );
-            }
-            if show_chevron && chevron_w > 0 && chevron_x >= area.x.saturating_add(label_used) {
-                buf.set_span(
-                    chevron_x,
-                    area.y,
-                    &Span::styled(chevron_str.as_str(), chevron_style),
-                    chevron_w,
-                );
-            }
-            if show_restart_pill && restart_w > 0 {
-                buf.set_span(
-                    restart_x_line1,
-                    area.y,
-                    &Span::styled(restart_pill_text, restart_style),
-                    restart_w,
-                );
-            }
-
-            let _ = desc_style;
-            let _ = is_selected;
-
-            // Hit-rect for the value column: spans the value text
-            // plus the (always-reserved) chevron column. Clicking
-            // the chevron column on a Bool row is a no-op (no
-            // glyph there) but still routes to the row, matching
-            // chevron rows.
-            Rect {
-                x: value_x,
-                y: area.y,
-                width: value_w.saturating_add(ROW_CHEVRON_COL_W),
-                height: 1,
-            }
-        }
-        RowLayout::TwoLine | RowLayout::TwoLineWithLabelTruncation => {
-            // ── Line 1: triangle + label + (restart pill) ──
-            // Compute how much horizontal space is available to the
-            // label before colliding with the restart pill.
-            let label_avail = area
-                .width
-                .saturating_sub(restart_w + 1) // restart pill + right pad
-                .saturating_sub(ROW_TRIANGLE_PREFIX_W);
-
-            let label_text_owned: String;
-            let label_text: &str = match layout {
-                RowLayout::TwoLineWithLabelTruncation => {
-                    // Truncate the label so triangle + truncated label
-                    // + restart_pill + right_pad fits on line 1.
-                    if label_avail == 0 {
-                        ""
-                    } else {
-                        label_text_owned = truncate_str(meta.label, label_avail as usize);
-                        &label_text_owned
-                    }
-                }
-                _ => meta.label,
-            };
-
-            let full_label_text = format!("{triangle} {label_text}");
-            let full_label_w = full_label_text.width() as u16;
-            let label_used = full_label_w.min(area.width.saturating_sub(restart_w + 1));
-
-            if label_used > 0 {
-                buf.set_span(
-                    area.x,
-                    area.y,
-                    &Span::styled(&full_label_text, label_style),
-                    label_used,
-                );
-            }
-            if show_restart_pill && restart_w > 0 {
-                buf.set_span(
-                    restart_x_line1,
-                    area.y,
-                    &Span::styled(restart_pill_text, restart_style),
-                    restart_w,
-                );
-            }
-
-            // ── Line 2: right-aligned value + chevron column ──
-            //
-            // The chevron column is reserved
-            // for ALL rows so the `›` glyph is at a constant
-            // offset; Bool rows leave it empty but the value
-            // still right-aligns to the column's left edge.
-            // An earlier version anchored Bool rows on line 2 to
-            // `area.right - value_w - 1` (no chevron column
-            // reserved), shifting their `on`/`off` text 2 cells
-            // to the right of chevron rows' values — a
-            // visual misalignment.
-            //
-            // Anchor line-2's
-            // chevron-column LEFT EDGE at the same column the
-            // one-line layout uses: `area.right - ROW_RIGHT_PAD_W
-            // - ROW_CHEVRON_COL_W` (i.e. `restart_x_line1 -
-            // ROW_CHEVRON_COL_W` when no restart pill is on
-            // line 2). The earlier version anchored at
-            // `area.right - ROW_CHEVRON_COL_W`, so on a row
-            // that flipped from one-line to two-line layout the
-            // `›` glyph would jump 1 cell rightward — producing
-            // a staircase between mixed-layout rows. Subtracting
-            // `ROW_RIGHT_PAD_W` here brings line 2 into pixel
-            // parity with line 1.
-            let y2 = area.y + 1;
-            let chevron_x_line2 = (area.x + area.width)
-                .saturating_sub(ROW_RIGHT_PAD_W + ROW_CHEVRON_COL_W)
-                .max(area.x);
-            let value_x_line2 = chevron_x_line2.saturating_sub(value_w + 1).max(area.x);
-
-            // Render value, then chevron, on line 2. Clip if either
-            // would land off the left edge in a pathologically
-            // narrow row.
-            if value_w > 0 && value_x_line2 + value_w <= area.x + area.width {
-                buf.set_span(
-                    value_x_line2,
-                    y2,
-                    &Span::styled(value_text, value_style),
-                    value_w,
-                );
-            }
-            if show_chevron
-                && chevron_w > 0
-                && chevron_x_line2 + ROW_CHEVRON_COL_W <= area.x + area.width
-            {
-                buf.set_span(
-                    chevron_x_line2,
-                    y2,
-                    &Span::styled(chevron_str.as_str(), chevron_style),
-                    chevron_w,
-                );
-            }
-
-            let _ = desc_style;
-            let _ = is_selected;
-
-            // Hit-rect for the value column: covers the value text
-            // + the always-reserved chevron column on LINE 2 only.
-            // Width is `value_w + ROW_CHEVRON_COL_W`
-            // (not `value_w + chevron_w`) so the hit-rect spans the
-            // empty chevron column on Bool rows too.
-            Rect {
-                x: value_x_line2,
-                y: y2,
-                width: value_w.saturating_add(ROW_CHEVRON_COL_W),
-                height: 1,
-            }
-        }
-    }
-}
-
-/// Render the wrapped description for an expanded row.
-fn render_expanded_description(
-    buf: &mut Buffer,
-    area: Rect,
-    meta: &SettingMeta,
-    lock_reason: Option<&'static str>,
-    theme: &Theme,
-) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
-    let desc_style = Style::default()
-        .fg(theme.gray)
-        .bg(theme.bg_base)
-        .add_modifier(Modifier::ITALIC);
-    let desc_text = lock_reason.unwrap_or(meta.description);
-    // Indent 4 cols to nest under the label.
-    let indent = 4u16.min(area.width);
-    let wrap_w = area.width.saturating_sub(indent);
-    if wrap_w == 0 {
-        return;
-    }
-    let line = Line::from(Span::styled(desc_text, desc_style));
-    let wrapped = crate::render::wrapping::word_wrap_line(&line, wrap_w as usize);
-    for (i, wrapped_line) in wrapped.iter().enumerate() {
-        if (i as u16) >= area.height {
-            break;
-        }
-        let y = area.y + i as u16;
-        // Paint indent bg first so the wrapped text aligns visually.
-        for x in area.x..area.x + indent {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_bg(theme.bg_base);
-            }
-        }
-        buf.set_line(area.x + indent, y, wrapped_line, wrap_w);
-    }
-}
-
-/// Fallback render path for a row whose `current_value_for` returned
-/// `None` (registry / dispatch skew). Shows the label without a value
-/// column so the misconfiguration is visible at runtime; the
-/// `every_setting_has_dispatch_arm` test catches the case at CI time.
-fn render_setting_row_no_value(
-    buf: &mut Buffer,
-    area: Rect,
-    meta: &SettingMeta,
-    max_label_w: u16,
-    is_selected: bool,
-    theme: &Theme,
-) {
-    let bg = settings_list_row_bg(theme, is_selected, false);
-    buf.set_style(area, Style::default().bg(bg));
-    let label_style = Style::default()
-        .fg(theme.accent_error)
-        .bg(bg)
-        .add_modifier(Modifier::BOLD);
-
-    let label_max_w = max_label_w;
-    let label_truncated: std::borrow::Cow<'_, str> = if meta.label.width() <= label_max_w as usize {
-        std::borrow::Cow::Borrowed(meta.label)
-    } else {
-        std::borrow::Cow::Owned(truncate_str(meta.label, label_max_w as usize))
-    };
-    let text = format!(" !   {label_truncated} (no read mapping)");
-    let w = text.width() as u16;
+    let cursor_style = Style::default().fg(theme.accent_user).bg(bg);
     buf.set_span(
         area.x,
         area.y,
-        &Span::styled(&text, label_style),
-        w.min(area.width),
+        &Span::styled(&cursor, cursor_style),
+        ROW_CURSOR_W.min(area.width),
     );
-}
 
-/// Render a `Group` row in the Browse list: a triangle-prefixed label with a
-/// trailing chevron (opens the sub-sheet). Carries no value column. Returns the
-/// chevron hit-rect so a click on it opens the sub-sheet like an Enum row.
-fn render_setting_group_row(
-    buf: &mut Buffer,
-    area: Rect,
-    meta: &SettingMeta,
-    is_selected: bool,
-    is_hovered: bool,
-    is_expanded: bool,
-    theme: &Theme,
-) -> Rect {
-    let bg = settings_list_row_bg(theme, is_selected, is_hovered);
-    buf.set_style(area, Style::default().bg(bg));
-    let mut label_style = Style::default().fg(theme.text_primary).bg(bg);
-    if is_selected {
-        label_style = label_style.add_modifier(Modifier::BOLD);
-    }
-    let chevron_style = Style::default().fg(theme.gray).bg(bg);
-
-    let chevron_str = format!(" {}", crate::glyphs::chevron());
-    let chevron_w = chevron_str.width() as u16;
-    let chevron_x = (area.x + area.width)
-        .saturating_sub(ROW_RIGHT_PAD_W)
-        .saturating_sub(ROW_CHEVRON_COL_W);
-
-    // Triangle prefix mirrors normal rows: "▾" expanded, "▸" collapsed
-    // (the group's description expands inline via Right/l like other rows).
-    let triangle = if is_expanded { "\u{25BE}" } else { "\u{25B8}" };
-    let label_text = format!("{triangle} {}", meta.label);
-    let label_cap = chevron_x.saturating_sub(area.x).saturating_sub(1);
-    let label_w = (label_text.width() as u16).min(label_cap);
+    // ── Label column ─────────────────────────────────────────────────────
+    let label_x = area.x + ROW_CURSOR_W.min(area.width);
+    let label_avail = area.width.saturating_sub(ROW_CURSOR_W);
+    let label = truncate_str(meta.label, max_label_w.min(label_avail) as usize);
+    let label_w = (label.width() as u16).min(label_avail);
     if label_w > 0 {
+        buf.set_span(label_x, area.y, &Span::styled(&label, label_style), label_w);
+    }
+
+    // ── Value column, right-aligned against the chevron gutter ───────────
+    let chevron_x = (area.x + area.width).saturating_sub(ROW_RIGHT_PAD_W + ROW_CHEVRON_COL_W);
+    let value_left_bound = label_x + max_label_w.min(label_avail) + ROW_GAP_W;
+    let value_avail = chevron_x.saturating_sub(value_left_bound);
+    let value_text = truncate_str(&value_text, value_avail as usize);
+    let value_w = (value_text.width() as u16).min(value_avail);
+    let value_x = chevron_x.saturating_sub(value_w);
+    if value_w > 0 {
         buf.set_span(
-            area.x,
+            value_x,
             area.y,
-            &Span::styled(&label_text, label_style),
-            label_w,
+            &Span::styled(&value_text, value_style),
+            value_w,
         );
     }
-    if chevron_w > 0 && chevron_x >= area.x.saturating_add(label_w) {
+    if show_chevron {
+        let chevron = format!(" {}", crate::glyphs::chevron());
+        let style = Style::default()
+            .fg(if row.dimmed {
+                theme.gray_dim
+            } else {
+                theme.gray
+            })
+            .bg(bg);
         buf.set_span(
             chevron_x,
             area.y,
-            &Span::styled(chevron_str.as_str(), chevron_style),
-            chevron_w,
+            &Span::styled(&chevron, style),
+            ROW_CHEVRON_COL_W,
         );
     }
-    // Hit-rect spans the chevron column (a click there opens the sub-sheet).
+
     Rect {
-        x: chevron_x,
+        x: value_x,
         y: area.y,
-        width: ROW_CHEVRON_COL_W,
+        width: value_w.saturating_add(ROW_CHEVRON_COL_W),
+        height: 1,
+    }
+}
+
+/// Fallback for a row whose `current_value_for` returned `None` (registry /
+/// dispatch skew). Renders the label in the error color so the
+/// misconfiguration is visible at runtime; `every_setting_has_dispatch_arm`
+/// catches the case at CI time.
+fn render_setting_row_unmapped(
+    buf: &mut Buffer,
+    area: Rect,
+    meta: &SettingMeta,
+    max_label_w: u16,
+    bg: Color,
+    theme: &Theme,
+) -> Rect {
+    let style = Style::default()
+        .fg(theme.accent_error)
+        .bg(bg)
+        .add_modifier(Modifier::BOLD);
+    let label = truncate_str(meta.label, max_label_w as usize);
+    let text = format!("  {label}  (no read mapping)");
+    let w = (text.width() as u16).min(area.width);
+    buf.set_span(area.x, area.y, &Span::styled(&text, style), w);
+    Rect {
+        x: area.x,
+        y: area.y,
+        width: 0,
         height: 1,
     }
 }
@@ -2751,8 +2382,8 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
     match &state.state.mode {
         SettingsMode::Browse => {
             // A locked row (ZDR / team-managed) accepts neither the edit keys
-            // nor `d`, so it advertises neither. `→ expand` stays — that is
-            // how the user reads the lock reason.
+            // nor `d`, so it advertises neither. The reason shows in the
+            // description block instead.
             let locked = state
                 .focused_setting()
                 .is_some_and(|(key, _)| state.row_lock(key).is_some());
@@ -2760,18 +2391,35 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
                 Some((_, meta)) if matches!(meta.kind, SettingKind::Bool { .. }) => "Enter toggle",
                 _ => "Enter edit",
             };
-            let mut shortcuts = vec![
-                Shortcut {
-                    label: "\u{2191}/\u{2193}/j/k nav",
-                    clickable: false,
-                    id: 0,
-                },
-                Shortcut {
-                    label: "g/G top/btm",
-                    clickable: false,
-                    id: 0,
-                },
-            ];
+            if state.section_focus {
+                return vec![
+                    Shortcut {
+                        label: "\u{2191}/\u{2193} jump sections",
+                        clickable: false,
+                        id: 0,
+                    },
+                    Shortcut {
+                        label: "Tab/Enter settings",
+                        clickable: false,
+                        id: 0,
+                    },
+                    Shortcut {
+                        label: "\u{2190}/\u{2192} switch tabs",
+                        clickable: false,
+                        id: 0,
+                    },
+                    Shortcut {
+                        label: "Esc close",
+                        clickable: false,
+                        id: 0,
+                    },
+                ];
+            }
+            let mut shortcuts = vec![Shortcut {
+                label: "\u{2191}/\u{2193}/j/k nav",
+                clickable: false,
+                id: 0,
+            }];
             if !locked {
                 shortcuts.push(Shortcut {
                     label: "Space toggle",
@@ -2784,18 +2432,23 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
                     id: 0,
                 });
             }
-            shortcuts.extend([
-                Shortcut {
-                    label: "\u{2192} expand",
+            shortcuts.push(Shortcut {
+                label: "\u{2190}/\u{2192} tabs",
+                clickable: false,
+                id: 0,
+            });
+            if state.sections().len() >= 2 {
+                shortcuts.push(Shortcut {
+                    label: "Tab sections",
                     clickable: false,
                     id: 0,
-                },
-                Shortcut {
-                    label: "/ search",
-                    clickable: false,
-                    id: 0,
-                },
-            ]);
+                });
+            }
+            shortcuts.push(Shortcut {
+                label: "type to search",
+                clickable: false,
+                id: 0,
+            });
             if !locked {
                 shortcuts.push(Shortcut {
                     label: "d reset",
@@ -2808,9 +2461,6 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
                 clickable: false,
                 id: 0,
             });
-            // Browse is nav mode (filter inactive), so append `i search` last
-            // (matching the shared pickers).
-            modal_window::push_vim_nav_search_hint(&mut shortcuts, false);
             shortcuts
         }
         SettingsMode::FilterFocused => vec![

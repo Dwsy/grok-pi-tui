@@ -86,6 +86,8 @@ const BASH_TASK_NAME_DESCRIPTION =
 	"(match the language of their messages). Required for every call — foreground and background. " +
 	"This is what the terminal UI shows instead of the raw shell, especially for long/complex commands. " +
 	"Never annotate command with # comments — put the label in task_name only.";
+const BASH_BACKGROUND_WAIT_GUIDELINE =
+	"A long-running foreground Bash call may be automatically backgrounded and return a task_id. When wait_tasks/get_task_output returns a running task at the configured max-wait cap, continue the agent loop and call it again if the result is still needed.";
 
 export function buildBashPrompts(
 	evalVersion: EvalVersion,
@@ -111,6 +113,6 @@ export function buildBashPrompts(
 	return {
 		description: `${nativeDescription} ${evalPreference}${BASH_TASK_NAME_DESCRIPTION}`,
 		promptSnippet,
-		promptGuidelines: [...nativeGuidelines, evalGuideline],
+		promptGuidelines: [...nativeGuidelines, evalGuideline, BASH_BACKGROUND_WAIT_GUIDELINE],
 	};
 }

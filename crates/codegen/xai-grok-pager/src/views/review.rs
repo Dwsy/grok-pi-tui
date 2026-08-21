@@ -1968,11 +1968,11 @@ fn aggregate_stats(node: &TrieNode) -> (usize, usize, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xai_grok_pager_diff::DiffLine;
     use crate::scrollback::blocks::tool::EditToolCallBlock;
     use crate::scrollback::blocks::tool::ExecuteToolCallBlock;
     use crate::scrollback::blocks::tool::ReadToolCallBlock;
     use crate::scrollback::entry::ScrollbackEntry;
+    use xai_grok_pager_diff::DiffLine;
 
     fn edit_entry(path: &str, write: bool) -> ScrollbackEntry {
         let hunk = vec![

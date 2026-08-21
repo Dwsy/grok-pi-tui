@@ -2026,9 +2026,8 @@ fn first_stream_start_pre_creates_thinking() {
     );
     assert_eq!(tracker.last_stream_start_ms, Some(1_000));
     assert!(
-        sb.get(0).is_some_and(
-            |e| matches!(&e.block, RenderBlock::Thinking(t) if t.text().is_empty())
-        ),
+        sb.get(0)
+            .is_some_and(|e| matches!(&e.block, RenderBlock::Thinking(t) if t.text().is_empty())),
         "pre-create should be an empty streaming Thinking block"
     );
     crate::appearance::cache::set_show_thinking_blocks(true);
@@ -2076,12 +2075,15 @@ fn stream_start_replaces_empty_precreated_thinking() {
         "old empty thinking entry should be removed"
     );
     assert!(
-        sb.get_by_id(second_id).is_some_and(
-            |e| matches!(&e.block, RenderBlock::Thinking(t) if t.text().is_empty())
-        ),
+        sb.get_by_id(second_id)
+            .is_some_and(|e| matches!(&e.block, RenderBlock::Thinking(t) if t.text().is_empty())),
         "replacement thinking entry should be the new empty pre-create"
     );
-    assert_eq!(sb.len(), 1, "only the fresh pre-created block should remain");
+    assert_eq!(
+        sb.len(),
+        1,
+        "only the fresh pre-created block should remain"
+    );
     crate::appearance::cache::set_show_thinking_blocks(true);
 }
 

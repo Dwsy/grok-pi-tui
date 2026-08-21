@@ -316,7 +316,10 @@ pub(super) fn find_agent_by_session_id<'a>(
     }
     for agent in agents.values_mut() {
         if agent.subagent_views.contains_key(session_id) {
-            return agent.subagent_views.get_mut(session_id).map(|child| &mut **child);
+            return agent
+                .subagent_views
+                .get_mut(session_id)
+                .map(|child| &mut **child);
         }
     }
     None

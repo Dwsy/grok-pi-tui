@@ -161,7 +161,13 @@ pub(in crate::app::dispatch) fn dispatch_new_session(app: &mut AppView) -> Vec<E
                 return vec![];
             }
         }
-        return dispatch_new_session_inner(app, None);
+        // Default (pi_keep_multi_agent = false): `/new` fully replaces the
+        // current session — drop the active agent tab so the dashboard only
+        // shows the new one. When the F2 toggle is on, the current agent is
+        // preserved so the dashboard can switch back to it.
+        let mut effects = drop_active_agent_for_replacement(app);
+        effects.extend(dispatch_new_session_inner(app, None));
+        return effects;
     }
     #[cfg(feature = "local-workspace")]
     if matches!(app.active_view, ActiveView::Welcome) {
@@ -538,6 +544,32 @@ pub(crate) fn dispatch_prewarm_welcome_session(app: &mut AppView) -> Vec<Effect>
     app.welcome_prewarm_agent = Some(agent_id);
     effects
 }
+/// When `pi_keep_multi_agent` is off (default), `/new` fully replaces the
+/// **current** session: the active agent tab is dropped (its Pi session is
+/// abandoned — Pi switches to the fresh session). Other idle agent tabs in
+/// the dashboard are left untouched. Returns the unregister effect for the
+/// dropped session. When the toggle is on this is a no-op (the current agent
+/// is preserved so the dashboard can switch back to it).
+fn drop_active_agent_for_replacement(app: &mut AppView) -> Vec<Effect> {
+    if app.current_ui.pi_keep_multi_agent {
+        return vec![];
+    }
+    // Only the currently active agent is replaced. Agents sitting idle in
+    // other dashboard tabs stay alive so the user can still switch to them.
+    let id = match app.active_view {
+        ActiveView::Agent(id) => id,
+        _ => return vec![],
+    };
+    let Some(agent) = app.agents.shift_remove(&id) else {
+        return vec![];
+    };
+    let effects = unregister_session_effect(agent.session.session_id);
+    if !effects.is_empty() {
+        crate::memory_release::release_retained_memory_with("new-replace-agent");
+    }
+    effects
+}
+
 /// Drop a welcome prewarm agent (e.g. user is resuming another session).
 pub(in crate::app::dispatch) fn discard_welcome_prewarm(app: &mut AppView) -> Vec<Effect> {
     let Some(id) = app.welcome_prewarm_agent.take() else {

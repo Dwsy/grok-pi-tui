@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import type { ExtensionCompletionOptions } from "@earendil-works/pi-coding-agent";
 
-import { MAX_OUTPUT_BYTES, MAX_TIMEOUT_SECONDS, killChildProcess } from "./shared.ts";
+import { MAX_OUTPUT_BYTES, MAX_TIMEOUT_SECONDS, killChildProcess, truncateTaskOutput } from "./shared.ts";
 import type { EvalToolMetadata } from "./tool-bridge.ts";
 
 export type EvalSkillMetadata = {
@@ -77,6 +77,7 @@ type PendingEval = {
 	reject: (error: Error) => void;
 	output: Buffer;
 	truncated: boolean;
+	outputSink?: (chunk: Buffer) => void;
 	timer?: ReturnType<typeof setTimeout>;
 	outerSignal?: AbortSignal;
 	abortHandler?: () => void;
@@ -602,6 +603,7 @@ export class PersistentEvalKernel {
 		reset: boolean,
 		tools: EvalToolMetadata[] = [],
 		skills: EvalSkillMetadata[] = [],
+		outputSink?: (chunk: Buffer) => void,
 	): Promise<EvalExecution> {
 		validateEvalTimeout(timeout);
 		if (this.pending) {
@@ -622,6 +624,7 @@ export class PersistentEvalKernel {
 				reject,
 				output: Buffer.alloc(0),
 				truncated: false,
+				outputSink,
 				outerSignal: signal,
 				runController: new AbortController(),
 			};
@@ -716,6 +719,7 @@ export class PersistentEvalKernel {
 		const pending = this.pending;
 		if (!pending) return;
 		const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+		pending.outputSink?.(bytes);
 		const joined = Buffer.concat([pending.output, bytes]);
 		if (joined.length > MAX_OUTPUT_BYTES) {
 			pending.output = joined.subarray(joined.length - MAX_OUTPUT_BYTES);
@@ -790,14 +794,18 @@ export class PersistentEvalKernel {
 		const pending = this.takePending();
 		if (!pending) return;
 		const streamed = pending.output.toString("utf8");
-		const output = [streamed, reply.value ?? ""]
-			.filter((part) => part.length > 0)
-			.join(streamed && reply.value ? (streamed.endsWith("\n") ? "" : "\n") : "");
-		const rendered = pending.truncated
-			? `[output truncated to ${MAX_OUTPUT_BYTES} bytes]\n${output}`
-			: output;
+		const value = reply.value ?? "";
+		const separator = streamed && value ? (streamed.endsWith("\n") ? "" : "\n") : "";
+		if (pending.outputSink && value) pending.outputSink(Buffer.from(`${separator}${value}`));
+		const output = [streamed, value].filter((part) => part.length > 0).join(separator);
+		const bounded = pending.outputSink ? truncateTaskOutput(output, pending.truncated) : undefined;
+		const rendered = bounded
+			? bounded.output
+			: pending.truncated
+				? `[output truncated to ${MAX_OUTPUT_BYTES} bytes]\n${output}`
+				: output;
 		if (reply.ok) {
-			pending.resolve({ output: rendered, truncated: pending.truncated });
+			pending.resolve({ output: rendered, truncated: bounded?.truncated ?? pending.truncated });
 			return;
 		}
 		pending.reject(new Error([reply.error || "Eval failed", rendered].filter(Boolean).join("\n")));

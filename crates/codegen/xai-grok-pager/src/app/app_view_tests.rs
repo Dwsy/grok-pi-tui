@@ -558,10 +558,9 @@ fn remote_tui_forwards_paste_as_bracketed_sequence_not_local_prompt() {
     app.pending_effects.clear();
     let _ = app.handle_input(&Event::Paste("local".to_owned()));
     assert!(
-        app.pending_effects.iter().all(|effect| !matches!(
-            effect,
-            crate::app::actions::Effect::RemoteTuiInput { .. }
-        )),
+        app.pending_effects
+            .iter()
+            .all(|effect| !matches!(effect, crate::app::actions::Effect::RemoteTuiInput { .. })),
         "no remote forwarding after the session closes"
     );
     assert_eq!(app.agents[&id].prompt.text(), "local");
@@ -660,10 +659,9 @@ fn reload_reset_discards_projected_extension_ui_and_keeps_session_title() {
     assert!(app.external_ui.remote_tui_overlays.is_empty());
     assert!(app.external_ui.extension_shortcuts.all().is_empty());
     assert!(
-        app.pending_effects.iter().all(|effect| !matches!(
-            effect,
-            crate::app::actions::Effect::RemoteTuiInput { .. }
-        ))
+        app.pending_effects
+            .iter()
+            .all(|effect| !matches!(effect, crate::app::actions::Effect::RemoteTuiInput { .. }))
     );
 
     let agent = &app.agents[&id];

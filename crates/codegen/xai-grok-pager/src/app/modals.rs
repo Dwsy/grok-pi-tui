@@ -928,6 +928,9 @@ impl AgentView {
                 InputOutcome::Changed
             }
             ArgPickerStep::Closed => {
+                if matches!(selection, ArgPickerSelection::LargePaste) {
+                    return self.resolve_large_paste_choice(false);
+                }
                 if in_effort_phase && self.try_arg_picker_step_back_from_effort() {
                     return InputOutcome::Changed;
                 }
@@ -955,6 +958,9 @@ impl AgentView {
                 InputOutcome::Changed
             }
             ArgPickerStep::Selected(item) => {
+                if matches!(selection, ArgPickerSelection::LargePaste) {
+                    return self.resolve_large_paste_choice(item.insert_text == "file");
+                }
                 if matches!(selection, ArgPickerSelection::ToggleScopedModel) {
                     if item.insert_text.eq_ignore_ascii_case("all") {
                         self.session.models.clear_scoped_models();
@@ -2782,6 +2788,7 @@ impl AgentView {
                     "model" | "m" if !args_query.is_empty() => "Pick reasoning effort",
                     "model" | "m" => "Pick model",
                     "theme" | "t" => "Pick theme",
+                    "large-paste" => "Large paste",
                     _ => "Pick option",
                 };
                 // Model list rows show the model name and provider. Metadata for

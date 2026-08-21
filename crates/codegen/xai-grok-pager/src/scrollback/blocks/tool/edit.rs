@@ -123,7 +123,10 @@ pub(super) fn expand_tabs(text: &str) -> Cow<'_, str> {
 }
 
 /// Source lines represented by one rendered row: `(old, new)`.
-pub(crate) type DiffLinePair = (Option<xai_grok_pager_diff::DiffLine>, Option<xai_grok_pager_diff::DiffLine>);
+pub(crate) type DiffLinePair = (
+    Option<xai_grok_pager_diff::DiffLine>,
+    Option<xai_grok_pager_diff::DiffLine>,
+);
 
 fn diff_line_pair_from_line(line: &xai_grok_pager_diff::DiffLine) -> DiffLinePair {
     match line.tag {

@@ -208,10 +208,12 @@ pub fn render_rail(
     rail: &TimelineRail,
     hovered: Option<TimelineHit>,
     theme: &Theme,
+    is_compaction_turn: impl Fn(usize) -> bool,
 ) {
     let dim = Style::default().fg(theme.gray_dim);
     let normal = Style::default().fg(theme.gray);
     let bright = Style::default().fg(theme.text_primary);
+    let compaction = Style::default().fg(theme.accent_tool);
     let up_enabled = rail.up_target.is_some();
     let down_enabled = rail.down_target.is_some();
     let up_style = if hovered == Some(TimelineHit::Up) && up_enabled {
@@ -257,5 +259,53 @@ pub fn render_rail(
             (" \u{2500}", dim)
         };
         buf.set_span(rail.rect.x, y, &Span::styled(text, style), RAIL_WIDTH);
+
+        // The rail is two columns wide. Keep the prompt tick in its normal
+        // style and use the left column as an additional compaction marker.
+        // This preserves turn navigation while showing both semantics at once.
+        if is_compaction_turn(turn_idx) {
+            buf.set_span(rail.rect.x, y, &Span::styled("\u{2500}", compaction), 1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compaction_tick_uses_distinct_tool_accent() {
+        let area = Rect::new(0, 0, RAIL_WIDTH, 4);
+        let rail = TimelineRail {
+            rect: area,
+            window: 0..2,
+            ticks_y: 1,
+            active: None,
+            up_target: None,
+            down_target: None,
+            up_y: 0,
+            down_y: 3,
+        };
+        let theme = Theme::current();
+        let mut buf = Buffer::empty(area);
+
+        render_rail(&mut buf, &rail, None, &theme, |turn_idx| turn_idx == 1);
+
+        assert_eq!(buf[(1, 1)].fg, theme.gray_dim, "prompt tick stays neutral");
+        assert_eq!(
+            buf[(0, 2)].fg,
+            theme.accent_tool,
+            "compaction marker must use the tool accent"
+        );
+        assert_eq!(
+            buf[(1, 2)].fg,
+            theme.gray_dim,
+            "prompt tick keeps its neutral color beside compaction"
+        );
+        assert_ne!(
+            buf[(0, 2)].fg,
+            buf[(1, 2)].fg,
+            "compaction and prompt ticks must remain visually distinct"
+        );
     }
 }

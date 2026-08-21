@@ -3,7 +3,7 @@
 //! Opens via Ctrl-F on a selected block, replaces the scrollback area.
 //! Provides ListPane-based navigation, search, visual-select, and copy.
 //!
-//! Supports thinking/agent message blocks (markdown content).
+//! Supports markdown-backed blocks, including persisted compaction summaries.
 //! Execute and edit viewers will be added in later phases.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
@@ -100,7 +100,12 @@ struct DiffLineMeta {
 }
 
 impl DiffLineMeta {
-    fn from_pair(pair: &(Option<xai_grok_pager_diff::DiffLine>, Option<xai_grok_pager_diff::DiffLine>)) -> Self {
+    fn from_pair(
+        pair: &(
+            Option<xai_grok_pager_diff::DiffLine>,
+            Option<xai_grok_pager_diff::DiffLine>,
+        ),
+    ) -> Self {
         let to_meta = |line: &xai_grok_pager_diff::DiffLine| DiffLineMetaLine {
             tag: line.tag,
             text: line.text.clone(),
@@ -141,7 +146,7 @@ fn flatten_diff_meta<'a>(
 /// What kind of block content the viewer is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewerKind {
-    /// Thinking or AgentMessage (markdown content).
+    /// Markdown-backed scrollback content.
     Markdown,
     /// Execute tool call (stdout).
     Execute,
@@ -279,7 +284,7 @@ impl TextDrag {
 }
 
 impl BlockViewerPane {
-    /// Create a viewer for a markdown block (thinking or agent message).
+    /// Create a viewer for a markdown-backed block.
     pub fn for_markdown(entry_id: EntryId, entry: &ScrollbackEntry) -> Option<Self> {
         let lines = Self::extract_markdown_lines(&entry.block)?;
         let generation = Self::extract_generation(&entry.block).unwrap_or(0);
@@ -744,7 +749,11 @@ impl BlockViewerPane {
                 lines.push(Line::from(""));
             }
             lines.push(Line::from(Span::styled(
-                if block.error.is_some() { "Error" } else { "Output" },
+                if block.error.is_some() {
+                    "Error"
+                } else {
+                    "Output"
+                },
                 label,
             )));
             let style = if block.error.is_some() {
@@ -756,7 +765,11 @@ impl BlockViewerPane {
                 lines.push(Line::from(Span::styled(line.to_string(), style)));
             }
         }
-        Some(Self::for_static_content(entry_id, ViewerKind::OtherTool, lines))
+        Some(Self::for_static_content(
+            entry_id,
+            ViewerKind::OtherTool,
+            lines,
+        ))
     }
 
     /// Create a viewer for a background task (stdout from central store).
@@ -1045,11 +1058,12 @@ impl BlockViewerPane {
         (items, diff_meta)
     }
 
-    /// Extract pre-wrap lines from a markdown block (thinking or agent message).
+    /// Extract pre-wrap lines from a markdown-backed block.
     fn extract_markdown_lines(block: &RenderBlock) -> Option<Vec<Line<'static>>> {
         match block {
             RenderBlock::Thinking(b) => Some(b.content().pre_wrap_lines()),
             RenderBlock::AgentMessage(b) => Some(b.content().pre_wrap_lines()),
+            RenderBlock::SessionEvent(b) => b.fullscreen_markdown_lines(),
             _ => None,
         }
     }
@@ -1950,8 +1964,8 @@ impl BlockViewerPane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xai_grok_pager_diff::DiffLine;
     use similar::ChangeTag;
+    use xai_grok_pager_diff::DiffLine;
 
     #[test]
     fn flatten_side_by_side_meta_keeps_patch_order_and_dedupes_equal() {

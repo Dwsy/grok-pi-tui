@@ -342,11 +342,7 @@ fn revert_action(key: &'static str, original: &SettingValue) -> Option<Action> {
 }
 
 fn group_key(state: &mut PiSettingsState, key: &KeyEvent) -> Outcome {
-    let Mode::PickingGroup {
-        key: group,
-        child,
-    } = state.mode
-    else {
+    let Mode::PickingGroup { key: group, child } = state.mode else {
         return Outcome::Unchanged;
     };
     let children = state.group_children(group);
@@ -560,12 +556,7 @@ pub fn handle_mouse(
     }
 }
 
-fn list_mouse(
-    state: &mut PiSettingsState,
-    kind: MouseEventKind,
-    column: u16,
-    row: u16,
-) -> Outcome {
+fn list_mouse(state: &mut PiSettingsState, kind: MouseEventKind, column: u16, row: u16) -> Outcome {
     let on_list = contains(state.list_area, column, row);
 
     if matches!(kind, MouseEventKind::Moved) {
@@ -680,7 +671,13 @@ fn choice_mouse(
             ..
         } => {
             let len = state.choice_rects.len() as isize;
-            move_choice(state, index, len, hit as isize - index as isize, supports_preview)
+            move_choice(
+                state,
+                index,
+                len,
+                hit as isize - index as isize,
+                supports_preview,
+            )
         }
         Mode::PickingGroup { key, .. } => {
             let children = state.group_children(key);

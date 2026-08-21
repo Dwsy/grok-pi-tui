@@ -110,8 +110,8 @@ mod tests {
             .expect("read bash tasks module");
         let eval_tasks_source = std::fs::read_to_string(source_dir.join("eval-tasks.ts"))
             .expect("read eval tasks module");
-        let prompts_source = std::fs::read_to_string(source_dir.join("prompts.ts"))
-            .expect("read prompts module");
+        let prompts_source =
+            std::fs::read_to_string(source_dir.join("prompts.ts")).expect("read prompts module");
         let shared_source =
             std::fs::read_to_string(source_dir.join("shared.ts")).expect("read shared module");
         let tool_bridge_source = std::fs::read_to_string(source_dir.join("tool-bridge.ts"))
@@ -130,6 +130,9 @@ mod tests {
         assert!(source.contains("name: \"get_task_output\""));
         assert!(source.contains("name: \"wait_tasks\""));
         assert!(source.contains("name: \"kill_task\""));
+        assert!(source.contains("resolveMaxWaitMs"));
+        assert!(source.contains("autoBackgroundMs: maxWaitMs"));
+        assert!(source.contains("capWaitMs"));
 
         assert!(eval_source.contains("PersistentEvalKernel"));
         assert!(eval_source.contains("JS_EVAL_WORKER"));
@@ -145,6 +148,7 @@ mod tests {
         assert!(bash_source.contains("PI_GROK_BASH_CONTROL_META"));
         assert!(bash_source.contains("pi-grok-background-bash/v1"));
         assert!(bash_source.contains("Background Bash task failed:"));
+        assert!(bash_source.contains("autoBackgroundHandle"));
         assert!(bash_source.contains(
             "shouldWake ? { triggerTurn: true, deliverAs: \"followUp\" } : { triggerTurn: false }"
         ));
@@ -156,7 +160,9 @@ mod tests {
         assert!(eval_tasks_source.contains("killEvalTask"));
         assert!(prompts_source.contains("buildBashPrompts"));
         assert!(prompts_source.contains("buildEvalPrompts"));
+        assert!(prompts_source.contains("automatically backgrounded"));
         assert!(shared_source.contains("killChildProcess"));
+        assert!(shared_source.contains("DEFAULT_MAX_WAIT_MINS"));
         assert!(tool_bridge_source.contains("getAllRegisteredTools"));
         assert!(tool_bridge_source.contains("wrapRegisteredTool"));
         assert_eq!(

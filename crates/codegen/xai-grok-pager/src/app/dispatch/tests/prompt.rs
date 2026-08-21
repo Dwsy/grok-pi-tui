@@ -53,7 +53,10 @@ fn subagent_prompt_response_finishes_child_without_touching_parent() {
         .insert_subagent_view(child_sid.clone(), Box::new(child));
 
     let response = acp::PromptResponse::new(acp::StopReason::EndTurn).meta(Some(
-        serde_json::json!({"promptId": prompt_id}).as_object().unwrap().clone(),
+        serde_json::json!({"promptId": prompt_id})
+            .as_object()
+            .unwrap()
+            .clone(),
     ));
     let effects = dispatch_task_result(
         TaskResult::SubagentPromptResponse {
@@ -67,10 +70,12 @@ fn subagent_prompt_response_finishes_child_without_touching_parent() {
     );
     assert!(effects.is_empty());
     assert!(app.agents[&parent_id].session.state.is_idle());
-    assert!(app.agents[&parent_id].subagent_views[&child_sid]
-        .session
-        .state
-        .is_idle());
+    assert!(
+        app.agents[&parent_id].subagent_views[&child_sid]
+            .session
+            .state
+            .is_idle()
+    );
 }
 
 /// Sending a prompt is a submit: it retires the active ephemeral tip.

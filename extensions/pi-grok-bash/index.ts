@@ -45,7 +45,7 @@ import {
 	waitForEvalTask,
 } from "./eval-tasks.ts";
 import { buildBashPrompts, buildEvalPrompts } from "./prompts.ts";
-import { MAX_TIMEOUT_SECONDS } from "./shared.ts";
+import { MAX_TIMEOUT_SECONDS, resolveMaxWaitMs } from "./shared.ts";
 import { EvalSessionToolBridge } from "./tool-bridge.ts";
 export { EvalSessionToolBridge } from "./tool-bridge.ts";
 
@@ -73,6 +73,7 @@ function hostToolNameEnabled(name: string): boolean {
 
 export default async function (pi: ExtensionAPI) {
 	const bashEnabled = envFlagDefaultOn("PI_GROK_BASH") && hostToolNameEnabled("bash");
+	const maxWaitMs = resolveMaxWaitMs();
 	const tasks = new Map<string, BackgroundTask>();
 	const evalTasks = new Map<string, EvalBackgroundTask>();
 	const control = bashEnabled ? createBashControl(tasks) : { sync: () => {}, close: () => {} };
@@ -87,6 +88,10 @@ export default async function (pi: ExtensionAPI) {
 	if (bashEnabled) pi.on("session_start", publishTodoBacking);
 	const nativeBash = createBashToolDefinition(process.cwd());
 	const evalVersion = resolveEvalVersion();
+	const evalV2Only = evalVersion === "v2" && process.env.PI_GROK_EVAL_V2_ONLY === "1";
+	if (evalV2Only) {
+		pi.on("session_start", () => pi.setActiveTools(["eval"]));
+	}
 	const evalToolBridge = evalVersion === "v2" ? new EvalSessionToolBridge(pi) : undefined;
 	let evalSkills: EvalSkillMetadata[] = [];
 	let evalSkillFiles = new Map<string, string>();
@@ -339,6 +344,7 @@ export default async function (pi: ExtensionAPI) {
 							command,
 							cwd,
 							timeout: options.timeout,
+							autoBackgroundMs: maxWaitMs,
 							backgrounded: false,
 							description: taskName,
 							env: options.env ?? process.env,
@@ -371,6 +377,8 @@ export default async function (pi: ExtensionAPI) {
 							activeTask.foregroundSettler = settle;
 							activeTask.promote = () => {
 								if (activeTask.completed || activeTask.backgrounded) return;
+								if (activeTask.autoBackgroundHandle) clearTimeout(activeTask.autoBackgroundHandle);
+								activeTask.autoBackgroundHandle = undefined;
 								activeTask.backgrounded = true;
 								syncTaskState();
 								settle("backgrounded");
@@ -425,11 +433,15 @@ export default async function (pi: ExtensionAPI) {
 		managed.kind === "bash"
 			? waitForCompletion(managed.task, timeoutMs, signal)
 			: waitForEvalTask(managed.task, timeoutMs, signal);
+	const capWaitMs = (timeoutMs: number | undefined) => {
+		if (maxWaitMs === undefined) return timeoutMs;
+		return timeoutMs && timeoutMs > 0 ? Math.min(timeoutMs, maxWaitMs) : maxWaitMs;
+	};
 
 	if (bashEnabled || evalVersion === "v2") pi.registerTool({
 		name: "get_task_output",
 		label: "get_task_output",
-		description: "Get output for one or more background Bash or Eval v2 tasks. Set timeout_ms to wait for completion; omit it to poll.",
+		description: "Get output for one or more background Bash or Eval v2 tasks. Set timeout_ms to wait for completion; omit it to poll. Configured max-wait still caps a blocking wait.",
 		parameters: Type.Object({
 			task_ids: Type.Array(Type.String({ minLength: 1 })),
 			timeout_ms: Type.Optional(Type.Number({ minimum: 0 })),
@@ -440,7 +452,7 @@ export default async function (pi: ExtensionAPI) {
 			if (selected.some((task) => !task)) return { content: jsonContent({ task_not_found: ids.filter((id) => !findManagedTask(id)) }) };
 			const found = selected.filter((task): task is ManagedTask => task !== undefined);
 			if (params.timeout_ms && params.timeout_ms > 0) {
-				await Promise.all(found.map((task) => waitManagedTask(task, params.timeout_ms, signal)));
+				await Promise.all(found.map((task) => waitManagedTask(task, capWaitMs(params.timeout_ms), signal)));
 			}
 			const results = found.map(managedTaskResult);
 			return { content: jsonContent(results.length === 1 ? results[0] : { mode: "wait_all", results }) };
@@ -450,7 +462,7 @@ export default async function (pi: ExtensionAPI) {
 	if (bashEnabled || evalVersion === "v2") pi.registerTool({
 		name: "wait_tasks",
 		label: "wait_tasks",
-		description: "Wait for background Bash or Eval v2 tasks to finish.",
+		description: "Wait for background Bash or Eval v2 tasks to finish. Configured max-wait returns current running state instead of blocking indefinitely.",
 		parameters: Type.Object({
 			task_ids: Type.Array(Type.String({ minLength: 1 })),
 			mode: StringEnum(["wait_any", "wait_all"] as const),
@@ -461,7 +473,7 @@ export default async function (pi: ExtensionAPI) {
 			const selected = ids.map(findManagedTask);
 			if (selected.some((task) => !task)) return { content: jsonContent({ task_not_found: ids.filter((id) => !findManagedTask(id)) }) };
 			const found = selected.filter((task): task is ManagedTask => task !== undefined);
-			const waits = found.map((task) => waitManagedTask(task, params.timeout_ms, signal));
+			const waits = found.map((task) => waitManagedTask(task, capWaitMs(params.timeout_ms), signal));
 			if (params.mode === "wait_any") await Promise.race(waits);
 			else await Promise.all(waits);
 			const results = found.map(managedTaskResult);
@@ -495,6 +507,7 @@ export default async function (pi: ExtensionAPI) {
 		for (const kernel of Object.values(evalKernels)) kernel.close();
 		for (const task of tasks.values()) {
 			if (task.completed) continue;
+			if (task.autoBackgroundHandle) clearTimeout(task.autoBackgroundHandle);
 			task.explicitlyKilled = true;
 			task.signal = ORPHANED_SIGNAL;
 			killProcessTree(task);

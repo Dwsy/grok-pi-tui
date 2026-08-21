@@ -2247,7 +2247,13 @@ impl AgentView {
                 self.hit_scrollbar.clear();
             }
             if let Some(rail) = self.timeline_rail.as_ref() {
-                crate::views::timeline::render_rail(buf, rail, self.timeline_hover, &theme);
+                crate::views::timeline::render_rail(
+                    buf,
+                    rail,
+                    self.timeline_hover,
+                    &theme,
+                    |turn_idx| self.scrollback.turn_has_compaction_summary(turn_idx),
+                );
                 if let Some(crate::views::timeline::TimelineHit::Tick(turn_idx)) =
                     self.timeline_hover
                     && let Some((preview_turn, preview)) = self.timeline_hover_preview.as_ref()

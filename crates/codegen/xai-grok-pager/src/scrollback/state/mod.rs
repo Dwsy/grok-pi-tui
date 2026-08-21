@@ -2248,8 +2248,8 @@ mod tests {
     /// layout exists.
     #[test]
     fn has_expanded_edit_in_viewport_detects_visible_diffs() {
-        use xai_grok_pager_diff::DiffLine;
         use similar::ChangeTag;
+        use xai_grok_pager_diff::DiffLine;
 
         let hunks = vec![vec![DiffLine {
             text: "fn main() {}\n".into(),

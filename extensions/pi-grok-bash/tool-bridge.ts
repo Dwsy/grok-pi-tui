@@ -160,6 +160,10 @@ function throwIfAborted(signal: AbortSignal) {
 	if (signal.aborted) throw abortError(signal);
 }
 
+function evalV2OnlyHostToolsEnabled(): boolean {
+	return process.env.PI_GROK_EVAL_V2_ONLY === "1";
+}
+
 function jsonSafeValue(value: unknown): unknown {
 	if (value === undefined) return undefined;
 	try {
@@ -242,9 +246,10 @@ export class EvalSessionToolBridge {
 
 	catalog(): EvalToolMetadata[] {
 		const active = new Set(this.pi.getActiveTools());
+		const includeRegistered = evalV2OnlyHostToolsEnabled();
 		return this.pi
 			.getAllTools()
-			.filter((tool) => active.has(tool.name) && tool.name !== "eval")
+			.filter((tool) => (includeRegistered || active.has(tool.name)) && tool.name !== "eval")
 			.map((tool) => {
 				const captured = this.registered.get(tool.name)?.registeredTool;
 				const runtimeInfo = tool as typeof tool & { executionMode?: BridgeExecutionMode };
@@ -279,14 +284,16 @@ export class EvalSessionToolBridge {
 
 	async invoke(toolName: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult> {
 		throwIfAborted(signal);
-		if (!this.pi.getActiveTools().includes(toolName)) {
+		const active = this.pi.getActiveTools().includes(toolName);
+		const registered = this.pi.getAllTools().some((tool) => tool.name === toolName);
+		if (!active && !(evalV2OnlyHostToolsEnabled() && registered)) {
 			throw new Error(`Eval v2 cannot invoke inactive tool ${JSON.stringify(toolName)}`);
 		}
 
 		const nativeInvoke = (this.pi as ExtensionAPI & {
 			invokeTool?: (name: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<ToolResult>;
 		}).invokeTool;
-		if (typeof nativeInvoke === "function") return nativeInvoke.call(this.pi, toolName, args, signal);
+		if (active && typeof nativeInvoke === "function") return nativeInvoke.call(this.pi, toolName, args, signal);
 
 		const captured = this.registered.get(toolName);
 		if (captured) return this.invokeWrapped(toolName, captured.wrappedTool, args, signal);

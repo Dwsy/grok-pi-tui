@@ -149,6 +149,11 @@ pub(super) struct Args {
     #[arg(long = "no-bridge-extensions")]
     pub(super) no_bridge_extensions: bool,
 
+    /// Minutes before foreground Bash auto-backgrounds and each blocking task wait is capped.
+    /// CLI overrides PI_GROK_BASH_MAX_WAIT_MINS; 0 or negative disables both behaviors.
+    #[arg(long = "bash-max-wait-mins", value_name = "MIN", allow_hyphen_values = true)]
+    pub(super) bash_max_wait_mins: Option<f64>,
+
     /// Comma-separated allowlist of tool names to enable.
     #[arg(short = 't', long = "tools", value_name = "TOOLS")]
     pub(super) tools: Option<String>,
@@ -519,6 +524,16 @@ mod tests {
             pi_args_with_startup_flags(args.pi_args.clone(), &args, None),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn bash_max_wait_mins_is_host_only_and_accepts_off_values() {
+        let args = Args::try_parse_from(["grok-pi", "--bash-max-wait-mins", "4.25"]).unwrap();
+        assert_eq!(args.bash_max_wait_mins, Some(4.25));
+        assert!(pi_args_with_startup_flags(args.pi_args.clone(), &args, None).is_empty());
+
+        let off = Args::try_parse_from(["grok-pi", "--bash-max-wait-mins", "-1"]).unwrap();
+        assert_eq!(off.bash_max_wait_mins, Some(-1.0));
     }
 
     #[test]

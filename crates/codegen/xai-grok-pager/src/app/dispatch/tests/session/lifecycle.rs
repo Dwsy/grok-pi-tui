@@ -66,7 +66,6 @@ fn successful_model_switch_refreshes_context_window() {
     assert_eq!(context.total, 200_000);
 }
 
-
 #[test]
 fn voice_on_welcome_creates_session_and_records() {
     if !xai_grok_voice::AUDIO_SUPPORTED {

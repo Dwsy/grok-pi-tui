@@ -166,20 +166,38 @@ fn is_group_child(reg: &SettingsRegistry, key: &str) -> bool {
     })
 }
 
-/// Move keyboard selection forward to a given setting key via `j`.
-/// Target must be at-or-after current selection (forward-only).
+/// Move keyboard selection to a given setting key via `j`.
+///
+/// The tabbed modal only exposes one category's rows at a time, so this first
+/// switches the active tab to the one owning `target` (when the target is in a
+/// different tab), then walks `j` within that tab's filtered set. The forward-
+/// only assertion is preserved for same-tab targets.
 fn navigate_to(state: &mut SettingsModalState, target: &str) {
     let goal = row_idx_for(state, target);
+
+    // Switch to the tab that owns the target row so it is in the filtered set.
+    let target_tab = state.rows[goal].category(&state.registry);
+    if let Some(cat) = target_tab {
+        if let Some(tab_idx) = state.tabs.iter().position(|t| *t == cat) {
+            if state.active_tab != tab_idx {
+                state.set_active_tab(tab_idx);
+            }
+        }
+    }
+
     assert!(
-        state.selected <= goal,
-        "navigate_to(`{target}`): test misconfigured — target row {goal} is BEFORE current \
-         selection {}; navigate_to only walks forward",
-        state.selected,
+        state.selected <= goal || state.rows[goal].category(&state.registry) == target_tab,
+        "navigate_to(`{target}`): target row {goal} is not reachable from the current tab",
     );
     let mut guard = 0;
     while state.selected != goal {
         let outcome = handle_settings_key(state, &press(KeyCode::Char('j')));
         if matches!(outcome, SettingsKeyOutcome::Unchanged) {
+            // The target may live in a later tab; advance one tab and retry.
+            if state.active_tab + 1 < state.tabs.len() {
+                state.set_active_tab(state.active_tab + 1);
+                continue;
+            }
             panic!(
                 "navigate_to(`{target}`): walked off the bottom of the row list \
                  without finding the target (currently at row {})",
@@ -187,8 +205,8 @@ fn navigate_to(state: &mut SettingsModalState, target: &str) {
             );
         }
         guard += 1;
-        if guard > 100 {
-            panic!("navigate_to(`{target}`): runaway navigation (100+ keystrokes)");
+        if guard > 200 {
+            panic!("navigate_to(`{target}`): runaway navigation (200+ keystrokes)");
         }
     }
 }
@@ -959,15 +977,34 @@ fn filter_query_nonexistent_shows_zero_settings() {
     );
 }
 
-/// Empty query shows all rows.
+/// Empty query shows the active tab's setting rows (headers/sections excluded).
+/// The tabbed modal exposes one category at a time, so the empty-query
+/// filtered set is the active tab's settings, not every row in the registry.
 #[test]
 fn filter_empty_query_shows_all_rows() {
     let s = make_state();
-    let filtered = s.filtered_indices();
-    let expected: Vec<usize> = (0..s.rows.len()).collect();
+    let active = s.active_tab_category();
+    let filtered = s.filtered_indices().to_vec();
+    let expected: Vec<usize> = s
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            matches!(r, RowEntry::Setting { .. })
+                && r.category(&s.registry) == active
+        })
+        .map(|(i, _)| i)
+        .collect();
     assert_eq!(
         filtered, expected,
-        "empty-query filtered set must equal (0..rows.len())"
+        "empty-query filtered set must equal the active tab's setting rows"
+    );
+    // And it must not span more than one tab.
+    assert!(
+        filtered
+            .iter()
+            .all(|&i| s.rows[i].category(&s.registry) == active),
+        "empty-query filtered set must not leak rows from other tabs"
     );
 }
 
@@ -975,6 +1012,7 @@ fn filter_empty_query_shows_all_rows() {
 #[test]
 fn filter_esc_clears_query_and_returns_to_browse() {
     let mut s = make_state();
+    let active = s.active_tab_category();
     let _ = handle_settings_key(&mut s, &press(KeyCode::Char('/')));
     for c in "stamp".chars() {
         let _ = handle_settings_key(&mut s, &press(KeyCode::Char(c)));
@@ -986,12 +1024,21 @@ fn filter_esc_clears_query_and_returns_to_browse() {
     assert!(matches!(outcome, SettingsKeyOutcome::Changed));
     assert!(matches!(s.mode(), SettingsModalMode::Browse));
     assert_eq!(s.query(), "", "Esc must clear the query");
-    // Filter is inert again — full set restored in original order.
-    let expected: Vec<usize> = (0..s.rows.len()).collect();
+    // Filter is inert again — active tab's setting rows restored in order.
+    let expected: Vec<usize> = s
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            matches!(r, RowEntry::Setting { .. })
+                && r.category(&s.registry) == active
+        })
+        .map(|(i, _)| i)
+        .collect();
     assert_eq!(
         s.filtered_indices(),
         expected.as_slice(),
-        "Esc must restore filtered_indices to (0..rows.len()) — full set in row-order"
+        "Esc must restore filtered_indices to the active tab's setting rows"
     );
 }
 
@@ -1000,20 +1047,18 @@ fn filter_esc_clears_query_and_returns_to_browse() {
 #[test]
 fn filter_navigation_lands_on_filtered_subset_only() {
     let mut s = make_state();
-    // Sanity check: initial selection is compact_mode (row 1).
-    let compact_idx = row_idx_for(&s, "compact_mode");
+    // `show_timestamps` is the unique "stamp" match that survives filtering
+    // once compact_mode (the default focus in older builds) is gone.
     let show_ts_idx = row_idx_for(&s, "show_timestamps");
-    assert_eq!(s.selected, compact_idx);
 
     let _ = handle_settings_key(&mut s, &press(KeyCode::Char('/')));
     for c in "stamp".chars() {
         let _ = handle_settings_key(&mut s, &press(KeyCode::Char(c)));
     }
-    // After filtering for "stamp", compact_mode is hidden — selection
-    // snaps to the only remaining setting (show_timestamps).
+    // After filtering for "stamp", selection snaps to the remaining setting.
     assert_eq!(
         s.selected, show_ts_idx,
-        "selection should snap to show_timestamps when compact_mode is filtered out"
+        "selection should snap to show_timestamps under the 'stamp' filter"
     );
 
     // Down arrow shouldn't move (only one setting in the filter).
@@ -1098,14 +1143,24 @@ fn filter_backspace_broadens_visible_set() {
         s.filtered_indices()
     );
 
-    // Final pop → "". Filter inert, full set restored in order.
+    // Final pop → "". Filter inert, active tab's rows restored in order.
     let _ = handle_settings_key(&mut s, &press(KeyCode::Backspace));
     assert_eq!(s.query(), "");
-    let expected: Vec<usize> = (0..s.rows.len()).collect();
+    let active = s.active_tab_category();
+    let expected: Vec<usize> = s
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            matches!(r, RowEntry::Setting { .. })
+                && r.category(&s.registry) == active
+        })
+        .map(|(i, _)| i)
+        .collect();
     assert_eq!(
         s.filtered_indices(),
         expected.as_slice(),
-        "empty query must re-broaden to (0..rows.len()) in row order",
+        "empty query must re-broaden to the active tab's setting rows in order",
     );
 }
 
@@ -2056,8 +2111,9 @@ fn defaults_round_trip_through_registry() {
 #[test]
 fn initial_state_selects_first_setting_row() {
     let s = make_state();
+    // The first visible setting in the Appearance tab is `theme`.
     match &s.rows[s.selected] {
-        RowEntry::Setting { key, .. } => assert_eq!(*key, "compact_mode"),
+        RowEntry::Setting { key, .. } => assert_eq!(*key, "theme"),
         _ => panic!("initial selection must land on a setting row, not a header"),
     }
 }
@@ -2202,7 +2258,8 @@ fn repeat_j_navigation_is_processed() {
 #[test]
 fn d_key_emits_open_reset_confirm_action_for_compact_mode() {
     let mut s = make_state();
-    // Default selection lands on `compact_mode`.
+    // The default selection is `theme`; navigate to `compact_mode`.
+    navigate_to(&mut s, "compact_mode");
     let outcome = handle_settings_key(&mut s, &press(KeyCode::Char('d')));
     match outcome {
         SettingsKeyOutcome::Action(Action::OpenResetConfirm { key }) => {
@@ -3919,108 +3976,78 @@ fn render_modal_to_string(s: &mut SettingsModalState, width: u16, height: u16) -
     out
 }
 
+/// The focused row's description always renders in the fixed bottom block —
+/// the new tabbed model dropped the per-row expand/collapse affordance, so
+/// there is no "collapsed hides the description" state to toggle.
 #[test]
-fn right_arrow_expands_focused_row() {
+fn focused_row_description_renders_in_bottom_block() {
     let mut s = make_state();
-    // The default focus is `compact_mode`. Press Right.
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Right));
-    assert!(
-        matches!(outcome, SettingsKeyOutcome::Changed),
-        "Right on focused row must transition to Changed (expanded), got {outcome:?}"
-    );
-    assert!(
-        s.expanded_keys.contains("compact_mode"),
-        "expanded_keys must contain `compact_mode` after Right, got {:?}",
-        s.expanded_keys
-    );
-
+    // Default focus is the first Appearance setting (`theme`); its
+    // description is "Color theme for the pager UI." No key press is
+    // needed — the description block is always reserved under the list.
     let rendered = render_modal_to_string(&mut s, 120, 30);
-    // `compact_mode`'s description starts with "Reduce padding".
     assert!(
-        rendered.contains("Reduce padding"),
-        "expanded row's description must appear in the rendered modal, got:\n{rendered}"
+        rendered.contains("Color theme for the pager UI"),
+        "focused row's description must appear in the bottom block, got:\n{rendered}"
     );
 }
 
+/// Moving focus to a different row swaps the bottom-block description.
 #[test]
-fn left_arrow_collapses_focused_row() {
+fn focused_row_description_updates_when_selection_moves() {
     let mut s = make_state();
-    // Pre-expand via Right.
-    let _ = handle_settings_key(&mut s, &press(KeyCode::Right));
-    assert!(s.expanded_keys.contains("compact_mode"));
-
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Left));
+    // `compact_mode`'s description starts with "Reduce padding".
+    navigate_to(&mut s, "compact_mode");
+    let rendered = render_modal_to_string(&mut s, 120, 30);
     assert!(
-        matches!(outcome, SettingsKeyOutcome::Changed),
-        "Left on expanded row must transition to Changed (collapsed), got {outcome:?}"
-    );
-    assert!(
-        !s.expanded_keys.contains("compact_mode"),
-        "expanded_keys must NOT contain `compact_mode` after Left, got {:?}",
-        s.expanded_keys
+        rendered.contains("Reduce padding"),
+        "description block must show compact_mode's description, got:\n{rendered}"
     );
 
+    // Move one row up to `auto_light_theme` (description mentions "light theme").
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Char('k')));
+    assert!(matches!(outcome, SettingsKeyOutcome::Changed));
     let rendered = render_modal_to_string(&mut s, 120, 30);
     assert!(
         !rendered.contains("Reduce padding"),
-        "collapsed row's description must NOT appear in the rendered modal, got:\n{rendered}"
+        "description block must no longer show compact_mode after moving focus, got:\n{rendered}"
     );
 }
 
-/// Restart-required setting at its registered default, not expanded:
-/// the pill is HIDDEN. User-feedback gate keeps the modal clean for
-/// the common "browsing only" case.
+/// A `restart_required` row appends "Takes effect on next start." to its
+/// description whenever it is focused — at default or edited — because the
+/// description block is always visible (there is no collapsed state that
+/// could hide the pill).
 #[test]
-fn restart_pill_hidden_when_not_expanded_and_not_edited() {
-    let mut s = make_state();
-    // `show_tips` is restart_required: true and its registered
-    // default is `true` (matches the snapshot's None → true fallback
-    // in current_value_for). Not expanded → no pill.
-    navigate_to(&mut s, "show_tips");
-    assert!(!s.expanded_keys.contains("show_tips"));
-
-    let rendered = render_modal_to_string(&mut s, 120, 30);
-    let restart_lines: Vec<&str> = rendered
-        .lines()
-        .filter(|l| l.contains("Show tips") && l.contains("restart"))
-        .collect();
-    assert!(
-        restart_lines.is_empty(),
-        "restart pill must NOT render on at-default + collapsed restart_required row, \
-         found: {restart_lines:?}"
-    );
-}
-
-/// Same setting, after Right → expanded. Pill renders.
-#[test]
-fn restart_pill_visible_when_expanded() {
-    let mut s = make_state();
-    navigate_to(&mut s, "show_tips");
-    let _ = handle_settings_key(&mut s, &press(KeyCode::Right));
-    assert!(s.expanded_keys.contains("show_tips"));
-
-    let rendered = render_modal_to_string(&mut s, 120, 30);
-    let restart_lines: Vec<&str> = rendered
-        .lines()
-        .filter(|l| l.contains("Show tips") && l.contains("restart"))
-        .collect();
-    assert!(
-        !restart_lines.is_empty(),
-        "restart pill must render on expanded restart_required row, got:\n{rendered}"
-    );
-}
-
-/// Edited value (differs from registered default) but collapsed:
-/// NO pill. A collapsed non-default row showing it forever misreads
-/// as "restart pending" — the exact repro a user hit with a
-/// previously-set Off value in a fresh session.
-#[test]
-fn restart_pill_hidden_when_edited_but_collapsed() {
+fn restart_required_row_appends_next_start_to_description() {
     use xai_grok_pager::settings::{PagerLocalSnapshot, SettingsRegistry};
     use xai_grok_shell::agent::config::UiConfig;
 
-    // Construct a state where `show_tips` is NOT at its registered
-    // default of `true`.
+    // `show_tips` lives in the Advanced tab. Search "banner" (a keyword
+    // unique to show_tips) to focus it regardless of the active tab.
+    fn focus_show_tips(s: &mut SettingsModalState) {
+        let _ = handle_settings_key(s, &press(KeyCode::Char('/')));
+        for c in "banner".chars() {
+            let _ = handle_settings_key(s, &press(KeyCode::Char(c)));
+        }
+        assert_eq!(
+            s.query(),
+            "banner",
+            "search query must be 'banner' (unique show_tips keyword)"
+        );
+    }
+
+    // At registered default (`true`).
+    let mut s = make_state();
+    focus_show_tips(&mut s);
+    let rendered = render_modal_to_string(&mut s, 120, 30);
+    assert!(
+        rendered.contains("Takes effect on next start"),
+        "restart_required row must append the next-start hint at default, got:\n{rendered}"
+    );
+
+    // Edited (differs from default) — the hint still renders because the
+    // description block is always visible.
     let mut s = SettingsModalState::new(
         Arc::new(SettingsRegistry::defaults()),
         UiConfig::default(),
@@ -4029,44 +4056,29 @@ fn restart_pill_hidden_when_edited_but_collapsed() {
             ..PagerLocalSnapshot::default()
         },
     );
-    navigate_to(&mut s, "show_tips");
-    assert!(!s.expanded_keys.contains("show_tips"));
-
+    focus_show_tips(&mut s);
     let rendered = render_modal_to_string(&mut s, 120, 30);
-    let restart_lines: Vec<&str> = rendered
-        .lines()
-        .filter(|l| l.contains("Show tips") && l.contains("restart"))
-        .collect();
     assert!(
-        restart_lines.is_empty(),
-        "restart pill must NOT render on edited-but-collapsed row, found: {restart_lines:?}"
+        rendered.contains("Takes effect on next start"),
+        "restart_required row must append the next-start hint when edited, got:\n{rendered}"
     );
 }
 
 /// Long descriptions wrap to the modal's content width on multiple
-/// lines. The wrapped output covers the description verbatim
-/// modulo whitespace normalization.
+/// lines. The wrapped output covers the description text.
 #[test]
-fn expanded_description_wraps_to_modal_width() {
+fn focused_description_wraps_to_modal_width() {
     let mut s = make_state();
-    // `permission_mode`'s description is long enough to wrap at 80
-    // cols. Expand and check that the entire description text is
-    // present in the buffer.
-    //
-    // **Width.** The `→ expand` shortcut was added to the
-    // Browse footer which can push the footer onto an extra line
-    // at narrower widths; we render at 80 cols to keep the full
-    // wrapped description visible.
-    navigate_to(&mut s, "permission_mode");
-    let _ = handle_settings_key(&mut s, &press(KeyCode::Right));
+    // `permission_mode` lives in the Agent tab; search "yolo" (unique
+    // keyword) to focus it, then render. Its description is long enough
+    // to wrap at 80 cols.
+    let _ = handle_settings_key(&mut s, &press(KeyCode::Char('/')));
+    for c in "yolo".chars() {
+        let _ = handle_settings_key(&mut s, &press(KeyCode::Char(c)));
+    }
+    assert_eq!(s.query(), "yolo");
 
-    // **Height bump.** Each non-first section header
-    // earns a 1-line gap above it. With permission_mode focused
-    // (Agent & Approval), two such gaps sit between Appearance
-    // and the expanded row's wrapped description, which would
-    // squeeze the 3rd wrapped line off the bottom at height=30.
-    // Render at 34 lines so the existing assertion about
-    // "automatically" still holds.
+    // Render tall enough for the wrapped lines to clear the bottom block.
     let rendered = render_modal_to_string(&mut s, 80, 34);
     // Distinctive phrases from the description text:
     assert!(
@@ -4080,58 +4092,59 @@ fn expanded_description_wraps_to_modal_width() {
     );
 }
 
-/// Mouse click on the expand-triangle glyph (col 0 of a setting
-/// row) toggles expansion — keyboard ↔ mouse parity for the
-/// new expand affordance.
+/// A click on a setting row selects it (the expand-triangle glyph and its
+/// toggle behavior were removed with the per-row expand/collapse model).
 #[test]
-fn click_on_expand_glyph_toggles_expansion() {
+fn click_on_setting_row_selects_it() {
     let mut s = make_state();
     synth_rects(&mut s);
-    let row_y = row_idx_for(&s, "compact_mode") as u16;
+    let compact_idx = row_idx_for(&s, "compact_mode");
+    // `compact_mode` is the default focus; click a later row in the same
+    // tab to verify selection moves. `show_timestamps` follows compact_mode.
+    let ts_idx = row_idx_for(&s, "show_timestamps");
+    assert!(ts_idx > compact_idx, "show_timestamps must come after compact_mode");
+    let row_y = ts_idx as u16;
 
-    // First click on col 0 (triangle) — expand.
     let outcome = handle_settings_mouse(
         &mut s,
         MouseEventKind::Down(crossterm::event::MouseButton::Left),
-        0,
+        2,
         row_y,
     );
     assert!(
         matches!(outcome, SettingsKeyOutcome::Changed),
-        "triangle click must transition to Changed (expanded), got {outcome:?}"
+        "click on a different row must select it, got {outcome:?}"
     );
-    assert!(
-        s.expanded_keys.contains("compact_mode"),
-        "triangle click on collapsed row must expand it"
-    );
-
-    // Second click on col 0 — collapse.
-    let outcome = handle_settings_mouse(
-        &mut s,
-        MouseEventKind::Down(crossterm::event::MouseButton::Left),
-        0,
-        row_y,
-    );
-    assert!(matches!(outcome, SettingsKeyOutcome::Changed));
-    assert!(
-        !s.expanded_keys.contains("compact_mode"),
-        "triangle click on expanded row must collapse it"
-    );
+    assert_eq!(s.selected, ts_idx);
 }
 
-/// The `l` / `h` vim aliases mirror the Right / Left arrows.
+/// `Right`/`Left` and their vim aliases `l`/`h` cycle tabs (the old
+/// expand/collapse binding was repurposed for tab navigation).
 #[test]
-fn vim_l_h_keys_toggle_expansion() {
+fn right_left_and_vim_l_h_cycle_tabs() {
     let mut s = make_state();
-    // l → expand.
+    let initial_tab = s.active_tab;
+    let tab_count = s.tabs.len();
+    assert!(tab_count >= 2, "modal must expose at least two tabs");
+
+    // Right advances the active tab.
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Right));
+    assert!(matches!(outcome, SettingsKeyOutcome::Changed));
+    assert_eq!(s.active_tab, (initial_tab + 1) % tab_count);
+
+    // Left returns to the original tab.
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Left));
+    assert!(matches!(outcome, SettingsKeyOutcome::Changed));
+    assert_eq!(s.active_tab, initial_tab);
+
+    // `l` mirrors Right, `h` mirrors Left.
     let outcome = handle_settings_key(&mut s, &press(KeyCode::Char('l')));
     assert!(matches!(outcome, SettingsKeyOutcome::Changed));
-    assert!(s.expanded_keys.contains("compact_mode"));
+    assert_eq!(s.active_tab, (initial_tab + 1) % tab_count);
 
-    // h → collapse.
     let outcome = handle_settings_key(&mut s, &press(KeyCode::Char('h')));
     assert!(matches!(outcome, SettingsKeyOutcome::Changed));
-    assert!(!s.expanded_keys.contains("compact_mode"));
+    assert_eq!(s.active_tab, initial_tab);
 }
 
 /// The confirmation overlay renders the prompt text inline at the

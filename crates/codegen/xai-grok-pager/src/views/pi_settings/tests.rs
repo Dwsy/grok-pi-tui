@@ -133,8 +133,15 @@ fn stepping_skips_headings_and_stops_at_the_ends() {
 fn horizontal_keys_cycle_tabs_and_reset_the_focus() {
     let mut state = state();
     let first = state.active_category();
-    assert!(matches!(press(&mut state, KeyCode::Right), Outcome::Changed));
-    assert_ne!(state.active_category(), first, "→ must move to the next tab");
+    assert!(matches!(
+        press(&mut state, KeyCode::Right),
+        Outcome::Changed
+    ));
+    assert_ne!(
+        state.active_category(),
+        first,
+        "→ must move to the next tab"
+    );
     assert!(
         state.rows[state.selected].is_setting(),
         "switching tabs must land on a selectable row",
@@ -150,7 +157,11 @@ fn tab_cycling_wraps_at_both_ends() {
     for _ in 0..state.tabs.len() {
         state.cycle_tab(1);
     }
-    assert_eq!(state.active_category(), first, "a full cycle must return home");
+    assert_eq!(
+        state.active_category(),
+        first,
+        "a full cycle must return home"
+    );
     state.cycle_tab(-1);
     assert_eq!(
         state.active_category(),
@@ -348,7 +359,10 @@ fn space_toggles_the_focused_bool() {
 fn enter_on_an_enum_row_opens_the_chooser_on_the_current_value() {
     let mut state = state();
     assert!(state.focus_key("theme"));
-    assert!(matches!(press(&mut state, KeyCode::Enter), Outcome::Changed));
+    assert!(matches!(
+        press(&mut state, KeyCode::Enter),
+        Outcome::Changed
+    ));
     let Mode::Picking { key, index, .. } = state.mode else {
         panic!("Enter on an Enum row must open the chooser")
     };
@@ -356,9 +370,10 @@ fn enter_on_an_enum_row_opens_the_chooser_on_the_current_value() {
     let choices = state.choices_for("theme");
     let current = state.value_of("theme");
     let expected = match current {
-        Some(crate::settings::SettingValue::Enum(canonical)) => {
-            choices.iter().position(|c| c.canonical == canonical).unwrap_or(0)
-        }
+        Some(crate::settings::SettingValue::Enum(canonical)) => choices
+            .iter()
+            .position(|c| c.canonical == canonical)
+            .unwrap_or(0),
         _ => 0,
     };
     assert_eq!(index, expected, "the chooser must open on the live value");
@@ -401,7 +416,10 @@ fn side_model_slots_defer_to_the_native_model_picker() {
     let mut state = state();
     assert!(state.focus_key("recap_models"));
     // The group sheet holds the slots; open it, then activate a slot.
-    assert!(matches!(press(&mut state, KeyCode::Enter), Outcome::Changed));
+    assert!(matches!(
+        press(&mut state, KeyCode::Enter),
+        Outcome::Changed
+    ));
     assert_eq!(state.mode.kind(), ModeKind::PickingGroup);
 }
 
@@ -409,8 +427,14 @@ fn side_model_slots_defer_to_the_native_model_picker() {
 fn enter_on_an_int_row_opens_the_stepper_seeded_with_the_live_value() {
     let mut state = state();
     assert!(state.focus_key("max_thoughts_width"));
-    assert!(matches!(press(&mut state, KeyCode::Enter), Outcome::Changed));
-    let Mode::EditingInt { buffer, min, max, .. } = &state.mode else {
+    assert!(matches!(
+        press(&mut state, KeyCode::Enter),
+        Outcome::Changed
+    ));
+    let Mode::EditingInt {
+        buffer, min, max, ..
+    } = &state.mode
+    else {
         panic!("Enter on an Int row must open the stepper")
     };
     assert!(min < max);
@@ -442,10 +466,16 @@ fn the_int_stepper_clamps_at_both_bounds() {
 fn d_asks_before_resetting_and_n_backs_out() {
     let mut state = state();
     state.focus_key("compact_mode");
-    assert!(matches!(press(&mut state, KeyCode::Char('d')), Outcome::Changed));
+    assert!(matches!(
+        press(&mut state, KeyCode::Char('d')),
+        Outcome::Changed
+    ));
     assert_eq!(state.mode.kind(), ModeKind::ConfirmReset);
 
-    assert!(matches!(press(&mut state, KeyCode::Char('n')), Outcome::Changed));
+    assert!(matches!(
+        press(&mut state, KeyCode::Char('n')),
+        Outcome::Changed
+    ));
     assert_eq!(state.mode.kind(), ModeKind::Browse);
 
     press(&mut state, KeyCode::Char('d'));
@@ -552,7 +582,10 @@ fn group_rows_render_as_navigation_not_as_a_skew_marker() {
         let mut state = state();
         assert!(state.focus_key(key), "`{key}` must have a row");
         let body = render_lines(&mut state, 140, 40).join("\n");
-        assert!(body.contains(label), "`{key}` must render its label:\n{body}");
+        assert!(
+            body.contains(label),
+            "`{key}` must render its label:\n{body}"
+        );
         assert!(
             !body.contains("no read mapping"),
             "`{key}` rendered the registry-skew marker:\n{body}",

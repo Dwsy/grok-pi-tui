@@ -874,11 +874,11 @@ fn handle_pi_ui_compaction_summary(notif: &acp::ExtNotification, app: &mut AppVi
     let Some(agent) = target_id.and_then(|id| app.agents.get_mut(&id)) else {
         return false;
     };
-    agent
-        .scrollback
-        .push_block(RenderBlock::session_event(SessionEvent::CompactionSummary {
+    agent.scrollback.push_block(RenderBlock::session_event(
+        SessionEvent::CompactionSummary {
             summary: summary.to_string(),
-        }));
+        },
+    ));
     true
 }
 

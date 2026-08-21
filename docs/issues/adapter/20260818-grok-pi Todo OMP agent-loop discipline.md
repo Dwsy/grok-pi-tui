@@ -3,7 +3,7 @@ id: "2026-08-18-grok-pi Todo OMP agent-loop discipline"
 title: "grok-pi Todo OMP agent-loop discipline"
 status: "done"
 created: "2026-08-18"
-updated: "2026-08-18"
+updated: "2026-08-19"
 category: "adapter"
 tags: ["workhub", "grok-pi", "todo", "omp", "agent-loop"]
 ---
@@ -89,7 +89,30 @@ tags: ["workhub", "grok-pi", "todo", "omp", "agent-loop"]
 - `docs/issues/adapter/20260717-Pi rpiv-todo 映射到 Grok 原生 TodoPane.md`
 - `docs/issues/adapter/20260722-grok-pi-loop.md`
 
+## 2026-08-19 回归修复：mid-run nudge 不得切断 tool batch
+
+真实 `provider-payload.jsonl` 已确认失败请求包含 76 个唯一 `function_call`，但有 83 个 `function_call_output`；7 个额外 output 来自两次 mid-run nudge（5 + 2 个并行 tool calls）。第一处第二次 output 从 Responses `input[74]` 转为 gprivider `messages.52`，可 1:1 复现 `unknown_tool_call_id`。
+
+根因是 `pi-grok-todo` 在 `tool_execution_end` 阶段调用 `sendMessage(..., { deliverAs: "steer" })`。该事件早于当前 assistant turn 的全部 `toolResult` message 完成；steer 消息进入 live context 后，Pi 消息转换把尚未闭合的 tool calls 视为被用户消息打断并合成 `No result provided`，真实结果随后再次序列化，形成重复 output。
+
+修复只改 extension lifecycle：
+
+- mid-run mutation 统计与 nudge 判定改到 `turn_end`；该事件发生在完整 `toolResults` 已加入 context 之后。
+- `todo` 仍清零 mutation debt；successful mutating tools 仍按原集合计数。
+- 每次真正发出 nudge 只扣一个 12-mutation threshold，保留超过阈值的 debt。
+- `sendMessage` 仍使用 `triggerTurn: false, deliverAs: "steer"`；Pi agent-loop 在 `turn_end` 后才读取 `getSteeringMessages()`，因此提醒只能进入下一轮。
+- 不修改 Pi Core、adapter 或 Pager。
+
+验证：
+
+- system Pi `0.84.2` 直接以 RPC 模式加载修改后的 `extensions/pi-grok-todo/index.ts`，退出码 0。
+- Jiti mock harness 直接执行当前扩展源码：注册 `turn_end=true`、`tool_execution_end=false`；阈值前不提醒，第 12 次 mutation 提醒；`todo` reset 后重新累计；两次提醒均保持 `{ triggerTurn:false, deliverAs:"steer" }`。
+- Pi `agent-loop.ts` 确认顺序为：tool results 写入 context → `turn_end` → `getSteeringMessages()`。
+- `git diff --check` 通过，改动限定在 Todo 扩展与本 Issue 记录。
+
 ## Status 更新日志
 
 - **2026-08-18**: 状态变更 → doing，完成 OMP/Grok/Pi lifecycle 对照，进入 P0 实现。
 - **2026-08-18**: 状态变更 → done，P0 agent-loop discipline 完成：OMP mid-run nudge、settled completion gate、Bash/Subagent backing bus 已实现并通过行为 harness 与 grok-pi Todo 注入回归。
+- **2026-08-19**: 状态变更 → in_progress。真实 provider trace 复现 `unknown_tool_call_id`：mid-run nudge 在 `tool_execution_end` 阶段以 steer 消息插入 assistant tool calls 与真实 tool results 之间，Pi 的消息转换随后为未闭合 tool calls 合成 `No result provided`，真实结果到来后形成重复 `function_call_output`。修复策略：只在 `turn_end`（完整工具批次已落地）后排队 nudge，不修改 Pi Core。
+- **2026-08-19**: 状态变更 → done。Todo mid-run nudge 已迁移到 `turn_end`，system Pi load、直接源码行为 harness、agent-loop 顺序核对与 `git diff --check` 均通过。

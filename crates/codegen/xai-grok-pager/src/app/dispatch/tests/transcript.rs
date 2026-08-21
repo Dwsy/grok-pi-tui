@@ -90,10 +90,12 @@ fn open_block_viewer_opens_eval_block() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let agent = app.agents.get_mut(&id).unwrap();
-    agent.scrollback.push_block(RenderBlock::ToolCall(ToolCallBlock::Eval(
-        crate::scrollback::blocks::tool::EvalToolCallBlock::new("python", "print('hello')")
-            .with_output("hello".to_string()),
-    )));
+    agent
+        .scrollback
+        .push_block(RenderBlock::ToolCall(ToolCallBlock::Eval(
+            crate::scrollback::blocks::tool::EvalToolCallBlock::new("python", "print('hello')")
+                .with_output("hello".to_string()),
+        )));
     agent.scrollback.set_selected(Some(0));
 
     let entry = agent.scrollback.entry(0).unwrap();
@@ -106,6 +108,31 @@ fn open_block_viewer_opens_eval_block() {
     assert_eq!(
         agent.block_viewer.as_ref().unwrap().kind,
         crate::views::block_viewer::ViewerKind::PlainText
+    );
+}
+
+#[test]
+fn open_block_viewer_opens_compaction_summary_as_markdown() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let agent = app.agents.get_mut(&id).unwrap();
+    agent.scrollback.push_block(RenderBlock::session_event(
+        crate::scrollback::blocks::SessionEvent::CompactionSummary {
+            summary: "Preserved **important context** and `main.rs`.".into(),
+        },
+    ));
+    agent.scrollback.set_selected(Some(0));
+
+    let entry = agent.scrollback.entry(0).unwrap();
+    assert!(entry.block.has_normal_fullscreen_viewer());
+
+    let effects = dispatch(Action::OpenBlockViewer, &mut app);
+    assert!(effects.is_empty());
+    let agent = app.agents.get(&id).unwrap();
+    assert_eq!(
+        agent.block_viewer.as_ref().map(|viewer| viewer.kind),
+        Some(crate::views::block_viewer::ViewerKind::Markdown),
+        "Enter/OpenBlockViewer must open a Markdown viewer for compaction summaries"
     );
 }
 

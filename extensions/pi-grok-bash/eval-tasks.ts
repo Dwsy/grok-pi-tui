@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createWriteStream } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import { join } from "node:path";
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 
 import type { EvalExecution, EvalSkillMetadata, PersistentEvalKernel } from "./eval.ts";
+import { formatTaskOutput, truncateTaskOutput } from "./shared.ts";
 
 const TASK_STATUS_KEY = "__pi_grok_bash_task__";
 
@@ -38,7 +40,12 @@ function systemTime(milliseconds: number) {
 	};
 }
 
+function boundedTaskOutput(task: EvalBackgroundTask) {
+	return truncateTaskOutput(task.output, task.truncated);
+}
+
 function snapshot(task: EvalBackgroundTask) {
+	const bounded = boundedTaskOutput(task);
 	return {
 		task_id: task.taskId,
 		command: task.code,
@@ -46,9 +53,9 @@ function snapshot(task: EvalBackgroundTask) {
 		cwd: task.cwd,
 		start_time: systemTime(task.startedAt),
 		end_time: task.endedAt === undefined ? undefined : systemTime(task.endedAt),
-		output: task.output,
+		output: bounded.output,
 		output_file: task.outputFile,
-		truncated: task.truncated,
+		truncated: bounded.truncated,
 		exit_code: task.completed && !task.error && !task.explicitlyKilled ? 0 : undefined,
 		signal: task.explicitlyKilled ? "killed" : task.error ? "eval_error" : undefined,
 		completed: task.completed,
@@ -119,6 +126,7 @@ export async function startEvalBackgroundTask(params: {
 		ui: params.ui,
 	};
 	await writeFile(task.outputFile, "", "utf8");
+	const log = createWriteStream(task.outputFile, { flags: "a" });
 	publish(task, "started");
 
 	void params.kernel
@@ -130,6 +138,7 @@ export async function startEvalBackgroundTask(params: {
 			false,
 			params.tools,
 			params.skills,
+			(chunk) => log.write(chunk),
 		)
 		.then((result: EvalExecution) => {
 			task.output = result.output;
@@ -144,11 +153,7 @@ export async function startEvalBackgroundTask(params: {
 			params.kernel.close();
 			const rendered = task.error ? [task.output, task.error].filter(Boolean).join("\n") : task.output;
 			task.output = rendered;
-			try {
-				await writeFile(task.outputFile, rendered, "utf8");
-			} catch {
-				// In-memory output remains available through get_task_output.
-			}
+			await new Promise<void>((resolve) => log.end(resolve));
 			publish(task, "completed");
 			for (const waiter of task.waiters) waiter();
 			task.waiters.clear();
@@ -159,6 +164,7 @@ export async function startEvalBackgroundTask(params: {
 }
 
 export function evalTaskResult(task: EvalBackgroundTask) {
+	const bounded = boundedTaskOutput(task);
 	return {
 		task_id: task.taskId,
 		command: task.code,
@@ -167,9 +173,9 @@ export function evalTaskResult(task: EvalBackgroundTask) {
 		started: new Date(task.startedAt).toISOString(),
 		ended: task.endedAt === undefined ? undefined : new Date(task.endedAt).toISOString(),
 		duration_secs: ((task.endedAt ?? Date.now()) - task.startedAt) / 1000,
-		output: task.output,
+		output: formatTaskOutput(bounded.output, bounded.truncated, task.outputFile),
 		output_file: task.outputFile,
-		truncated: task.truncated,
+		truncated: bounded.truncated,
 		raw_output_bytes: Buffer.byteLength(task.output),
 		kind: "eval",
 	};

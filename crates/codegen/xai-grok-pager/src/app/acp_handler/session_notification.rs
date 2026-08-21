@@ -474,6 +474,10 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             let mut child_scrollback = crate::scrollback::state::ScrollbackState::new();
             child_scrollback.set_appearance(agent.scrollback.appearance().clone());
             let mut child_view = AgentView::new(child_session, child_scrollback);
+            child_view
+                .prompt
+                .file_search
+                .set_default_hidden(agent.prompt.file_search.default_hidden());
             child_view.set_input_mode(InputMode::Vim);
             child_view.active_pane = crate::views::agent::ActivePane::Scrollback;
             child_view.set_sharing_enabled(agent.sharing_enabled);
@@ -616,6 +620,21 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                     .models
                     .override_context_window(context_window_tokens);
             }
+            // Sync live turn/token stats onto the collapsed scrollback block
+            // so the user sees progress without opening the child view.
+            if let Some(info) = agent.subagent_sessions.get(&child_session_id)
+                && let Some(eid) = info.scrollback_entry_id
+                && let Some(entry) = agent.scrollback.get_by_id_mut(eid)
+                && let RenderBlock::Subagent(ref mut sb) = entry.block
+            {
+                let changed =
+                    sb.turn_count != Some(turn_count) || sb.tokens_used != Some(tokens_used);
+                sb.turn_count = Some(turn_count);
+                sb.tokens_used = Some(tokens_used);
+                if changed {
+                    entry.invalidate_cache();
+                }
+            }
             let activity_label = agent
                 .subagent_views
                 .get(&child_session_id)
@@ -651,29 +670,27 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             }
             sync_subagent_activity(agent, &child_session_id, None);
             if is_background {
-                let block = match status.as_str() {
-                    "completed" => {
-                        RenderBlock::Subagent(crate::scrollback::blocks::SubagentBlock::completed(
-                            description.as_ref(),
-                            child_session_id.as_str(),
-                            elapsed_dur,
-                        ))
-                    }
-                    "cancelled" => {
-                        RenderBlock::Subagent(crate::scrollback::blocks::SubagentBlock::cancelled(
-                            description.as_ref(),
-                            child_session_id.as_str(),
-                            elapsed_dur,
-                        ))
-                    }
-                    _ => RenderBlock::Subagent(crate::scrollback::blocks::SubagentBlock::failed(
+                let mut block = match status.as_str() {
+                    "completed" => crate::scrollback::blocks::SubagentBlock::completed(
+                        description.as_ref(),
+                        child_session_id.as_str(),
+                        elapsed_dur,
+                    ),
+                    "cancelled" => crate::scrollback::blocks::SubagentBlock::cancelled(
+                        description.as_ref(),
+                        child_session_id.as_str(),
+                        elapsed_dur,
+                    ),
+                    _ => crate::scrollback::blocks::SubagentBlock::failed(
                         description.as_ref(),
                         child_session_id.as_str(),
                         elapsed_dur,
                         error.clone(),
-                    )),
+                    ),
                 };
-                agent.scrollback.push_block(block);
+                block.turn_count = (turns > 0).then_some(turns);
+                block.tokens_used = (tokens_used > 0).then_some(tokens_used);
+                agent.scrollback.push_block(RenderBlock::Subagent(block));
             } else if let Some(eid) = entry_id
                 && let Some(entry) = agent.scrollback.get_by_id_mut(eid)
             {
@@ -696,6 +713,8 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                             };
                         }
                     }
+                    sb.turn_count = (turns > 0).then_some(turns);
+                    sb.tokens_used = (tokens_used > 0).then_some(tokens_used);
                 }
                 entry.invalidate_cache();
             }

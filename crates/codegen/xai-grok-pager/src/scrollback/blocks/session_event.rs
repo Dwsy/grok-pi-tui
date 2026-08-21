@@ -70,9 +70,7 @@ pub enum SessionEvent {
         elapsed_ms: Option<i64>,
     },
     /// Pi's persisted compaction summary, rendered as a foldable Markdown block.
-    CompactionSummary {
-        summary: String,
-    },
+    CompactionSummary { summary: String },
     /// Auto-compaction failed.
     CompactionFailed {
         /// Error description.
@@ -399,6 +397,26 @@ impl SessionEventBlock {
         self.event
             .summary_body()
             .is_some_and(|(_, summary)| !summary.trim().is_empty())
+    }
+
+    /// Whether this event has a compaction summary body suitable for the
+    /// fullscreen block viewer. Recaps keep their existing fold-only behavior.
+    pub fn has_fullscreen_summary(&self) -> bool {
+        matches!(
+            &self.event,
+            SessionEvent::CompactionSummary { summary } if !summary.trim().is_empty()
+        )
+    }
+
+    /// Pre-wrap Markdown lines for the fullscreen compaction-summary viewer.
+    pub fn fullscreen_markdown_lines(&self) -> Option<Vec<Line<'static>>> {
+        let SessionEvent::CompactionSummary { summary } = &self.event else {
+            return None;
+        };
+        if summary.trim().is_empty() {
+            return None;
+        }
+        Some(MarkdownContent::new(summary).pre_wrap_lines())
     }
 
     /// Merge the stop-hook runs into the marker's output: a right-justified

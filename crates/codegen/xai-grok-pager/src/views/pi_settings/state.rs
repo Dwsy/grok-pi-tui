@@ -86,7 +86,10 @@ pub(crate) enum Mode {
         scroll: usize,
     },
     /// Sub-sheet listing a `Group` setting's child toggles.
-    PickingGroup { key: SettingKey, child: usize },
+    PickingGroup {
+        key: SettingKey,
+        child: usize,
+    },
     EditingString {
         key: SettingKey,
         editor: LineEditor,
@@ -100,7 +103,9 @@ pub(crate) enum Mode {
         max: i64,
     },
     /// `d` was pressed; y/n confirms resetting the focused row to its default.
-    ConfirmReset { key: SettingKey },
+    ConfirmReset {
+        key: SettingKey,
+    },
 }
 
 /// Read-only projection of [`Mode`], for callers outside this module.
@@ -168,7 +173,11 @@ pub enum Outcome {
 
 impl Outcome {
     pub(super) fn changed_if(moved: bool) -> Self {
-        if moved { Self::Changed } else { Self::Unchanged }
+        if moved {
+            Self::Changed
+        } else {
+            Self::Unchanged
+        }
     }
 }
 
@@ -514,7 +523,10 @@ impl PiSettingsState {
     /// Focus the first (`delta < 0`) or last (`delta > 0`) selectable row.
     pub fn jump_end(&mut self, delta: isize) -> bool {
         let target = if delta > 0 {
-            self.visible.iter().rev().find(|&&r| self.rows[r].is_setting())
+            self.visible
+                .iter()
+                .rev()
+                .find(|&&r| self.rows[r].is_setting())
         } else {
             self.visible.iter().find(|&&r| self.rows[r].is_setting())
         };
@@ -687,9 +699,10 @@ impl PiSettingsState {
         // silently wipe the user's preference.
         let unknown_fallback = usize::from(is_dynamic && choices.len() > 1);
         let index = match &current {
-            Some(SettingValue::Enum(cur)) => {
-                choices.iter().position(|c| c.canonical == *cur).unwrap_or(0)
-            }
+            Some(SettingValue::Enum(cur)) => choices
+                .iter()
+                .position(|c| c.canonical == *cur)
+                .unwrap_or(0),
             Some(SettingValue::String(cur)) if !cur.is_empty() => choices
                 .iter()
                 .position(|c| c.canonical == *cur)
@@ -707,7 +720,10 @@ impl PiSettingsState {
         }
         let original = current.unwrap_or(match is_dynamic {
             true => SettingValue::String(
-                choices.first().map(|c| c.canonical.clone()).unwrap_or_default(),
+                choices
+                    .first()
+                    .map(|c| c.canonical.clone())
+                    .unwrap_or_default(),
             ),
             false => SettingValue::Enum(match &meta.kind {
                 SettingKind::Enum { choices, .. } => {

@@ -641,23 +641,29 @@ fn upgrade_if_breadcrumb_flipped(
 }
 
 fn handle_browse(state: &mut SettingsModalState, key: &KeyEvent) -> SettingsKeyOutcome {
+    // While the sidebar owns the keyboard, Up/Down jump whole sections and
+    // Tab/Enter/Esc hand focus back to the rows.
+    if state.section_focus {
+        return match key.code {
+            KeyCode::Down | KeyCode::Char('j') => changed_if(state.jump_section(1)),
+            KeyCode::Up | KeyCode::Char('k') => changed_if(state.jump_section(-1)),
+            KeyCode::Left => changed_if(state.cycle_tab(-1)),
+            KeyCode::Right => changed_if(state.cycle_tab(1)),
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter | KeyCode::Esc => {
+                state.section_focus = false;
+                SettingsKeyOutcome::Changed
+            }
+            _ => SettingsKeyOutcome::Unchanged,
+        };
+    }
     match key.code {
         KeyCode::Down | KeyCode::Char('j') => changed_if(state.advance_next()),
         KeyCode::Up | KeyCode::Char('k') => changed_if(state.advance_prev()),
-        KeyCode::PageDown => {
-            let mut moved = false;
-            for _ in 0..10 {
-                moved |= state.advance_next();
-            }
-            changed_if(moved)
-        }
-        KeyCode::PageUp => {
-            let mut moved = false;
-            for _ in 0..10 {
-                moved |= state.advance_prev();
-            }
-            changed_if(moved)
-        }
+        // Tab parks the cursor on the section sidebar for fast hopping; tabs
+        // without sections have nowhere to go and fall through unchanged.
+        KeyCode::Tab | KeyCode::BackTab => changed_if(state.toggle_section_focus()),
+        KeyCode::PageDown => changed_if(state.jump_section(1)),
+        KeyCode::PageUp => changed_if(state.jump_section(-1)),
         KeyCode::Char('g') if key.modifiers.is_empty() => {
             // First selectable row IN THE FILTERED SET. When no filter
             // is active, `filtered_cache` is `(0..rows.len())` so this
@@ -691,25 +697,13 @@ fn handle_browse(state: &mut SettingsModalState, key: &KeyEvent) -> SettingsKeyO
                 SettingsKeyOutcome::Unchanged
             }
         }
-        // User-feedback follow-up: Right/`l` expands the focused
-        // row's description inline; Left/`h` collapses it.
-        // Expansion is per-row + persists across selection moves
-        // (multiple rows can be expanded simultaneously).
+        // Descriptions now live in the fixed block under the list, which frees
+        // the horizontal keys to move between tabs.
         KeyCode::Right | KeyCode::Char('l') if key.modifiers.is_empty() => {
-            if let Some((key, _meta)) = state.focused_setting()
-                && state.expanded_keys.insert(key)
-            {
-                return SettingsKeyOutcome::Changed;
-            }
-            SettingsKeyOutcome::Unchanged
+            changed_if(state.cycle_tab(1))
         }
         KeyCode::Left | KeyCode::Char('h') if key.modifiers.is_empty() => {
-            if let Some((key, _meta)) = state.focused_setting()
-                && state.expanded_keys.remove(key)
-            {
-                return SettingsKeyOutcome::Changed;
-            }
-            SettingsKeyOutcome::Unchanged
+            changed_if(state.cycle_tab(-1))
         }
         KeyCode::Char(' ') => {
             if let Some(action) = state.toggle_focused_bool() {
@@ -807,6 +801,10 @@ fn handle_filter_focused(state: &mut SettingsModalState, key: &KeyEvent) -> Sett
     match key.code {
         KeyCode::Esc => {
             if !state.query().is_empty() {
+                // Search doubles as navigation: land on the tab owning the
+                // focused result rather than snapping back to where the
+                // search started.
+                state.sync_tab_to_selection();
                 state.state.filter.reset();
                 state.invalidate_filter();
                 state.clamp_selected_to_visible();
@@ -824,14 +822,24 @@ fn handle_filter_focused(state: &mut SettingsModalState, key: &KeyEvent) -> Sett
             state.transition_to_browse();
             SettingsKeyOutcome::Changed
         }
-        KeyCode::Down => changed_if(state.advance_next()),
-        KeyCode::Up => changed_if(state.advance_prev()),
+        // Results span every tab, so the tab bar follows the focused result.
+        KeyCode::Down => {
+            let moved = state.advance_next();
+            state.sync_tab_to_selection();
+            changed_if(moved)
+        }
+        KeyCode::Up => {
+            let moved = state.advance_prev();
+            state.sync_tab_to_selection();
+            changed_if(moved)
+        }
         KeyCode::PageDown => {
             // Match Browse mode's fast-scroll affordance (advance 10).
             let mut moved = false;
             for _ in 0..10 {
                 moved |= state.advance_next();
             }
+            state.sync_tab_to_selection();
             changed_if(moved)
         }
         KeyCode::PageUp => {
@@ -839,6 +847,7 @@ fn handle_filter_focused(state: &mut SettingsModalState, key: &KeyEvent) -> Sett
             for _ in 0..10 {
                 moved |= state.advance_prev();
             }
+            state.sync_tab_to_selection();
             changed_if(moved)
         }
         KeyCode::Tab => SettingsKeyOutcome::Unchanged,
@@ -877,6 +886,7 @@ fn apply_filter_edit(
         LineEditOutcome::TextChanged => {
             state.invalidate_filter();
             state.clamp_selected_to_visible();
+            state.sync_tab_to_selection();
             SettingsKeyOutcome::Changed
         }
         LineEditOutcome::HandledNoChange | LineEditOutcome::CursorChanged => {
@@ -1009,6 +1019,20 @@ pub fn handle_settings_mouse(
             if !on_list {
                 return SettingsKeyOutcome::Unchanged;
             }
+            // Sidebar click jumps to that section's first row, mirroring the
+            // Tab + Up/Down keyboard path.
+            if let Some(section) = state
+                .sidebar_rects
+                .iter()
+                .position(|r| rect_contains(*r, column, row))
+            {
+                let target = state.sections().get(section).map(|(_, first)| *first);
+                if let Some(target) = target {
+                    state.section_focus = false;
+                    return changed_if(state.select_at(target));
+                }
+                return SettingsKeyOutcome::Unchanged;
+            }
             // Resolve the clicked row.
             let clicked_idx = state
                 .row_rects
@@ -1037,41 +1061,15 @@ pub fn handle_settings_mouse(
             // `try_enter_editing_value` helpers all return falsy
             // for non-matching kinds, so the per-kind predicates
             // are redundant.
-            let row_rect = state.row_rects[idx];
-            // User-feedback follow-up: col 0 of the row is the
-            // `▸`/`▾` triangle glyph. A click there toggles
-            // expansion (no value mutation) — matching the
-            // keyboard's Right/Left arrow contract. The triangle
-            // is at exactly column `row_rect.x` and is 1 cell wide.
-            //
-            // Two-line rows have `row_rect.height = 2`,
-            // and the triangle stays on LINE 1 only — clicks on
-            // line 2's col 0 (which is empty padding) shouldn't
-            // toggle expansion. The y-check enforces this.
-            let on_triangle = column == row_rect.x && row == row_rect.y;
-            // The 5-col Fitts's-law
-            // indicator hit-rect sits on the
-            // value column on the right (rather than the left edge). Clicking the Bool's
-            // `on`/`off` text toggles the bool in one click; clicking
-            // an Enum/String/DynamicEnum/Int value opens the
-            // picker/editor in one click. The hit-rect is supplied
-            // by `render_setting_row` via
-            // `state.value_hit_rects[idx]`.
+            // Fitts's-law nudge: the value column carries its own hit-rect so
+            // clicking a Bool's `on`/`off` toggles it, and clicking an
+            // Enum/String/Int value opens its sub-pane, both in one click.
+            // Supplied by `render_setting_row` via `state.value_hit_rects`.
             let value_rect = state.value_hit_rects.get(idx).copied().unwrap_or_default();
             let on_value = rect_contains(value_rect, column, row);
             let was_selected_already = state.selected == idx;
             let _ = state.select_at(idx);
-
-            if on_triangle && let Some((key, _meta)) = state.focused_setting() {
-                // Toggle expansion. Mirrors the keyboard
-                // Right/Left arrow contract.
-                if state.expanded_keys.contains(key) {
-                    state.expanded_keys.remove(key);
-                } else {
-                    state.expanded_keys.insert(key);
-                }
-                return SettingsKeyOutcome::Changed;
-            }
+            state.section_focus = false;
 
             if on_value || was_selected_already {
                 if state.try_enter_picking_group() {

@@ -974,7 +974,8 @@ pub(super) fn dispatch_send_prompt_inner(
         maybe_drain_queue(agent)
     };
     let drain_effects = if active_child_sid.is_some() {
-        drain.effects
+        drain
+            .effects
             .into_iter()
             .map(|effect| match effect {
                 Effect::SendPrompt {
@@ -1172,11 +1173,7 @@ pub(super) fn handle_subagent_prompt_response(
     let was_cancelling = child.session.state.is_cancelling()
         || matches!(&result, Ok(pr) if pr.stop_reason == acp::StopReason::Cancelled);
     let elapsed = child.turn_elapsed();
-    let ending_prompt_id = child
-        .session
-        .current_prompt_id
-        .clone()
-        .or(response_pid);
+    let ending_prompt_id = child.session.current_prompt_id.clone().or(response_pid);
     child.session.finish_turn(&mut child.scrollback);
     let event = match &result {
         Ok(_) if was_cancelling => Some(SessionEvent::TurnCancelled {
@@ -1205,7 +1202,8 @@ pub(super) fn handle_subagent_prompt_response(
         tracing::error!(parent_agent = ?parent_agent_id, child_session = %child_session_id.0, error = %err, "Subagent prompt failed");
     }
     let drain = maybe_drain_queue(child);
-    drain.effects
+    drain
+        .effects
         .into_iter()
         .map(|effect| match effect {
             Effect::SendPrompt {

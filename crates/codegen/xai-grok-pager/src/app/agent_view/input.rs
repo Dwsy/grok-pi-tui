@@ -1166,6 +1166,22 @@ impl AgentView {
                     } else {
                         None
                     };
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    if attachment_change_count.is_none()
+                        && self.try_open_large_paste_selector(
+                            text,
+                            super::paste::LargePasteSource::Bracketed,
+                        )
+                    {
+                        return InputOutcome::Changed;
+                    }
+                    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                    if self.try_open_large_paste_selector(
+                        text,
+                        super::paste::LargePasteSource::Bracketed,
+                    ) {
+                        return InputOutcome::Changed;
+                    }
                     let (outcome, synchronous_text_insertion) =
                         self.insert_bracketed_prompt_text(text);
                     #[cfg(any(target_os = "macos", target_os = "windows"))]

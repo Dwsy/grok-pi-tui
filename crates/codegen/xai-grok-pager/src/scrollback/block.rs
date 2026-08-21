@@ -1081,6 +1081,7 @@ impl RenderBlock {
             RenderBlock::ToolCall(ToolCallBlock::ListDir(b)) => {
                 b.error.is_none() && !b.output.is_empty()
             }
+            RenderBlock::SessionEvent(block) => block.has_fullscreen_summary(),
             _ => false,
         }
     }

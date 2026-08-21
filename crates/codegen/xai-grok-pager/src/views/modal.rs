@@ -262,6 +262,8 @@ pub enum ArgPickerSelection {
     ToggleScopedModel,
     /// Persist into a settings model slot (recap/btw chain).
     SetModelSlot(&'static str),
+    /// Resolve the transient two-choice large-paste selector.
+    LargePaste,
 }
 
 /// One message in the PSM session-preview surface (Ctrl+→ on External resume).
