@@ -7,6 +7,13 @@ use std::{
     time::Duration,
 };
 
+/// Windows filesystems are case-insensitive: fold cwd equality so the pager's
+/// cwd matches Pi-recorded casing (drive letters etc.). Unix stays byte-exact.
+#[cfg(windows)]
+const CWD_COLLATION: &str = " COLLATE NOCASE";
+#[cfg(not(windows))]
+const CWD_COLLATION: &str = "";
+
 const DEFAULT_PSM_WS_PORT: u16 = 52_131;
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(150);
 const BUSY_TIMEOUT: Duration = Duration::from_millis(50);
@@ -56,17 +63,20 @@ fn load_catalog_from_db(
                 s.parent_session_path
            FROM sessions s LEFT JOIN session_details_cache d ON d.path = s.path
           ORDER BY s.modified DESC"
+        .to_string()
     } else {
-        "SELECT s.id, s.path, s.cwd, s.name, s.created, s.modified, s.message_count,
+        format!(
+            "SELECT s.id, s.path, s.cwd, s.name, s.created, s.modified, s.message_count,
                 COALESCE(s.first_message, ''), COALESCE(d.models_json, '[]'),
                 COALESCE(d.input_tokens, 0), COALESCE(d.output_tokens, 0),
                 COALESCE(d.cache_read_tokens, 0), COALESCE(d.cache_write_tokens, 0),
                 d.input_cost + d.output_cost + d.cache_read_cost + d.cache_write_cost,
                 s.parent_session_path
            FROM sessions s LEFT JOIN session_details_cache d ON d.path = s.path
-          WHERE s.cwd = ?1 ORDER BY s.modified DESC"
+          WHERE s.cwd = ?1{CWD_COLLATION} ORDER BY s.modified DESC"
+        )
     };
-    let mut statement = connection.prepare(sql)?;
+    let mut statement = connection.prepare(&sql)?;
     let rows = if all {
         statement.query_map([], session_from_row)?
     } else {
@@ -238,7 +248,8 @@ fn run_psm_message_fts(
     // we keep one best hit per session_id).
     let fetch = (limit as i64).saturating_mul(4).max(limit as i64);
 
-    let sql = "SELECT s.id, s.cwd,
+    let sql = format!(
+        "SELECT s.id, s.cwd,
                 COALESCE(s.name, s.first_message, ''),
                 s.modified,
                 -message_fts.rank AS score,
@@ -247,11 +258,11 @@ fn run_psm_message_fts(
            JOIN message_fts ON m.rowid = message_fts.rowid
            JOIN sessions s ON s.path = m.session_path
           WHERE message_fts MATCH ?1
-            AND (?2 IS NULL OR s.cwd = ?2)
+            AND (?2 IS NULL OR s.cwd = ?2{CWD_COLLATION})
           ORDER BY score DESC, julianday(m.timestamp) DESC
-          LIMIT ?3";
+          LIMIT ?3");
 
-    let mut stmt = connection.prepare(sql)?;
+    let mut stmt = connection.prepare(&sql)?;
     let rows = stmt.query_map(params![fts_query, cwd_val, fetch], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -302,7 +313,8 @@ fn run_resume_x_like_search(
 
     // 1) Session name / first / last message
     {
-        let sql = "SELECT s.id, s.cwd,
+        let sql = format!(
+            "SELECT s.id, s.cwd,
                     COALESCE(NULLIF(s.name, ''), NULLIF(s.first_message, ''),
                              NULLIF(s.last_message, ''), '(no content)'),
                     s.modified,
@@ -311,10 +323,10 @@ fn run_resume_x_like_search(
               WHERE (lower(COALESCE(s.name, '')) LIKE ?1
                  OR lower(COALESCE(s.first_message, '')) LIKE ?1
                  OR lower(COALESCE(s.last_message, '')) LIKE ?1)
-                AND (?2 IS NULL OR s.cwd = ?2)
+                AND (?2 IS NULL OR s.cwd = ?2{CWD_COLLATION})
               ORDER BY s.modified DESC
-              LIMIT ?3";
-        let mut stmt = connection.prepare(sql)?;
+              LIMIT ?3");
+        let mut stmt = connection.prepare(&sql)?;
         let rows = stmt.query_map(params![q, cwd_val, limit as i64], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -348,17 +360,18 @@ fn run_resume_x_like_search(
     {
         let remaining = limit - hits.len();
         let fetch = (remaining as i64).saturating_mul(3).max(remaining as i64);
-        let sql = "SELECT s.id, s.cwd,
+        let sql = format!(
+            "SELECT s.id, s.cwd,
                     COALESCE(NULLIF(s.name, ''), '(no content)'),
                     s.modified,
                     me.content
                FROM message_entries me
                JOIN sessions s ON s.path = me.session_path
               WHERE lower(me.content) LIKE ?1
-                AND (?2 IS NULL OR s.cwd = ?2)
+                AND (?2 IS NULL OR s.cwd = ?2{CWD_COLLATION})
               ORDER BY me.timestamp DESC
-              LIMIT ?3";
-        let mut stmt = connection.prepare(sql)?;
+              LIMIT ?3");
+        let mut stmt = connection.prepare(&sql)?;
         let rows = stmt.query_map(params![q, cwd_val, fetch], |row| {
             Ok((
                 row.get::<_, String>(0)?,

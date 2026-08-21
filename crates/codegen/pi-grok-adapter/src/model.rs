@@ -355,8 +355,10 @@ fn format_tool_call(name: &str, args: &Value) -> String {
         String::new()
     };
     let shorten_path = |p: &str| -> String {
-        if let Ok(home) = std::env::var("HOME") {
-            if !home.is_empty() && p.starts_with(&home) {
+        // home_dir(): $HOME on Unix, %USERPROFILE% fallback chain on Windows.
+        if let Some(home) = std::env::home_dir() {
+            let home = home.to_string_lossy();
+            if !home.is_empty() && p.starts_with(home.as_ref()) {
                 return format!("~{}", &p[home.len()..]);
             }
         }
