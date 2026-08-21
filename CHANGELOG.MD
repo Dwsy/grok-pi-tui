@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Recap and `/btw` bridge traffic no longer leaks into the agent loop context: both extensions deliver summaries, deltas, and answers as `appendEntry` custom entries (never custom messages), the adapter parses the resulting `entry_appended` events, and a `context` hook strips legacy sendMessage-era entries from LLM context in old sessions.
 - `tools.describe(name)` now renders nested tool schemas deeply instead of collapsing `properties` to `[Object]` in the JavaScript REPL.
 - Bash `timeout: 0` now consistently means “no timeout”, matching the Eval v2 escape-hatch semantics and avoiding task validation failures from nested `tool.bash(...)` calls.
 - Eval v2 background promotion immediately replaces the foreground kernel so subsequent cells are not blocked by the promoted task.

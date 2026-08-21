@@ -2,9 +2,11 @@
  * Headless /btw bridge for grok-pi.
  *
  * Single-turn side question via pi-ai `streamSimple()` — does not mutate the main
- * LLM conversation. Stream deltas and the final result are emitted as custom
- * messages (`pi-grok-btw/v1`, display:false) for the native review Q&A panel;
- * successful answers are also persisted as non-context custom entries.
+ * LLM conversation. Stream deltas and the final result are appended as custom
+ * session entries (`pi-grok-btw/v1`) that never enter the agent loop context;
+ * the adapter projects the `entry_appended` event onto the native review Q&A
+ * panel. Successful answers are also persisted under a dedicated history
+ * custom type for `/btw-history`.
  *
  * Invoked via `/__pi_grok_btw` (hidden from slash UI by adapter filter).
  * `/btw-history` is a model-free command whose projection is handled by the
@@ -250,6 +252,11 @@ function modelChain(
 }
 
 export default function (pi: ExtensionAPI) {
+	// Live bridge traffic must never reach the LLM: sendMessage would push
+	// custom messages into agent.state.messages when idle (convertToLlm maps
+	// them onto user messages) or steer the parent mid-turn when streaming.
+	// appendEntry keeps deltas/answers out of the loop entirely — same pattern
+	// as pi-grok-subagents live traffic.
 	function emit(
 		requestId: string,
 		payload: {
@@ -261,21 +268,11 @@ export default function (pi: ExtensionAPI) {
 			modelUsed?: string;
 		},
 	) {
-		pi.sendMessage(
-			{
-				customType: BRIDGE_TYPE,
-				content: payload.ok
-					? (payload.answer ?? "")
-					: (payload.error ?? "error"),
-				display: false,
-				details: {
-					version: 1,
-					requestId,
-					...payload,
-				},
-			},
-			{ triggerTurn: false },
-		);
+		pi.appendEntry(BRIDGE_TYPE, {
+			version: 1,
+			requestId,
+			...payload,
+		});
 	}
 
 	pi.registerCommand(COMMAND, {
@@ -388,9 +385,9 @@ export default function (pi: ExtensionAPI) {
 							createdAt: Date.now(),
 							modelUsed,
 						};
-						// Custom entries are durable Pi state and do not participate in
-						// the main agent context. Keep the transient bridge message
-						// separate so the native BTW overlay remains unchanged.
+						// Custom entries are durable Pi state and do not participate
+						// in the main agent context. The dedicated history type keeps
+						// /btw-history separate from live bridge traffic.
 						pi.appendEntry(HISTORY_ENTRY_TYPE, historyEntry);
 						emit(requestId, {
 							ok: true,
@@ -425,5 +422,17 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand(HISTORY_COMMAND, {
 		description: "Show saved /btw answers",
 		handler: () => {},
+	});
+
+	// Belt-and-braces for sessions recorded by older builds: their bridge
+	// deltas/answers were persisted as display:false custom messages, which
+	// reloads restore into agent.state.messages. Strip them from every LLM
+	// call so legacy entries stay out of the loop too.
+	pi.on("context", (event) => {
+		const messages = event.messages.filter((message) => {
+			if (message.role === "custom") return message.customType !== BRIDGE_TYPE;
+			return true;
+		});
+		return { messages };
 	});
 }

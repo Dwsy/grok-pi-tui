@@ -2,8 +2,9 @@
  * Headless recap bridge for grok-pi.
  *
  * Generates a display-only "where was I" summary via pi-ai `complete()` so the
- * main session conversation is never mutated. Results are emitted as a custom
- * message (`display: false`) that the adapter projects to Grok SessionRecap.
+ * main session conversation is never mutated. Results are appended as custom
+ * session entries (`appendEntry`) that never enter the agent loop context; the
+ * adapter projects the `entry_appended` event onto Grok SessionRecap.
  *
  * Invoked only via `/__pi_grok_recap` (hidden from slash UI by adapter filter).
  * Args: JSON one-liner `{ auto, model?, thinkingLevel?, language?, customInstructions? }`.
@@ -189,8 +190,15 @@ function lastSuccessfulRecapTurnCount(branch: Array<Record<string, unknown>>): n
 			if ((entry.message as Record<string, unknown>).role === "user") userTurns++;
 			continue;
 		}
-		if (entry.type !== "custom_message" || entry.customType !== BRIDGE_TYPE) continue;
-		const details = entry.details;
+		if (entry.customType !== BRIDGE_TYPE) continue;
+		// appendEntry entries carry `data`; sendMessage-era custom_message
+		// entries carried `details`. Accept both for session continuity.
+		const details =
+			entry.type === "custom"
+				? entry.data
+				: entry.type === "custom_message"
+					? entry.details
+					: undefined;
 		if (details && typeof details === "object" && (details as Record<string, unknown>).ok === true) {
 			lastSuccessful = userTurns;
 		}
@@ -292,21 +300,18 @@ function modelChain(
 export default function (pi: ExtensionAPI) {
 	// sendMessage lives on ExtensionAPI (pi), not command ctx — same as
 	// pi-grok-subagents bridge. Command ctx only has session controls.
+	// Live bridge traffic must never reach the LLM: sendMessage would push the
+	// summary into agent.state.messages when idle (convertToLlm maps custom
+	// messages onto user messages) or steer the parent mid-turn when streaming.
+	// appendEntry keeps it out of the loop entirely while staying durable for
+	// auto-recap dedup — same pattern as pi-grok-subagents live traffic.
 	function emitSummary(summary: string, auto: boolean) {
-		pi.sendMessage(
-			{
-				customType: BRIDGE_TYPE,
-				content: summary,
-				display: false,
-				details: {
-					version: 1,
-					ok: true,
-					auto,
-					summary,
-				},
-			},
-			{ triggerTurn: false },
-		);
+		pi.appendEntry(BRIDGE_TYPE, {
+			version: 1,
+			ok: true,
+			auto,
+			summary,
+		});
 	}
 
 	pi.registerCommand(COMMAND, {
@@ -400,5 +405,17 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 		},
+	});
+
+	// Belt-and-braces for sessions recorded by older builds: their bridge
+	// summaries were persisted as display:false custom messages, which reloads
+	// restore into agent.state.messages. Strip them from every LLM call so
+	// legacy entries stay out of the loop too.
+	pi.on("context", (event) => {
+		const messages = event.messages.filter((message) => {
+			if (message.role === "custom") return message.customType !== BRIDGE_TYPE;
+			return true;
+		});
+		return { messages };
 	});
 }

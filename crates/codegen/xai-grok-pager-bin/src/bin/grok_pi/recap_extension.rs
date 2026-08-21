@@ -3,7 +3,7 @@ use std::{fs::File, io::Write};
 use tempfile::NamedTempFile;
 
 /// Inject a headless Pi extension that generates display-only session recaps
-/// via `complete()` and emits `pi-grok-recap/v1` custom messages for the adapter.
+/// via `complete()` and appends `pi-grok-recap/v1` custom entries for the adapter.
 pub(super) fn write_recap_extension() -> Result<NamedTempFile> {
     let mut file = tempfile::Builder::new()
         .prefix("pi-grok-recap-")
@@ -62,6 +62,19 @@ mod tests {
         assert!(source.contains("ok: true,"));
         assert!(!source.contains("ok: false"));
         assert!(!source.contains("reason: payload.reason"));
+    }
+
+    #[test]
+    fn recap_extension_keeps_bridge_traffic_out_of_the_agent_loop() {
+        // Regression: emitSummary used to deliver via sendMessage, which pushes
+        // the summary into agent.state.messages when idle (convertToLlm maps it
+        // onto a user message) or steers the parent mid-turn when streaming.
+        // Bridge traffic must be appended custom entries only.
+        let file = write_recap_extension().expect("temp extension");
+        let source = std::fs::read_to_string(file.path()).expect("read extension");
+        assert!(source.contains("pi.appendEntry(BRIDGE_TYPE, {"));
+        assert!(!source.contains("pi.sendMessage"));
+        assert!(source.contains("pi.on(\"context\""));
     }
 
     #[test]

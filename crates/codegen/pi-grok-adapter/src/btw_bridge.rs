@@ -71,22 +71,33 @@ pub(crate) fn parse_btw_history_entry(value: &Value) -> Option<BtwHistoryEntry> 
     })
 }
 
-/// Parse a Pi custom message into a streamed delta or final btw projection.
+/// Parse a btw bridge event into a streamed delta or final projection.
 ///
 /// Returns `None` when the event is not a btw bridge message.
 pub(crate) fn parse_btw_message(event: &Value) -> Option<BtwProjection> {
-    let message = event
-        .get("message")
-        .or_else(|| event.get("entry").and_then(|e| e.get("message")))
-        .unwrap_or(event);
-    let custom_type = message
-        .get("customType")
-        .or_else(|| message.get("custom_type"))
-        .and_then(Value::as_str)?;
-    if custom_type != BRIDGE_TYPE {
-        return None;
-    }
-    let details = message.get("details").unwrap_or(&Value::Null);
+    // Live traffic arrives via appendEntry (`entry_appended` with a custom
+    // entry carrying `data`); the extension keeps deltas/answers out of the
+    // agent context that way. Older builds delivered display:false custom
+    // messages (`message_end` with `details`) — keep accepting both shapes.
+    let (message, details) = if let Some(entry) = event.get("entry").filter(|entry| {
+        field_str(entry, "type") == Some("custom")
+            && field_str(entry, "customType") == Some(BRIDGE_TYPE)
+    }) {
+        (entry, entry.get("data").unwrap_or(entry))
+    } else {
+        let message = event
+            .get("message")
+            .or_else(|| event.get("entry").and_then(|e| e.get("message")))
+            .unwrap_or(event);
+        let custom_type = message
+            .get("customType")
+            .or_else(|| message.get("custom_type"))
+            .and_then(Value::as_str)?;
+        if custom_type != BRIDGE_TYPE {
+            return None;
+        }
+        (message, message.get("details").unwrap_or(&Value::Null))
+    };
     let request_id = details
         .get("requestId")
         .or_else(|| details.get("request_id"))
@@ -154,6 +165,10 @@ pub(crate) fn btw_answer_payload(projection: &BtwProjection) -> Value {
             Err(error) => json!({ "error": error }),
         },
     }
+}
+
+fn field_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(Value::as_str)
 }
 
 #[cfg(test)]
@@ -229,6 +244,84 @@ mod tests {
                 ..
             } if request_id == "r2" && error.contains("failed")
         ));
+    }
+
+    #[test]
+    fn parses_delta_from_append_entry() {
+        let event = json!({
+            "type": "entry_appended",
+            "entry": {
+                "id": "e1",
+                "type": "custom",
+                "customType": "pi-grok-btw/v1",
+                "data": {
+                    "version": 1,
+                    "requestId": "r1",
+                    "ok": true,
+                    "phase": "delta",
+                    "delta": "partial"
+                },
+                "timestamp": "2026-08-21T00:00:00.000Z"
+            }
+        });
+        assert_eq!(
+            parse_btw_message(&event),
+            Some(BtwProjection::Delta {
+                request_id: "r1".into(),
+                delta: "partial".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_complete_from_append_entry() {
+        let event = json!({
+            "type": "entry_appended",
+            "entry": {
+                "type": "custom",
+                "customType": "pi-grok-btw/v1",
+                "data": {
+                    "version": 1,
+                    "requestId": "r3",
+                    "ok": true,
+                    "phase": "complete",
+                    "answer": "42",
+                    "modelUsed": "openai::gpt"
+                }
+            }
+        });
+        assert_eq!(
+            parse_btw_message(&event),
+            Some(BtwProjection::Complete {
+                request_id: "r3".into(),
+                result: Ok("42".into()),
+                model_used: Some("openai::gpt".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn ignores_history_and_other_custom_entries() {
+        // /btw-history entries use a dedicated custom type.
+        let history = json!({
+            "type": "entry_appended",
+            "entry": {
+                "type": "custom",
+                "customType": "pi-grok-btw/history/v1",
+                "data": { "version": 1, "answer": "saved" }
+            }
+        });
+        assert!(parse_btw_message(&history).is_none());
+
+        let other = json!({
+            "type": "entry_appended",
+            "entry": {
+                "type": "custom",
+                "customType": "pi-grok-recap/v1",
+                "data": { "version": 1 }
+            }
+        });
+        assert!(parse_btw_message(&other).is_none());
     }
 
     #[test]

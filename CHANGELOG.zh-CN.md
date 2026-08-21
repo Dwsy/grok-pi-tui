@@ -16,6 +16,7 @@
 
 ### 修复
 
+- Recap 与 `/btw` 桥接流量不再泄漏进 agent loop context：两个扩展的摘要、delta 和答案一律通过 `appendEntry` 写入 custom entry（不再产生 custom message），adapter 解析对应的 `entry_appended` 事件，并由 `context` hook 把旧会话中 sendMessage 时代的遗留条目从 LLM context 中剔除。
 - `tools.describe(name)` 在 JavaScript REPL 中会深层展示嵌套 tool schema，不再把 `properties` 折叠为 `[Object]`。
 - Bash `timeout: 0` 现在统一表示“不设置超时”，与 Eval v2 的 escape hatch 语义一致；嵌套 `tool.bash(...)` 不再因 0 值触发校验失败。
 - Eval v2 前台任务自动转后台后会立即补充新的前台 kernel，后续 cell 不再被已转后台任务阻塞。

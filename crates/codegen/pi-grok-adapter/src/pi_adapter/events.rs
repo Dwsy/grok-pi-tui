@@ -146,7 +146,9 @@ impl PiAgent {
             // streaming. RPC exposes that append as entry_appended.
             "entry_appended" => {
                 if self.handle_btw_bridge_message(&event).await {
-                    // /btw answer may arrive via appendEntry when parent is streaming.
+                    // /btw deltas and answers are appended custom entries.
+                } else if self.handle_recap_bridge_message(&event).await? {
+                    // Recap summaries are appended custom entries.
                 } else if !self.handle_workflow_bridge_message(&event).await?
                     && !self.handle_goal_bridge_message(&event).await?
                     && !self.handle_loop_bridge_message(&event).await?
