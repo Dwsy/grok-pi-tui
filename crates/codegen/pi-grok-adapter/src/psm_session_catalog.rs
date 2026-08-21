@@ -21,7 +21,9 @@ pub fn load_catalog(cwd: &Path, all: bool) -> Option<Vec<PiSessionInfo>> {
 }
 
 fn default_database_path() -> Option<PathBuf> {
-    Some(std::env::var_os("HOME")?.into()).map(|home: PathBuf| {
+    // std::env::home_dir(): $HOME on Unix, %USERPROFILE% fallback chain on
+    // Windows — keeps the PSM index reachable outside macOS/Linux.
+    std::env::home_dir().map(|home| {
         home.join(".pi")
             .join("agent")
             .join("sessions")
@@ -628,8 +630,8 @@ mod tests {
 
     #[test]
     fn live_db_like_or_fts_smoke() {
-        let home = std::env::var_os("HOME").expect("HOME");
-        let path = PathBuf::from(home).join(".pi/agent/sessions/sessions.db");
+        let home = std::env::home_dir().expect("home dir");
+        let path = home.join(".pi/agent/sessions/sessions.db");
         if !path.exists() {
             return;
         }
