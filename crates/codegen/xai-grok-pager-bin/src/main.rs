@@ -213,6 +213,91 @@ async fn run_setup_command(json: bool) {
         }
     }
 }
+async fn run_leader_mgmt(args: LeaderMgmtArgs) -> Result<()> {
+    match args.command {
+        LeaderMgmtCommand::Kill => kill_leaders().await,
+        LeaderMgmtCommand::List { json } => {
+            let leaders = xai_grok_shell::leader::discover_leaders().await;
+            if json {
+                let payload: Vec<_> = leaders.iter().map(leader_descriptor_json).collect();
+                println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::Value::Array(payload))?
+                );
+            } else if leaders.is_empty() {
+                println!("No leader candidates found.");
+            } else {
+                for d in &leaders {
+                    print_leader_descriptor(d);
+                }
+            }
+            Ok(())
+        }
+        LeaderMgmtCommand::Info { target, json } => {
+            let (descriptor, client) = connect_to_leader(&target).await?;
+            let info = match ensure_control_caps(client.registration()) {
+                Ok(_) => client
+                    .send_control(ControlCommand::GetLeaderInfo)
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok()),
+                Err(_) => None,
+            };
+            if json {
+                let payload = leader_info_json(&descriptor, client.registration(), info.as_ref())?;
+                println!("{}", serde_json::to_string(&payload)?);
+            } else if let Some(info) = info {
+                println!("{info:#?}");
+            } else {
+                print_leader_descriptor(&descriptor);
+                eprintln!(
+                    "  (detailed info unavailable — leader does not advertise control capabilities)"
+                );
+            }
+            client.cancel();
+            Ok(())
+        }
+    }
+}
+async fn kill_leaders() -> Result<()> {
+    let leaders = xai_grok_shell::leader::discover_leaders().await;
+    if leaders.is_empty() {
+        eprintln!("No leader candidates found.");
+        return Ok(());
+    }
+    let mut killed = 0u32;
+    let mut cleaned = 0u32;
+    for d in &leaders {
+        let Some(pid) = leader_pid(d) else {
+            continue;
+        };
+        if !xai_grok_shell::util::is_grok_process(pid) {
+            if let Some(ref lock) = d.lock_path {
+                eprintln!("  PID {pid} is not a grok process, removing stale lock");
+                let _ = std::fs::remove_file(lock);
+                cleaned += 1;
+            }
+            if let Some(ref sock) = d.socket_path {
+                let _ = std::fs::remove_file(sock);
+            }
+            continue;
+        }
+        eprintln!("  Killing leader PID {pid}");
+        if let Err(e) = xai_grok_shell::util::kill_process_by_pid(pid) {
+            eprintln!("  warning: failed to terminate PID {pid}: {e}");
+            continue;
+        }
+        killed += 1;
+    }
+    if killed > 0 {
+        eprintln!("Killed {killed} leader process(es).");
+    } else if cleaned > 0 {
+        eprintln!("No live leader processes found (cleaned up {cleaned} stale lock(s)).");
+    } else {
+        eprintln!("No live leader processes found.");
+    }
+    Ok(())
+}
 fn resolve_target(args: &LeaderTargetArgs) -> LeaderTarget {
     match args.pid {
         Some(pid) => LeaderTarget::Pid(pid),
@@ -1961,6 +2046,11 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                 let agent_config = AgentConfig::new_from_toml_cfg(&config)
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 return xai_grok_pager::models::list_available_models(&agent_config).await;
+            }
+            Command::Leader(leader_args) => {
+                init_tracing_simple("cli");
+                let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
+                return run_leader_mgmt(leader_args).await;
             }
             Command::Worktree(worktree_args) => {
                 init_tracing_simple("cli");
