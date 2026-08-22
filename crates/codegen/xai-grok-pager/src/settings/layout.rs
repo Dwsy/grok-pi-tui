@@ -72,7 +72,10 @@ pub fn section_for(key: SettingKey) -> &'static str {
         "keep_text_selection" => "Selection",
 
         // -- Editor ----------------------------------------------------------
-        "combine_queued_prompts" | "multiline_mode" | "prompt_suggestions" | "pi_at_search_hidden" => "Input",
+        "combine_queued_prompts"
+        | "multiline_mode"
+        | "prompt_suggestions"
+        | "pi_at_search_hidden" => "Input",
         "voice_keybind_enabled" | "voice_capture_mode" | "voice_stt_language" => "Voice",
 
         // -- Agent -----------------------------------------------------------
@@ -92,6 +95,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
         "pi_bash"
         | "pi_eval"
         | "pi_eval_v2_language"
+        | "pi_eval_v2_display_mode"
         | "pi_eval_v2_only"
         | "pi_herdr"
         | "pi_subagents"

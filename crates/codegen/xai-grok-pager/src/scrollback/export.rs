@@ -50,6 +50,9 @@ pub fn render_blocks_to_markdown<'a>(blocks: impl IntoIterator<Item = &'a Render
                 last_was_agent = true;
             }
             RenderBlock::ToolCall(tc) => {
+                if matches!(tc, ToolCallBlock::Eval(eval) if eval.effects_first()) {
+                    continue;
+                }
                 if !in_tools_section {
                     out.push_str("## Tools\n\n");
                     in_tools_section = true;
@@ -112,5 +115,36 @@ mod tests {
     fn empty_blocks_yield_empty_string() {
         let out = render_blocks_to_markdown(std::iter::empty::<&RenderBlock>());
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn effects_first_omits_v2_eval_but_keeps_nested_tool_entries() {
+        crate::appearance::cache::set_pi_eval_v2_effects_first(true);
+        let blocks = vec![
+            RenderBlock::ToolCall(ToolCallBlock::Eval(
+                crate::scrollback::blocks::tool::EvalToolCallBlock::new(
+                    "js",
+                    "await tool.read({ path: 'README.md' })",
+                )
+                .with_bridge_version("v2"),
+            )),
+            RenderBlock::read("README.md", None),
+        ];
+        let out = render_blocks_to_markdown(blocks.iter());
+        assert!(!out.contains("Eval:"));
+        assert!(!out.contains("tool.read"));
+        assert!(out.contains("Read: README.md"));
+    }
+
+    #[test]
+    fn legacy_mode_exports_v2_eval_summary() {
+        crate::appearance::cache::set_pi_eval_v2_effects_first(false);
+        let blocks = [RenderBlock::ToolCall(ToolCallBlock::Eval(
+            crate::scrollback::blocks::tool::EvalToolCallBlock::new("js", "1 + 1")
+                .with_bridge_version("v2"),
+        ))];
+        let out = render_blocks_to_markdown(blocks.iter());
+        assert!(out.contains("Eval: js"));
+        crate::appearance::cache::set_pi_eval_v2_effects_first(true);
     }
 }

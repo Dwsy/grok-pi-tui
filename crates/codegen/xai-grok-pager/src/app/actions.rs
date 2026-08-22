@@ -768,6 +768,8 @@ pub enum Action {
     SetPiEval(String),
     /// Select Eval v2 language exposure (`js`, `py`, or `all`; restart required).
     SetPiEvalV2Language(String),
+    /// Select Eval v2 presentation (`effects` or `legacy`; live-applied).
+    SetPiEvalV2DisplayMode(String),
     /// Force Eval v2 and hide every other Pi tool (restart required).
     SetPiEvalV2Only(bool),
     /// Enable PSM's optional SQLite catalog source for Pi `/resume`.

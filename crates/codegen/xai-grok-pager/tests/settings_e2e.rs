@@ -989,10 +989,7 @@ fn filter_empty_query_shows_all_rows() {
         .rows
         .iter()
         .enumerate()
-        .filter(|(_, r)| {
-            matches!(r, RowEntry::Setting { .. })
-                && r.category(&s.registry) == active
-        })
+        .filter(|(_, r)| matches!(r, RowEntry::Setting { .. }) && r.category(&s.registry) == active)
         .map(|(i, _)| i)
         .collect();
     assert_eq!(
@@ -1029,10 +1026,7 @@ fn filter_esc_clears_query_and_returns_to_browse() {
         .rows
         .iter()
         .enumerate()
-        .filter(|(_, r)| {
-            matches!(r, RowEntry::Setting { .. })
-                && r.category(&s.registry) == active
-        })
+        .filter(|(_, r)| matches!(r, RowEntry::Setting { .. }) && r.category(&s.registry) == active)
         .map(|(i, _)| i)
         .collect();
     assert_eq!(
@@ -1151,10 +1145,7 @@ fn filter_backspace_broadens_visible_set() {
         .rows
         .iter()
         .enumerate()
-        .filter(|(_, r)| {
-            matches!(r, RowEntry::Setting { .. })
-                && r.category(&s.registry) == active
-        })
+        .filter(|(_, r)| matches!(r, RowEntry::Setting { .. }) && r.category(&s.registry) == active)
         .map(|(i, _)| i)
         .collect();
     assert_eq!(
@@ -1973,7 +1964,7 @@ fn registry_kind_membership_through_pr_14() {
 
 /// Pins the set of Enum-kind settings (sorted, order-independent).
 #[test]
-fn enum_settings_membership_through_pr_14() {
+fn enum_settings_membership() {
     let reg = SettingsRegistry::defaults();
     let mut enum_keys: Vec<&str> = reg
         .all()
@@ -1988,10 +1979,15 @@ fn enum_settings_membership_through_pr_14() {
             "auto_dark_theme",
             "auto_light_theme",
             "coding_data_sharing",
+            "ctrl_o_tool_expansion",
             "default_selected_permission",
             "hunk_tracker_mode",
             "keep_text_selection",
             "permission_mode",
+            "pi_bash_run_display",
+            "pi_eval",
+            "pi_eval_v2_display_mode",
+            "pi_eval_v2_language",
             "plan_mode",
             "render_mermaid",
             "screen_mode",
@@ -4102,7 +4098,10 @@ fn click_on_setting_row_selects_it() {
     // `compact_mode` is the default focus; click a later row in the same
     // tab to verify selection moves. `show_timestamps` follows compact_mode.
     let ts_idx = row_idx_for(&s, "show_timestamps");
-    assert!(ts_idx > compact_idx, "show_timestamps must come after compact_mode");
+    assert!(
+        ts_idx > compact_idx,
+        "show_timestamps must come after compact_mode"
+    );
     let row_y = ts_idx as u16;
 
     let outcome = handle_settings_mouse(

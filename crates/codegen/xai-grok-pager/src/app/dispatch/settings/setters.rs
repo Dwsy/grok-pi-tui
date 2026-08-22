@@ -2396,6 +2396,52 @@ pub(in crate::app::dispatch) fn set_pi_eval_v2_language(
     }]
 }
 
+pub(super) fn set_pi_eval_v2_display_mode_inner(app: &mut AppView, mode: &str) {
+    let canonical = if mode.eq_ignore_ascii_case("legacy") {
+        "legacy"
+    } else {
+        "effects"
+    };
+    crate::appearance::cache::set_pi_eval_v2_effects_first(canonical == "effects");
+    app.current_ui.pi_eval_v2_display_mode = canonical.to_string();
+    for agent in app.agents.values_mut() {
+        agent.scrollback.invalidate_heights();
+        for child in agent.subagent_views.values_mut() {
+            child.scrollback.invalidate_heights();
+        }
+    }
+}
+
+/// Set Eval v2 presentation and persist it to `[ui]`. This is display-only and
+/// takes effect immediately for existing scrollback blocks.
+pub(in crate::app::dispatch) fn set_pi_eval_v2_display_mode(
+    app: &mut AppView,
+    requested: String,
+) -> Vec<Effect> {
+    let previous = if crate::appearance::cache::load_pi_eval_v2_effects_first() {
+        "effects"
+    } else {
+        "legacy"
+    };
+    let canonical = match requested.trim().to_ascii_lowercase().as_str() {
+        "legacy" => "legacy",
+        "toggle" if previous == "effects" => "legacy",
+        "toggle" => "effects",
+        _ => "effects",
+    };
+    if previous == canonical {
+        return vec![];
+    }
+    set_pi_eval_v2_display_mode_inner(app, canonical);
+    refresh_open_settings_modals(app);
+    app.show_toast(&format!("✓ Eval v2 display: {canonical}"));
+    vec![Effect::PersistSetting {
+        key: "pi_eval_v2_display_mode",
+        value: crate::settings::SettingValue::Enum(canonical),
+        rollback_value: crate::settings::SettingValue::Enum(previous),
+    }]
+}
+
 pub(in crate::app::dispatch) fn set_pi_eval_v2_only(
     app: &mut AppView,
     enabled: bool,

@@ -34,7 +34,8 @@ This embedded skill is the compact starting point for answering grok-pi configur
 
 - `pi_config_skill`: default-on embedded configuration skill.
 - `pi_builtin_tools.*`: enable/disable built-in `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, and `eval` tools.
-- `pi_bash`, `pi_eval`, `pi_eval_v2_only`: Bash/Eval bridge behavior.
+- `pi_bash`, `pi_eval`, `pi_eval_v2_language`, `pi_eval_v2_only`: Bash/Eval bridge behavior; version/language/only changes apply on the next grok-pi session.
+- `pi_eval_v2_display_mode`: live Eval v2 presentation (`effects` default, `legacy` for source + results); F2 label **Eval v2 display** and `/eval-display [effects|legacy]` change it immediately and persist the choice.
 - `pi_subagents`, `pi_todo`, `pi_workflows`, `pi_goal`, `pi_loop`, `pi_btw`, `pi_ask_user_question`: native Pi/Grok features.
 - `pi_cache_graph`, `pi_user_markdown`, `pi_keep_multi_agent`: UI/session behavior.
 - `theme`, `auto_dark_theme`, `auto_light_theme`: appearance.

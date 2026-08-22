@@ -251,6 +251,11 @@ pub async fn set_pi_eval_v2_language(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_eval_v2_language = value).await
 }
 
+/// Persist the Eval v2 presentation mode (`effects` or `legacy`).
+pub async fn set_pi_eval_v2_display_mode(value: String) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_eval_v2_display_mode = value).await
+}
+
 /// Persist the grok-pi Eval v2 isolation mode.
 pub async fn set_pi_eval_v2_only(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_eval_v2_only = value).await

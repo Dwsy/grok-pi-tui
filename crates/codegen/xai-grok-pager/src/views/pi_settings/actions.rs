@@ -158,6 +158,10 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &str) -> Option<Ac
             "js" | "py" | "all" => Some(Action::SetPiEvalV2Language(choice.to_string())),
             _ => None,
         },
+        "pi_eval_v2_display_mode" => match choice {
+            "effects" | "legacy" => Some(Action::SetPiEvalV2DisplayMode(choice.to_string())),
+            _ => None,
+        },
         "pi_bash_run_display" => crate::appearance::ExecuteHeaderContent::from_canonical(choice)
             .map(Action::SetPiBashRunDisplay),
         "hunk_tracker_mode" => Some(Action::SetHunkTrackerMode(choice.to_string())),

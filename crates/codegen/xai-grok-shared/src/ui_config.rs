@@ -13,6 +13,10 @@ fn default_pi_eval_v2_language() -> String {
     "js".to_string()
 }
 
+fn default_pi_eval_v2_display_mode() -> String {
+    "effects".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
@@ -45,6 +49,10 @@ pub struct UiConfig {
     /// Default `js` preserves the pre-selector v2 behavior.
     #[serde(default = "default_pi_eval_v2_language")]
     pub pi_eval_v2_language: String,
+    /// Select Eval v2 presentation: `effects` hides orchestration source while
+    /// `legacy` keeps the source/result card. Display-only and live-applied.
+    #[serde(default = "default_pi_eval_v2_display_mode")]
+    pub pi_eval_v2_display_mode: String,
     /// Force Eval Bridge v2 and allow only the Eval tool in the Pi registry.
     /// This is a restart-required grok-pi isolation mode; it does not mutate
     /// the stored `pi_eval` or per-tool preferences underneath it.
@@ -485,11 +493,12 @@ impl Default for UiConfig {
             write_edit_hover_popups: true,
             pi_eval: default_pi_eval(),
             pi_eval_v2_language: default_pi_eval_v2_language(),
+            pi_eval_v2_display_mode: default_pi_eval_v2_display_mode(),
             pi_eval_v2_only: false,
             psm_resume_index: false,
             pi_tree_file_rollback: false,
             pi_tree_skip_summary_prompt: false,
-            pi_herdr: true,
+            pi_herdr: false,
             pi_subagents: true,
             pi_workflows: false,
             pi_todo: true,

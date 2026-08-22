@@ -39,6 +39,8 @@ const COMBINE_QUEUED_PROMPTS_DEFAULT: bool = false;
 const SIMPLE_MODE_DEFAULT: bool = true;
 /// Vim-mode scrollback default — matches the previous on-disk default.
 const VIM_MODE_DEFAULT: bool = false;
+/// Eval v2 defaults to effects-first presentation.
+const PI_EVAL_V2_EFFECTS_FIRST_DEFAULT: bool = true;
 /// PSM resume index + full-text/preview (defaults OFF; opt-in).
 const PSM_RESUME_INDEX_DEFAULT: bool = false;
 const SHOW_THINKING_BLOCKS_DEFAULT: bool = true;
@@ -266,6 +268,33 @@ pub fn load_vim_mode() -> bool {
 pub fn set_vim_mode(enabled: bool) {
     VIM_MODE_CURRENT.with(|c| c.set(enabled));
     VIM_MODE_LOADED.with(|l| l.set(true));
+}
+
+// -- Eval v2 presentation ----------------------------------------------------
+
+thread_local! {
+    static PI_EVAL_V2_EFFECTS_FIRST_CURRENT: Cell<bool> =
+        const { Cell::new(PI_EVAL_V2_EFFECTS_FIRST_DEFAULT) };
+    static PI_EVAL_V2_EFFECTS_FIRST_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether Eval v2 should hide orchestration source and foreground nested effects.
+pub fn load_pi_eval_v2_effects_first() -> bool {
+    PI_EVAL_V2_EFFECTS_FIRST_LOADED.with(|loaded| {
+        if !loaded.get() {
+            let effects_first = load_str_from_effective_config("pi_eval_v2_display_mode")
+                .as_deref()
+                != Some("legacy");
+            PI_EVAL_V2_EFFECTS_FIRST_CURRENT.with(|c| c.set(effects_first));
+            loaded.set(true);
+        }
+    });
+    PI_EVAL_V2_EFFECTS_FIRST_CURRENT.with(|c| c.get())
+}
+
+pub fn set_pi_eval_v2_effects_first(enabled: bool) {
+    PI_EVAL_V2_EFFECTS_FIRST_CURRENT.with(|c| c.set(enabled));
+    PI_EVAL_V2_EFFECTS_FIRST_LOADED.with(|l| l.set(true));
 }
 
 // -- PSM resume index (catalog + full-text + preview) -------------------------
@@ -817,6 +846,7 @@ pub fn prime(ui: &UiConfig) {
             .unwrap_or(COMBINE_QUEUED_PROMPTS_DEFAULT),
     );
     set_simple_mode(ui.simple_mode.unwrap_or(SIMPLE_MODE_DEFAULT));
+    set_pi_eval_v2_effects_first(ui.pi_eval_v2_display_mode != "legacy");
     set_psm_resume_index(ui.psm_resume_index);
     set_keep_text_selection(text_selection_from_ui(ui));
     // Layered-config keys (not the `UiConfig` arg) — seed so the first frame
@@ -935,6 +965,10 @@ mod tests {
     #[test]
     fn cache_initial_defaults_match_ui_config_default() {
         let ui = UiConfig::default();
+        assert_eq!(
+            PI_EVAL_V2_EFFECTS_FIRST_DEFAULT,
+            ui.pi_eval_v2_display_mode != "legacy"
+        );
         assert_eq!(PSM_RESUME_INDEX_DEFAULT, ui.psm_resume_index);
         assert_eq!(COMPACT_DEFAULT, ui.compact_mode);
         assert_eq!(TIMESTAMPS_DEFAULT, ui.show_timestamps.unwrap_or(true));

@@ -553,6 +553,12 @@ pub fn current_value_for(
             "all" => "all",
             _ => "js",
         })),
+        "pi_eval_v2_display_mode" => Some(SettingValue::Enum(
+            match ui.pi_eval_v2_display_mode.as_str() {
+                "legacy" => "legacy",
+                _ => "effects",
+            },
+        )),
         "pi_eval_v2_only" => Some(SettingValue::Bool(ui.pi_eval_v2_only)),
         "psm_resume_index" => Some(SettingValue::Bool(ui.psm_resume_index)),
         "pi_tree_file_rollback" => Some(SettingValue::Bool(ui.pi_tree_file_rollback)),
@@ -979,6 +985,14 @@ mod tests {
                     };
                     assert_eq!(*default, expected);
                 }
+                ("pi_eval_v2_display_mode", SettingKind::Enum { default, .. }) => {
+                    let expected = if ui.pi_eval_v2_display_mode == "legacy" {
+                        "legacy"
+                    } else {
+                        "effects"
+                    };
+                    assert_eq!(*default, expected);
+                }
                 ("pi_eval_v2_only", SettingKind::Bool { default }) => {
                     assert_eq!(*default, ui.pi_eval_v2_only);
                 }
@@ -1390,6 +1404,56 @@ mod tests {
                         "UiConfig::default().recap_model must be empty",
                     );
                 }
+                ("recap_model_2", SettingKind::DynamicEnum { default, .. }) => {
+                    assert_eq!(
+                        *default, "",
+                        "recap_model_2 registry default must be empty string (disabled)",
+                    );
+                    assert!(
+                        ui.recap_model_2.is_empty(),
+                        "UiConfig::default().recap_model_2 must be empty",
+                    );
+                }
+                ("recap_model_3", SettingKind::DynamicEnum { default, .. }) => {
+                    assert_eq!(
+                        *default, "",
+                        "recap_model_3 registry default must be empty string (disabled)",
+                    );
+                    assert!(
+                        ui.recap_model_3.is_empty(),
+                        "UiConfig::default().recap_model_3 must be empty",
+                    );
+                }
+                ("btw_model", SettingKind::DynamicEnum { default, .. }) => {
+                    assert_eq!(
+                        *default, "",
+                        "btw_model registry default must be empty string",
+                    );
+                    assert!(
+                        ui.btw_model.is_empty(),
+                        "UiConfig::default().btw_model must be empty",
+                    );
+                }
+                ("btw_model_2", SettingKind::DynamicEnum { default, .. }) => {
+                    assert_eq!(
+                        *default, "",
+                        "btw_model_2 registry default must be empty string",
+                    );
+                    assert!(
+                        ui.btw_model_2.is_empty(),
+                        "UiConfig::default().btw_model_2 must be empty",
+                    );
+                }
+                ("btw_model_3", SettingKind::DynamicEnum { default, .. }) => {
+                    assert_eq!(
+                        *default, "",
+                        "btw_model_3 registry default must be empty string",
+                    );
+                    assert!(
+                        ui.btw_model_3.is_empty(),
+                        "UiConfig::default().btw_model_3 must be empty",
+                    );
+                }
                 ("psm_resume_index", SettingKind::Bool { default }) => {
                     assert_eq!(
                         *default, ui.psm_resume_index,
@@ -1512,6 +1576,17 @@ mod tests {
                     );
                     assert!(!*default, "pi_keep_multi_agent must default OFF");
                 }
+                ("pi_bash_run_display", SettingKind::Enum { default, .. }) => {
+                    assert_eq!(
+                        *default,
+                        ui.pi_bash_run_display.as_deref().unwrap_or("task_name"),
+                        "pi_bash_run_display default drifts from UiConfig::default()"
+                    );
+                    assert_eq!(
+                        *default, "task_name",
+                        "pi_bash_run_display must default to task_name"
+                    );
+                }
                 ("pi_bash_command_format", SettingKind::Bool { default }) => {
                     assert_eq!(
                         *default, ui.pi_bash_command_format,
@@ -1574,6 +1649,12 @@ mod tests {
                     assert_eq!(
                         *default, pager.multiline_mode,
                         "multiline_mode default drifts from PagerLocalSnapshot::default()"
+                    );
+                }
+                ("prompt_cursor", SettingKind::String { default, .. }) => {
+                    assert_eq!(
+                        *default, pager.prompt_cursor,
+                        "prompt_cursor default drifts from PagerLocalSnapshot::default()"
                     );
                 }
                 ("respect_manual_folds", SettingKind::Bool { default }) => {

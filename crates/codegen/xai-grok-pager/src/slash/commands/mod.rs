@@ -23,6 +23,7 @@ pub mod doctor;
 pub mod edit_prompt;
 pub mod effort;
 pub mod effort_levels;
+pub mod eval_display;
 pub mod exit;
 pub mod expand;
 pub mod export;
@@ -121,6 +122,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(auto::AutoCommand),
         Arc::new(multiline::MultilineCommand),
         Arc::new(compact_mode::CompactModeCommand),
+        Arc::new(eval_display::EvalDisplayCommand),
         Arc::new(vim_mode::VimModeCommand),
         Arc::new(plugin::HooksCommand),
         Arc::new(plugin::PluginsCommand),

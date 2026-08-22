@@ -1584,6 +1584,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "pi_eval_v2_display_mode" => {
+            let SettingValue::Enum(mode) = value else {
+                return Err(kind_mismatch("pi_eval_v2_display_mode", "Enum", &value));
+            };
+            xai_grok_shell::util::config::set_pi_eval_v2_display_mode(mode.to_string())
+                .await
+                .map_err(|e| e.to_string())
+        }
         "pi_eval_v2_only" => {
             let SettingValue::Bool(b) = value else {
                 return Err(kind_mismatch("pi_eval_v2_only", "Bool", &value));

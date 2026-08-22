@@ -2097,6 +2097,9 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
             let language = extract_raw_field(tc, "language").unwrap_or_default();
             let code = extract_raw_field(tc, "code").unwrap_or_default();
             let mut block = EvalToolCallBlock::new(language, code);
+            if let Some(version) = extract_eval_bridge_version(tc) {
+                block = block.with_bridge_version(version);
+            }
             if let Some(title) = extract_raw_field(tc, "title") {
                 block = block.with_title(title);
             }
@@ -2526,6 +2529,21 @@ fn is_scheduler_tool(tc: &acp::ToolCall) -> bool {
     tc.title.starts_with("scheduler_")
         || extract_variant(tc).is_some_and(|v| v.starts_with("Scheduler"))
 }
+fn extract_eval_bridge_version(tc: &acp::ToolCall) -> Option<String> {
+    let from_input =
+        extract_raw_field(tc, "bridge_version").or_else(|| extract_raw_field(tc, "bridgeVersion"));
+    if from_input.is_some() {
+        return from_input;
+    }
+    let raw = tc.raw_output.as_ref()?;
+    raw.pointer("/details/bridgeVersion")
+        .or_else(|| raw.pointer("/details/bridge_version"))
+        .or_else(|| raw.get("bridgeVersion"))
+        .or_else(|| raw.get("bridge_version"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
 /// Extract a string field from raw_input JSON.
 fn extract_raw_field(tc: &acp::ToolCall, field: &str) -> Option<String> {
     tc.raw_input

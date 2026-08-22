@@ -9,8 +9,8 @@ use super::setters::{
     set_fork_secondary_model_inner, set_group_tool_verbs_inner, set_hunk_tracker_mode_inner,
     set_invert_scroll_inner, set_keep_text_selection_inner, set_max_thoughts_width_inner,
     set_multiline_mode, set_page_flip_on_send_inner, set_pi_at_search_hidden_inner,
-    set_pi_bash_command_format_inner, set_pi_bash_run_display_inner, set_progress_bar_inner,
-    set_prompt_cursor_inner,
+    set_pi_bash_command_format_inner, set_pi_bash_run_display_inner,
+    set_pi_eval_v2_display_mode_inner, set_progress_bar_inner, set_prompt_cursor_inner,
     set_prompt_suggestions_inner, set_recap_mermaid_inner, set_recap_model_inner,
     set_remember_tool_approvals_inner, set_render_mermaid_inner, set_respect_manual_folds_inner,
     set_screen_mode_inner, set_scroll_lines_inner, set_scroll_mode_inner, set_scroll_speed_inner,
@@ -1112,6 +1112,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("pi_eval_v2_language", SettingValue::Enum(s)) => {
             Some(Action::SetPiEvalV2Language((*s).to_string()))
         }
+        ("pi_eval_v2_display_mode", SettingValue::Enum(s)) => {
+            Some(Action::SetPiEvalV2DisplayMode((*s).to_string()))
+        }
         ("pi_eval_v2_only", SettingValue::Bool(b)) => Some(Action::SetPiEvalV2Only(*b)),
         ("psm_resume_index", SettingValue::Bool(b)) => Some(Action::SetPsmResumeIndex(*b)),
         ("pi_tree_file_rollback", SettingValue::Bool(b)) => Some(Action::SetPiTreeFileRollback(*b)),
@@ -1379,6 +1382,9 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         ("pi_eval_v2_language", SettingValue::Enum(s)) => {
             app.current_ui.pi_eval_v2_language = (*s).to_string()
         }
+        ("pi_eval_v2_display_mode", SettingValue::Enum(s)) => {
+            set_pi_eval_v2_display_mode_inner(app, s)
+        }
         ("pi_eval_v2_only", SettingValue::Bool(b)) => app.current_ui.pi_eval_v2_only = *b,
         ("psm_resume_index", SettingValue::Bool(b)) => app.current_ui.psm_resume_index = *b,
         ("pi_tree_file_rollback", SettingValue::Bool(b)) => {
@@ -1402,9 +1408,7 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             app.current_ui.pi_user_markdown = *b;
             crate::appearance::cache::set_pi_user_markdown(*b);
         }
-        ("pi_at_search_hidden", SettingValue::Bool(b)) => {
-            set_pi_at_search_hidden_inner(app, *b)
-        }
+        ("pi_at_search_hidden", SettingValue::Bool(b)) => set_pi_at_search_hidden_inner(app, *b),
         ("pi_keep_multi_agent", SettingValue::Bool(b)) => {
             app.current_ui.pi_keep_multi_agent = *b;
         }

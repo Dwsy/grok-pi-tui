@@ -1067,7 +1067,6 @@ impl RenderBlock {
             RenderBlock::AgentMessage(_)
             | RenderBlock::Thinking(_)
             | RenderBlock::ToolCall(ToolCallBlock::Execute(_))
-            | RenderBlock::ToolCall(ToolCallBlock::Eval(_))
             | RenderBlock::ToolCall(ToolCallBlock::Edit(_))
             | RenderBlock::ToolCall(ToolCallBlock::WebFetch(_))
             | RenderBlock::ToolCall(ToolCallBlock::WebSearch(_))
@@ -1076,6 +1075,7 @@ impl RenderBlock {
             | RenderBlock::ToolCall(ToolCallBlock::Other(_))
             | RenderBlock::ToolCall(ToolCallBlock::Skill(_))
             | RenderBlock::BgTask(_) => true,
+            RenderBlock::ToolCall(ToolCallBlock::Eval(eval)) => !eval.effects_first(),
             RenderBlock::ToolCall(ToolCallBlock::Read(b)) => b.has_content(),
             RenderBlock::ToolCall(ToolCallBlock::Search(b)) => b.error.is_none(),
             RenderBlock::ToolCall(ToolCallBlock::ListDir(b)) => {
@@ -1412,6 +1412,22 @@ mod tests {
         ));
         assert!(block.has_normal_fullscreen_viewer());
         assert!(block.supports_fullscreen());
+    }
+
+    #[test]
+    fn eval_v2_effects_first_has_no_normal_fullscreen_viewer() {
+        crate::appearance::cache::set_pi_eval_v2_effects_first(true);
+        let block = RenderBlock::ToolCall(ToolCallBlock::Eval(
+            crate::scrollback::blocks::tool::EvalToolCallBlock::new("js", "secret()")
+                .with_bridge_version("v2")
+                .with_output("done"),
+        ));
+        assert!(!block.has_normal_fullscreen_viewer());
+        assert!(!block.supports_fullscreen());
+
+        crate::appearance::cache::set_pi_eval_v2_effects_first(false);
+        assert!(block.has_normal_fullscreen_viewer());
+        crate::appearance::cache::set_pi_eval_v2_effects_first(true);
     }
 
     #[test]

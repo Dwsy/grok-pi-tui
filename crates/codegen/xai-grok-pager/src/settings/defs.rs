@@ -61,6 +61,19 @@ const PI_EVAL_V2_LANGUAGE_CHOICES: &[EnumChoice] = &[
     },
 ];
 
+const PI_EVAL_V2_DISPLAY_MODE_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        canonical: "effects",
+        display: "effects",
+        description: "Hide Eval v2 orchestration source and foreground nested effects/results.",
+    },
+    EnumChoice {
+        canonical: "legacy",
+        display: "legacy",
+        description: "Show the Eval v2 source/result card using the legacy presentation.",
+    },
+];
+
 // ---------------------------------------------------------------------------
 // Theme choice catalogs.
 //
@@ -1959,13 +1972,37 @@ pub fn default_settings() -> Vec<SettingMeta> {
             owner: SettingOwner::Shell,
             label: "Eval v2 language",
             description: "Choose which language(s) Eval Bridge v2 exposes next session: js, py, or all.",
-            keywords: &["pi", "eval", "v2", "language", "javascript", "python", "all"],
+            keywords: &[
+                "pi",
+                "eval",
+                "v2",
+                "language",
+                "javascript",
+                "python",
+                "all",
+            ],
             kind: SettingKind::Enum {
                 default: "js",
                 choices: PI_EVAL_V2_LANGUAGE_CHOICES,
                 supports_preview: false,
             },
             restart_required: true,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
+        SettingMeta {
+            key: "pi_eval_v2_display_mode",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Eval v2 display",
+            description: "Choose the live Eval v2 presentation: effects hides orchestration source; legacy shows source and results.",
+            keywords: &["pi", "eval", "v2", "display", "effects", "legacy", "source"],
+            kind: SettingKind::Enum {
+                default: "effects",
+                choices: PI_EVAL_V2_DISPLAY_MODE_CHOICES,
+                supports_preview: false,
+            },
+            restart_required: false,
             hidden_in_minimal: false,
             external_only: true,
         },
@@ -2453,7 +2490,15 @@ pub fn default_settings() -> Vec<SettingMeta> {
             owner: SettingOwner::Shell,
             label: "Hidden files in @ search",
             description: "Include hidden/dotfile entries in plain `@` file search while still respecting ignore rules, matching pi-main's fd `--hidden` behavior. `@!` additionally reveals gitignored project files while `.git`, `node_modules`, and common dependency/package stores remain excluded. Default on.",
-            keywords: &["pi", "at", "file", "search", "hidden", "dotfile", "gitignore"],
+            keywords: &[
+                "pi",
+                "at",
+                "file",
+                "search",
+                "hidden",
+                "dotfile",
+                "gitignore",
+            ],
             kind: SettingKind::Bool {
                 default: ui_default.pi_at_search_hidden,
             },

@@ -15,6 +15,7 @@ pub struct EvalToolCallBlock {
     pub language: String,
     pub code: String,
     pub title: Option<String>,
+    pub bridge_version: Option<String>,
     pub output: Option<String>,
     pub error: Option<String>,
     pub started_at: Option<std::time::Instant>,
@@ -27,6 +28,7 @@ impl EvalToolCallBlock {
             language: language.into(),
             code: code.into(),
             title: None,
+            bridge_version: None,
             output: None,
             error: None,
             started_at: None,
@@ -38,6 +40,17 @@ impl EvalToolCallBlock {
         let title = title.into();
         self.title = (!title.trim().is_empty()).then_some(title);
         self
+    }
+
+    pub fn with_bridge_version(mut self, version: impl Into<String>) -> Self {
+        let version = version.into();
+        self.bridge_version = (!version.trim().is_empty()).then_some(version);
+        self
+    }
+
+    pub fn effects_first(&self) -> bool {
+        self.bridge_version.as_deref() == Some("v2")
+            && crate::appearance::cache::load_pi_eval_v2_effects_first()
     }
 
     pub fn with_output(mut self, output: impl Into<String>) -> Self {
@@ -120,9 +133,14 @@ impl EvalToolCallBlock {
     fn render_body(&self, ctx: &BlockContext, include_output: bool) -> BlockOutput {
         let theme = Theme::current();
         let width = ctx.content_width().max(20);
-        let mut lines: Vec<BlockLine> = vec![self.header_line(&theme, false).into()];
+        let effects_first = self.effects_first();
+        let mut lines: Vec<BlockLine> = if effects_first {
+            Vec::new()
+        } else {
+            vec![self.header_line(&theme, false).into()]
+        };
 
-        if !self.code.is_empty() {
+        if !effects_first && !self.code.is_empty() {
             lines.push(Line::from("").into());
             for line in word_wrap_lines(self.highlighted_code(&theme), width) {
                 lines.push(BlockLine::styled(line));
@@ -131,7 +149,9 @@ impl EvalToolCallBlock {
 
         if include_output {
             if let Some(output) = &self.output {
-                lines.push(Line::from("").into());
+                if !lines.is_empty() {
+                    lines.push(Line::from("").into());
+                }
                 let output_lines: Vec<Line<'static>> = output
                     .lines()
                     .map(|line| Line::from(Span::styled(line.to_string(), theme.muted())))
@@ -141,7 +161,9 @@ impl EvalToolCallBlock {
                 }
             }
             if let Some(error) = &self.error {
-                lines.push(Line::from("").into());
+                if !lines.is_empty() {
+                    lines.push(Line::from("").into());
+                }
                 for line in error.lines() {
                     lines.push(BlockLine::styled(Line::from(Span::styled(
                         line.to_string(),
@@ -426,10 +448,44 @@ mod tests {
             "JavaScript code should contain multiple syntax spans, got {code_spans}"
         );
     }
+
+    #[test]
+    fn v2_effects_first_hides_source_but_keeps_output() {
+        crate::appearance::cache::set_pi_eval_v2_effects_first(true);
+        let block = EvalToolCallBlock::new("js", "await tool.read({ path: 'secret' })")
+            .with_bridge_version("v2")
+            .with_output("done");
+        let output = block.output(&ctx());
+        let text = output
+            .lines
+            .iter()
+            .map(|line| line.content.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!text.contains("tool.read"));
+        assert!(text.contains("done"));
+    }
+
+    #[test]
+    fn v1_keeps_source_even_when_v2_effects_first_is_enabled() {
+        crate::appearance::cache::set_pi_eval_v2_effects_first(true);
+        let block = EvalToolCallBlock::new("js", "1 + 1").with_bridge_version("v1");
+        let output = block.output(&ctx());
+        let text = output
+            .lines
+            .iter()
+            .map(|line| line.content.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("1 + 1"));
+    }
 }
 
 impl BlockContent for EvalToolCallBlock {
     fn output(&self, ctx: &BlockContext) -> BlockOutput {
+        if self.effects_first() {
+            return self.render_body(ctx, true);
+        }
         let theme = Theme::current();
         match ctx.mode {
             DisplayMode::Collapsed => BlockOutput {
@@ -480,7 +536,8 @@ impl BlockContent for EvalToolCallBlock {
     }
 
     fn is_foldable(&self) -> bool {
-        !self.code.is_empty() || self.output.is_some() || self.error.is_some()
+        !self.effects_first()
+            && (!self.code.is_empty() || self.output.is_some() || self.error.is_some())
     }
 
     fn default_display_mode(&self) -> DisplayMode {
@@ -495,6 +552,10 @@ impl BlockContent for EvalToolCallBlock {
     }
 
     fn preamble(&self, _ctx: &BlockContext) -> Option<Text<'static>> {
-        Some(Text::from(vec![self.header_line(&Theme::current(), false)]))
+        if self.effects_first() {
+            None
+        } else {
+            Some(Text::from(vec![self.header_line(&Theme::current(), false)]))
+        }
     }
 }
