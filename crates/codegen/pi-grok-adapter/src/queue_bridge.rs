@@ -1,7 +1,7 @@
 //! Adapter-owned queue isolation for the native Grok queue surface.
 //!
-//! User and extension follow-ups stay here until the adapter dispatches them to
-//! Pi. That makes remove/edit/reorder/clear/interject real operations instead of
+//! User and extension follow-ups and mid-turn steer rows stay here until the
+//! adapter dispatches them to Pi. That makes remove/edit/reorder/clear/interject real operations instead of
 //! optimistic UI mutations against Pi's text-only RPC arrays. Pi `queue_update`
 //! is still mirrored as an external lane for messages that bypass the adapter.
 
@@ -46,6 +46,10 @@ pub(crate) struct QueueMirror {
     local_entries: Vec<QueueEntry>,
     pi_entries: Vec<QueueEntry>,
     reserved: Vec<ReservedPrompt>,
+    /// Pi-origin follow-ups that vanished from Pi's queue arrays while the
+    /// running slot was owned by another prompt. Promoted by
+    /// [`QueueMirror::promote_parked_running`] at the next free `agent_start`.
+    parked: Vec<QueueEntry>,
     next_seq: u64,
     running: Option<QueueEntry>,
 }
@@ -102,10 +106,6 @@ impl QueueMirror {
         id
     }
 
-    pub(crate) fn local_entry(&self, id: &str) -> Option<&QueueEntry> {
-        self.local_entries.iter().find(|entry| entry.id == id)
-    }
-
     pub(crate) fn take_local(
         &mut self,
         id: &str,
@@ -119,6 +119,15 @@ impl QueueMirror {
 
     pub(crate) fn pop_next_local(&mut self) -> Option<QueueEntry> {
         (!self.local_entries.is_empty()).then(|| self.local_entries.remove(0))
+    }
+
+    /// Oldest pending local row in `lane`, as `(id, version)` for an atomic
+    /// [`QueueMirror::take_local`].
+    pub(crate) fn next_local_in_lane(&self, lane: QueueLane) -> Option<(String, u64)> {
+        self.local_entries
+            .iter()
+            .find(|entry| entry.lane == lane)
+            .map(|entry| (entry.id.clone(), entry.version))
     }
 
     pub(crate) fn push_front_local(&mut self, entry: QueueEntry) {
@@ -288,13 +297,53 @@ impl QueueMirror {
         self.reserved
             .retain(|item| !next.iter().any(|entry| entry.id == item.id));
 
-        if let Some(entry) = previous.iter().enumerate().find_map(|(index, entry)| {
-            (!used_prev[index] && entry.lane == QueueLane::FollowUp).then(|| entry.clone())
-        }) {
-            self.running = Some(entry);
+        // A follow-up that vanished from Pi's arrays started executing inside
+        // Pi. Promote it to running ONLY when the slot is free: stealing the
+        // slot from a live entry (e.g. the client `/goal` command prompt that
+        // queued this follow-up via sendUserMessage) loses that entry's
+        // identity — its settle then emits prompt_complete for a pid nobody
+        // adopted, and the real turn's settle finds an empty slot, so no
+        // terminal signal ever reaches the pager and it strands on
+        // "Waiting for response…". Park displaced leftovers instead;
+        // agent_start claims them once the slot frees.
+        let dequeued_follow_ups: Vec<QueueEntry> = previous
+            .iter()
+            .enumerate()
+            .filter(|(index, entry)| !used_prev[*index] && entry.lane == QueueLane::FollowUp)
+            .map(|(_, entry)| entry.clone())
+            .collect();
+        match (self.running.as_ref(), dequeued_follow_ups.split_first()) {
+            (None, Some((first, rest))) => {
+                self.running = Some(first.clone());
+                self.parked.extend(rest.iter().cloned());
+            }
+            (_, _) => self.parked.extend(dequeued_follow_ups),
         }
         self.pi_entries = next;
         self.snapshot()
+    }
+
+    /// Claim a parked Pi-origin follow-up as running at a turn boundary.
+    /// Called on `agent_start` when no tracked prompt owns the slot, so a turn
+    /// Pi chained from its own queue still broadcasts a running id and receives
+    /// a matching `prompt_complete` at settle.
+    pub(crate) fn promote_parked_running(&mut self) -> bool {
+        if self.running.is_some() {
+            return false;
+        }
+        while let Some(entry) = self.parked.pop() {
+            let requeued = self
+                .pi_entries
+                .iter()
+                .chain(self.local_entries.iter())
+                .any(|current| current.id == entry.id);
+            if requeued {
+                continue;
+            }
+            self.running = Some(entry);
+            return true;
+        }
+        false
     }
 
     pub(crate) fn snapshot(&self) -> QueueSnapshot {
@@ -319,7 +368,10 @@ impl QueueMirror {
             .chain(self.local_entries.iter())
             .filter(|entry| entry.lane == QueueLane::Steering)
             .count();
-        let total = self.pi_entries.len() + self.local_entries.len();
+        // Parked entries are not listed as queue rows, but Pi will still run
+        // them — count them so continuation guards (e.g. maybe_continue_goal)
+        // do not stack a duplicate directive on top of a pending reminder.
+        let total = self.pi_entries.len() + self.local_entries.len() + self.parked.len();
         QueueSnapshot {
             entries,
             running_prompt_id: self.running.as_ref().map(|entry| entry.id.clone()),
@@ -336,6 +388,7 @@ impl QueueMirror {
         self.local_entries.clear();
         self.pi_entries.clear();
         self.reserved.clear();
+        self.parked.clear();
         self.running = None;
         self.snapshot()
     }
@@ -391,7 +444,10 @@ mod tests {
         enqueue(&mut mirror, "b", "two");
         enqueue(&mut mirror, "c", "three");
         assert!(mirror.edit_local("b", "two edited".into()));
-        assert_eq!(mirror.local_entry("b").unwrap().version, 1);
+        assert_eq!(
+            mirror.local_entries.iter().find(|e| e.id == "b").unwrap().version,
+            1
+        );
         assert!(mirror.reorder_local(&["c".into(), "b".into(), "a".into()]));
         assert_eq!(mirror.snapshot().entries[0]["id"], "c");
         let removed = mirror.take_local("b", Some(1)).unwrap();
@@ -440,6 +496,38 @@ mod tests {
     }
 
     #[test]
+    fn held_steering_rows_are_cancellable_and_lane_scoped() {
+        let mut mirror = QueueMirror::default();
+        mirror.enqueue_local(
+            Some("s1".into()),
+            "steer one".into(),
+            "steer one".into(),
+            Vec::new(),
+            QueueLane::Steering,
+            QueueOrigin::Client,
+        );
+        mirror.enqueue_local(
+            Some("f1".into()),
+            "follow".into(),
+            "follow".into(),
+            Vec::new(),
+            QueueLane::FollowUp,
+            QueueOrigin::Client,
+        );
+        // Flush picks the oldest steering row, ignoring the follow-up lane.
+        assert_eq!(
+            mirror.next_local_in_lane(QueueLane::Steering),
+            Some(("s1".into(), 0))
+        );
+        // Cancel = atomic take; version mismatch must reject.
+        assert!(mirror.take_local("s1", Some(1)).is_none());
+        let cancelled = mirror.take_local("s1", Some(0)).unwrap();
+        assert_eq!(cancelled.lane, QueueLane::Steering);
+        assert_eq!(mirror.next_local_in_lane(QueueLane::Steering), None);
+        assert_eq!(mirror.next_local_in_lane(QueueLane::FollowUp).unwrap().0, "f1");
+    }
+
+    #[test]
     fn external_follow_up_dequeue_becomes_running() {
         let mut mirror = QueueMirror::default();
         mirror.apply_queue_update(&[], &["one".into(), "two".into()]);
@@ -466,6 +554,61 @@ mod tests {
         mirror.apply_queue_update(&["change".into()], &[]);
         mirror.apply_queue_update(&[], &[]);
         assert_eq!(mirror.running().unwrap().id, "primary");
+    }
+
+    /// Regression: a Pi-queued follow-up that starts executing while a client
+    /// prompt owns the running slot (the `/goal` flow — the command prompt is
+    /// still settling when Pi chains the queued GOAL reminder) must NOT steal
+    /// the slot. Stealing lost the client entry's identity, so the command
+    /// settle emitted prompt_complete for the pi-queue id prematurely and the
+    /// real turn's settle found an empty slot — no terminal signal ever reached
+    /// the pager, which stayed on "Waiting for response…" forever.
+    #[test]
+    fn follow_up_dequeue_never_steals_a_live_running_slot() {
+        let mut mirror = QueueMirror::default();
+        mirror.set_running_primary(
+            "client-1".into(),
+            "/goal ship it".into(),
+            "/goal ship it".into(),
+            Vec::new(),
+            QueueOrigin::Client,
+        );
+        mirror.apply_queue_update(&[], &["GOAL reminder".into()]);
+        mirror.apply_queue_update(&[], &[]);
+
+        assert_eq!(mirror.running().unwrap().id, "client-1");
+        assert_eq!(mirror.running().unwrap().origin, QueueOrigin::Client);
+        // Slot occupied: parked entries stay parked…
+        assert!(!mirror.promote_parked_running());
+        assert_eq!(mirror.running().unwrap().id, "client-1");
+        // …but still count as pending work for continuation guards.
+        assert_eq!(mirror.snapshot().follow_up_count, 1);
+        assert!(mirror.snapshot().entries.is_empty());
+    }
+
+    #[test]
+    fn parked_follow_up_promotes_once_the_running_slot_frees() {
+        let mut mirror = QueueMirror::default();
+        mirror.set_running_primary(
+            "client-1".into(),
+            "cmd".into(),
+            "cmd".into(),
+            Vec::new(),
+            QueueOrigin::Client,
+        );
+        mirror.apply_queue_update(&[], &["reminder".into()]);
+        mirror.apply_queue_update(&[], &[]);
+        mirror.clear_running();
+
+        assert!(mirror.promote_parked_running());
+        let snapshot = mirror.snapshot();
+        assert_eq!(snapshot.running_prompt_id.as_deref(), Some("pi-queue-1"));
+        assert_eq!(mirror.running().unwrap().origin, QueueOrigin::Pi);
+        // Claimed entry keeps its 1:1 pairing: one clear_running → one
+        // prompt_complete at settle.
+        let claimed = mirror.clear_running().unwrap();
+        assert_eq!(claimed.id, "pi-queue-1");
+        assert!(!mirror.promote_parked_running());
     }
 
     #[test]

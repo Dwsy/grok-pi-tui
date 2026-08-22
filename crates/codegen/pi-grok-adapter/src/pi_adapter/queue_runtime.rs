@@ -207,7 +207,7 @@ impl PiAgent {
         } else {
             QueueLane::FollowUp
         };
-        let (id, version, should_interject) = {
+        {
             let mut state = self.state.borrow_mut();
             // Cancel is a hard barrier for extension continuations. In
             // particular, loop.ts may call sendUserMessage() from its terminal
@@ -217,29 +217,19 @@ impl PiAgent {
                 tracing::debug!("dropping extension queue message during cancellation");
                 return;
             }
-            let id = state.queue_mirror.enqueue_local(
+            state.queue_mirror.enqueue_local(
                 None,
                 text.clone(),
                 text,
                 images,
                 lane,
                 QueueOrigin::Extension,
-            );
-            let version = state
-                .queue_mirror
-                .local_entry(&id)
-                .map(|entry| entry.version)
-                .unwrap_or(0);
-            let should_interject =
-                lane == QueueLane::Steering && state.agent_running && !state.cancelling;
-            (id, version, should_interject)
+            )
         };
         self.publish_queue_snapshot().await;
-        if should_interject {
-            self.interject_local_queue(&id, Some(version), None).await;
-        } else {
-            self.dispatch_next_queued().await;
-        }
+        // Steering rows are not interjected here: they wait for the assistant
+        // message_end safe-point flush so they stay cancellable until then.
+        self.dispatch_next_queued().await;
     }
 
     pub(super) async fn interject_local_queue(
@@ -317,5 +307,33 @@ impl PiAgent {
             return false;
         }
         true
+    }
+
+    /// Safe-point delivery for locally held steering rows.
+    ///
+    /// Pi injects a steer between the current tool calls finishing and the
+    /// next LLM call. The earliest adapter-visible point with identical
+    /// observable behavior is an assistant `message_end`: forwarding there
+    /// still lands the row in Pi's steering lane for the same turn, while
+    /// every earlier moment stays cancellable via `x.ai/queue/remove`.
+    /// Rows still held when the run settles fall through to
+    /// [`Self::dispatch_next_queued`] and become the next turn's prompt.
+    pub(super) async fn flush_pending_steering(&self) {
+        loop {
+            let next = {
+                let state = self.state.borrow();
+                if state.cancelling || !state.agent_running {
+                    None
+                } else {
+                    state.queue_mirror.next_local_in_lane(QueueLane::Steering)
+                }
+            };
+            let Some((id, version)) = next else {
+                return;
+            };
+            if !self.interject_local_queue(&id, Some(version), None).await {
+                return;
+            }
+        }
     }
 }

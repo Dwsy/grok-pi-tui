@@ -229,13 +229,22 @@ impl acp::Agent for PiAgent {
             let mut state = self.state.borrow_mut();
             let streaming_behavior =
                 prompt_streaming_behavior(Self::adapter_busy(&state), arguments.meta.as_ref());
-            if streaming_behavior == Some("followUp") {
+            // Steer requests are held locally too (lane is the only
+            // difference): the row stays editable/cancellable until the
+            // assistant message_end safe-point flush forwards it to Pi.
+            if let Some(lane) = streaming_behavior.map(|behavior| {
+                if behavior == "steer" {
+                    QueueLane::Steering
+                } else {
+                    QueueLane::FollowUp
+                }
+            }) {
                 let id = state.queue_mirror.enqueue_local(
                     client_prompt_id.clone(),
                     message,
                     display_message,
                     images.clone(),
-                    QueueLane::FollowUp,
+                    lane,
                     QueueOrigin::Client,
                 );
                 state

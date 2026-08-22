@@ -51,22 +51,41 @@ impl PiAgent {
         match event_type {
             "agent_start" => {
                 let now = utc_now_ms();
-                let mut state = self.state.borrow_mut();
-                state.agent_running = true;
-                for active in &mut state.active_prompts {
-                    active.agent_started = true;
-                }
-                if !state.cancelling {
-                    state.turn_start_ms = Some(now);
-                    state.stream_start_ms = Some(now);
-                    if state.live_prompt_id.is_none() {
-                        state.live_prompt_id = state
-                            .active_prompts
-                            .iter()
-                            .rev()
-                            .find_map(|p| p.client_prompt_id.clone())
-                            .or_else(|| state.queue_mirror.running().map(|entry| entry.id.clone()));
+                let claimed_parked = {
+                    let mut state = self.state.borrow_mut();
+                    state.agent_running = true;
+                    for active in &mut state.active_prompts {
+                        active.agent_started = true;
                     }
+                    if !state.cancelling {
+                        state.turn_start_ms = Some(now);
+                        state.stream_start_ms = Some(now);
+                        if state.live_prompt_id.is_none() {
+                            state.live_prompt_id = state
+                                .active_prompts
+                                .iter()
+                                .rev()
+                                .find_map(|p| p.client_prompt_id.clone())
+                                .or_else(|| {
+                                    state.queue_mirror.running().map(|entry| entry.id.clone())
+                                });
+                        }
+                    }
+                    // Server-chained turn (e.g. a Pi-queued goal reminder that
+                    // starts right after the `/goal` command turn): claim the
+                    // free running slot so the turn is broadcast to the pager
+                    // and receives its paired prompt_complete at settle.
+                    if !state.cancelling
+                        && state.active_prompts.is_empty()
+                        && state.queue_mirror.running().is_none()
+                    {
+                        state.queue_mirror.promote_parked_running()
+                    } else {
+                        false
+                    }
+                };
+                if claimed_parked {
+                    self.publish_queue_snapshot().await;
                 }
             }
             "agent_settled" => {
@@ -337,6 +356,7 @@ impl PiAgent {
         {
             self.send_ui_notification(&error, Some("error")).await;
         }
+        self.flush_pending_steering().await;
     }
 
     pub(super) fn finish_prompts(&self, requested_reason: acp::StopReason) {
