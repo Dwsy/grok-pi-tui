@@ -41,6 +41,9 @@ pub fn sections_for(category: SettingCategory) -> &'static [&'static str] {
 
 /// The sidebar section a setting belongs to, within its category's tab.
 pub fn section_for(key: SettingKey) -> &'static str {
+    if let Some(spec) = xai_grok_shell::host_features::feature_spec_by_setting_key(key) {
+        return spec.section;
+    }
     match key {
         // -- Appearance ------------------------------------------------------
         "theme" | "auto_dark_theme" | "auto_light_theme" => "Theme",
@@ -97,19 +100,11 @@ pub fn section_for(key: SettingKey) -> &'static str {
         | "pi_eval_v2_language"
         | "pi_eval_v2_display_mode"
         | "pi_eval_v2_only"
-        | "pi_herdr"
-        | "pi_subagents"
-        | "pi_workflows"
-        | "pi_todo"
-        | "pi_goal"
-        | "pi_loop"
-        | "pi_btw"
         | "pi_cache_graph"
         | "pi_config_skill"
         | "pi_config"
         | "pi_user_markdown"
         | "pi_keep_multi_agent"
-        | "pi_ask_user_question"
         | "pi_ask_user_question_notifications"
         | "toolset.ask_user_question.timeout_enabled" => "Pi features",
         "psm_resume_index"

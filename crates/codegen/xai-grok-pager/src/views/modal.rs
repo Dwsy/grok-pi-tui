@@ -758,17 +758,75 @@ pub(crate) fn default_palette_entries(
     });
     entries
 }
-#[allow(clippy::collapsible_if)]
-/// Filter palette entries for search, preserving section headers when any item in the section matches.
-pub(crate) fn filter_palette_entries(
-    query: &str,
+/// Build the command palette for a live session. Pi-owned ACP commands are
+/// projected into the palette from the same catalog used by slash completion.
+/// Commands without `piCommandSource` are deliberately ignored so stock Grok's
+/// ACP command catalog does not change the native Pager palette.
+pub(crate) fn palette_entries_with_acp_commands(
     sharing_enabled: bool,
     slash: &crate::slash::SlashController,
+    available_commands: &[agent_client_protocol::AvailableCommand],
 ) -> Vec<PaletteEntry> {
-    let all = default_palette_entries(sharing_enabled, slash);
+    let mut entries = default_palette_entries(sharing_enabled, slash);
+    let mut seen = std::collections::HashSet::new();
+    for entry in &entries {
+        let text = match &entry.command {
+            PaletteCommand::SlashCommand(text) => Some(text.as_str()),
+            _ if entry.shortcut.trim_start().starts_with('/') => Some(entry.shortcut.as_str()),
+            _ => None,
+        };
+        if let Some(invocation) = text.and_then(|text| crate::slash::parse_invocation(text.trim()))
+        {
+            seen.insert(invocation.token.to_ascii_lowercase());
+        }
+    }
+
+    let mut dynamic = Vec::new();
+    for command in available_commands {
+        let source = command
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("piCommandSource"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|source| !source.is_empty());
+        if source.is_none() {
+            continue;
+        }
+        let name = command.name.trim().trim_start_matches('/');
+        if name.is_empty() || !seen.insert(name.to_ascii_lowercase()) {
+            continue;
+        }
+        let slash_text = format!("/{name}");
+        let label = if command.description.trim().is_empty() {
+            slash_text.clone()
+        } else {
+            command.description.trim().to_string()
+        };
+        dynamic.push(PaletteEntry {
+            label,
+            shortcut: slash_text.clone(),
+            command: PaletteCommand::SlashCommand(slash_text),
+        });
+    }
+
+    if !dynamic.is_empty() {
+        entries.push(PaletteEntry {
+            label: "Pi / Extensions".into(),
+            shortcut: String::new(),
+            command: PaletteCommand::SectionHeader("Pi / Extensions".into()),
+        });
+        entries.extend(dynamic);
+    }
+    entries
+}
+
+#[allow(clippy::collapsible_if)]
+/// Filter palette entries for search, preserving section headers when any item in the section matches.
+pub(crate) fn filter_palette_entries(all: &[PaletteEntry], query: &str) -> Vec<PaletteEntry> {
     let query_lower = query.to_lowercase();
     if query_lower.is_empty() {
-        return all;
+        return all.to_vec();
     }
     let mut result = Vec::new();
     let mut pending_header: Option<PaletteEntry> = None;
@@ -780,7 +838,7 @@ pub(crate) fn filter_palette_entries(
                     result.push(h);
                 }
             }
-            pending_header = Some(entry);
+            pending_header = Some(entry.clone());
             section_has_match = false;
         } else {
             let matches = entry.label.to_lowercase().contains(&query_lower)
@@ -790,7 +848,7 @@ pub(crate) fn filter_palette_entries(
                     result.push(h);
                     section_has_match = true;
                 }
-                result.push(entry);
+                result.push(entry.clone());
             }
         }
     }
@@ -1782,13 +1840,14 @@ mod palette_sharing_tests {
     }
     #[test]
     fn filter_palette_omits_share_when_disabled() {
-        let entries = filter_palette_entries("", false, &slash(crate::app::ScreenMode::Fullscreen));
+        let base = default_palette_entries(false, &slash(crate::app::ScreenMode::Fullscreen));
+        let entries = filter_palette_entries(&base, "");
         assert!(
             !has_share(&entries),
             "/share must not appear in unfiltered palette when sharing_enabled=false"
         );
-        let entries =
-            filter_palette_entries("share", false, &slash(crate::app::ScreenMode::Fullscreen));
+        let base = default_palette_entries(false, &slash(crate::app::ScreenMode::Fullscreen));
+        let entries = filter_palette_entries(&base, "share");
         assert!(
             !has_share(&entries),
             "/share must not appear when filtering for 'share' with sharing_enabled=false"
@@ -1796,13 +1855,80 @@ mod palette_sharing_tests {
     }
     #[test]
     fn filter_palette_includes_share_when_enabled_and_matched() {
-        let entries =
-            filter_palette_entries("share", true, &slash(crate::app::ScreenMode::Fullscreen));
+        let base = default_palette_entries(true, &slash(crate::app::ScreenMode::Fullscreen));
+        let entries = filter_palette_entries(&base, "share");
         assert!(
             has_share(&entries),
             "/share should match a 'share' query when sharing_enabled=true"
         );
     }
+    #[test]
+    fn pi_acp_commands_extend_palette_without_changing_stock_acp_rows() {
+        let controller = slash(crate::app::ScreenMode::Fullscreen);
+        let pi_meta = || {
+            serde_json::json!({ "piCommandSource": "extension" })
+                .as_object()
+                .cloned()
+        };
+        let commands = vec![
+            agent_client_protocol::AvailableCommand::new(
+                "review".to_string(),
+                "Review changes".to_string(),
+            )
+            .meta(pi_meta()),
+            agent_client_protocol::AvailableCommand::new(
+                "REVIEW".to_string(),
+                "Duplicate review".to_string(),
+            )
+            .meta(pi_meta()),
+            agent_client_protocol::AvailableCommand::new(
+                "theme".to_string(),
+                "Duplicate native command".to_string(),
+            )
+            .meta(pi_meta()),
+            agent_client_protocol::AvailableCommand::new(
+                "stock-only".to_string(),
+                "Foreign ACP command".to_string(),
+            ),
+        ];
+        let entries = palette_entries_with_acp_commands(true, &controller, &commands);
+
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(
+                    &entry.command,
+                    PaletteCommand::SlashCommand(text) if text.eq_ignore_ascii_case("/review")
+                ))
+                .count(),
+            1,
+            "Pi commands should be deduplicated case-insensitively",
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(
+                    &entry.command,
+                    PaletteCommand::SlashCommand(text) if text.trim() == "/theme"
+                ))
+                .count(),
+            1,
+            "dynamic commands should not duplicate native palette rows",
+        );
+        assert!(entries.iter().any(|entry| matches!(
+            &entry.command,
+            PaletteCommand::SectionHeader(section) if section == "Pi / Extensions"
+        )));
+        assert!(!entries.iter().any(|entry| entry.shortcut == "/stock-only"));
+
+        let filtered = filter_palette_entries(&entries, "review");
+        assert!(filtered.iter().any(|entry| entry.shortcut == "/review"));
+        assert!(filtered.iter().any(|entry| matches!(
+            &entry.command,
+            PaletteCommand::SectionHeader(section) if section == "Pi / Extensions"
+        )));
+    }
+
     #[test]
     fn palette_tools_section_routes_each_tab_to_itself() {
         use crate::views::extensions_modal::ExtensionsTab;

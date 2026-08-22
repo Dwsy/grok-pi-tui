@@ -1113,15 +1113,10 @@ impl AgentView {
         };
 
         match modal {
-            ActiveModal::CommandPalette {
-                entries: _, state, ..
-            } => {
-                // Build filtered entries for count and non-selectable indices.
-                let filtered = crate::views::modal::filter_palette_entries(
-                    state.query(),
-                    self.sharing_enabled,
-                    &self.prompt.slash_controller,
-                );
+            ActiveModal::CommandPalette { entries, state, .. } => {
+                // Filter the modal's full entry catalog. This includes live Pi
+                // commands captured when the palette opened.
+                let filtered = crate::views::modal::filter_palette_entries(entries, state.query());
                 let non_sel: Vec<bool> = filtered
                     .iter()
                     .map(|e| matches!(e.command, PaletteCommand::SectionHeader(_)))
@@ -1340,17 +1335,16 @@ impl AgentView {
                         InputOutcome::Changed
                     }
                     PickerOutcome::QueryChanged => {
-                        // Re-filter entries based on updated query.
-                        let sharing_enabled = self.sharing_enabled;
+                        // Keep `entries` as the complete catalog; only clamp the
+                        // selection against the filtered view. Mutating entries
+                        // here would permanently discard live Pi commands.
                         if let Some(ActiveModal::CommandPalette { entries, state, .. }) =
                             self.active_modal.as_mut()
                         {
-                            *entries = crate::views::modal::filter_palette_entries(
-                                state.query(),
-                                sharing_enabled,
-                                &self.prompt.slash_controller,
-                            );
-                            state.selected = state.selected.min(entries.len().saturating_sub(1));
+                            let filtered_len =
+                                crate::views::modal::filter_palette_entries(entries, state.query())
+                                    .len();
+                            state.selected = state.selected.min(filtered_len.saturating_sub(1));
                         }
                         InputOutcome::Changed
                     }
@@ -2801,17 +2795,13 @@ impl AgentView {
             // dirty pane-switch lock blocks instead) — arming it would capture
             // all input invisibly.
             if let modal::ActiveModal::CommandPalette {
-                entries: _,
+                entries,
                 state,
                 window,
             } = active_modal
             {
                 // Command palette: ModalWindow chrome + picker content.
-                let filtered = modal::filter_palette_entries(
-                    state.query(),
-                    self.sharing_enabled,
-                    &self.prompt.slash_controller,
-                );
+                let filtered = modal::filter_palette_entries(entries, state.query());
                 let non_sel: Vec<bool> = filtered
                     .iter()
                     .map(|e| matches!(e.command, modal::PaletteCommand::SectionHeader(_)))

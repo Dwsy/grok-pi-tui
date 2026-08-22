@@ -862,7 +862,10 @@ mod tests {
             tracker,
             store,
             notify,
-            subagent_tx,
+            Arc::new(crate::session::workflow::backend::GrokSubagentBackend {
+                subagent_event_tx: subagent_tx,
+                parent_session_id: "test-session".into(),
+            }),
             Arc::new(|_, _, _| {}),
             mpsc::unbounded_channel().0,
             HashMap::new(),

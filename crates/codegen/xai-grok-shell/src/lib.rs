@@ -24,6 +24,7 @@ pub use xai_grok_shell_base::env;
 pub mod extensions;
 pub use xai_grok_foreign_sessions as foreign_sessions;
 pub mod heap_profile;
+pub mod host_features;
 pub use xai_grok_http as http;
 pub mod inspect;
 pub mod instrumentation;

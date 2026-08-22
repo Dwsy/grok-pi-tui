@@ -10,6 +10,12 @@ use crate::settings::{PagerLocalSnapshot, SettingKey, StringValidator};
 
 /// Construct the typed `Action::Set*` for a Bool setting.
 pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
+    if let Some(spec) = xai_grok_shell::host_features::feature_spec_by_setting_key(key) {
+        return Some(Action::SetHostFeatureBool {
+            key: spec.key,
+            enabled: new,
+        });
+    }
     use crate::app::actions::PiBuiltinTool;
     let action = match key {
         "compact_mode" => Action::SetCompactMode(new),
@@ -52,15 +58,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "psm_resume_index" => Action::SetPsmResumeIndex(new),
         "pi_tree_file_rollback" => Action::SetPiTreeFileRollback(new),
         "pi_tree_skip_summary_prompt" => Action::SetPiTreeSkipSummaryPrompt(new),
-        "pi_herdr" => Action::SetPiHerdr(new),
-        "pi_subagents" => Action::SetPiSubagents(new),
-        "pi_workflows" => Action::SetPiWorkflows(new),
-        "pi_todo" => Action::SetPiTodo(new),
-        "pi_goal" => Action::SetPiGoal(new),
-        "pi_loop" => Action::SetPiLoop(new),
-        "pi_ask_user_question" => Action::SetPiAskUserQuestion(new),
         "pi_ask_user_question_notifications" => Action::SetPiAskUserQuestionNotifications(new),
-        "pi_btw" => Action::SetPiBtw(new),
         "pi_cache_graph" => Action::SetPiCacheGraph(new),
         "pi_config_skill" => Action::SetPiConfigSkill(new),
         "pi_user_markdown" => Action::SetPiUserMarkdown(new),

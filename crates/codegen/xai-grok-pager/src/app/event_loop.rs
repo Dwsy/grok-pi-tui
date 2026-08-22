@@ -939,6 +939,11 @@ pub(crate) async fn run(
         connection.available_commands,
     );
     app.external_agent = external_agent;
+    if let crate::acp::UiProfile::External(profile) = &ui_profile {
+        app.settings_registry = std::sync::Arc::new(
+            crate::settings::SettingsRegistry::defaults_with_host_features(&profile.host_features),
+        );
+    }
     crate::app::set_external_agent_active(external_agent);
     app.pending_startup = Some(pending_startup);
     app.tracing_rx = Some(tracing_handle.rx);

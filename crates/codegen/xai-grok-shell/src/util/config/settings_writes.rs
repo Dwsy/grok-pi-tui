@@ -271,49 +271,19 @@ pub async fn set_pi_tree_file_rollback(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_tree_file_rollback = value).await
 }
 
-/// Persist `[ui].pi_herdr` via `update_config`.
-pub async fn set_pi_herdr(value: bool) -> Result<()> {
-    update_config(|cfg| cfg.ui.pi_herdr = value).await
-}
-
-/// Persist `[ui].pi_subagents` via `update_config`.
-pub async fn set_pi_subagents(value: bool) -> Result<()> {
-    update_config(|cfg| cfg.ui.pi_subagents = value).await
-}
-
-/// Persist `[ui].pi_workflows` via `update_config`.
-pub async fn set_pi_workflows(value: bool) -> Result<()> {
-    update_config(|cfg| cfg.ui.pi_workflows = value).await
-}
-
-/// Persist `[ui].pi_todo` via `update_config`.
-pub async fn set_pi_todo(value: bool) -> Result<()> {
-    update_config(|cfg| cfg.ui.pi_todo = value).await
-}
-
-/// Persist `[ui].pi_goal` via `update_config`.
-pub async fn set_pi_goal(value: bool) -> Result<()> {
-    update_config(|cfg| cfg.ui.pi_goal = value).await
-}
-
-/// Persist `[ui].pi_loop` via `update_config`.
-pub async fn set_pi_loop(value: bool) -> Result<()> {
-    update_config(|cfg| cfg.ui.pi_loop = value).await
-}
-
-/// Persist `[ui].pi_ask_user_question` via `update_config`.
-pub async fn set_pi_ask_user_question(value: bool) -> Result<()> {
-    update_config(|cfg| cfg.ui.pi_ask_user_question = value).await
+/// Persist a registered host-feature bool through its typed UiConfig binding.
+pub async fn set_host_feature_bool(
+    key: crate::host_features::HostFeatureKey,
+    value: bool,
+) -> Result<()> {
+    let spec = crate::host_features::feature_spec(key)
+        .ok_or_else(|| anyhow::anyhow!("unknown host feature: {}", key.as_str()))?;
+    update_config(move |cfg| spec.set_bool(&mut cfg.ui, value)).await
 }
 
 /// Persist `[ui].pi_ask_user_question_notifications` via `update_config`.
 pub async fn set_pi_ask_user_question_notifications(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_ask_user_question_notifications = value).await
-}
-
-/// Persist `[ui].pi_btw` via `update_config`.
-pub async fn set_pi_btw(value: bool) -> Result<()> {
-    update_config(|cfg| cfg.ui.pi_btw = value).await
 }
 
 /// Persist `[ui].pi_keep_multi_agent` via `update_config`.

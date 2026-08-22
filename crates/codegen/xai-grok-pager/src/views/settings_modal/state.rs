@@ -1134,6 +1134,12 @@ fn build_tabs(rows: &[RowEntry]) -> Vec<SettingCategory> {
 
 /// Construct the typed `Action::Set*` for a Bool setting.
 pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
+    if let Some(spec) = xai_grok_shell::host_features::feature_spec_by_setting_key(key) {
+        return Some(Action::SetHostFeatureBool {
+            key: spec.key,
+            enabled: new,
+        });
+    }
     match key {
         "compact_mode" => Some(Action::SetCompactMode(new)),
         "show_timestamps" => Some(Action::SetTimestamps(new)),
@@ -1175,17 +1181,9 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "psm_resume_index" => Some(Action::SetPsmResumeIndex(new)),
         "pi_tree_file_rollback" => Some(Action::SetPiTreeFileRollback(new)),
         "pi_tree_skip_summary_prompt" => Some(Action::SetPiTreeSkipSummaryPrompt(new)),
-        "pi_herdr" => Some(Action::SetPiHerdr(new)),
-        "pi_subagents" => Some(Action::SetPiSubagents(new)),
-        "pi_workflows" => Some(Action::SetPiWorkflows(new)),
-        "pi_todo" => Some(Action::SetPiTodo(new)),
-        "pi_goal" => Some(Action::SetPiGoal(new)),
-        "pi_loop" => Some(Action::SetPiLoop(new)),
-        "pi_ask_user_question" => Some(Action::SetPiAskUserQuestion(new)),
         "pi_ask_user_question_notifications" => {
             Some(Action::SetPiAskUserQuestionNotifications(new))
         }
-        "pi_btw" => Some(Action::SetPiBtw(new)),
         "pi_cache_graph" => Some(Action::SetPiCacheGraph(new)),
         "pi_config_skill" => Some(Action::SetPiConfigSkill(new)),
         "pi_user_markdown" => Some(Action::SetPiUserMarkdown(new)),

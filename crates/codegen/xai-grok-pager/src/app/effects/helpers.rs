@@ -1073,6 +1073,14 @@ pub(crate) async fn persist_setting(
     value: crate::settings::SettingValue,
 ) -> Result<(), String> {
     use crate::settings::SettingValue;
+    if let Some(spec) = xai_grok_shell::host_features::feature_spec_by_setting_key(key) {
+        let SettingValue::Bool(enabled) = value else {
+            return Err(kind_mismatch(key, "Bool", &value));
+        };
+        return xai_grok_shell::util::config::set_host_feature_bool(spec.key, enabled)
+            .await
+            .map_err(|e| e.to_string());
+    }
     fn kind_mismatch(key: &str, expected: &str, got: &SettingValue) -> String {
         format!("persist_setting({key}) expected {expected}, got {got:?}")
     }
@@ -1616,62 +1624,6 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
-        "pi_herdr" => {
-            let SettingValue::Bool(b) = value else {
-                return Err(kind_mismatch("pi_herdr", "Bool", &value));
-            };
-            xai_grok_shell::util::config::set_pi_herdr(b)
-                .await
-                .map_err(|e| e.to_string())
-        }
-        "pi_subagents" => {
-            let SettingValue::Bool(b) = value else {
-                return Err(kind_mismatch("pi_subagents", "Bool", &value));
-            };
-            xai_grok_shell::util::config::set_pi_subagents(b)
-                .await
-                .map_err(|e| e.to_string())
-        }
-        "pi_workflows" => {
-            let SettingValue::Bool(b) = value else {
-                return Err(kind_mismatch("pi_workflows", "Bool", &value));
-            };
-            xai_grok_shell::util::config::set_pi_workflows(b)
-                .await
-                .map_err(|e| e.to_string())
-        }
-        "pi_todo" => {
-            let SettingValue::Bool(b) = value else {
-                return Err(kind_mismatch("pi_todo", "Bool", &value));
-            };
-            xai_grok_shell::util::config::set_pi_todo(b)
-                .await
-                .map_err(|e| e.to_string())
-        }
-        "pi_goal" => {
-            let SettingValue::Bool(b) = value else {
-                return Err(kind_mismatch("pi_goal", "Bool", &value));
-            };
-            xai_grok_shell::util::config::set_pi_goal(b)
-                .await
-                .map_err(|e| e.to_string())
-        }
-        "pi_loop" => {
-            let SettingValue::Bool(b) = value else {
-                return Err(kind_mismatch("pi_loop", "Bool", &value));
-            };
-            xai_grok_shell::util::config::set_pi_loop(b)
-                .await
-                .map_err(|e| e.to_string())
-        }
-        "pi_ask_user_question" => {
-            let SettingValue::Bool(b) = value else {
-                return Err(kind_mismatch("pi_ask_user_question", "Bool", &value));
-            };
-            xai_grok_shell::util::config::set_pi_ask_user_question(b)
-                .await
-                .map_err(|e| e.to_string())
-        }
         "pi_ask_user_question_notifications" => {
             let SettingValue::Bool(b) = value else {
                 return Err(kind_mismatch(
@@ -1681,14 +1633,6 @@ pub(crate) async fn persist_setting(
                 ));
             };
             xai_grok_shell::util::config::set_pi_ask_user_question_notifications(b)
-                .await
-                .map_err(|e| e.to_string())
-        }
-        "pi_btw" => {
-            let SettingValue::Bool(b) = value else {
-                return Err(kind_mismatch("pi_btw", "Bool", &value));
-            };
-            xai_grok_shell::util::config::set_pi_btw(b)
                 .await
                 .map_err(|e| e.to_string())
         }

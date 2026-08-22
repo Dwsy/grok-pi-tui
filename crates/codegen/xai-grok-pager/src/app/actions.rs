@@ -778,23 +778,13 @@ pub enum Action {
     SetPiTreeFileRollback(bool),
     /// Skip the "Summarize branch?" prompt when navigating the session tree.
     SetPiTreeSkipSummaryPrompt(bool),
-    /// Enable the built-in Herdr lifecycle bridge for grok-pi (restart required).
-    SetPiHerdr(bool),
-    /// Enable built-in Pi child-session subagents (restart required).
-    SetPiSubagents(bool),
-    /// Enable upstream Rhai workflows for grok-pi (restart required).
-    SetPiWorkflows(bool),
-    /// Enable grok-pi's built-in structured todo tool (restart required).
-    SetPiTodo(bool),
-    /// Enable Grok-style /goal for grok-pi (restart required).
-    SetPiGoal(bool),
-    SetPiLoop(bool),
-    /// Enable native Q&A (`ask_user_question` → QuestionView; restart required).
-    SetPiAskUserQuestion(bool),
+    /// Set a declaratively registered external-host bool feature.
+    SetHostFeatureBool {
+        key: xai_grok_shell::host_features::HostFeatureKey,
+        enabled: bool,
+    },
     /// Notify when a native Q&A question arrives while grok-pi is unfocused.
     SetPiAskUserQuestionNotifications(bool),
-    /// Enable native /btw for grok-pi (restart required).
-    SetPiBtw(bool),
     SetPiCacheGraph(bool),
     /// Load the bundled grok-pi configuration skill (restart required).
     SetPiConfigSkill(bool),

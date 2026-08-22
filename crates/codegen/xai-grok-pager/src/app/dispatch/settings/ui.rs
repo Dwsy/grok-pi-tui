@@ -220,9 +220,10 @@ pub(in crate::app::dispatch) fn dispatch_open_command_palette(app: &mut AppView)
         return vec![];
     }
     agent.active_modal = Some(ActiveModal::CommandPalette {
-        entries: crate::views::modal::default_palette_entries(
+        entries: crate::views::modal::palette_entries_with_acp_commands(
             agent.sharing_enabled,
             &agent.prompt.slash_controller,
+            &agent.session.available_commands,
         ),
         // Type-to-find: open in input mode (matches Ctrl+P).
         state: crate::views::picker::PickerState::input_active(),
@@ -1071,6 +1072,15 @@ pub(in crate::app::dispatch) fn action_for_reset(
     value: &crate::settings::SettingValue,
 ) -> Option<Action> {
     use crate::settings::SettingValue;
+    if let Some(spec) = xai_grok_shell::host_features::feature_spec_by_setting_key(key) {
+        return match value {
+            SettingValue::Bool(enabled) => Some(Action::SetHostFeatureBool {
+                key: spec.key,
+                enabled: *enabled,
+            }),
+            _ => None,
+        };
+    }
     match (key, value) {
         ("compact_mode", SettingValue::Bool(b)) => Some(Action::SetCompactMode(*b)),
         ("show_timestamps", SettingValue::Bool(b)) => Some(Action::SetTimestamps(*b)),
@@ -1121,17 +1131,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("pi_tree_skip_summary_prompt", SettingValue::Bool(b)) => {
             Some(Action::SetPiTreeSkipSummaryPrompt(*b))
         }
-        ("pi_herdr", SettingValue::Bool(b)) => Some(Action::SetPiHerdr(*b)),
-        ("pi_subagents", SettingValue::Bool(b)) => Some(Action::SetPiSubagents(*b)),
-        ("pi_workflows", SettingValue::Bool(b)) => Some(Action::SetPiWorkflows(*b)),
-        ("pi_todo", SettingValue::Bool(b)) => Some(Action::SetPiTodo(*b)),
-        ("pi_goal", SettingValue::Bool(b)) => Some(Action::SetPiGoal(*b)),
-        ("pi_loop", SettingValue::Bool(b)) => Some(Action::SetPiLoop(*b)),
-        ("pi_ask_user_question", SettingValue::Bool(b)) => Some(Action::SetPiAskUserQuestion(*b)),
         ("pi_ask_user_question_notifications", SettingValue::Bool(b)) => {
             Some(Action::SetPiAskUserQuestionNotifications(*b))
         }
-        ("pi_btw", SettingValue::Bool(b)) => Some(Action::SetPiBtw(*b)),
         ("pi_cache_graph", SettingValue::Bool(b)) => Some(Action::SetPiCacheGraph(*b)),
         ("pi_config_skill", SettingValue::Bool(b)) => Some(Action::SetPiConfigSkill(*b)),
         ("pi_user_markdown", SettingValue::Bool(b)) => Some(Action::SetPiUserMarkdown(*b)),
@@ -1370,6 +1372,15 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
 ) -> Vec<Effect> {
     use crate::settings::SettingValue;
     let mut companion_effects: Vec<Effect> = Vec::new();
+    if let Some(spec) = xai_grok_shell::host_features::feature_spec_by_setting_key(key) {
+        if let SettingValue::Bool(enabled) = rollback_value {
+            spec.set_bool(&mut app.current_ui, *enabled);
+            refresh_open_settings_modals(app);
+        } else {
+            tracing::error!(target: "settings", key, "host-feature rollback kind mismatch");
+        }
+        return companion_effects;
+    }
     match (key, rollback_value) {
         ("compact_mode", SettingValue::Bool(b)) => set_compact_mode_inner(app, *b),
         ("show_timestamps", SettingValue::Bool(b)) => set_timestamps_inner(app, *b),
@@ -1393,15 +1404,9 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         ("pi_tree_skip_summary_prompt", SettingValue::Bool(b)) => {
             app.current_ui.pi_tree_skip_summary_prompt = *b
         }
-        ("pi_herdr", SettingValue::Bool(b)) => app.current_ui.pi_herdr = *b,
-        ("pi_workflows", SettingValue::Bool(b)) => app.current_ui.pi_workflows = *b,
-        ("pi_goal", SettingValue::Bool(b)) => app.current_ui.pi_goal = *b,
-        ("pi_loop", SettingValue::Bool(b)) => app.current_ui.pi_loop = *b,
-        ("pi_ask_user_question", SettingValue::Bool(b)) => app.current_ui.pi_ask_user_question = *b,
         ("pi_ask_user_question_notifications", SettingValue::Bool(b)) => {
             app.current_ui.pi_ask_user_question_notifications = *b
         }
-        ("pi_btw", SettingValue::Bool(b)) => app.current_ui.pi_btw = *b,
         ("pi_cache_graph", SettingValue::Bool(b)) => app.current_ui.pi_cache_graph = *b,
         ("pi_config_skill", SettingValue::Bool(b)) => app.current_ui.pi_config_skill = *b,
         ("pi_user_markdown", SettingValue::Bool(b)) => {

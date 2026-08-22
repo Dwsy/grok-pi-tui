@@ -1774,13 +1774,31 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
             let _ = dispatch(Action::SetPiEvalV2Only(true), app);
         }
         "pi_herdr" => {
-            let _ = dispatch(Action::SetPiHerdr(false), app);
+            let _ = dispatch(
+                Action::SetHostFeatureBool {
+                    key: xai_grok_shell::host_features::PI_HERDR,
+                    enabled: false,
+                },
+                app,
+            );
         }
         "pi_subagents" => {
-            let _ = dispatch(Action::SetPiSubagents(false), app);
+            let _ = dispatch(
+                Action::SetHostFeatureBool {
+                    key: xai_grok_shell::host_features::PI_SUBAGENTS,
+                    enabled: false,
+                },
+                app,
+            );
         }
         "pi_todo" => {
-            let _ = dispatch(Action::SetPiTodo(false), app);
+            let _ = dispatch(
+                Action::SetHostFeatureBool {
+                    key: xai_grok_shell::host_features::PI_TODO,
+                    enabled: false,
+                },
+                app,
+            );
         }
         other => {
             panic!(
@@ -1795,7 +1813,13 @@ fn set_pi_todo_persists_restart_required_toggle() {
     let mut app = test_app_with_agent();
     app.current_ui.pi_todo = true;
 
-    let effects = dispatch(Action::SetPiTodo(false), &mut app);
+    let effects = dispatch(
+        Action::SetHostFeatureBool {
+            key: xai_grok_shell::host_features::PI_TODO,
+            enabled: false,
+        },
+        &mut app,
+    );
     assert!(!app.current_ui.pi_todo);
     assert!(matches!(
         effects.as_slice(),
@@ -1815,7 +1839,13 @@ fn set_pi_subagents_persists_restart_required_toggle() {
     let mut app = test_app_with_agent();
     app.current_ui.pi_subagents = true;
 
-    let effects = dispatch(Action::SetPiSubagents(false), &mut app);
+    let effects = dispatch(
+        Action::SetHostFeatureBool {
+            key: xai_grok_shell::host_features::PI_SUBAGENTS,
+            enabled: false,
+        },
+        &mut app,
+    );
     assert!(!app.current_ui.pi_subagents);
     assert!(matches!(
         effects.as_slice(),

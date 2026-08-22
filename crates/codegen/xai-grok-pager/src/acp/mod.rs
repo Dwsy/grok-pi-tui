@@ -127,6 +127,8 @@ pub struct ExternalUiProfile {
     /// Allow Pager-owned voice dictation while retaining the external agent's
     /// ownership of prompts, sessions, and model selection.
     pub enable_voice_dictation: bool,
+    /// Declarative settings/startup features supported by this host.
+    pub host_features: xai_grok_shell::host_features::HostFeatureManifest,
 }
 
 impl Default for ExternalUiProfile {
@@ -139,6 +141,7 @@ impl Default for ExternalUiProfile {
             hide_new_worktree: false,
             changelog_url: None,
             enable_voice_dictation: false,
+            host_features: xai_grok_shell::host_features::HostFeatureManifest::default(),
         }
     }
 }

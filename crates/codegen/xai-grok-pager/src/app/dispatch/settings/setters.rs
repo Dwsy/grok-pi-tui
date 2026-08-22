@@ -2518,131 +2518,32 @@ pub(in crate::app::dispatch) fn set_pi_tree_skip_summary_prompt(
     }]
 }
 
-pub(in crate::app::dispatch) fn set_pi_herdr(app: &mut AppView, enabled: bool) -> Vec<Effect> {
-    let previous = app.current_ui.pi_herdr;
-    if previous == enabled {
-        return vec![];
-    }
-    app.current_ui.pi_herdr = enabled;
-    refresh_open_settings_modals(app);
-    let value = if enabled { "on" } else { "off" };
-    app.show_toast(&format!(
-        "\u{2713} Pi Herdr integration: {value} \u{2014} restart grok-pi to apply"
-    ));
-    vec![Effect::PersistSetting {
-        key: "pi_herdr",
-        value: crate::settings::SettingValue::Bool(enabled),
-        rollback_value: crate::settings::SettingValue::Bool(previous),
-    }]
-}
-
-pub(in crate::app::dispatch) fn set_pi_subagents(app: &mut AppView, enabled: bool) -> Vec<Effect> {
-    let previous = app.current_ui.pi_subagents;
-    if previous == enabled {
-        return vec![];
-    }
-    app.current_ui.pi_subagents = enabled;
-    refresh_open_settings_modals(app);
-    let value = if enabled { "on" } else { "off" };
-    app.show_toast(&format!(
-        "\u{2713} Pi subagents: {value} \u{2014} restart grok-pi to apply"
-    ));
-    vec![Effect::PersistSetting {
-        key: "pi_subagents",
-        value: crate::settings::SettingValue::Bool(enabled),
-        rollback_value: crate::settings::SettingValue::Bool(previous),
-    }]
-}
-
-pub(in crate::app::dispatch) fn set_pi_workflows(app: &mut AppView, enabled: bool) -> Vec<Effect> {
-    let previous = app.current_ui.pi_workflows;
-    if previous == enabled {
-        return vec![];
-    }
-    app.current_ui.pi_workflows = enabled;
-    refresh_open_settings_modals(app);
-    // restart_required: extension inject happens only at grok-pi process start.
-    let value = if enabled { "on" } else { "off" };
-    app.show_toast(&format!(
-        "\u{2713} Pi workflows: {value} \u{2014} restart grok-pi to apply"
-    ));
-    vec![Effect::PersistSetting {
-        key: "pi_workflows",
-        value: crate::settings::SettingValue::Bool(enabled),
-        rollback_value: crate::settings::SettingValue::Bool(previous),
-    }]
-}
-
-pub(in crate::app::dispatch) fn set_pi_todo(app: &mut AppView, enabled: bool) -> Vec<Effect> {
-    let previous = app.current_ui.pi_todo;
-    if previous == enabled {
-        return vec![];
-    }
-    app.current_ui.pi_todo = enabled;
-    refresh_open_settings_modals(app);
-    let value = if enabled { "on" } else { "off" };
-    app.show_toast(&format!(
-        "\u{2713} Pi todo: {value} \u{2014} restart grok-pi to apply"
-    ));
-    vec![Effect::PersistSetting {
-        key: "pi_todo",
-        value: crate::settings::SettingValue::Bool(enabled),
-        rollback_value: crate::settings::SettingValue::Bool(previous),
-    }]
-}
-
-pub(in crate::app::dispatch) fn set_pi_goal(app: &mut AppView, enabled: bool) -> Vec<Effect> {
-    let previous = app.current_ui.pi_goal;
-    if previous == enabled {
-        return vec![];
-    }
-    app.current_ui.pi_goal = enabled;
-    refresh_open_settings_modals(app);
-    let value = if enabled { "on" } else { "off" };
-    app.show_toast(&format!(
-        "\u{2713} Pi goal mode: {value} \u{2014} restart grok-pi to apply"
-    ));
-    vec![Effect::PersistSetting {
-        key: "pi_goal",
-        value: crate::settings::SettingValue::Bool(enabled),
-        rollback_value: crate::settings::SettingValue::Bool(previous),
-    }]
-}
-
-pub(in crate::app::dispatch) fn set_pi_loop(app: &mut AppView, enabled: bool) -> Vec<Effect> {
-    let previous = app.current_ui.pi_loop;
-    if previous == enabled {
-        return vec![];
-    }
-    app.current_ui.pi_loop = enabled;
-    refresh_open_settings_modals(app);
-    let value = if enabled { "on" } else { "off" };
-    app.show_toast(&format!(
-        "\u{2713} Pi /loop scheduler: {value} \u{2014} restart grok-pi to apply"
-    ));
-    vec![Effect::PersistSetting {
-        key: "pi_loop",
-        value: crate::settings::SettingValue::Bool(enabled),
-        rollback_value: crate::settings::SettingValue::Bool(previous),
-    }]
-}
-
-pub(in crate::app::dispatch) fn set_pi_ask_user_question(
+pub(in crate::app::dispatch) fn set_host_feature_bool(
     app: &mut AppView,
+    key: xai_grok_shell::host_features::HostFeatureKey,
     enabled: bool,
 ) -> Vec<Effect> {
-    let previous = app.current_ui.pi_ask_user_question;
+    let Some(spec) = xai_grok_shell::host_features::feature_spec(key) else {
+        tracing::error!(target: "settings", key = key.as_str(), "unknown host feature");
+        return vec![];
+    };
+    let previous = spec.current_bool(&app.current_ui);
     if previous == enabled {
         return vec![];
     }
-    app.current_ui.pi_ask_user_question = enabled;
+    spec.set_bool(&mut app.current_ui, enabled);
     refresh_open_settings_modals(app);
     let value = if enabled { "on" } else { "off" };
-    app.show_toast(&format!(
-        "\u{2713} Q&A: {value} \u{2014} restart grok-pi to apply"
-    ));
+    if spec.restart_required {
+        app.show_toast(&format!(
+            "\u{2713} {}: {value} \u{2014} restart grok-pi to apply",
+            spec.label
+        ));
+    } else {
+        app.show_toast(&format!("\u{2713} {}: {value}", spec.label));
+    }
     vec![Effect::PersistSetting {
-        key: "pi_ask_user_question",
+        key: spec.key.as_str(),
         value: crate::settings::SettingValue::Bool(enabled),
         rollback_value: crate::settings::SettingValue::Bool(previous),
     }]
@@ -2662,24 +2563,6 @@ pub(in crate::app::dispatch) fn set_pi_ask_user_question_notifications(
     app.show_toast(&format!("\u{2713} Q&A desktop notifications: {value}"));
     vec![Effect::PersistSetting {
         key: "pi_ask_user_question_notifications",
-        value: crate::settings::SettingValue::Bool(enabled),
-        rollback_value: crate::settings::SettingValue::Bool(previous),
-    }]
-}
-
-pub(in crate::app::dispatch) fn set_pi_btw(app: &mut AppView, enabled: bool) -> Vec<Effect> {
-    let previous = app.current_ui.pi_btw;
-    if previous == enabled {
-        return vec![];
-    }
-    app.current_ui.pi_btw = enabled;
-    refresh_open_settings_modals(app);
-    let value = if enabled { "on" } else { "off" };
-    app.show_toast(&format!(
-        "\u{2713} Pi /btw: {value} \u{2014} restart grok-pi to apply"
-    ));
-    vec![Effect::PersistSetting {
-        key: "pi_btw",
         value: crate::settings::SettingValue::Bool(enabled),
         rollback_value: crate::settings::SettingValue::Bool(previous),
     }]

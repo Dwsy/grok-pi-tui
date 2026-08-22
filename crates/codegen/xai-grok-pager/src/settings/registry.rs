@@ -441,6 +441,18 @@ impl SettingsRegistry {
         Self { entries }
     }
 
+    /// Build the core registry plus settings declared by an external host.
+    /// Stock Grok calls [`Self::defaults`] and therefore never sees host-only
+    /// feature rows.
+    pub fn defaults_with_host_features(
+        manifest: &xai_grok_shell::host_features::HostFeatureManifest,
+    ) -> Self {
+        let mut entries = crate::settings::defs::default_settings();
+        entries.extend(manifest.iter().map(host_feature_setting_meta));
+        assert_unique_keys(&entries);
+        Self { entries }
+    }
+
     /// Build a registry from a caller-supplied list of `SettingMeta`.
     /// Test seam — `#[doc(hidden)]` to discourage production use.
     /// Panics on duplicate keys.
@@ -503,6 +515,35 @@ fn assert_unique_keys(entries: &[SettingMeta]) {
     );
 }
 
+fn host_feature_setting_meta(
+    spec: &'static xai_grok_shell::host_features::HostFeatureSpec,
+) -> SettingMeta {
+    let category = match spec.category {
+        xai_grok_shell::host_features::HostFeatureCategory::Agent => SettingCategory::Agent,
+    };
+    let description = match spec.native_feature_key {
+        Some(conflict_key) => crate::native_feature_conflicts::f2_description_with_conflicts(
+            spec.description,
+            conflict_key,
+        ),
+        None => spec.description,
+    };
+    SettingMeta {
+        key: spec.key.as_str(),
+        category,
+        owner: SettingOwner::Shell,
+        label: spec.label,
+        description,
+        keywords: spec.keywords,
+        kind: SettingKind::Bool {
+            default: spec.default_enabled,
+        },
+        restart_required: spec.restart_required,
+        hidden_in_minimal: false,
+        external_only: true,
+    }
+}
+
 fn build_search_haystack(m: &SettingMeta) -> String {
     let mut s = String::new();
     s.push_str(&m.label.to_lowercase());
@@ -530,6 +571,9 @@ pub fn current_value_for(
     ui: &UiConfig,
     pager: &PagerLocalSnapshot,
 ) -> Option<SettingValue> {
+    if let Some(spec) = xai_grok_shell::host_features::feature_spec_by_setting_key(key) {
+        return Some(SettingValue::Bool(spec.current_bool(ui)));
+    }
     match key {
         // SHARED — UiConfig source of truth, pager keeps a cache.
         "compact_mode" => Some(SettingValue::Bool(ui.compact_mode)),
@@ -563,17 +607,9 @@ pub fn current_value_for(
         "psm_resume_index" => Some(SettingValue::Bool(ui.psm_resume_index)),
         "pi_tree_file_rollback" => Some(SettingValue::Bool(ui.pi_tree_file_rollback)),
         "pi_tree_skip_summary_prompt" => Some(SettingValue::Bool(ui.pi_tree_skip_summary_prompt)),
-        "pi_herdr" => Some(SettingValue::Bool(ui.pi_herdr)),
-        "pi_subagents" => Some(SettingValue::Bool(ui.pi_subagents)),
-        "pi_workflows" => Some(SettingValue::Bool(ui.pi_workflows)),
-        "pi_todo" => Some(SettingValue::Bool(ui.pi_todo)),
-        "pi_goal" => Some(SettingValue::Bool(ui.pi_goal)),
-        "pi_loop" => Some(SettingValue::Bool(ui.pi_loop)),
-        "pi_ask_user_question" => Some(SettingValue::Bool(ui.pi_ask_user_question)),
         "pi_ask_user_question_notifications" => {
             Some(SettingValue::Bool(ui.pi_ask_user_question_notifications))
         }
-        "pi_btw" => Some(SettingValue::Bool(ui.pi_btw)),
         "pi_cache_graph" => Some(SettingValue::Bool(ui.pi_cache_graph)),
         "pi_config_skill" => Some(SettingValue::Bool(ui.pi_config_skill)),
         "pi_user_markdown" => Some(SettingValue::Bool(
@@ -1475,62 +1511,6 @@ mod tests {
                     );
                     assert!(!*default, "pi_tree_skip_summary_prompt must default OFF");
                 }
-                ("pi_herdr", SettingKind::Bool { default }) => {
-                    assert_eq!(
-                        *default, ui.pi_herdr,
-                        "pi_herdr default drifts from UiConfig::default()"
-                    );
-                    assert!(!*default, "pi_herdr must default OFF");
-                }
-                ("pi_subagents", SettingKind::Bool { default }) => {
-                    assert_eq!(
-                        *default, ui.pi_subagents,
-                        "pi_subagents default drifts from UiConfig::default()"
-                    );
-                    assert!(*default, "pi_subagents must default ON");
-                }
-                ("pi_workflows", SettingKind::Bool { default }) => {
-                    assert_eq!(
-                        *default, ui.pi_workflows,
-                        "pi_workflows default drifts from UiConfig::default()"
-                    );
-                    assert!(!*default, "pi_workflows must default OFF");
-                }
-                ("pi_todo", SettingKind::Bool { default }) => {
-                    assert_eq!(
-                        *default, ui.pi_todo,
-                        "pi_todo default drifts from UiConfig::default()"
-                    );
-                    assert!(*default, "pi_todo must default ON");
-                }
-                ("pi_goal", SettingKind::Bool { default }) => {
-                    assert_eq!(
-                        *default, ui.pi_goal,
-                        "pi_goal default drifts from UiConfig::default()"
-                    );
-                    assert!(!*default, "pi_goal must default OFF");
-                }
-                ("pi_loop", SettingKind::Bool { default }) => {
-                    assert_eq!(
-                        *default, ui.pi_loop,
-                        "pi_loop default drifts from UiConfig::default()"
-                    );
-                    assert!(!*default, "pi_loop must default OFF");
-                }
-                ("pi_btw", SettingKind::Bool { default }) => {
-                    assert_eq!(
-                        *default, ui.pi_btw,
-                        "pi_btw default drifts from UiConfig::default()"
-                    );
-                    assert!(!*default, "pi_btw must default OFF");
-                }
-                ("pi_ask_user_question", SettingKind::Bool { default }) => {
-                    assert_eq!(
-                        *default, ui.pi_ask_user_question,
-                        "pi_ask_user_question default drifts from UiConfig::default()"
-                    );
-                    assert!(!*default, "pi_ask_user_question must default OFF");
-                }
                 ("pi_ask_user_question_notifications", SettingKind::Bool { default }) => {
                     assert_eq!(
                         *default, ui.pi_ask_user_question_notifications,
@@ -1629,6 +1609,48 @@ mod tests {
                     meta.key
                 ),
             }
+        }
+    }
+
+    /// Host-feature rows must never leak into stock Grok's registry, and the
+    /// composed registry must project them through the declarative spec.
+    #[test]
+    fn host_feature_rows_are_manifest_scoped() {
+        let manifest = xai_grok_shell::host_features::HostFeatureManifest::new(
+            xai_grok_shell::host_features::ALL_HOST_FEATURE_SPECS.to_vec(),
+        );
+
+        let stock = SettingsRegistry::defaults();
+        for spec in xai_grok_shell::host_features::ALL_HOST_FEATURE_SPECS {
+            assert!(
+                stock.find(spec.key.as_str()).is_none(),
+                "stock defaults() must not contain host-only feature row `{}`",
+                spec.key.as_str(),
+            );
+        }
+
+        let reg = SettingsRegistry::defaults_with_host_features(&manifest);
+        for spec in xai_grok_shell::host_features::ALL_HOST_FEATURE_SPECS {
+            let meta = reg
+                .find(spec.key.as_str())
+                .unwrap_or_else(|| panic!("host feature `{}` registered", spec.key.as_str()));
+            assert_eq!(meta.label, spec.label);
+            match &meta.kind {
+                SettingKind::Bool { default } => assert_eq!(*default, spec.default_enabled),
+                other => panic!("host feature must project as Bool row, got {other:?}"),
+            }
+            assert!(!meta.hidden_in_minimal);
+            assert_eq!(meta.restart_required, spec.restart_required);
+
+            let ui = UiConfig::default();
+            assert_eq!(
+                current_value_for(spec.key.as_str(), &ui, &PagerLocalSnapshot::default()),
+                Some(SettingValue::Bool(spec.current_bool(&ui))),
+            );
+            assert_eq!(
+                crate::settings::layout::section_for(spec.key.as_str()),
+                spec.section,
+            );
         }
     }
 
