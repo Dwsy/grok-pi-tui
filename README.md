@@ -93,7 +93,7 @@ grok-pi update
 | Product tutorial | `/tutorial` (aliases `/tour`, `/onboarding`) opens 18 grok-pi capability areas: native Pager workflows, Pi providers/models/tools/sessions, the extension/Skill/Package ecosystem, product bridges, optional automation and explicit boundaries |
 | **Remote TUI bridge** | Pi `ctx.ui.custom` components rendered through Grok Build's native Pager, without a second TUI |
 | Shell execution | Bash integration, background tasks, output limits, timeouts, and process-tree cleanup |
-| Parallel work | Pi sub-agents with foreground/background execution and native task views; `/subagents` exposes built-ins plus product-isolated project/global overrides, reuses the Pi resource manager for extensions/skills, and `/subagent-message` sends follow-up or steer messages to running children |
+| Parallel work | Pi sub-agents with foreground/background execution and native task views; `/subagents` exposes built-ins plus product-isolated project/global overrides. Optional Subagents V2 (`PI_GROK_SUBAGENTS_V2=1`) adds root-session-scoped stable `/root/...` agent paths, parent/child + peer messaging, nested spawn, and external team presets under `.grok-pi/teams` / `~/.grok-pi/teams` |
 | Rhai workflows | Upstream `xai-workflow` host (F2 **Pi workflows**); `/workflow`, `/workflows`, `/create-workflow`; scripts under `~/.grok-pi/workflows` and `<repo>/.grok-pi/workflows` |
 | Session workflow | Resume, tree navigation, labels, recap, context inspection, and session picker |
 | Resource management | Native manager for Pi extensions, skills, prompts, and themes |
@@ -128,9 +128,25 @@ Bundled bridge extensions are enabled by default where stable. Experimental nati
 | `PI_GROK_REMOTE_TUI` | `1` | Enable Pi `ctx.ui.custom` components |
 | `PI_GROK_BASH` | `1` | Enable Grok-owned Bash integration |
 | `PI_GROK_NATIVE_COMMANDS` | `0` | Enable experimental `/pi-*` commands |
+| `PI_GROK_SUBAGENTS_V2` | `0` | Enable optional V2 team tools (`spawn_team`, stable agent paths, peer messaging, nested spawn) on top of Pi subagents |
 | `GROK_HOME` | `~/.grok-pi` | User state root (isolated from stock Grok `~/.grok`) |
 | `GROK_PROJECT_DIR` | `.grok-pi` | Project config/workflows/hooks dir name under repo root |
 | `GROK_PI_NO_AUTO_UPDATE` | unset | Disable background update checks |
+
+Subagents V2 team presets are JSON files under `<repo>/.grok-pi/teams` or `~/.grok-pi/teams` (project overrides global, which overrides bundled presets). Agent profiles remain external Markdown under the matching `agents/` directories. Example:
+
+```json
+{
+  "name": "implementation",
+  "description": "Implementation plus review",
+  "members": [
+    { "name": "implementer", "agent": "general-purpose", "task": "Implement: {{task}}" },
+    { "name": "reviewer", "agent": "explore", "task": "Review: {{task}}" }
+  ]
+}
+```
+
+Enable V2 before starting grok-pi with `PI_GROK_SUBAGENTS_V2=1`; use `/subagent-teams` to inspect presets. `spawn_team` starts a preset, while `spawn_team_agent`, `team_send_message`, `team_followup_task`, `team_wait`, `team_list`, and `team_interrupt` provide the lower-level collaboration surface. Rhai Workflow remains the deterministic orchestration engine; Team V2 is the session-scoped, run-reusable agent identity/messaging layer.
 
 Rhai workflows are **off by default** (F2 → Agent → **Pi workflows**, then full restart). Details: [FEATURE_MATRIX.md](FEATURE_MATRIX.md), [AGENTS.md](AGENTS.md#product-state-isolation).
 
@@ -171,6 +187,7 @@ See [VERIFICATION.md](VERIFICATION.md) for the distinction between static checks
 ## Documentation
 
 - [Feature matrix](FEATURE_MATRIX.md) — supported behavior and intentional boundaries
+- [Subagents V2 guide](docs/usage/subagents-v2.md) — opt-in team collaboration, stable paths, presets, queue semantics, rollback, and troubleshooting
 - [Architecture alignment](NATIVE_GROK_TUI_ALIGNMENT.md) — component ownership, protocol mapping, and migration guidance
 - [Verification record](VERIFICATION.md) — completed checks and known environment blockers
 - [Changelog](CHANGELOG.MD) / [更新日志](CHANGELOG.zh-CN.md) — release history (EN / ZH)
@@ -199,7 +216,7 @@ flowchart LR
 | **Q&A desktop notifications** (`pi_ask_user_question_notifications`) | F2 → Agent → Q&A desktop notifications | on | — |
 | **Pi goal mode** (`pi_goal`) | F2 → Agent → Pi goal mode (restart) | off | `pi-codex-goal`, `@narumitw/pi-goal`, `@misunders2d/pi-goal`, `pi-goal`, `pi-goal-x` |
 | **Pi workflows** (`pi_workflows`) | F2 → Agent → Pi workflows (restart) | off | `@quintinshaw/pi-dynamic-workflows` |
-| **Pi subagents** (`pi_subagents`) | F2 → Agent → Pi subagents (restart) | on | `pi-subagents`, `@tintinweb/pi-subagents`; native `/subagents` config writes isolated global/project Markdown definitions (tools, up to 3 Pi models, extensions, skills, enablement, max turns) |
+| **Pi subagents** (`pi_subagents`) | F2 → Agent → Pi subagents (restart) | on | `pi-subagents`, `@tintinweb/pi-subagents`; native `/subagents` config writes isolated global/project Markdown definitions. Optional V2 is separately enabled with `PI_GROK_SUBAGENTS_V2=1`; `/subagent-teams` discovers project/global/bundled JSON presets |
 | **`/btw`** (`pi_btw`) | F2 → Agent → Pi /btw (restart); saved answers are viewable with `/btw-history` | off | `pi-btw`, `@narumitw/pi-btw`, `@juicesharp/rpiv-btw` |
 | **Markdown user messages** (`pi_user_markdown`) | F2 → Agent → Markdown user messages | on | — |
 
@@ -208,10 +225,13 @@ Eval bridge generations are mutually exclusive and selected at process start. Ev
 ```toml
 [ui]
 pi_eval = "v2"
-pi_eval_v2_language = "all" # "js" (default), "py", or "all"
+pi_eval_v2_language = "all"       # "js" (default), "py", or "all"
+pi_eval_v2_display_mode = "effects" # "effects" (default) or "legacy"
 ```
 
-Use `pi_eval = "v1"` (or omit the key) for legacy Eval. Eval v1 keeps persistent Python and JavaScript kernels; Eval Bridge v2 uses isolated cells with explicit `store/load` persistence and the selected language set. Because `pi_eval` is a single version selector, v1 and v2 cannot run concurrently. Both settings are restart-required.
+Use `pi_eval = "v1"` (or omit the key) for legacy Eval. Eval v1 keeps persistent Python and JavaScript kernels; Eval Bridge v2 uses isolated cells with explicit `store/load` persistence and the selected language set. Because `pi_eval` is a single version selector, v1 and v2 cannot run concurrently. `pi_eval` and `pi_eval_v2_language` are restart-required.
+
+`pi_eval_v2_display_mode` is presentation-only and applies immediately: `effects` keeps Eval v2 orchestration source out of the normal transcript and presents its effects/results, while `legacy` restores source + result rendering. Change it from **F2 → Agent → Eval v2 display**, edit `[ui].pi_eval_v2_display_mode`, or use `/eval-display [effects|legacy]`; `/eval-display` with no argument toggles the current mode. The selected mode is persisted for future sessions.
 
 Turning Pi subagents off omits the bundled bridge, forces `PI_GROK_SUBAGENTS=0`, and admits conflicting third-party packages again for the next process.
 

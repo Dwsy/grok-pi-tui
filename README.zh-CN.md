@@ -90,7 +90,7 @@ grok-pi update
 | 产品教程 | `/tutorial`（别名 `/tour`、`/onboarding`）展示 18 个 grok-pi 能力域：Pager 原生工作流、Pi Provider/模型/工具/会话、扩展/Skill/Package 生态、产品桥接、可选自动化与明确边界 |
 | **Remote TUI 桥接** | Pi `ctx.ui.custom` 组件通过 Grok Build 原生 Pager 渲染，不创建第二套 TUI |
 | Shell 执行 | Bash 集成、后台任务、输出限制、超时和进程树清理 |
-| 并行工作 | Pi 子代理，支持前台/后台执行和原生任务视图；`/subagents` 可查看内置代理并维护隔离的项目/全局 Markdown 覆盖（工具、最多 3 个 Pi 模型、扩展、技能、开关和最大回合），扩展/技能复用 Pi 资源管理器；`/subagent-message` 可向运行中子代理发送 follow-up 或 steer |
+| 并行工作 | Pi 子代理，支持前台/后台执行和原生任务视图；`/subagents` 维护产品隔离的项目/全局 agent 定义。可选 Subagents V2（`PI_GROK_SUBAGENTS_V2=1`）增加在当前 root session 内稳定的 `/root/...` agent path、主/子与子/子消息、嵌套 spawn，以及 `.grok-pi/teams` / `~/.grok-pi/teams` 外置 team preset |
 | Rhai Workflow | 上游 `xai-workflow` 宿主（F2 **Pi workflows**）；`/workflow`、`/workflows`、`/create-workflow`；脚本目录 `~/.grok-pi/workflows` 与 `<repo>/.grok-pi/workflows` |
 | 会话流程 | Resume、树导航、标签、回顾、上下文查看和会话选择器 |
 | 资源管理 | Pi 扩展、skills、prompt 和主题的原生管理器 |
@@ -125,9 +125,25 @@ flowchart LR
 | `PI_GROK_REMOTE_TUI` | `1` | 启用 Pi `ctx.ui.custom` 组件 |
 | `PI_GROK_BASH` | `1` | 启用 Grok-owned Bash 集成 |
 | `PI_GROK_NATIVE_COMMANDS` | `0` | 启用实验性的 `/pi-*` 命令 |
+| `PI_GROK_SUBAGENTS_V2` | `0` | 在 Pi subagents 上启用可选 V2 team tools（`spawn_team`、稳定 agent path、peer messaging、nested spawn） |
 | `GROK_HOME` | `~/.grok-pi` | 用户状态根目录（与 stock Grok 的 `~/.grok` 隔离） |
 | `GROK_PROJECT_DIR` | `.grok-pi` | 仓库内项目配置/workflows/hooks 目录名 |
 | `GROK_PI_NO_AUTO_UPDATE` | 未设置 | 禁用后台更新检查 |
+
+Subagents V2 的 team preset 使用 JSON，放在 `<repo>/.grok-pi/teams` 或 `~/.grok-pi/teams`（项目覆盖全局，全局覆盖 bundled preset）；agent profile 继续使用对应 `agents/` 目录里的外置 Markdown。示例：
+
+```json
+{
+  "name": "implementation",
+  "description": "Implementation plus review",
+  "members": [
+    { "name": "implementer", "agent": "general-purpose", "task": "Implement: {{task}}" },
+    { "name": "reviewer", "agent": "explore", "task": "Review: {{task}}" }
+  ]
+}
+```
+
+启动 grok-pi 前设置 `PI_GROK_SUBAGENTS_V2=1`；用 `/subagent-teams` 查看 preset。`spawn_team` 启动整组 preset，`spawn_team_agent`、`team_send_message`、`team_followup_task`、`team_wait`、`team_list`、`team_interrupt` 提供底层协作面。Rhai Workflow 仍负责确定性编排；Team V2 负责 session-scoped、可跨单次 run 复用的 agent identity 和 peer messaging。
 
 Rhai Workflow **默认关闭**（F2 → Agent → **Pi workflows**，改完后需**整进程重启**）。细节见 [功能矩阵](FEATURE_MATRIX.zh-CN.md)、[AGENTS.md 产品态隔离](AGENTS.md#product-state-isolation)。
 
@@ -167,6 +183,7 @@ incremental 缓存，若已超限的 target 仍过大则执行 `cargo clean`。�
 ## 文档
 
 - [功能矩阵](FEATURE_MATRIX.zh-CN.md) —— 支持的行为与有意边界（[English](FEATURE_MATRIX.md)）
+- [Subagents V2 使用指南](docs/usage/subagents-v2.zh-CN.md) —— 可选 team 协作、稳定 path、preset、队列语义、回滚与排障（[English](docs/usage/subagents-v2.md)）
 - [架构对齐](NATIVE_GROK_TUI_ALIGNMENT.md) —— 组件所有权、协议映射和迁移说明
 - [验证记录](VERIFICATION.md) —— 已完成检查与环境阻塞项
 - [更新日志](CHANGELOG.zh-CN.md) / [Changelog (EN)](CHANGELOG.MD) —— 版本历史（中英）
@@ -195,7 +212,7 @@ flowchart LR
 | **Q&A 桌面通知**（`pi_ask_user_question_notifications`） | F2 → Agent → Q&A desktop notifications | 开 | — |
 | **Pi goal mode**（`pi_goal`） | F2 → Agent → Pi goal mode（需重启） | 关 | `pi-codex-goal`、`@narumitw/pi-goal`、`@misunders2d/pi-goal`、`pi-goal`、`pi-goal-x` |
 | **Pi workflows**（`pi_workflows`） | F2 → Agent → Pi workflows（需重启） | 关 | `@quintinshaw/pi-dynamic-workflows` |
-| **Pi subagents**（`pi_subagents`） | F2 → Agent → Pi subagents（需重启） | 开 | `pi-subagents`、`@tintinweb/pi-subagents`；原生 `/subagents` 显示内置代理并写入产品隔离的项目/全局 Markdown 覆盖（工具、最多 3 个 Pi 模型、扩展、技能、开关、最大回合）；资源选择复用 Pi 资源管理器，`/subagent-message` 支持追问运行中子代理 |
+| **Pi subagents**（`pi_subagents`） | F2 → Agent → Pi subagents（需重启） | 开 | `pi-subagents`、`@tintinweb/pi-subagents`；原生 `/subagents` 管理隔离的项目/全局 Markdown agent 定义。V2 另用 `PI_GROK_SUBAGENTS_V2=1` 开启；`/subagent-teams` 发现 project/global/bundled JSON preset |
 | **`/btw`**（`pi_btw`） | F2 → Agent → Pi /btw（需重启）；已保存答案可用 `/btw-history` 查看 | 关 | `pi-btw`、`@narumitw/pi-btw`、`@juicesharp/rpiv-btw` |
 | **用户消息 Markdown**（`pi_user_markdown`） | F2 → Agent → Markdown user messages | 开 | — |
 
@@ -204,10 +221,13 @@ Eval bridge 的版本在进程启动时互斥选择，默认仍为 Eval v1。Eva
 ```toml
 [ui]
 pi_eval = "v2"
-pi_eval_v2_language = "all" # "js"（默认）、"py" 或 "all"
+pi_eval_v2_language = "all"         # "js"（默认）、"py" 或 "all"
+pi_eval_v2_display_mode = "effects" # "effects"（默认）或 "legacy"
 ```
 
-使用 `pi_eval = "v1"`（或省略该键）即为 legacy Eval。Eval v1 保留持久化 Python/JavaScript kernel；Eval Bridge v2 使用隔离 cell，并通过显式 `store/load` 跨 cell 持久化，同时按 `pi_eval_v2_language` 暴露语言。`pi_eval` 是单值版本 selector，因此 v1/v2 不会双活；这两个设置都需重启 `grok-pi` 生效。
+使用 `pi_eval = "v1"`（或省略该键）即为 legacy Eval。Eval v1 保留持久化 Python/JavaScript kernel；Eval Bridge v2 使用隔离 cell，并通过显式 `store/load` 跨 cell 持久化，同时按 `pi_eval_v2_language` 暴露语言。`pi_eval` 是单值版本 selector，因此 v1/v2 不会双活；`pi_eval` 与 `pi_eval_v2_language` 都需要重启 `grok-pi` 生效。
+
+`pi_eval_v2_display_mode` 只控制展示并会立即生效：`effects` 会在普通会话记录中隐藏 Eval v2 的编排源码，重点展示其 effects/结果；`legacy` 恢复源码 + 结果的传统展示。可通过 **F2 → Agent → Eval v2 display**、`[ui].pi_eval_v2_display_mode`，或 `/eval-display [effects|legacy]` 修改；不带参数执行 `/eval-display` 会在两种模式间切换。所选模式会持久化到后续会话。
 
 关闭 Pi subagents 后，下次启动会省略内置桥接、强制 `PI_GROK_SUBAGENTS=0`，并重新放行与其冲突的第三方包。
 

@@ -10,6 +10,23 @@ The current delivery has passed production build, adapter unit tests, and native
 We cannot yet claim **all** verification is green. The Rust syntax stage of `verify.sh` depends on undeclared Python packages `tree_sitter` / `tree_sitter_rust`, which are missing from this environment. The native-source and renderer hash manifests, slash `fork`/`voice` rule, and one mock `agent_settled` completion-barrier expectation are stale and require deliberate baseline review; they were not broadened or regenerated during the merge. One Hooks SSRF test is environment-dependent here because the local resolver maps `.invalid` to an internal IPv6 address, and the same failure reproduces before the merge. Focused Pager lib tests now compile and pass. No new real-model PTY end-to-end smoke test has been added.
 
 
+
+## 2026-08-22 Subagents V2 + Eval V2 production review
+
+This review covers the opt-in Subagents V2 collaboration layer, the refactored bundled extension modules, and the current Eval V2 production regression surface. Subagents V2 remains **off by default** (`PI_GROK_SUBAGENTS_V2=1` opts in); passing static/unit checks does not promote it to default-on or replace the required real-model handtest.
+
+| Verification layer | Result | Notes |
+|---|---:|---|
+| Subagents V2 coordinator/runtime tests | PASS | `cd extensions/pi-grok-subagents && bun test v2.test.ts runtime.test.ts` — 18 passed, 0 failed. Coverage includes scope precedence/malformed preset isolation, root/child routing, idle reactivation with child-session reuse, queued follow-up deferral, nested `FINAL_ANSWER`, atomic team rollback/roster registration, wait/interrupt, canonical record mutation, stable finished output, and queued cancellation. |
+| Eval V2.1 production regression | PASS | `node extensions/pi-grok-bash/test-v2.1.mjs` — focused suite completed with `Eval v2.1 focused production regression: PASS`, including JS/Python all-mode host RPC parity, timeout/abort, concurrency/FIFO, background task limits, eval-v2-only tool isolation, regex tool search, and `display(image)` vision forwarding. |
+| `grok-pi` binary unit suite | PASS | `cargo test -p xai-grok-pager-bin --bin grok-pi` — 96 passed, 0 failed. The embedded Subagents dependency-materialization test and Bash extension source test are included. |
+| Stale Bash injector assertion | FIXED | The source test now requires `PYTHON_EVAL_WORKER_V2`, matching the authored `eval.ts` V2 Python worker selected by `PersistentEvalKernel`. Focused test passes. |
+| Diff hygiene | PASS | `git diff --check` completed with no whitespace errors. |
+| Extension TypeScript full check | BLOCKED (upstream baseline) | Direct `tsc` currently stops first at `TS2688` because the sibling Node type definitions are not visible; after making the `pi-main/node_modules/@types` path explicit, checking still stops in existing `pi-main` sources (including interactive footer `string`→`never` diagnostics, plus baseline target/declaration compatibility without overrides). No diagnostic from these runs pointed at `extensions/pi-grok-subagents`. The Bun tests above are the executable V2 source check for this increment. |
+| Native real-model team E2E | PENDING | Before default-on/release promotion, handtest root→child, child→root, sibling messaging, nested spawn, idle follow-up/session reuse, nested final-answer wakeup, interrupt, concurrency queueing, preset override/disable, and V2-off surface absence with a real target model/provider. |
+
+Reproducible commands for the V2-specific checks are also documented in `docs/usage/subagents-v2.md` and `docs/usage/subagents-v2.zh-CN.md`.
+
 ## 2026-07-26 Lossless Main Delivery
 
 | Layer | Result | Notes |
