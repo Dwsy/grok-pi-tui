@@ -401,11 +401,12 @@ impl ModelState {
             }
         }
 
-        // `provider/id` (slash form used in search / CLI).
+        // `provider/id` (slash form used in search / CLI). The model id may
+        // itself contain slashes (e.g. Pi `openrouter/stealth/ox-alpha high`),
+        // so only the first `/` separates provider from id.
         if let Some((provider, model_id)) = query.split_once('/')
             && !provider.is_empty()
             && !model_id.is_empty()
-            && !model_id.contains('/')
         {
             let key = format!("{provider}::{model_id}");
             if let Some((id, _)) = self
@@ -872,6 +873,32 @@ mod tests {
         );
         assert_eq!(
             state.resolve_by_name_or_id("claude-haiku-4-5").as_ref(),
+            Some(&id)
+        );
+    }
+
+    #[test]
+    fn resolve_by_name_or_id_accepts_multi_slash_provider_id() {
+        // Pi model ids may themselves contain slashes
+        // (e.g. `openrouter/stealth/ox-alpha high` → catalog key
+        // `openrouter::stealth/ox-alpha high`). Only the first `/` splits.
+        let mut state = ModelState::default();
+        let id = acp::ModelId::new(Arc::from("openrouter::stealth/ox-alpha high"));
+        state.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id.clone(), "OX Alpha High".to_string()),
+        );
+
+        assert_eq!(
+            state
+                .resolve_by_name_or_id("openrouter/stealth/ox-alpha high")
+                .as_ref(),
+            Some(&id)
+        );
+        assert_eq!(
+            state
+                .resolve_by_name_or_id("openrouter::stealth/ox-alpha high")
+                .as_ref(),
             Some(&id)
         );
     }
