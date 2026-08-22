@@ -31,6 +31,7 @@ use crate::{
     },
     recap_bridge::{parse_recap_message, session_recap_notification},
     subagent_projection::{BridgeOperation, bridge_parent_session_id, parse_bridge_message},
+    subagent_transport::SubagentEventTransport,
     todo_bridge::plan_update_for_tool,
     tool_projection::{
         bash_tool_output, edit_diff_content, history_tool_content, normalize_tool_raw_input,
@@ -107,8 +108,8 @@ impl PiBootstrap {
         ))
     }
 
-    pub fn acp_commands(&self) -> Vec<acp::AvailableCommand> {
-        command_catalog(&self.commands)
+    pub fn acp_commands(&self, workflows_enabled: bool) -> Vec<acp::AvailableCommand> {
+        command_catalog(&self.commands, workflows_enabled)
     }
 
     /// Pi session identifier used to seed the native Grok session surface.
@@ -296,6 +297,11 @@ pub struct PiAgent {
     workflow_host: Rc<RefCell<Option<std::sync::Arc<WorkflowHost>>>>,
     /// F2 pi_goal control file + GoalHost (None when feature off).
     goal_host: Rc<RefCell<Option<GoalHost>>>,
+    /// Process-private path-based local IPC emitted by the Pi subagent extension.
+    /// Child traffic belongs here, never in the parent SessionManager JSONL.
+    subagent_transport: Option<Rc<SubagentEventTransport>>,
+    /// Startup-resolved host capability; never re-reads disk or parent env.
+    workflows_enabled: bool,
 }
 
 impl PiAgent {
@@ -308,6 +314,8 @@ impl PiAgent {
         context_breakdown: Option<PathBuf>,
         plan_mode_control: Option<PathBuf>,
         goal_control: Option<PathBuf>,
+        subagent_transport: Option<SubagentEventTransport>,
+        workflows_enabled: bool,
     ) -> Result<Self> {
         let acp_session_id = bootstrap.state.session_id.clone();
         let plan_file = plan_file_path(&bootstrap.state, &session_dir);
@@ -328,6 +336,8 @@ impl PiAgent {
             workflow_bridge_rx: Rc::new(RefCell::new(Some(workflow_bridge_rx))),
             workflow_host: Rc::new(RefCell::new(None)),
             goal_host: Rc::new(RefCell::new(goal_control.map(GoalHost::new))),
+            subagent_transport: subagent_transport.map(Rc::new),
+            workflows_enabled,
             state: Rc::new(RefCell::new(AdapterState {
                 bootstrap,
                 acp_session_id,
@@ -377,12 +387,30 @@ impl PiAgent {
                 }
             });
         }
-        while let Some(event) = events.recv().await {
-            if let Err(error) = self.handle_event(event).await {
-                tracing::warn!(%error, "failed to adapt Pi event into Grok ACP");
-                self.send_ui_notification(&format!("Pi adapter: {error}"), Some("warning"))
-                    .await;
+        let (subagent_tx, mut subagent_rx) = mpsc::unbounded_channel();
+        let subagent_task = self.subagent_transport.clone().map(|transport| {
+            tokio::task::spawn_local(async move { transport.forward(subagent_tx).await })
+        });
+        loop {
+            tokio::select! {
+                maybe_event = events.recv() => {
+                    let Some(event) = maybe_event else { break; };
+                    if let Err(error) = self.handle_event(event).await {
+                        tracing::warn!(%error, "failed to adapt Pi event into Grok ACP");
+                        self.send_ui_notification(&format!("Pi adapter: {error}"), Some("warning"))
+                            .await;
+                    }
+                }
+                maybe_subagent = subagent_rx.recv(), if self.subagent_transport.is_some() => {
+                    let Some(event) = maybe_subagent else { continue; };
+                    if let Err(error) = self.handle_subagent_bridge_message(&event).await {
+                        tracing::warn!(%error, "failed to adapt transient Pi subagent event");
+                    }
+                }
             }
+        }
+        if let Some(task) = subagent_task {
+            task.abort();
         }
         self.finish_prompts(acp::StopReason::Cancelled);
     }
@@ -745,7 +773,7 @@ fn normalize_language_tag(value: &str) -> Option<String> {
     }
 }
 
-fn command_catalog(commands: &[PiCommand]) -> Vec<acp::AvailableCommand> {
+fn command_catalog(commands: &[PiCommand], workflows_enabled: bool) -> Vec<acp::AvailableCommand> {
     // The adapter reports Pi's command catalog (normalized + deduped), minus
     // private bridge commands. When Pi workflows are enabled, inject the
     // upstream-aligned workflow slash surface so Pager autocomplete matches
@@ -811,30 +839,10 @@ fn command_catalog(commands: &[PiCommand]) -> Vec<acp::AvailableCommand> {
         })
         .collect();
 
-    if workflows_extension_enabled_static() {
+    if workflows_enabled {
         inject_workflow_slash_commands(&mut out, &mut seen);
     }
     out
-}
-
-fn workflows_extension_enabled_static() -> bool {
-    if let Ok(config) = xai_grok_shell::config::load_effective_config() {
-        if config
-            .get("ui")
-            .and_then(|ui| ui.get("pi_workflows"))
-            .and_then(|v| v.as_bool())
-            == Some(true)
-        {
-            return true;
-        }
-    }
-    match std::env::var("PI_GROK_WORKFLOWS") {
-        Ok(v) => {
-            let v = v.trim();
-            v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("on")
-        }
-        Err(_) => false,
-    }
 }
 
 fn inject_workflow_slash_commands(

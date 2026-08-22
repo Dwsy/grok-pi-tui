@@ -28,7 +28,7 @@ impl PiAgent {
 
     pub(super) async fn send_commands(&self, commands: &[PiCommand]) {
         self.send_update(acp::SessionUpdate::AvailableCommandsUpdate(
-            acp::AvailableCommandsUpdate::new(command_catalog(commands)),
+            acp::AvailableCommandsUpdate::new(command_catalog(commands, self.workflows_enabled)),
         ))
         .await;
     }

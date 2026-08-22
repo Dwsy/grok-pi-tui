@@ -12,6 +12,6 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
   registerV1Tools(pi, runtime);
   if (process.env.PI_GROK_SUBAGENTS_V2 === "1") registerV2Tools(pi, runtime);
 
-  pi.on("session_start", () => runtime.onSessionStart());
+  pi.on("session_start", (_event, ctx) => runtime.onSessionStart(ctx));
   pi.on("session_shutdown", () => runtime.shutdown());
 }

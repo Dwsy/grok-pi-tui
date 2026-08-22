@@ -20,12 +20,16 @@ mod config_skill;
 mod context_extension;
 #[path = "grok_pi/export_extension.rs"]
 mod export_extension;
+#[path = "grok_pi/extension_self_heal.rs"]
+mod extension_self_heal;
 #[path = "grok_pi/goal_extension.rs"]
 mod goal_extension;
 #[path = "grok_pi/herdr_extension.rs"]
 mod herdr_extension;
 #[path = "grok_pi/home.rs"]
 mod home;
+#[path = "grok_pi/host_feature_extension.rs"]
+mod host_feature_extension;
 #[path = "grok_pi/loop_extension.rs"]
 mod loop_extension;
 #[path = "grok_pi/migrate_home.rs"]
@@ -47,6 +51,8 @@ mod remote_tui_extension;
 mod rollback_extension;
 #[path = "grok_pi/rpc_compat_extension.rs"]
 mod rpc_compat_extension;
+#[path = "grok_pi/runtime_config.rs"]
+mod runtime_config;
 #[path = "grok_pi/rust_tui_bridge_extension.rs"]
 mod rust_tui_bridge_extension;
 #[path = "grok_pi/session_paths.rs"]
@@ -63,13 +69,10 @@ mod tools_extension;
 mod tree_bridge;
 #[path = "grok_pi/tutorial_profile.rs"]
 mod tutorial_profile;
-#[path = "grok_pi/workflow_extension.rs"]
-mod workflow_extension;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use pi_grok_adapter::{PiAgent, PiBootstrap, PiRpc, SpawnConfig};
-use std::future::Future;
+use pi_grok_adapter::{PiAgent, SubagentEventTransport};
 use std::rc::Rc;
 use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
@@ -80,6 +83,10 @@ use xai_grok_pager::{
     pi_resource_config::PiResourceCatalog,
     pi_resource_policy::ResourcePolicy,
 };
+use xai_grok_shell::host_features::{
+    HostFeatureKey, HostFeatureManifest, PI_ASK_USER_QUESTION, PI_BTW, PI_GOAL, PI_HERDR, PI_LOOP,
+    PI_SUBAGENTS, PI_TODO, PI_WORKFLOWS, PI_WORKFLOWS_SPEC,
+};
 
 use ask_user_extension::write_ask_user_extension;
 use auth_extension::write_auth_extension;
@@ -89,8 +96,12 @@ use cli::{Args, Command, normalize_compound_short_flags, pi_args_with_startup_fl
 use config_skill::{config_skill_enabled, sync_config_skill_cache};
 use context_extension::write_context_extension;
 use export_extension::write_export_extension;
+use extension_self_heal::spawn_with_extension_self_heal;
+#[cfg(test)]
+use extension_self_heal::{bootstrap_with_deadline, disable_all_extensions};
 use goal_extension::write_goal_extension;
 use herdr_extension::{is_managed_pi_integration, write_herdr_extension};
+use host_feature_extension::write_host_feature_extension;
 use loop_extension::write_loop_extension;
 use native_commands_extension::write_native_commands_extension;
 use pi_version::ensure_compatible_pi_host;
@@ -98,6 +109,11 @@ use plan_mode_extension::write_plan_mode_extension;
 use recap_extension::write_recap_extension;
 use remote_tui_extension::write_remote_tui_extension;
 use rpc_compat_extension::write_rpc_compat_extension;
+use runtime_config::{
+    bash_bridge_enabled, bash_control_meta_for_adapter, env_flag_default_off, env_flag_default_on,
+    eval_v2_language, eval_v2_only_enabled, eval_v2_only_tool_policy_applies, eval_version,
+    host_terminal_size, normal_f2_tool_policy_applies, resolve_bash_max_wait_mins,
+};
 use rust_tui_bridge_extension::write_rust_tui_bridge_extension;
 use session_paths::pi_session_dir;
 use shortcut_manager_extension::write_shortcut_manager_extension;
@@ -105,11 +121,9 @@ use subagent_extension::write_subagent_extension;
 use todo_extension::write_todo_extension;
 use tools_extension::{
     cli_tool_exclusions, configured_builtin_tools, disabled_builtin_tools_from_selected,
-    has_explicit_tools_arg, has_no_tools_arg, merge_tool_exclusions, should_inject_tools_extension,
-    tool_name_allowed_by_cli, write_tools_extension,
+    has_no_tools_arg, merge_tool_exclusions, tool_name_allowed_by_cli, write_tools_extension,
 };
 use tree_bridge::write_navigate_tree_extension;
-use workflow_extension::write_workflow_extension;
 
 /// Grok pager commands that are meaningful when Pi is the ACP backend.
 ///
@@ -319,8 +333,30 @@ async fn run(mut args: Args) -> Result<()> {
         .then(|| write_navigate_tree_extension())
         .transpose()
         .context("failed to create Pi navigateTree bridge extension")?;
+    // External host features are declarative: support metadata remains visible
+    // in F2 even when disabled, while enabled state is resolved once at startup
+    // from the same manifest that drives the composed settings registry.
+    let host_feature_manifest = HostFeatureManifest::new([
+        &PI_WORKFLOWS_SPEC,
+        &xai_grok_shell::host_features::PI_HERDR_SPEC,
+        &xai_grok_shell::host_features::PI_SUBAGENTS_SPEC,
+        &xai_grok_shell::host_features::PI_TODO_SPEC,
+        &xai_grok_shell::host_features::PI_GOAL_SPEC,
+        &xai_grok_shell::host_features::PI_LOOP_SPEC,
+        &xai_grok_shell::host_features::PI_ASK_USER_QUESTION_SPEC,
+        &xai_grok_shell::host_features::PI_BTW_SPEC,
+    ]);
+    let host_feature_config = xai_grok_shell::config::load_effective_config().ok();
+    let enabled_host_features = host_feature_manifest
+        .iter()
+        .filter(|spec| {
+            bridge_extensions_enabled && spec.resolve_enabled(host_feature_config.as_ref())
+        })
+        .collect::<Vec<_>>();
+    let host_feature_enabled =
+        |key: HostFeatureKey| enabled_host_features.iter().any(|spec| spec.key == key);
     // F2 `[ui].pi_herdr` (default off). Outside Herdr the extension is a silent no-op.
-    let herdr_extension = if bridge_extensions_enabled && herdr_enabled() {
+    let herdr_extension = if host_feature_enabled(PI_HERDR) {
         Some(write_herdr_extension().context("failed to create Pi Herdr extension")?)
     } else {
         None
@@ -337,37 +373,48 @@ async fn run(mut args: Args) -> Result<()> {
     let eval_version = if eval_v2_only { "v2" } else { eval_version() };
     let eval_v2_language = eval_v2_language();
     // F2 `[ui].pi_subagents` (default on). Restart required — inject at startup only.
-    let subagent_extension = if bridge_extensions_enabled && subagents_enabled() {
+    let subagent_extension = if host_feature_enabled(PI_SUBAGENTS) {
         Some(write_subagent_extension().context("failed to create Pi subagent extension")?)
     } else {
         None
     };
+    let subagent_transport = subagent_extension
+        .as_ref()
+        .map(|_| SubagentEventTransport::bind())
+        .transpose()
+        .context("failed to bind Pi subagent local socket")?;
     // F2 `[ui].pi_todo` (default on). Restart required — inject at startup only.
-    let todo_extension = if bridge_extensions_enabled && todo_enabled() {
+    let todo_extension = if host_feature_enabled(PI_TODO) {
         Some(write_todo_extension().context("failed to create Pi todo extension")?)
     } else {
         None
     };
-    // F2 `[ui].pi_workflows` (default off). Restart required — inject at startup only.
-    let workflow_extension = if bridge_extensions_enabled && workflows_enabled() {
-        Some(write_workflow_extension().context("failed to create Pi workflow extension")?)
-    } else {
-        None
-    };
+    let workflows_enabled = enabled_host_features
+        .iter()
+        .any(|spec| spec.key == PI_WORKFLOWS);
+    let workflow_extension = enabled_host_features
+        .iter()
+        .copied()
+        .find(|spec| spec.key == PI_WORKFLOWS)
+        .map(write_host_feature_extension)
+        .transpose()
+        .context("failed to materialize registered Pi host feature")?;
     // F2 `[ui].pi_goal` (default off). Restart required — inject at startup only.
-    let goal_extension = if bridge_extensions_enabled && goal_enabled() {
+    // Control-file features keep narrow bootstrap factories; the manifest owns
+    // their F2 metadata, persistence, and enablement resolution.
+    let goal_extension = if host_feature_enabled(PI_GOAL) {
         Some(write_goal_extension().context("failed to create Pi goal extension")?)
     } else {
         None
     };
     // F2 `[ui].pi_loop` (default off). Restart required — inject at startup only.
-    let loop_extension = if bridge_extensions_enabled && loop_enabled() {
+    let loop_extension = if host_feature_enabled(PI_LOOP) {
         Some(write_loop_extension().context("failed to create Pi loop extension")?)
     } else {
         None
     };
     // F2 `[ui].pi_ask_user_question` (default off). Restart required — inject at startup only.
-    let ask_user_extension = if bridge_extensions_enabled && ask_user_enabled() {
+    let ask_user_extension = if host_feature_enabled(PI_ASK_USER_QUESTION) {
         Some(
             write_ask_user_extension()
                 .context("failed to create Pi ask_user_question extension")?,
@@ -376,7 +423,7 @@ async fn run(mut args: Args) -> Result<()> {
         None
     };
     // F2 `[ui].pi_btw` (default off). Restart required — inject at startup only.
-    let btw_extension = if bridge_extensions_enabled && btw_enabled() {
+    let btw_extension = if host_feature_enabled(PI_BTW) {
         Some(write_btw_extension().context("failed to create Pi btw extension")?)
     } else {
         None
@@ -468,38 +515,19 @@ async fn run(mut args: Args) -> Result<()> {
     // below and always load regardless of policy.
     let mut resource_policy = ResourcePolicy::load_from_config();
     // Feature-gated package blocks (assets/native_feature_conflicts.toml).
-    if ask_user_extension.is_some() {
-        resource_policy
-            .enabled_native_features
-            .push("pi_ask_user_question".to_owned());
-    }
-    if goal_extension.is_some() {
-        resource_policy
-            .enabled_native_features
-            .push("pi_goal".to_owned());
+    // Enabled host features contribute their declared conflict keys; todo
+    // additionally forces its native tool registration.
+    for spec in &enabled_host_features {
+        if let Some(feature_key) = spec.native_feature_key {
+            resource_policy
+                .enabled_native_features
+                .push(feature_key.to_owned());
+        }
     }
     if todo_extension.is_some() {
         resource_policy
-            .enabled_native_features
-            .push("pi_todo".to_owned());
-        resource_policy
             .forced_native_features
             .push("pi_todo".to_owned());
-    }
-    if workflow_extension.is_some() {
-        resource_policy
-            .enabled_native_features
-            .push("pi_workflows".to_owned());
-    }
-    if subagent_extension.is_some() {
-        resource_policy
-            .enabled_native_features
-            .push("pi_subagents".to_owned());
-    }
-    if btw_extension.is_some() {
-        resource_policy
-            .enabled_native_features
-            .push("pi_btw".to_owned());
     }
     // Mirror Pi's --approve / --no-approve so the catalog's project-resource
     // discovery matches what Pi itself will trust for this run.
@@ -902,6 +930,14 @@ async fn run(mut args: Args) -> Result<()> {
     if subagent_extension.is_some() {
         env.push(("PI_GROK_SUBAGENTS".to_string(), "1".to_string()));
         env.push((
+            "PI_GROK_SUBAGENT_SOCKET".to_string(),
+            subagent_transport
+                .as_ref()
+                .expect("subagent transport exists with extension")
+                .endpoint()
+                .to_string(),
+        ));
+        env.push((
             "PI_GROK_SUBAGENT_EXTENSION_CATALOG".to_string(),
             serde_json::to_string(&subagent_extension_catalog)
                 .expect("Pi-Grok extension catalog must be serializable"),
@@ -916,18 +952,9 @@ async fn run(mut args: Args) -> Result<()> {
             "[]".to_string(),
         ));
     }
-    if workflow_extension.is_some() {
-        // Pi child reads this for extension factory; adapter also checks it
-        // (and F2 config). Set child env + parent process env.
-        env.push(("PI_GROK_WORKFLOWS".to_string(), "1".to_string()));
-        // SAFETY: single-threaded startup; process-local flag for this session.
-        unsafe {
-            std::env::set_var("PI_GROK_WORKFLOWS", "1");
-        }
-    } else {
-        // Avoid a stale parent env from a previous enable in the same shell.
-        unsafe {
-            std::env::remove_var("PI_GROK_WORKFLOWS");
+    for spec in &enabled_host_features {
+        if let Some(env_key) = spec.startup_env {
+            env.push((env_key.to_string(), "1".to_string()));
         }
     }
     if let Some(extension) = goal_extension.as_ref() {
@@ -1113,7 +1140,7 @@ async fn run(mut args: Args) -> Result<()> {
     let _rollback_extension = rollback_ext;
 
     let initial_models = bootstrap.acp_models();
-    let initial_commands = bootstrap.acp_commands();
+    let initial_commands = bootstrap.acp_commands(workflows_enabled);
     let session_id = bootstrap.session_id().to_string();
     let session_title = bootstrap
         .session_title()
@@ -1131,6 +1158,8 @@ async fn run(mut args: Args) -> Result<()> {
             context_breakdown,
             plan_mode_control,
             goal_control,
+            subagent_transport,
+            workflows_enabled,
         )
         .context("failed to restore Pi plan-mode state")?,
     );
@@ -1181,6 +1210,7 @@ async fn run(mut args: Args) -> Result<()> {
             hide_new_worktree: true,
             changelog_url: Some("https://github.com/Dwsy/grok-pi/blob/main/CHANGELOG.MD"),
             enable_voice_dictation: true,
+            host_features: host_feature_manifest.clone(),
         },
     );
     connection.session_recap_available = true;
@@ -1216,747 +1246,16 @@ async fn run(mut args: Args) -> Result<()> {
     .await
 }
 
-/// Best-effort host terminal size for Remote TUI viewport (Pi child has no TTY).
-fn host_terminal_size() -> Option<(u16, u16)> {
-    #[cfg(unix)]
-    {
-        // SAFETY: ioctl(TIOCGWINSZ) on stdout; fails cleanly when not a TTY.
-        unsafe {
-            let mut ws: libc::winsize = std::mem::zeroed();
-            if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0
-                && ws.ws_col > 0
-                && ws.ws_row > 0
-            {
-                return Some((ws.ws_col, ws.ws_row));
-            }
-        }
-    }
-    None
-}
-
-/// Feature flags that default to ON. Explicit `0`/`false`/`off`/`no` disables.
-/// Unset or any other value (including `1`) enables.
-fn env_flag_default_on(name: &str) -> bool {
-    match std::env::var(name) {
-        Err(_) => true,
-        Ok(value) => {
-            let v = value.trim();
-            !(v.eq_ignore_ascii_case("0")
-                || v.eq_ignore_ascii_case("false")
-                || v.eq_ignore_ascii_case("off")
-                || v.eq_ignore_ascii_case("no"))
-        }
-    }
-}
-
-/// Experimental features default to OFF and require an explicit truthy value.
-fn env_flag_default_off(name: &str) -> bool {
-    match std::env::var(name) {
-        Ok(value) => matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "on" | "yes"
-        ),
-        Err(_) => false,
-    }
-}
-
-// ── Extension self-heal (VSCode-style binary search) ─────────────────────────
-//
-// When an extension crashes the Pi RPC child during bootstrap, grok-pi used to
-// exit with an opaque error. Now we:
-//
-// 1. Confirm Pi boots with zero extensions (sanity check).
-// 2. Binary-search the ordered `--extension` list to isolate the culprit.
-// 3. Print a diagnostic naming the bad extension.
-// 4. Relaunch without it (self-heal) so the user is never stuck.
-//
-// The user can run `grok-pi -ne --no-bridge-extensions` to skip all extensions.
-
-const PI_BOOTSTRAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-
-async fn bootstrap_with_deadline<T>(
-    future: impl Future<Output = anyhow::Result<T>>,
-    deadline: std::time::Duration,
-) -> anyhow::Result<T> {
-    tokio::time::timeout(deadline, future).await.map_err(|_| {
-        anyhow::anyhow!(
-            "Pi RPC bootstrap timed out after {} ms",
-            deadline.as_millis()
-        )
-    })?
-}
-
-/// Spawn Pi with the full extension set. If bootstrap fails, run the
-/// self-heal bisection and return a working process.
-async fn spawn_with_extension_self_heal(
-    args: &Args,
-    cwd: &std::path::Path,
-    pi_args: Vec<String>,
-    env: &[(String, String)],
-) -> Result<(pi_grok_adapter::PiProcess, PiBootstrap, Vec<String>)> {
-    let config = SpawnConfig {
-        program: args.pi_bin.clone(),
-        prefix_args: args.pi_prefix_args.clone(),
-        cwd: cwd.to_path_buf(),
-        pi_args: pi_args.clone(),
-        env: env.to_vec(),
-    };
-
-    let process = PiRpc::spawn(config).await?;
-    match bootstrap_with_deadline(PiBootstrap::load(&process.rpc), PI_BOOTSTRAP_TIMEOUT).await {
-        Ok(bootstrap) => return Ok((process, bootstrap, pi_args)),
-        Err(error) => {
-            process.rpc.kill().await;
-            tracing::warn!(%error, "Pi bootstrap failed; starting extension self-heal");
-        }
-    }
-
-    // Extract extension paths from pi_args (pairs: "--extension" <path>).
-    let ext_paths = extract_extension_paths(&pi_args);
-    if ext_paths.is_empty() {
-        // No extensions to bisect — the failure is not extension-related.
-        anyhow::bail!(
-            "Pi RPC bootstrap failed and no extensions are loaded.\n\
-             Try: grok-pi -ne --no-bridge-extensions"
-        );
-    }
-
-    // Step 1: Confirm Pi boots with zero extensions.
-    let no_ext_args = disable_all_extensions(&pi_args);
-    let probe_config = SpawnConfig {
-        program: args.pi_bin.clone(),
-        prefix_args: args.pi_prefix_args.clone(),
-        cwd: cwd.to_path_buf(),
-        pi_args: no_ext_args.clone(),
-        env: env.to_vec(),
-    };
-    let probe = PiRpc::spawn(probe_config).await?;
-    match bootstrap_with_deadline(PiBootstrap::load(&probe.rpc), PI_BOOTSTRAP_TIMEOUT).await {
-        Ok(_) => {
-            probe.rpc.kill().await;
-        }
-        Err(e) => {
-            probe.rpc.kill().await;
-            anyhow::bail!(
-                "Pi RPC bootstrap fails even with zero extensions.\n\
-                 This is not an extension problem.\n\
-                 Error: {e}"
-            );
-        }
-    }
-
-    // Step 2: Binary search for the culprit extension.
-    let culprit = bisect_extension_culprit(args, cwd, &no_ext_args, env, &ext_paths).await;
-
-    match culprit {
-        Some(bad_path) => {
-            let display = std::path::Path::new(&bad_path)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| bad_path.clone());
-
-            eprintln!();
-            eprintln!("\x1b[1;31m✗ Extension crash detected\x1b[0m");
-            eprintln!("  Culprit: \x1b[1m{display}\x1b[0m");
-            eprintln!("  Path:    {bad_path}");
-            eprintln!();
-            eprintln!("  \x1b[1mSelf-healing:\x1b[0m relaunching without this extension.");
-            eprintln!();
-            eprintln!(
-                "  To disable all extensions:  \x1b[1mgrok-pi -ne --no-bridge-extensions\x1b[0m"
-            );
-            eprintln!(
-                "  To permanently block it, add to {}/config.toml:",
-                home::display_home(&home::effective_grok_home())
-            );
-            eprintln!("    [pi.resources]");
-            eprintln!("    block = [\"{bad_path}\"]");
-            eprintln!("  Or project sidecar: .grok-pi/pi-resources.toml  block = [\"...\"]");
-            eprintln!();
-
-            // After successful bisection: Y / any key = report, only N = skip.
-            prompt_and_maybe_report_ext_crash(&bad_path, "crash");
-
-            // Step 3: Relaunch without the culprit.
-            let healed_args = remove_extension_path(&pi_args, &bad_path);
-            let heal_config = SpawnConfig {
-                program: args.pi_bin.clone(),
-                prefix_args: args.pi_prefix_args.clone(),
-                cwd: cwd.to_path_buf(),
-                pi_args: healed_args.clone(),
-                env: env.to_vec(),
-            };
-            let process = PiRpc::spawn(heal_config).await?;
-            let bootstrap =
-                bootstrap_with_deadline(PiBootstrap::load(&process.rpc), PI_BOOTSTRAP_TIMEOUT)
-                    .await
-                    .context("self-heal relaunch still failed")?;
-            Ok((process, bootstrap, healed_args))
-        }
-        None => {
-            // Bisection couldn't isolate a single culprit (e.g. combination
-            // conflict). Fall back to disabling all extensions.
-            eprintln!();
-            eprintln!("\x1b[1;31m✗ Extension conflict detected\x1b[0m");
-            eprintln!("  Could not isolate a single culprit (possible combination conflict).");
-            eprintln!();
-            eprintln!("  \x1b[1mSelf-healing:\x1b[0m relaunching with all extensions disabled.");
-            eprintln!("  To do this manually:  \x1b[1mgrok-pi -ne --no-bridge-extensions\x1b[0m");
-            eprintln!();
-
-            prompt_and_maybe_report_ext_crash("combo", "combo");
-
-            let process = PiRpc::spawn(SpawnConfig {
-                program: args.pi_bin.clone(),
-                prefix_args: args.pi_prefix_args.clone(),
-                cwd: cwd.to_path_buf(),
-                pi_args: no_ext_args.clone(),
-                env: env.to_vec(),
-            })
-            .await?;
-            let bootstrap =
-                bootstrap_with_deadline(PiBootstrap::load(&process.rpc), PI_BOOTSTRAP_TIMEOUT)
-                    .await
-                    .context("fallback no-extension launch failed")?;
-            Ok((process, bootstrap, no_ext_args))
-        }
-    }
-}
-
-// ── Extension crash telemetry (privacy: name + package_dir only) ─────────────
-
-const DEFAULT_EXT_TELEMETRY_URL: &str = "https://ext-crash-telemetry.dwsycode.workers.dev";
-
-/// After bisection succeeds: interactive confirm then fire-and-forget POST.
-///
-/// Key semantics:
-/// - `N` / `n` → do **not** report
-/// - `Y` / any other key → report
-/// Non-TTY → skip (never block CI / piped stdin).
-fn prompt_and_maybe_report_ext_crash(path_or_label: &str, kind: &str) {
-    use std::io::{IsTerminal, Write};
-
-    if !std::io::stdin().is_terminal() {
-        return;
-    }
-
-    let (ext_name, package_dir) = if kind == "combo" {
-        ("combo".to_owned(), "combo".to_owned())
-    } else {
-        ext_identity_from_path(path_or_label)
-    };
-
-    eprint!(
-        "  Report this {kind} to telemetry (name only: {package_dir})? [Y/n]  \
-(N = no, any other key = yes) "
-    );
-    let _ = std::io::stderr().flush();
-
-    let key = read_one_key_char();
-    match key {
-        Some('n') | Some('N') => {
-            eprintln!("n — skipped report.");
-            return;
-        }
-        Some(c) => eprintln!("{c} — reporting…"),
-        None => eprintln!("— reporting…"),
-    }
-
-    let url = std::env::var("GROK_PI_EXT_TELEMETRY_URL")
-        .or_else(|_| std::env::var("REPORT_URL"))
-        .unwrap_or_else(|_| DEFAULT_EXT_TELEMETRY_URL.to_owned());
-    let endpoint = format!("{}/v1/report", url.trim_end_matches('/'));
-    let body = serde_json::json!({
-        "ext_name": ext_name,
-        "package_dir": package_dir,
-        "kind": kind,
-        "client": "grok-pi",
-    })
-    .to_string();
-
-    // Token required server-side (fail closed). Prefer env, then ~/.grok-pi file.
-    let token = std::env::var("REPORT_TOKEN")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(load_ext_telemetry_token_file);
-    let Some(token) = token else {
-        eprintln!(
-            "  REPORT_TOKEN missing (set env or ~/.grok-pi/ext-telemetry.token); skip report."
-        );
-        return;
-    };
-
-    // Fire-and-forget so self-heal is not blocked on network.
-    std::thread::spawn(move || {
-        let mut cmd = std::process::Command::new("curl");
-        cmd.args([
-            "-sS",
-            "-m",
-            "5",
-            "-X",
-            "POST",
-            &endpoint,
-            "-H",
-            "content-type: application/json",
-            "-H",
-            &format!("authorization: Bearer {token}"),
-            "-d",
-            &body,
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-        let _ = cmd.status();
-    });
-}
-
-fn load_ext_telemetry_token_file() -> Option<String> {
-    let home = home::effective_grok_home();
-    let path = home.join("ext-telemetry.token");
-    let text = std::fs::read_to_string(path).ok()?;
-    let t = text.trim();
-    if t.is_empty() {
-        None
-    } else {
-        Some(t.to_owned())
-    }
-}
-
-/// Privacy-safe identity from an extension path (no absolute path returned).
-fn ext_identity_from_path(input: &str) -> (String, String) {
-    let raw = input.replace('\\', "/");
-    let parts: Vec<&str> = raw.split('/').filter(|p| !p.is_empty()).collect();
-
-    if let Some(nm) = parts.iter().rposition(|p| *p == "node_modules") {
-        if nm + 1 < parts.len() {
-            let a = parts[nm + 1];
-            if a.starts_with('@') && nm + 2 < parts.len() {
-                let name = parts[nm + 2].to_owned();
-                let pkg = format!("{a}/{name}");
-                return (name, pkg);
-            }
-            return (a.to_owned(), a.to_owned());
-        }
-    }
-
-    if let Some(ei) = parts.iter().rposition(|p| *p == "extensions") {
-        if ei + 1 < parts.len() && !parts[ei + 1].contains('.') {
-            let d = parts[ei + 1].to_owned();
-            return (d.clone(), d);
-        }
-    }
-
-    let leaf = parts.last().copied().unwrap_or("unknown");
-    let name = leaf
-        .trim_end_matches(".ts")
-        .trim_end_matches(".js")
-        .trim_end_matches(".mjs")
-        .to_owned();
-    if parts.len() >= 2 {
-        let parent = parts[parts.len() - 2];
-        if parent != "node_modules" && !parent.starts_with('.') {
-            return (name, parent.to_owned());
-        }
-    }
-    (name.clone(), name)
-}
-
-/// Read a single key (raw mode on Unix). Falls back to first char of a line.
-fn read_one_key_char() -> Option<char> {
-    #[cfg(unix)]
-    {
-        if let Some(c) = read_one_key_raw_unix() {
-            return Some(c);
-        }
-    }
-    let mut line = String::new();
-    match std::io::stdin().read_line(&mut line) {
-        Ok(0) => None,
-        Ok(_) => line.chars().next().filter(|c| *c != '\n' && *c != '\r'),
-        Err(_) => None,
-    }
-}
-
-#[cfg(unix)]
-fn read_one_key_raw_unix() -> Option<char> {
-    use std::io::Read;
-    use std::os::fd::AsRawFd;
-
-    let stdin = std::io::stdin();
-    let fd = stdin.as_raw_fd();
-    // SAFETY: termios get/set on the process stdin fd; restored before return.
-    unsafe {
-        let mut old: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(fd, &mut old) != 0 {
-            return None;
-        }
-        let mut raw = old;
-        raw.c_lflag &= !(libc::ICANON | libc::ECHO);
-        raw.c_cc[libc::VMIN] = 1;
-        raw.c_cc[libc::VTIME] = 0;
-        if libc::tcsetattr(fd, libc::TCSANOW, &raw) != 0 {
-            return None;
-        }
-        let mut buf = [0u8; 1];
-        let n = {
-            let mut lock = stdin.lock();
-            lock.read(&mut buf).unwrap_or(0)
-        };
-        let _ = libc::tcsetattr(fd, libc::TCSANOW, &old);
-        if n == 0 {
-            return None;
-        }
-        Some(buf[0] as char)
-    }
-}
-
-/// F2 `[ui].pi_herdr` — report lifecycle state to Herdr for this process.
-/// Missing/invalid config defaults off; outside Herdr the extension is inert.
-fn herdr_enabled() -> bool {
-    let config = xai_grok_shell::config::load_effective_config().ok();
-    herdr_enabled_from_config(config.as_ref())
-}
-
-fn herdr_enabled_from_config(config: Option<&toml::Value>) -> bool {
-    config
-        .and_then(|root| root.get("ui"))
-        .and_then(|ui| ui.get("pi_herdr"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(false)
-}
-
-/// `[ui].pi_bash` — switch for grok-pi's enhanced Bash bridge only.
-/// Eval version/visibility are independent. An explicitly-set `PI_GROK_BASH`
-/// environment variable remains a process-local override; otherwise F2/TOML is
-/// authoritative. Missing/invalid config defaults on.
-fn bash_bridge_enabled() -> bool {
-    if std::env::var_os("PI_GROK_BASH").is_some() {
-        return env_flag_default_on("PI_GROK_BASH");
-    }
-    let config = xai_grok_shell::config::load_effective_config().ok();
-    bash_bridge_enabled_from_config(config.as_ref())
-}
-
-fn bash_bridge_enabled_from_config(config: Option<&toml::Value>) -> bool {
-    config
-        .and_then(|root| root.get("ui"))
-        .and_then(|ui| ui.get("pi_bash"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(true)
-}
-
-const DEFAULT_BASH_MAX_WAIT_MINS: &str = "4.5";
-
-fn resolve_bash_max_wait_mins(cli: Option<f64>, inherited: Option<&str>) -> String {
-    cli.map(|value| value.to_string())
-        .or_else(|| inherited.map(str::to_owned))
-        .unwrap_or_else(|| DEFAULT_BASH_MAX_WAIT_MINS.to_string())
-}
-
-/// Adapter background/kill RPC is valid only while the enhanced Bash half of
-/// the shared Bash/Eval extension is active. Eval-only sessions still inject
-/// the bundle, but must expose no Bash control metadata to the host adapter.
-fn bash_control_meta_for_adapter(
-    bash_enabled: bool,
-    extension: Option<&bash_extension::BashExtension>,
-) -> Option<std::path::PathBuf> {
-    extension
-        .filter(|_| bash_enabled)
-        .map(|extension| extension.control_meta_path().to_path_buf())
-}
-
-/// `[ui].pi_eval` — select the mutually exclusive Eval bridge generation.
-/// Only an explicit `"v2"` opts into Eval Bridge v2; missing/invalid values preserve v1.
-fn eval_version() -> &'static str {
-    let config = xai_grok_shell::config::load_effective_config().ok();
-    eval_version_from_config(config.as_ref())
-}
-
-fn eval_version_from_config(config: Option<&toml::Value>) -> &'static str {
-    match config
-        .and_then(|root| root.get("ui"))
-        .and_then(|ui| ui.get("pi_eval"))
-        .and_then(toml::Value::as_str)
-    {
-        Some("v2") => "v2",
-        _ => "v1",
-    }
-}
-
-/// `[ui].pi_eval_v2_language` — select Eval v2 language exposure.
-/// Missing or invalid values preserve the pre-selector JavaScript-only default.
-fn eval_v2_language() -> &'static str {
-    let config = xai_grok_shell::config::load_effective_config().ok();
-    eval_v2_language_from_config(config.as_ref())
-}
-
-fn eval_v2_language_from_config(config: Option<&toml::Value>) -> &'static str {
-    match config
-        .and_then(|root| root.get("ui"))
-        .and_then(|ui| ui.get("pi_eval_v2_language"))
-        .and_then(toml::Value::as_str)
-    {
-        Some("py") => "py",
-        Some("all") => "all",
-        _ => "js",
-    }
-}
-
-/// `[ui].pi_eval_v2_only` — force Eval v2 and isolate the top-level model to Eval.
-fn eval_v2_only_enabled() -> bool {
-    let config = xai_grok_shell::config::load_effective_config().ok();
-    eval_v2_only_enabled_from_config(config.as_ref())
-}
-
-fn eval_v2_only_enabled_from_config(config: Option<&toml::Value>) -> bool {
-    config
-        .and_then(|root| root.get("ui"))
-        .and_then(|ui| ui.get("pi_eval_v2_only"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(false)
-}
-
-fn eval_v2_only_tool_policy_applies(
-    pi_args: &[String],
-    bridge_extensions_enabled: bool,
-    eval_v2_only: bool,
-) -> bool {
-    bridge_extensions_enabled
-        && eval_v2_only
-        && !has_explicit_tools_arg(pi_args)
-        && !pi_args
-            .iter()
-            .any(|arg| matches!(arg.as_str(), "--no-tools" | "-nt"))
-}
-
-fn normal_f2_tool_policy_applies(
-    pi_args: &[String],
-    bridge_extensions_enabled: bool,
-    eval_v2_only_tool_policy_applied: bool,
-) -> bool {
-    bridge_extensions_enabled
-        && !eval_v2_only_tool_policy_applied
-        && should_inject_tools_extension(pi_args)
-}
-
-/// F2 `[ui].pi_subagents` — enable built-in Pi child-session subagents.
-/// Missing/invalid config preserves the product's existing default-on behavior.
-fn subagents_enabled() -> bool {
-    let config = xai_grok_shell::config::load_effective_config().ok();
-    subagents_enabled_from_config(config.as_ref())
-}
-
-fn subagents_enabled_from_config(config: Option<&toml::Value>) -> bool {
-    config
-        .and_then(|root| root.get("ui"))
-        .and_then(|ui| ui.get("pi_subagents"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(true)
-}
-
-/// F2 `[ui].pi_todo` — enable the built-in structured todo tool.
-/// Missing/invalid config preserves the default-on behavior.
-fn todo_enabled() -> bool {
-    let config = xai_grok_shell::config::load_effective_config().ok();
-    todo_enabled_from_config(config.as_ref())
-}
-
-fn todo_enabled_from_config(config: Option<&toml::Value>) -> bool {
-    config
-        .and_then(|root| root.get("ui"))
-        .and_then(|ui| ui.get("pi_todo"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(true)
-}
-
-/// F2 `[ui].pi_workflows` — enable upstream Rhai workflows for this process.
-fn workflows_enabled() -> bool {
-    let Ok(config) = xai_grok_shell::config::load_effective_config() else {
-        return false;
-    };
-    config
-        .get("ui")
-        .and_then(|ui| ui.get("pi_workflows"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(false)
-}
-
-/// F2 `[ui].pi_goal` — enable Grok-style /goal for this process.
-fn goal_enabled() -> bool {
-    let Ok(config) = xai_grok_shell::config::load_effective_config() else {
-        return false;
-    };
-    config
-        .get("ui")
-        .and_then(|ui| ui.get("pi_goal"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(false)
-}
-
-/// F2 `[ui].pi_loop` — enable Grok-style /loop scheduler for this process.
-fn loop_enabled() -> bool {
-    let Ok(config) = xai_grok_shell::config::load_effective_config() else {
-        return false;
-    };
-    config
-        .get("ui")
-        .and_then(|ui| ui.get("pi_loop"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(false)
-}
-
-/// F2 `[ui].pi_btw` — enable native /btw for this process.
-fn btw_enabled() -> bool {
-    let Ok(config) = xai_grok_shell::config::load_effective_config() else {
-        return false;
-    };
-    config
-        .get("ui")
-        .and_then(|ui| ui.get("pi_btw"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(false)
-}
-
-/// F2 `[ui].pi_ask_user_question` — enable native Q&A for this process.
-fn ask_user_enabled() -> bool {
-    let Ok(config) = xai_grok_shell::config::load_effective_config() else {
-        return false;
-    };
-    config
-        .get("ui")
-        .and_then(|ui| ui.get("pi_ask_user_question"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(false)
-}
-
-/// Extract all `--extension <path>` values from pi_args.
-fn extract_extension_paths(pi_args: &[String]) -> Vec<String> {
-    let mut paths = Vec::new();
-    let mut i = 0;
-    while i < pi_args.len() {
-        if pi_args[i] == "--extension" && i + 1 < pi_args.len() {
-            paths.push(pi_args[i + 1].clone());
-            i += 2;
-        } else {
-            i += 1;
-        }
-    }
-    paths
-}
-
-/// Remove explicit extension paths and disable Pi extension auto-discovery.
-fn disable_all_extensions(pi_args: &[String]) -> Vec<String> {
-    let mut result = Vec::with_capacity(pi_args.len() + 1);
-    let mut i = 0;
-    while i < pi_args.len() {
-        if pi_args[i] == "--extension" && i + 1 < pi_args.len() {
-            i += 2;
-        } else {
-            result.push(pi_args[i].clone());
-            i += 1;
-        }
-    }
-    if !result.iter().any(|arg| arg == "--no-extensions") {
-        result.push("--no-extensions".to_owned());
-    }
-    result
-}
-
-/// Remove a specific `--extension <path>` pair from pi_args.
-fn remove_extension_path(pi_args: &[String], path: &str) -> Vec<String> {
-    let mut result = Vec::with_capacity(pi_args.len());
-    let mut i = 0;
-    while i < pi_args.len() {
-        if pi_args[i] == "--extension" && i + 1 < pi_args.len() && pi_args[i + 1] == path {
-            i += 2;
-        } else {
-            result.push(pi_args[i].clone());
-            i += 1;
-        }
-    }
-    result
-}
-
-/// Binary search the extension list to find the one that crashes Pi.
-/// Returns the path of the culprit, or None if isolation fails.
-async fn bisect_extension_culprit(
-    args: &Args,
-    cwd: &std::path::Path,
-    base_args: &[String],
-    env: &[(String, String)],
-    ext_paths: &[String],
-) -> Option<String> {
-    // If the full set passes, there's no culprit (shouldn't happen).
-    if probe_extensions_ok(args, cwd, base_args, env, ext_paths).await {
-        return None;
-    }
-
-    // Binary search: find the minimal prefix that fails.
-    let mut lo = 0usize;
-    let mut hi = ext_paths.len();
-    while lo + 1 < hi {
-        let mid = (lo + hi) / 2;
-        if probe_extensions_ok(args, cwd, base_args, env, &ext_paths[..mid]).await {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-
-    // Verify the single extension at index `lo` is the culprit.
-    let suspect = &ext_paths[lo];
-    if !probe_extensions_ok(args, cwd, base_args, env, std::slice::from_ref(suspect)).await {
-        return Some(suspect.clone());
-    }
-
-    // The suspect passes alone — it's a combination conflict.
-    // Try each extension individually to find one that fails alone.
-    for path in ext_paths {
-        if !probe_extensions_ok(args, cwd, base_args, env, std::slice::from_ref(path)).await {
-            return Some(path.clone());
-        }
-    }
-
-    None
-}
-
-/// Probe whether Pi boots successfully with the given subset of extensions.
-async fn probe_extensions_ok(
-    args: &Args,
-    cwd: &std::path::Path,
-    base_args: &[String],
-    env: &[(String, String)],
-    subset: &[String],
-) -> bool {
-    let mut probe_args = base_args.to_vec();
-    for path in subset {
-        probe_args.extend(["--extension".to_string(), path.clone()]);
-    }
-    let config = SpawnConfig {
-        program: args.pi_bin.clone(),
-        prefix_args: args.pi_prefix_args.clone(),
-        cwd: cwd.to_path_buf(),
-        pi_args: probe_args,
-        env: env.to_vec(),
-    };
-    let Ok(process) = PiRpc::spawn(config).await else {
-        return false;
-    };
-    let ok = bootstrap_with_deadline(PiBootstrap::load(&process.rpc), PI_BOOTSTRAP_TIMEOUT)
-        .await
-        .is_ok();
-    process.rpc.kill().await;
-    ok
-}
-
 #[cfg(test)]
 mod env_flag_tests {
+    use super::runtime_config::{
+        bash_bridge_enabled_from_config, eval_v2_only_enabled_from_config, eval_version_from_config,
+    };
     use super::{
-        Args, PI_GROK_NATIVE_COMMANDS, bash_bridge_enabled_from_config,
-        bash_control_meta_for_adapter, bootstrap_with_deadline, disable_all_extensions,
-        env_flag_default_off, env_flag_default_on, eval_v2_only_enabled_from_config,
-        eval_v2_only_tool_policy_applies, eval_version_from_config, herdr_enabled_from_config,
-        normal_f2_tool_policy_applies, resolve_bash_max_wait_mins, subagents_enabled_from_config,
-        todo_enabled_from_config,
+        Args, PI_GROK_NATIVE_COMMANDS, bash_control_meta_for_adapter, bootstrap_with_deadline,
+        disable_all_extensions, env_flag_default_off, env_flag_default_on,
+        eval_v2_only_tool_policy_applies, normal_f2_tool_policy_applies,
+        resolve_bash_max_wait_mins,
     };
     use clap::Parser;
 
@@ -1970,22 +1269,6 @@ mod env_flag_tests {
         .expect_err("pending bootstrap must time out");
 
         assert!(error.to_string().contains("Pi RPC bootstrap timed out"));
-    }
-
-    #[test]
-    fn herdr_integration_defaults_off_and_honors_explicit_true() {
-        assert!(!herdr_enabled_from_config(None));
-
-        let missing: toml::Value = toml::from_str("[ui]\n").expect("parse missing config");
-        assert!(!herdr_enabled_from_config(Some(&missing)));
-
-        let enabled: toml::Value =
-            toml::from_str("[ui]\npi_herdr = true\n").expect("parse enabled config");
-        assert!(herdr_enabled_from_config(Some(&enabled)));
-
-        let disabled: toml::Value =
-            toml::from_str("[ui]\npi_herdr = false\n").expect("parse disabled config");
-        assert!(!herdr_enabled_from_config(Some(&disabled)));
     }
 
     #[test]
@@ -2084,38 +1367,6 @@ mod env_flag_tests {
         let no_builtins = vec!["--no-builtin-tools".to_string()];
         assert!(eval_v2_only_tool_policy_applies(&no_builtins, true, true));
         assert!(!normal_f2_tool_policy_applies(&no_builtins, true, true));
-    }
-
-    #[test]
-    fn subagents_default_on_and_honor_explicit_off() {
-        assert!(subagents_enabled_from_config(None));
-
-        let missing: toml::Value = toml::from_str("[ui]\n").expect("parse missing config");
-        assert!(subagents_enabled_from_config(Some(&missing)));
-
-        let enabled: toml::Value =
-            toml::from_str("[ui]\npi_subagents = true\n").expect("parse enabled config");
-        assert!(subagents_enabled_from_config(Some(&enabled)));
-
-        let disabled: toml::Value =
-            toml::from_str("[ui]\npi_subagents = false\n").expect("parse disabled config");
-        assert!(!subagents_enabled_from_config(Some(&disabled)));
-    }
-
-    #[test]
-    fn todo_default_on_and_honors_explicit_off() {
-        assert!(todo_enabled_from_config(None));
-
-        let missing: toml::Value = toml::from_str("[ui]\n").expect("parse missing config");
-        assert!(todo_enabled_from_config(Some(&missing)));
-
-        let enabled: toml::Value =
-            toml::from_str("[ui]\npi_todo = true\n").expect("parse enabled config");
-        assert!(todo_enabled_from_config(Some(&enabled)));
-
-        let disabled: toml::Value =
-            toml::from_str("[ui]\npi_todo = false\n").expect("parse disabled config");
-        assert!(!todo_enabled_from_config(Some(&disabled)));
     }
 
     #[test]

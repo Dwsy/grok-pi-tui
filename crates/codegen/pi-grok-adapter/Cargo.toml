@@ -23,7 +23,7 @@ serde_json = { workspace = true, features = ["unbounded_depth"] }
 sha2 = { workspace = true }
 rusqlite = { version = "0.37", features = ["bundled"] }
 chrono = { workspace = true }
-tokio = { workspace = true, features = ["process", "io-util", "sync", "rt", "macros", "time"] }
+tokio = { workspace = true, features = ["process", "io-util", "net", "sync", "rt", "macros", "time"] }
 tracing = { workspace = true }
 xai-acp-lib = { workspace = true }
 xai-workflow = { path = "../xai-workflow" }

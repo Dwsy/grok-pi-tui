@@ -311,7 +311,7 @@ fn command_catalog_is_pi_owned_and_deduplicated() {
             ..Default::default()
         },
     ];
-    let serialized = serde_json::to_value(command_catalog(&commands)).unwrap();
+    let serialized = serde_json::to_value(command_catalog(&commands, false)).unwrap();
     let text = serialized.to_string();
     assert_eq!(text.matches("review").count(), 1);
     assert!(text.contains("Review changes"));
@@ -337,7 +337,7 @@ fn command_catalog_carries_pi_argument_completions_in_meta() {
             description: String::new(),
         }],
     }];
-    let catalog = command_catalog(&commands);
+    let catalog = command_catalog(&commands, false);
     // Workflows may inject extra slash entries when enabled; assert the gapp row.
     let cmd = catalog
         .iter()

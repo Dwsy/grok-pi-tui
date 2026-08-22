@@ -196,11 +196,15 @@ mod tests {
         let tools_v1 = read("tools-v1.ts");
         let teams = read("teams.ts");
         let v2 = read("v2.ts");
-        assert!(bridge.contains("export type BridgeKind = \"spawned\" | \"finished\";"));
+        assert!(
+            bridge.contains(
+                "export type BridgeKind = \"spawned\" | \"finished\" | \"child_update\";"
+            )
+        );
         assert!(bridge.contains("pi.appendEntry(BRIDGE_TYPE, envelope);"));
         assert!(!index.contains("PROGRESS_INTERVAL_MS"));
         assert!(!index.contains("emitProgress("));
-        assert!(!index.contains("emit(record, \"child_update\""));
+        assert!(runtime.contains("this.emit(record, \"child_update\""));
         assert!(index.contains("process.env.PI_GROK_SUBAGENTS !== \"1\""));
         assert!(index.contains("process.env.PI_GROK_SUBAGENTS_V2 === \"1\""));
         assert!(tools_v1.contains("name: \"spawn_subagent\""));

@@ -257,33 +257,8 @@ impl PiAgent {
         )))
     }
 
-    /// True when F2 `[ui].pi_workflows` is on (and/or parent env set by grok-pi).
-    ///
-    /// Prefer disk config: env alone is unreliable because `PI_GROK_WORKFLOWS`
-    /// was historically only injected into the Pi *child* process, while the
-    /// adapter runs in the *parent* (grok-pi) process.
-    pub(super) fn workflows_extension_enabled() -> bool {
-        if let Ok(config) = xai_grok_shell::config::load_effective_config() {
-            if config
-                .get("ui")
-                .and_then(|ui| ui.get("pi_workflows"))
-                .and_then(|v| v.as_bool())
-                == Some(true)
-            {
-                return true;
-            }
-        }
-        match std::env::var("PI_GROK_WORKFLOWS") {
-            Ok(v) => {
-                let v = v.trim();
-                v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("on")
-            }
-            Err(_) => false,
-        }
-    }
-
     pub(super) fn ensure_workflow_host(&self) -> Result<()> {
-        if !Self::workflows_extension_enabled() {
+        if !self.workflows_enabled {
             bail!(
                 "Pi workflows is off. F2 → Agent → Pi workflows → on, fully quit, then restart grok-pi (extension injects only at startup)."
             );

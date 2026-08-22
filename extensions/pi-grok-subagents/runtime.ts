@@ -8,6 +8,7 @@ import {
   getAgentDir,
   SessionManager,
   SettingsManager,
+  type AgentSessionEvent,
   type ExtensionAPI,
   type ExtensionContext,
   type ToolDefinition,
@@ -19,13 +20,16 @@ import {
   SHORT_SUBAGENT_ID_LENGTH,
   extractUsage,
   requireText,
+  textFromContent,
 } from "./shared.ts";
 import { profileFor, selectedDefinition } from "./definitions.ts";
 import {
   createBridgeEmitter,
+  latestPersistedRecords,
   persist,
   shortSubagentIdFor,
   type BridgeEmitter,
+  type PersistedRecord,
   type SubagentRecord,
 } from "./bridge.ts";
 
@@ -66,6 +70,32 @@ function lastAssistantText(session: SubagentRecord["session"]): string {
   return "";
 }
 
+
+function childUpdate(event: AgentSessionEvent): Record<string, unknown> | undefined {
+  if (event.type === "message_update") {
+    if (event.assistantMessageEvent.type === "text_delta") {
+      return { type: "assistant_delta", text: event.assistantMessageEvent.delta };
+    }
+    if (event.assistantMessageEvent.type === "thinking_delta") {
+      return { type: "thinking_delta", text: event.assistantMessageEvent.delta };
+    }
+  }
+  if (event.type === "message_end" && event.message.role === "user") {
+    const text = textFromContent(event.message.content);
+    return text ? { type: "user", text } : undefined;
+  }
+  if (event.type === "tool_execution_start") {
+    return { type: "tool_call", toolCallId: event.toolCallId, toolName: event.toolName, args: event.args };
+  }
+  if (event.type === "tool_execution_update") {
+    return { type: "tool_update", toolCallId: event.toolCallId, toolName: event.toolName, partialResult: event.partialResult };
+  }
+  if (event.type === "tool_execution_end") {
+    return { type: "tool_result", toolCallId: event.toolCallId, toolName: event.toolName, result: event.result, isError: event.isError };
+  }
+  return undefined;
+}
+
 export class SubagentRuntime {
   readonly records = new Map<string, SubagentRecord>();
   private readonly queuedBackground: Array<{ record: SubagentRecord; run: () => Promise<void> }> = [];
@@ -80,10 +110,73 @@ export class SubagentRuntime {
     this.emit = createBridgeEmitter(pi);
   }
 
-  onSessionStart(): void {
-    // Historical subagents are not re-emitted into the parent session:
-    // rebuild belongs to the adapter, reading state/v1 snapshots.
+  onSessionStart(ctx: ExtensionContext): void {
+    // Rebuild Pager state over the transient bridge only. The durable source is
+    // the parent state snapshot plus each child's own Pi session JSONL; replay
+    // must not append anything to the active parent session.
+    for (const snapshot of latestPersistedRecords(ctx)) {
+      this.emit(snapshot, "spawned", {
+        parentToolCallId: snapshot.parentToolCallId,
+        description: snapshot.description,
+        subagentType: snapshot.type,
+        background: snapshot.background,
+        capabilityMode: snapshot.capabilityMode,
+        model: snapshot.modelId,
+        prompt: snapshot.prompt,
+      }, true);
+      this.replayChildTranscript(snapshot);
+      const status = snapshot.status === "running" ? "cancelled" : snapshot.status;
+      this.emit(snapshot, "finished", {
+        status,
+        durationMs: Math.max(0, Date.now() - snapshot.startedAt),
+        turns: snapshot.turnCount,
+        toolCalls: snapshot.toolCallCount,
+        tokensUsed: snapshot.tokensUsed,
+        error: snapshot.status === "running" ? "Pi host restarted before child completion" : snapshot.lastError,
+      }, true);
+    }
     this.publishTodoBacking();
+  }
+
+  private replayChildTranscript(snapshot: PersistedRecord): void {
+    let entries: readonly unknown[];
+    try {
+      entries = SessionManager.open(snapshot.childSessionFile).getBranch();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.emit(snapshot, "finished", {
+        status: "failed", durationMs: 0, turns: snapshot.turnCount, toolCalls: snapshot.toolCallCount,
+        tokensUsed: snapshot.tokensUsed, error: `child transcript is unavailable: ${message}`,
+      }, true);
+      return;
+    }
+    for (const entry of entries) {
+      const message = (entry as { message?: unknown }).message;
+      if (typeof message !== "object" || message === null) continue;
+      const child = message as { role?: unknown; content?: unknown; toolCallId?: unknown; toolName?: unknown; isError?: unknown };
+      if (child.role === "user") {
+        const text = textFromContent(child.content);
+        if (text) this.emit(snapshot, "child_update", { update: { type: "user", text } }, true);
+        continue;
+      }
+      if (child.role === "assistant" && Array.isArray(child.content)) {
+        for (const block of child.content) {
+          if (typeof block !== "object" || block === null) continue;
+          const value = block as { type?: unknown; text?: unknown; thinking?: unknown; id?: unknown; name?: unknown; arguments?: unknown };
+          if (value.type === "text" && typeof value.text === "string" && value.text) {
+            this.emit(snapshot, "child_update", { update: { type: "assistant_delta", text: value.text } }, true);
+          } else if (value.type === "thinking" && typeof value.thinking === "string" && value.thinking) {
+            this.emit(snapshot, "child_update", { update: { type: "thinking_delta", text: value.thinking } }, true);
+          } else if (value.type === "toolCall" && typeof value.id === "string" && typeof value.name === "string") {
+            this.emit(snapshot, "child_update", { update: { type: "tool_call", toolCallId: value.id, toolName: value.name, args: value.arguments ?? {} } }, true);
+          }
+        }
+        continue;
+      }
+      if (child.role === "toolResult" && typeof child.toolCallId === "string" && typeof child.toolName === "string") {
+        this.emit(snapshot, "child_update", { update: { type: "tool_result", toolCallId: child.toolCallId, toolName: child.toolName, result: { content: child.content }, isError: child.isError === true } }, true);
+      }
+    }
   }
 
   shutdown(): void {
@@ -123,6 +216,8 @@ export class SubagentRuntime {
       if (event.type === "message_end" && event.message.role === "assistant") {
         record.tokensUsed += extractUsage(event.message);
       }
+      const update = childUpdate(event);
+      if (update) this.emit(record, "child_update", { update });
     });
   }
 

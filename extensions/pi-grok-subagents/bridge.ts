@@ -1,9 +1,10 @@
 /** Bridge envelopes and persistence records for pi-grok-subagents. */
 
+import { connect, type Socket } from "node:net";
 import { SessionManager, type AgentSession, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { BRIDGE_TYPE, SHORT_SUBAGENT_ID_LENGTH, STATE_ENTRY_TYPE, textFromContent, type CapabilityMode } from "./shared.ts";
 
-export type BridgeKind = "spawned" | "finished";
+export type BridgeKind = "spawned" | "finished" | "child_update";
 
 export type BridgeEnvelope = {
   version: 1;
@@ -85,22 +86,26 @@ export type BridgeEmitter = (
   record: BridgeRef,
   kind: BridgeKind,
   payload: Record<string, unknown>,
+  replay?: boolean,
 ) => void;
+
+function createTransientTransport(): Socket | undefined {
+  const endpoint = process.env.PI_GROK_SUBAGENT_SOCKET?.trim();
+  if (!endpoint) return undefined;
+  const socket = connect({ path: endpoint });
+  socket.unref();
+  socket.on("error", () => {});
+  return socket;
+}
 
 export function createBridgeEmitter(pi: ExtensionAPI): BridgeEmitter {
   let nextSequence = 1;
-  return (record, kind, payload) => {
-    // Subagent traffic is UI/transport state, never parent-conversation
-    // content. pi's ExtensionAPI has no emit-without-persist channel, so the
-    // only envelopes allowed into the parent session are the two lifecycle
-    // markers per run; everything a child produces stays in its own session
-    // file, reachable via /subagent-history. Session loads therefore append
-    // nothing, and live runs append exactly two entries.
-    if (kind !== "spawned" && kind !== "finished") return;
+  const transport = createTransientTransport();
+  return (record, kind, payload, replay = false) => {
     const envelope: BridgeEnvelope = {
       version: 1,
       sequence: nextSequence,
-      replay: false,
+      replay,
       kind,
       parentSessionId: record.parentSessionId,
       subagentId: record.id,
@@ -108,7 +113,17 @@ export function createBridgeEmitter(pi: ExtensionAPI): BridgeEmitter {
       payload,
     };
     nextSequence += 1;
-    pi.appendEntry(BRIDGE_TYPE, envelope);
+
+    // Child traffic is transport state, not parent conversation state. The
+    // process-private loopback stream keeps it off disk and out of the parent
+    // SessionManager tree while preserving event order and low latency.
+    transport?.write(`${JSON.stringify({ type: "custom", customType: BRIDGE_TYPE, data: envelope })}\n`);
+
+    // Parent persistence needs only durable lifecycle anchors. Replay and
+    // child_update events must never mutate the parent session JSONL.
+    if (!replay && (kind === "spawned" || kind === "finished")) {
+      pi.appendEntry(BRIDGE_TYPE, envelope);
+    }
   };
 }
 
