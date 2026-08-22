@@ -1,0 +1,26 @@
+{
+  "name": "review",
+  "description": "Exploration, adversarial review, and verification team",
+  "enabled": true,
+  "instructions": "Do not edit files. Divide evidence gathering, correctness review, and verification. Send only actionable findings with file/line or command evidence.",
+  "members": [
+    {
+      "name": "explorer",
+      "agent": "explore",
+      "description": "Change explorer",
+      "task": "Map the relevant implementation and changed surfaces for: {{task}}. Send concrete context and suspicious areas to /root/reviewer and /root/verifier with team_followup_task so late evidence is processed even if either agent is already IDLE."
+    },
+    {
+      "name": "reviewer",
+      "agent": "plan",
+      "description": "Adversarial reviewer",
+      "task": "Perform an adversarial correctness review for: {{task}}. Use explorer messages plus your own inspection; report prioritized findings to your parent."
+    },
+    {
+      "name": "verifier",
+      "agent": "explore",
+      "description": "Validation specialist",
+      "task": "Identify and run safe targeted checks for: {{task}}. Cross-check explorer/reviewer claims when possible and report verified failures or confidence to your parent."
+    }
+  ]
+}

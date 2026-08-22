@@ -22,6 +22,6 @@
       "@earendil-works/pi-agent-old/*": ["../../pi-main/packages/agent-old/src/*"]
     }
   },
-  "include": ["index.ts"],
+  "include": ["*.ts"],
   "exclude": []
 }

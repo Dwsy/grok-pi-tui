@@ -1,0 +1,20 @@
+{
+  "name": "implementation",
+  "description": "Implementation plus independent review team",
+  "enabled": true,
+  "instructions": "The implementer owns edits. The reviewer stays read-only and reviews shared working-tree state. Communicate concrete file paths, test results, and blockers.",
+  "members": [
+    {
+      "name": "implementer",
+      "agent": "general-purpose",
+      "description": "Primary implementer",
+      "task": "Implement the objective end-to-end: {{task}}. Run narrow validation. When the change is ready for review, send a concise change/test summary to /root/reviewer with team_followup_task."
+    },
+    {
+      "name": "reviewer",
+      "agent": "explore",
+      "description": "Independent reviewer",
+      "task": "Review the objective and current codebase while the implementer works: {{task}}. Wait for the implementer's follow-up, inspect the resulting diff/tests, and report concrete defects or approval to your parent."
+    }
+  ]
+}

@@ -165,6 +165,7 @@ const PI_GROK_NATIVE_COMMANDS: &[&str] = &[
     // Native Grok terminal/composer appearance controls.
     "multiline",
     "compact-mode",
+    "eval-display",
     "vim-mode",
     "theme",
     "timestamps",
@@ -457,13 +458,8 @@ async fn run(mut args: Args) -> Result<()> {
     // first-class CLI or passthrough args; F2 pi_config_skill remains the
     // default-on source of truth otherwise.
     let skills_disabled = args.no_skills || pi_args.iter().any(|arg| arg == "--no-skills");
-    if !skills_disabled
-        && let Some(path) = config_skill_path.as_ref()
-    {
-        pi_args.extend([
-            "--skill".to_string(),
-            path.to_string_lossy().into_owned(),
-        ]);
+    if !skills_disabled && let Some(path) = config_skill_path.as_ref() {
+        pi_args.extend(["--skill".to_string(), path.to_string_lossy().into_owned()]);
     }
 
     // ── Resource admission policy ────────────────────────────────────────────
@@ -556,10 +552,10 @@ async fn run(mut args: Args) -> Result<()> {
         herdr_extension.as_ref().map(|extension| extension.path()),
         remote_tui_extension
             .as_ref()
-            .map(|extension| extension.path()),
+            .map(|extension| extension.source_path()),
         shortcut_manager_extension
             .as_ref()
-            .map(|extension| extension.path()),
+            .map(|extension| extension.source_path()),
         rust_tui_bridge_extension
             .as_ref()
             .map(|extension| extension.path()),
@@ -702,13 +698,13 @@ async fn run(mut args: Args) -> Result<()> {
         "grok-pi: remote TUI",
         remote_tui_extension
             .as_ref()
-            .map(|extension| extension.path().to_path_buf()),
+            .map(|extension| extension.source_path().to_path_buf()),
     );
     add_subagent_extension(
         "grok-pi: shortcut manager",
         shortcut_manager_extension
             .as_ref()
-            .map(|extension| extension.path().to_path_buf()),
+            .map(|extension| extension.source_path().to_path_buf()),
     );
     add_subagent_extension(
         "grok-pi: Rust TUI bridge",
@@ -720,7 +716,7 @@ async fn run(mut args: Args) -> Result<()> {
         "grok-pi: subagents",
         subagent_extension
             .as_ref()
-            .map(|extension| extension.path().to_path_buf()),
+            .map(|extension| extension.source_path().to_path_buf()),
     );
     add_subagent_extension(
         "grok-pi: todo",
@@ -756,13 +752,13 @@ async fn run(mut args: Args) -> Result<()> {
         "grok-pi: btw",
         btw_extension
             .as_ref()
-            .map(|extension| extension.path().to_path_buf()),
+            .map(|extension| extension.source_path().to_path_buf()),
     );
     add_subagent_extension(
         "grok-pi: recap",
         recap_extension
             .as_ref()
-            .map(|extension| extension.path().to_path_buf()),
+            .map(|extension| extension.source_path().to_path_buf()),
     );
     add_subagent_extension(
         "grok-pi: context breakdown",
@@ -774,7 +770,7 @@ async fn run(mut args: Args) -> Result<()> {
         "grok-pi: auth",
         auth_extension
             .as_ref()
-            .map(|extension| extension.path().to_path_buf()),
+            .map(|extension| extension.source_path().to_path_buf()),
     );
     add_subagent_extension(
         "grok-pi: export",
@@ -804,7 +800,7 @@ async fn run(mut args: Args) -> Result<()> {
         "grok-pi: rollback",
         rollback_ext
             .as_ref()
-            .map(|extension| extension.path().to_path_buf()),
+            .map(|extension| extension.source_path().to_path_buf()),
     );
     add_subagent_extension(
         "grok-pi: plan mode",
@@ -820,7 +816,7 @@ async fn run(mut args: Args) -> Result<()> {
     for path in [
         subagent_extension
             .as_ref()
-            .map(|extension| extension.path()),
+            .map(|extension| extension.source_path()),
         todo_extension.as_ref().map(|extension| extension.path()),
         workflow_extension
             .as_ref()
@@ -834,12 +830,18 @@ async fn run(mut args: Args) -> Result<()> {
         ask_user_extension
             .as_ref()
             .map(|extension| extension.source_path()),
-        btw_extension.as_ref().map(|extension| extension.path()),
-        recap_extension.as_ref().map(|extension| extension.path()),
+        btw_extension
+            .as_ref()
+            .map(|extension| extension.source_path()),
+        recap_extension
+            .as_ref()
+            .map(|extension| extension.source_path()),
         context_extension
             .as_ref()
             .map(|extension| extension.source_path()),
-        auth_extension.as_ref().map(|extension| extension.path()),
+        auth_extension
+            .as_ref()
+            .map(|extension| extension.source_path()),
         export_extension.as_ref().map(|extension| extension.path()),
         native_commands_extension
             .as_ref()
@@ -849,7 +851,9 @@ async fn run(mut args: Args) -> Result<()> {
             .map(|extension| extension.source_path()),
         tools_extension.as_ref().map(|extension| extension.path()),
         // Rollback extension observes the final built-in registrations.
-        rollback_ext.as_ref().map(|extension| extension.path()),
+        rollback_ext
+            .as_ref()
+            .map(|extension| extension.source_path()),
         // Plan gate runs after all tool registrations and owns no renderer/UI.
         plan_mode_extension
             .as_ref()
@@ -998,10 +1002,7 @@ async fn run(mut args: Args) -> Result<()> {
             "PI_GROK_EVAL_V2_LANGUAGE".to_string(),
             eval_v2_language.to_string(),
         ));
-        env.push((
-            "PI_GROK_BASH_MAX_WAIT_MINS".to_string(),
-            bash_max_wait_mins,
-        ));
+        env.push(("PI_GROK_BASH_MAX_WAIT_MINS".to_string(), bash_max_wait_mins));
         env.push((
             "PI_GROK_BASH_CONTROL_META".to_string(),
             if bash_bridge_runtime_enabled {

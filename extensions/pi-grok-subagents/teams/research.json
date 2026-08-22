@@ -1,0 +1,26 @@
+{
+  "name": "research",
+  "description": "Parallel research, critique, and synthesis team",
+  "enabled": true,
+  "instructions": "Share evidence with explicit absolute agent paths. Keep messages concise and source-grounded. The synthesizer owns the final integrated recommendation.",
+  "members": [
+    {
+      "name": "researcher",
+      "agent": "explore",
+      "description": "Primary researcher",
+      "task": "Investigate the objective deeply: {{task}}. Gather concrete evidence, then send your strongest findings to /root/synthesizer with team_send_message."
+    },
+    {
+      "name": "critic",
+      "agent": "plan",
+      "description": "Critical reviewer",
+      "task": "Independently challenge assumptions, risks, and missing evidence for: {{task}}. Send the most important corrections to /root/synthesizer with team_send_message."
+    },
+    {
+      "name": "synthesizer",
+      "agent": "plan",
+      "description": "Research synthesizer",
+      "task": "Coordinate the research team for: {{task}}. Use team_wait while researcher/critic work, integrate their messages, resolve disagreements from available evidence, and return a concise final synthesis to your parent."
+    }
+  ]
+}
