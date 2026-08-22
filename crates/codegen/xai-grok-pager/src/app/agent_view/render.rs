@@ -2188,7 +2188,7 @@ impl AgentView {
                     buf,
                 );
             }
-            if self.write_edit_hover_popup_ready() {
+            self.write_edit_hover_popup_frame = if self.write_edit_hover_popup_ready() {
                 agent::render_write_edit_hover_popup(
                     buf,
                     layout.scrollback,
@@ -2196,9 +2196,12 @@ impl AgentView {
                     self.hovered_entry,
                     self.last_mouse_pos,
                     self.write_edit_hover_popup_scroll,
+                    self.write_edit_hover_popup_frame.map(|frame| frame.area),
                     &theme,
-                );
-            }
+                )
+            } else {
+                None
+            };
             agent::render_hook_hover_popup(
                 buf,
                 layout.scrollback,

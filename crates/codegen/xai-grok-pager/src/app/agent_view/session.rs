@@ -163,6 +163,7 @@ impl AgentView {
             write_edit_hover_popup_entry: None,
             write_edit_hover_started_at: None,
             write_edit_hover_popup_scroll: 0,
+            write_edit_hover_popup_frame: None,
             pending_text_drag: None,
             drag_selection: None,
             pending_block_drag: None,

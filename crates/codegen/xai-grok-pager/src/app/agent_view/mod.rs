@@ -1029,6 +1029,10 @@ pub struct AgentView {
     pub write_edit_hover_started_at: Option<Instant>,
     /// Independent scroll offset inside the Write/Edit hover popup.
     pub write_edit_hover_popup_scroll: usize,
+    /// Geometry of the last rendered Write/Edit hover popup, exported by the
+    /// render pass each frame (cleared when the popup is not drawn) so mouse
+    /// handling can keep the popup alive while the pointer rests on it.
+    pub write_edit_hover_popup_frame: Option<crate::views::agent::WriteEditPopupFrame>,
     /// Pending markdown text drag before the pointer crosses the drag threshold.
     pub pending_text_drag: Option<PendingTextDrag>,
     /// Active markdown text drag selection.

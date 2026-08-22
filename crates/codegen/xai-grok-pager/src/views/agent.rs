@@ -693,7 +693,28 @@ pub fn render_hook_hover_popup(
     }
 }
 
+/// Geometry and content metadata of the last painted Write/Edit hover popup.
+///
+/// Exported by [`render_write_edit_hover_popup`] every frame (cleared when the
+/// popup is not drawn) so input handling can treat the overlay itself as a
+/// stable hover zone instead of dismissing the popup as soon as the pointer
+/// crosses onto it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteEditPopupFrame {
+    /// Outer rect including borders — used for hit-testing.
+    pub area: Rect,
+    /// Inner text area inside the borders.
+    pub inner: Rect,
+    /// Total expanded line count of the popup content.
+    pub total_lines: usize,
+}
+
 /// Render a floating popup with expanded Write/Edit details for collapsed tool rows.
+///
+/// Returns the painted popup frame, or `None` when nothing was drawn.
+/// `keep_alive_area` is the previous frame's popup rect: while the pointer
+/// rests on the popup itself (outside the hovered row), it keeps rendering at
+/// a frozen position instead of vanishing.
 pub fn render_write_edit_hover_popup(
     buf: &mut Buffer,
     scrollback_area: Rect,
@@ -701,21 +722,22 @@ pub fn render_write_edit_hover_popup(
     hovered_entry: Option<usize>,
     mouse_pos: (u16, u16),
     scroll_offset: usize,
+    keep_alive_area: Option<Rect>,
     theme: &Theme,
-) {
+) -> Option<WriteEditPopupFrame> {
     const MAX_POPUP_HEIGHT: u16 = 24;
 
     if !crate::appearance::cache::load_write_edit_hover_popups() {
-        return;
+        return None;
     }
     if scrollback_area.width < 12 || scrollback_area.height < 3 {
-        return;
+        return None;
     }
     let Some(hover_idx) = hovered_entry else {
-        return;
+        return None;
     };
     let Some(entry) = scrollback.get(hover_idx) else {
-        return;
+        return None;
     };
     let layout_info = scrollback
         .get_cached_entry_layouts()
@@ -723,10 +745,10 @@ pub fn render_write_edit_hover_popup(
     if layout_info.is_some_and(|info| {
         info.verb_group_header && !info.is_expanded_verb_header() && info.group_header_count > 1
     }) {
-        return;
+        return None;
     }
     if entry.display_mode != crate::scrollback::types::DisplayMode::Collapsed {
-        return;
+        return None;
     }
     if !matches!(
         &entry.block,
@@ -734,26 +756,24 @@ pub fn render_write_edit_hover_popup(
             crate::scrollback::blocks::tool::ToolCallBlock::Edit(_)
         )
     ) {
-        return;
+        return None;
     }
 
     let Some((entry_area, _, _)) = scrollback.entry_screen_area(hover_idx, scrollback_area) else {
-        return;
+        return None;
     };
     let (mouse_col, mouse_row) = mouse_pos;
-    if mouse_row < entry_area.y
-        || mouse_row >= entry_area.y.saturating_add(entry_area.height)
-        || mouse_col < entry_area.x
-        || mouse_col >= entry_area.x.saturating_add(entry_area.width)
-    {
-        return;
+    let mouse_position = ratatui::layout::Position::new(mouse_col, mouse_row);
+    let pointer_on_popup = keep_alive_area.is_some_and(|area| area.contains(mouse_position));
+    if !entry_area.contains(mouse_position) && !pointer_on_popup {
+        return None;
     }
 
     let buf_height = buf.area.height;
     let buf_width = buf.area.width;
     let popup_height = MAX_POPUP_HEIGHT.min(scrollback_area.height).min(buf_height);
     if popup_height < 3 {
-        return;
+        return None;
     }
     let popup_width = scrollback_area
         .width
@@ -763,7 +783,7 @@ pub fn render_write_edit_hover_popup(
         .min(scrollback_area.width)
         .min(buf_width);
     if popup_width < 8 {
-        return;
+        return None;
     }
     let body_budget = popup_height.saturating_sub(2).max(1);
     let inner_width = popup_width.saturating_sub(2);
@@ -781,14 +801,14 @@ pub fn render_write_edit_hover_popup(
     );
     let lines = entry.output_with_hooks(&ctx).lines;
     if lines.is_empty() {
-        return;
+        return None;
     }
     let body_len = body_budget as usize;
     let start = scroll_offset.min(lines.len().saturating_sub(body_len));
     let end = start.saturating_add(body_len).min(lines.len());
     let visible_lines = &lines[start..end];
     if visible_lines.is_empty() {
-        return;
+        return None;
     }
 
     let popup_height = (visible_lines.len() as u16 + 2).min(popup_height);
@@ -805,7 +825,16 @@ pub fn render_write_edit_hover_popup(
     let max_x = scrollback_area
         .x
         .saturating_add(scrollback_area.width.saturating_sub(popup_width));
-    let popup_x = mouse_col.saturating_sub(4).clamp(scrollback_area.x, max_x);
+    // While the pointer rests on the popup itself, freeze the x anchor so the
+    // popup does not slide horizontally with the cursor.
+    let popup_x = if pointer_on_popup {
+        keep_alive_area.map_or_else(
+            || mouse_col.saturating_sub(4).clamp(scrollback_area.x, max_x),
+            |area| area.x,
+        )
+    } else {
+        mouse_col.saturating_sub(4).clamp(scrollback_area.x, max_x)
+    };
     let popup_area = Rect::new(
         popup_x,
         popup_y,
@@ -813,7 +842,7 @@ pub fn render_write_edit_hover_popup(
         popup_height.min(buf_height.saturating_sub(popup_y)),
     );
     if popup_area.height < 3 || popup_area.width < 8 {
-        return;
+        return None;
     }
 
     let bg = theme.bg_base;
@@ -842,6 +871,11 @@ pub fn render_write_edit_hover_popup(
         }
         buf.set_line_safe(inner.x, y, &line.content, inner.width);
     }
+    Some(WriteEditPopupFrame {
+        area: popup_area,
+        inner,
+        total_lines: lines.len(),
+    })
 }
 /// Selection/hover chrome for a side pane (todo / queue / tasks). Focused panes get a dismiss control.
 pub fn render_todo_chrome(

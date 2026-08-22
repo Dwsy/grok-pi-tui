@@ -36,6 +36,11 @@ impl AgentView {
     pub(super) fn handle_mouse(&mut self, mouse: &MouseEvent) -> InputOutcome {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                // Clicks on the painted popup itself are absorbed so they do
+                // not toggle expansion (or start drags) on the row beneath.
+                if self.write_edit_hover_popup_contains(mouse.column, mouse.row) {
+                    return InputOutcome::Changed;
+                }
                 self.left_mouse_down = true;
                 if self.hit_todo_close.contains(mouse.column, mouse.row) {
                     self.todo.overlay.escape();
@@ -771,6 +776,18 @@ impl AgentView {
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 self.pending_link_click = None;
+                // Absorb bare drags that start inside the popup with no
+                // gesture armed (Down on the popup was already absorbed);
+                // active drags keep extending across the overlay.
+                let gesture_armed = self.scrollbar_dragging
+                    || self.drag_selection.is_some()
+                    || self.block_drag_selection.is_some()
+                    || self.pending_text_drag.is_some()
+                    || self.pending_block_drag.is_some()
+                    || self.deferred_text_press.is_some();
+                if !gesture_armed && self.write_edit_hover_popup_contains(mouse.column, mouse.row) {
+                    return InputOutcome::Changed;
+                }
                 tracing::debug!(
                     event = "scrollback_mouse_drag",
                     col = mouse.column,
@@ -1000,7 +1017,15 @@ impl AgentView {
                     .timeline_rail
                     .as_ref()
                     .and_then(|rail| rail.hit(mouse.column, mouse.row));
-                let new_hover = if new_timeline_hover.is_some() || suppress_scrollback_hover {
+                let new_hover = if new_timeline_hover.is_none()
+                    && !suppress_scrollback_hover
+                    && self.write_edit_hover_popup_contains(mouse.column, mouse.row)
+                {
+                    // Pointer rests on the painted popup itself: keep the
+                    // current hover target so the overlay stays open instead
+                    // of re-targeting whatever entry lies beneath it.
+                    self.hovered_entry
+                } else if new_timeline_hover.is_some() || suppress_scrollback_hover {
                     None
                 } else {
                     hit.and_then(|pane| match pane {

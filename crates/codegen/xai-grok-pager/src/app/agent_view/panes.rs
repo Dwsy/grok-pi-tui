@@ -499,6 +499,30 @@ impl AgentView {
             .is_some_and(|started_at| started_at.elapsed() >= Self::WRITE_EDIT_HOVER_DELAY)
     }
 
+    /// Whether the Write/Edit hover popup is currently painted under
+    /// `(col, row)` and still backed by a valid collapsed Write/Edit tool row.
+    /// Guards against stale frame rects by re-validating the hover target.
+    pub(crate) fn write_edit_hover_popup_contains(&self, col: u16, row: u16) -> bool {
+        let Some(frame) = self.write_edit_hover_popup_frame else {
+            return false;
+        };
+        if !frame.area.contains((col, row).into()) {
+            return false;
+        }
+        let Some(hover_idx) = self.hovered_entry else {
+            return false;
+        };
+        self.scrollback.get(hover_idx).is_some_and(|entry| {
+            entry.display_mode == crate::scrollback::types::DisplayMode::Collapsed
+                && matches!(
+                    &entry.block,
+                    crate::scrollback::block::RenderBlock::ToolCall(
+                        crate::scrollback::blocks::tool::ToolCallBlock::Edit(_)
+                    )
+                )
+        })
+    }
+
     pub(crate) fn needs_write_edit_hover_popup_tick(&self) -> bool {
         if !crate::appearance::cache::load_write_edit_hover_popups() {
             return false;
@@ -557,19 +581,33 @@ impl AgentView {
         else {
             return false;
         };
-        if !entry_area.contains((col, row).into()) {
+        // Accept the wheel over the collapsed row or over the painted popup
+        // body itself; anything else falls through to scrollback scrolling.
+        if !entry_area.contains((col, row).into())
+            && !self.write_edit_hover_popup_contains(col, row)
+        {
             return false;
         }
         if self.write_edit_hover_popup_entry != Some(hover_idx) {
             self.write_edit_hover_popup_entry = Some(hover_idx);
             self.write_edit_hover_popup_scroll = 0;
         }
+        // Clamp against the painted popup's content so the wheel stops at the
+        // ends instead of growing the offset without bound.
+        let max_offset = self
+            .write_edit_hover_popup_frame
+            .map(|frame| {
+                frame
+                    .total_lines
+                    .saturating_sub(frame.inner.height as usize)
+            })
+            .unwrap_or(u16::MAX as usize);
         let amount = lines.unsigned_abs() as usize;
         if lines > 0 {
             self.write_edit_hover_popup_scroll = self
                 .write_edit_hover_popup_scroll
                 .saturating_add(amount)
-                .min(u16::MAX as usize);
+                .min(max_offset);
         } else {
             self.write_edit_hover_popup_scroll =
                 self.write_edit_hover_popup_scroll.saturating_sub(amount);
@@ -851,6 +889,173 @@ mod scroll_granularity_tests {
 
         agent.write_edit_hover_started_at = None;
         assert!(!agent.write_edit_hover_popup_ready());
+    }
+
+    mod write_edit_hover_popup_interaction_tests {
+        use super::super::super::AgentView;
+        use super::super::super::test_fixtures::make_agent;
+        use crate::app::app_view::InputOutcome;
+        use crate::views::agent::WriteEditPopupFrame;
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::layout::Rect;
+        use std::time::{Duration, Instant};
+
+        fn popup_frame(area: Rect) -> WriteEditPopupFrame {
+            WriteEditPopupFrame {
+                area,
+                inner: Rect::new(
+                    area.x.saturating_add(1),
+                    area.y.saturating_add(1),
+                    area.width.saturating_sub(2),
+                    area.height.saturating_sub(2),
+                ),
+                total_lines: 15,
+            }
+        }
+
+        fn moved_to(col: u16, row: u16) -> MouseEvent {
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: col,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }
+        }
+
+        fn left_mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+            MouseEvent {
+                kind,
+                column: col,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }
+        }
+
+        /// Fresh scrollback with one collapsed Edit entry at index 0.
+        fn agent_with_collapsed_edit() -> AgentView {
+            let mut agent = make_agent();
+            agent
+                .scrollback
+                .push_block(crate::scrollback::RenderBlock::edit_with_hunks(
+                    "src/main.rs",
+                    vec![],
+                ));
+            agent
+        }
+
+        #[test]
+        fn moved_onto_popup_keeps_hover_target_and_dwell() {
+            let mut agent = agent_with_collapsed_edit();
+            agent.hovered_entry = Some(0);
+            agent.write_edit_hover_started_at = Some(Instant::now() - Duration::from_millis(350));
+            agent.write_edit_hover_popup_frame = Some(popup_frame(Rect::new(10, 10, 40, 8)));
+
+            // Pointer moves onto the popup body (outside any pane rect).
+            agent.handle_mouse(&moved_to(20, 12));
+
+            assert_eq!(
+                agent.hovered_entry,
+                Some(0),
+                "hover must persist while the pointer rests on the popup"
+            );
+            assert!(
+                agent.write_edit_hover_popup_ready(),
+                "dwell must not reset when moving onto the popup"
+            );
+        }
+
+        #[test]
+        fn stale_popup_frame_does_not_pin_hover() {
+            let mut agent = make_agent();
+            // Non-Edit entry: the frame rect is stale and must not pin hover.
+            agent
+                .scrollback
+                .push_block(crate::scrollback::RenderBlock::user_prompt("hi"));
+            agent.hovered_entry = Some(0);
+            agent.write_edit_hover_popup_frame = Some(popup_frame(Rect::new(10, 10, 40, 8)));
+
+            agent.handle_mouse(&moved_to(20, 12));
+
+            assert_eq!(
+                agent.hovered_entry, None,
+                "a stale frame over a non-Write/Edit row must re-target hover"
+            );
+        }
+
+        #[test]
+        fn click_on_popup_is_absorbed_without_toggling_underlying_row() {
+            let mut agent = agent_with_collapsed_edit();
+            agent.hovered_entry = Some(0);
+            agent.write_edit_hover_started_at = Some(Instant::now() - Duration::from_millis(350));
+            agent.write_edit_hover_popup_frame = Some(popup_frame(Rect::new(10, 10, 40, 8)));
+
+            let out =
+                agent.handle_mouse(&left_mouse(MouseEventKind::Down(MouseButton::Left), 20, 12));
+
+            assert!(matches!(out, InputOutcome::Changed));
+            assert!(!agent.left_mouse_down, "absorbed press must not latch");
+            assert_eq!(agent.hovered_entry, Some(0));
+            assert_eq!(
+                agent.scrollback.get(0).unwrap().display_mode,
+                crate::scrollback::DisplayMode::Collapsed,
+                "the row beneath the popup must stay collapsed"
+            );
+
+            // Control: a click outside the frame latches the button as usual.
+            let _ = agent.handle_mouse(&left_mouse(MouseEventKind::Down(MouseButton::Left), 2, 2));
+            assert!(agent.left_mouse_down);
+        }
+
+        #[test]
+        fn wheel_over_popup_body_routes_to_popup_scroll_with_clamp() {
+            let mut agent = agent_with_collapsed_edit();
+            agent.pane_areas.scrollback = Rect::new(0, 0, 80, 40);
+            agent.scrollback.prepare_layout(80, 40);
+            agent.hovered_entry = Some(0);
+            agent.write_edit_hover_popup_entry = Some(0);
+            agent.write_edit_hover_started_at = Some(Instant::now() - Duration::from_millis(350));
+            // Popup body far below the single small entry: disjoint rects.
+            agent.write_edit_hover_popup_frame = Some(popup_frame(Rect::new(1, 30, 60, 9)));
+            let wheel_point = (30u16, 34u16);
+
+            assert!(
+                !agent
+                    .write_edit_hover_popup_frame
+                    .unwrap()
+                    .area
+                    .intersects(agent_scroll_entry_area(&agent)),
+                "precondition: popup rect disjoint from the hovered row"
+            );
+
+            // Wheel down over the popup body scrolls only the popup
+            // (offset moves 0 -> 3; scrollback routing would not touch it).
+            agent.handle_scroll(3, wheel_point.0, wheel_point.1);
+            assert_eq!(
+                agent.write_edit_hover_popup_scroll, 3,
+                "wheel inside the popup rect must be intercepted"
+            );
+
+            // Clamp at total_lines - inner.height (15 - 7 = 8).
+            for _ in 0..10 {
+                agent.handle_scroll(3, wheel_point.0, wheel_point.1);
+            }
+            assert_eq!(
+                agent.write_edit_hover_popup_scroll, 8,
+                "scroll offset must clamp to content height"
+            );
+
+            // Wheel up reduces.
+            agent.handle_scroll(-3, wheel_point.0, wheel_point.1);
+            assert_eq!(agent.write_edit_hover_popup_scroll, 5);
+        }
+
+        fn agent_scroll_entry_area(agent: &AgentView) -> Rect {
+            agent
+                .scrollback
+                .entry_screen_area(0, agent.pane_areas.scrollback)
+                .map(|(area, _, _)| area)
+                .expect("entry 0 must be visible")
+        }
     }
 
     /// Selection dropdowns step exactly one item per wheel dispatch: a
