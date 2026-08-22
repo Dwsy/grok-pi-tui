@@ -14,6 +14,7 @@ use ratatui::widgets::Widget;
 use super::actions::Action;
 use super::agent_view::{
     AgentView, active_contexts_for_pane, apply_pi_settings_outcome, apply_settings_outcome,
+    render_dropdown_chrome,
 };
 use super::app_view::InputOutcome;
 
@@ -2174,6 +2175,18 @@ impl AgentView {
                     if self.try_arg_picker_step_back_from_effort() {
                         return InputOutcome::Changed;
                     }
+                    // Match keyboard Esc: dismissing the large-paste select
+                    // pastes normally instead of leaking the pending paste.
+                    let large_paste_open = self.active_modal.as_ref().is_some_and(|m| {
+                        matches!(
+                            m,
+                            ActiveModal::ArgPicker { command, .. }
+                                if command == "large-paste"
+                        )
+                    });
+                    if large_paste_open {
+                        return self.resolve_large_paste_choice(false);
+                    }
                     // Match keyboard Esc: a closed SessionPicker may still
                     // have a list/search fetch in flight — the dispatch
                     // layer must invalidate it (its landing surface is gone).
@@ -2676,6 +2689,95 @@ impl AgentView {
             };
             use crate::views::picker::{self, PickerEntry, PickerRow};
 
+            // Large paste: render as a bottom select anchored above the prompt
+            // (same chrome family as the slash/completion dropdowns) instead of
+            // a centered modal window. Content reuses picker rendering and
+            // populates `state.hit_areas`, so `handle_arg_picker_input` keeps
+            // owning keys and mouse unchanged.
+            if let modal::ActiveModal::ArgPicker {
+                command,
+                items,
+                state,
+                window,
+                ..
+            } = active_modal
+                && command == "large-paste"
+            {
+                let appearance = self.scrollback.appearance().clone();
+                let layout_cfg = &appearance.scrollback.layout;
+                let compact = self.scrollback.appearance().prompt.compact;
+                let item_count = items.len();
+                match render_dropdown_chrome(
+                    buf,
+                    item_count,
+                    item_count as u16,
+                    self.inline_prompt_area,
+                    self.pane_areas.prompt,
+                    area,
+                    layout_cfg,
+                    compact,
+                    false,
+                    &theme,
+                ) {
+                    Some(chrome) => {
+                        let entries: Vec<PickerEntry> = items
+                            .iter()
+                            .enumerate()
+                            .map(|(i, item)| {
+                                PickerEntry::Row(PickerRow {
+                                    label: &item.display,
+                                    right_label: &item.description,
+                                    selected: state.hovered == Some(i)
+                                        || (state.hovered.is_none() && i == state.selected),
+                                    expanded: false,
+                                    fields: &[],
+                                    description_lines: &[],
+                                    summary_lines: &[],
+                                    dimmed: false,
+                                    indent: 0,
+                                    label_color: None,
+                                    badge: "",
+                                    badge_color: None,
+                                    collapsible: false,
+                                    underline_last_desc: false,
+                                })
+                            })
+                            .collect();
+                        let content_hit = picker::render_picker_content(
+                            buf,
+                            chrome.items,
+                            &theme,
+                            state,
+                            &entries,
+                            &[],
+                            &[],
+                            Some(theme.bg_light),
+                            false,
+                        );
+                        state.hit_areas = Some(picker::PickerHitAreas {
+                            close_button: Rect::default(),
+                            search_bar: Rect::default(),
+                            item_rects: content_hit.item_rects,
+                            entry_indices: content_hit.entry_indices,
+                            tab_rects: vec![],
+                            filter_rect: None,
+                        });
+                        // Clicks outside the panel dismiss (chrome
+                        // click-outside rule via `popup_area`); clicks inside
+                        // fall through to the picker hit areas above.
+                        window.popup_area = Some(chrome.panel);
+                        self.frame_occluder_rects.push(chrome.panel);
+                    }
+                    None => {
+                        // No room above the prompt: keep Esc working, drop
+                        // stale hit areas so clicks can't hit ghost rows.
+                        window.popup_area = None;
+                        state.hit_areas = None;
+                    }
+                }
+                return;
+            }
+
             // Standard footer shortcuts for picker-style modals.
             let mut picker_shortcuts: Vec<Shortcut> = vec![
                 Shortcut {
@@ -2788,7 +2890,6 @@ impl AgentView {
                     "model" | "m" if !args_query.is_empty() => "Pick reasoning effort",
                     "model" | "m" => "Pick model",
                     "theme" | "t" => "Pick theme",
-                    "large-paste" => "Large paste",
                     _ => "Pick option",
                 };
                 // Model list rows show the model name and provider. Metadata for

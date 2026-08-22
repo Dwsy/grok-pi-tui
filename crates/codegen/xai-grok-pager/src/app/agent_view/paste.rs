@@ -34,7 +34,10 @@ fn large_paste_line_count(text: &str) -> usize {
     if !text.contains('\r') {
         return text.lines().count();
     }
-    text.replace("\r\n", "\n").replace('\r', "\n").lines().count()
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .count()
 }
 
 fn large_paste_needs_selector(text: &str) -> bool {
@@ -78,19 +81,20 @@ fn persist_large_paste_in(
     unreachable!("unbounded paste filename sequence exhausted")
 }
 
-fn format_large_paste_reference(
-    path: &std::path::Path,
-    pending: &PendingLargePaste,
-) -> String {
+fn format_large_paste_reference(path: &std::path::Path, pending: &PendingLargePaste) -> String {
     if pending.is_json {
         format!(
             "{} [paste: size={}B, lines={}, json=true] ",
-            path.display(), pending.size_bytes, pending.line_count
+            path.display(),
+            pending.size_bytes,
+            pending.line_count
         )
     } else {
         format!(
             "{} [paste: size={}B, lines={}] ",
-            path.display(), pending.size_bytes, pending.line_count
+            path.display(),
+            pending.size_bytes,
+            pending.line_count
         )
     }
 }
@@ -181,9 +185,15 @@ impl AgentView {
             is_json: serde_json::from_str::<serde_json::Value>(text).is_ok(),
         };
         let file_description = if pending.is_json {
-            format!("{} lines · {} bytes · JSON", pending.line_count, pending.size_bytes)
+            format!(
+                "{} lines · {} bytes · JSON",
+                pending.line_count, pending.size_bytes
+            )
         } else {
-            format!("{} lines · {} bytes", pending.line_count, pending.size_bytes)
+            format!(
+                "{} lines · {} bytes",
+                pending.line_count, pending.size_bytes
+            )
         };
         let items = vec![
             crate::slash::command::ArgItem {
@@ -748,7 +758,10 @@ pub(super) mod paste_key_tests {
         let registry = ActionRegistry::defaults();
         let outcome = agent.handle_input(&Event::Paste(text.clone()), &registry);
         assert!(matches!(outcome, InputOutcome::Changed));
-        assert!(agent.prompt.text().is_empty(), "selector must intercept before insertion");
+        assert!(
+            agent.prompt.text().is_empty(),
+            "selector must intercept before insertion"
+        );
         let Some(crate::views::modal::ActiveModal::ArgPicker {
             items,
             state,
@@ -761,8 +774,14 @@ pub(super) mod paste_key_tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].display, "Paste normally");
         assert_eq!(items[1].display, "Save as temporary file");
-        assert_eq!(state.selected, 0, "current paste behavior must be the default");
-        assert_eq!(*selection, crate::views::modal::ArgPickerSelection::LargePaste);
+        assert_eq!(
+            state.selected, 0,
+            "current paste behavior must be the default"
+        );
+        assert_eq!(
+            *selection,
+            crate::views::modal::ArgPickerSelection::LargePaste
+        );
 
         let outcome = agent.resolve_large_paste_choice(false);
         assert!(matches!(outcome, InputOutcome::Changed));
@@ -813,8 +832,14 @@ pub(super) mod paste_key_tests {
         let dir = tempfile::tempdir().unwrap();
         let first = persist_large_paste_in(dir.path(), "first").unwrap();
         let second = persist_large_paste_in(dir.path(), "second").unwrap();
-        assert_eq!(first.file_name().and_then(|name| name.to_str()), Some("paste-1.txt"));
-        assert_eq!(second.file_name().and_then(|name| name.to_str()), Some("paste-2.txt"));
+        assert_eq!(
+            first.file_name().and_then(|name| name.to_str()),
+            Some("paste-1.txt")
+        );
+        assert_eq!(
+            second.file_name().and_then(|name| name.to_str()),
+            Some("paste-2.txt")
+        );
         assert_eq!(std::fs::read_to_string(first).unwrap(), "first");
         assert_eq!(std::fs::read_to_string(second).unwrap(), "second");
     }
