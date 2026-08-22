@@ -345,6 +345,10 @@ fn cancel_agent_turn(
         && agent.session.in_flight_prompt.is_some()
         && agent.session.pending_prompts.is_empty()
         && !in_flight_committed
+        // A blocking ask_user_question card owns the composer (its freeform
+        // editor lives there), so a rewind would fight the card's own
+        // prompt-stash restore below.
+        && agent.question_view.is_none()
         && !composer_has_draft;
     if rewinding && let Some(stashed) = agent.session.in_flight_prompt.take() {
         if let Some(pid) = agent.session.current_prompt_id.clone() {
@@ -375,6 +379,18 @@ fn cancel_agent_turn(
         agent.plan_next_comment_id = pav.next_comment_id;
         agent.prompt.restore(pav.stashed_prompt);
         agent.line_viewer = None;
+    }
+    // An ask_user_question card raised by the turn being cancelled can never
+    // receive its answer once the turn is gone: leaving it drawn keeps it
+    // blocking the composer forever (Esc on the parked card fires CancelTurn).
+    // Resolve it as `Cancelled` — the same payload the next-question replace
+    // path sends — and hand the stashed composer back.
+    if let Some(mut qv) = agent.question_view.take() {
+        agent.record_question_pause(&qv);
+        qv.send_ext_response(
+            xai_grok_tools::implementations::grok_build::ask_user_question::AskUserQuestionExtResponse::Cancelled,
+        );
+        agent.restore_card_prompt(qv.stashed_prompt);
     }
 
     let Some(session_id) = agent.session.session_id.clone() else {

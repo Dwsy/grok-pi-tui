@@ -216,6 +216,65 @@ fn cancel_turn_without_subagents_cancels_immediately() {
     assert!(app.agents[&id].session.state.is_cancelling());
 }
 
+/// Regression: cancelling a turn that is blocked on an `ask_user_question`
+/// card must dismiss the card with a `Cancelled` ext response and restore the
+/// stashed composer. Esc on the parked Q&A card fires CancelTurn, so without
+/// this cleanup the card survives the cancel and blocks the prompt forever.
+#[test]
+fn cancel_turn_dismisses_open_ask_question_as_cancelled() {
+    use crate::views::prompt_widget::StashedPrompt;
+    use crate::views::question_view::QuestionViewState;
+    use xai_grok_tools::implementations::grok_build::ask_user_question::{
+        AskUserQuestionMode, Question, QuestionOption,
+    };
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let question = Question {
+        question: "Which DB?".to_string(),
+        options: vec![
+            QuestionOption {
+                label: "Redis".to_string(),
+                description: String::new(),
+                preview: None,
+                id: None,
+            },
+            QuestionOption {
+                label: "Postgres".to_string(),
+                description: String::new(),
+                preview: None,
+                id: None,
+            },
+        ],
+        multi_select: Some(false),
+        id: None,
+    };
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    let qv = QuestionViewState::with_response_tx(
+        "call-q".to_string(),
+        vec![question],
+        StashedPrompt::default(),
+        Some(tx),
+        AskUserQuestionMode::Default,
+    );
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.state = AgentState::TurnRunning;
+        agent.question_view = Some(qv);
+    }
+
+    let effects = dispatch(Action::CancelTurn, &mut app);
+
+    assert!(matches!(&effects[0], Effect::CancelTurn { .. }));
+    assert!(
+        app.agents[&id].question_view.is_none(),
+        "the ask card must be dismissed by the cancel"
+    );
+    assert!(
+        rx.try_recv().is_ok(),
+        "a Cancelled ext response must reach the adapter"
+    );
+}
+
 /// Cancel inside a subagent drill-in view kills the focused running subagent
 /// instead of resolving the root turn. The root is idle here, so only the kill
 /// path reaches the coordinator-run child.
