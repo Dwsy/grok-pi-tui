@@ -110,9 +110,33 @@ tags: ["workhub", "grok-pi", "todo", "omp", "agent-loop"]
 - Pi `agent-loop.ts` 确认顺序为：tool results 写入 context → `turn_end` → `getSteeringMessages()`。
 - `git diff --check` 通过，改动限定在 Todo 扩展与本 Issue 记录。
 
+## 2026-08-22 v1/v2 版本拆分：`PI_GROK_TODO_VERSION`
+
+本期 steering 机制（mid-run nudge、completion gate、backing bus）整体复杂度偏高，与 Grok 原生 `todo_write` 的"模型自管列表"哲学冲突。`pi-grok-todo` 拆为三个文件、按 `PI_GROK_TODO_VERSION` 切换（默认 `v1`，非法值启动即报错）：
+
+- `index.ts`：版本解析与 wiring 入口。
+- `v1.ts`（默认）：对齐 Grok 原生 `todo_write` 语义 —— `{ merge?, todos: [{ id, content?, status? }] }`，字符串 id、merge/replace 增量更新、空 content 回退 id、status-only 忘带 `merge:true` 时自动升级 merge；无任何 steering。工具名仍为 `todo`，快照写入 `details.tasks`（cancelled 不进 pane）+ 权威回放态 `details.todos`。
+- `v2.ts`：保留本 Issue 全部行为（6-action、blockedBy、backing event、turn_end nudge、settled completion gate）。快照增加 `version: 2` 标记。
+
+注入器 `grok_pi/todo_extension.rs` 从单 tempfile 改为 TempDir bundle（index/v1/v2 全量落盘），单元测试扩展为断言每个模块存在且含关键内容；`pi-grok-adapter` 的 TodoPane 投影对两版均无需改动。
+
+### 跨版本切换兼容（同会话 v1↔v2）
+
+回放规则统一为"**分支上最后一个 `todo` 快照生效，无论哪个版本写入**"：
+
+- 本版形状 → 直接解析。
+- 异版形状 → 一次性转换为本版状态（读时迁移，首次写回即落为本版快照，此后原生回放）。
+- v2→v1：subject→content、id 字符串化、deleted 墓碑丢弃。
+- v1→v2：content→subject、字符串 id 按 nextId 重新编号（1..n）、cancelled→deleted 墓碑（保持 pane/list 默认隐藏语义）。
+- 旧版无标记快照仍归 v2 形状家族，v1 侧同样可从其迁移。
+
+任意次来回切换均正确（latest-wins 不受 own-kind 陈旧快照干扰）。行为回归见 `extensions/pi-grok-todo/compat.test.mjs`（jiti 直载源码 + mock harness）：v2→v1 迁移、v1→v2 重编号与 cancelled 映射、重复切换 latest-wins、legacy 无标记双版本兼容，4/4 通过。
+
 ## Status 更新日志
 
 - **2026-08-18**: 状态变更 → doing，完成 OMP/Grok/Pi lifecycle 对照，进入 P0 实现。
 - **2026-08-18**: 状态变更 → done，P0 agent-loop discipline 完成：OMP mid-run nudge、settled completion gate、Bash/Subagent backing bus 已实现并通过行为 harness 与 grok-pi Todo 注入回归。
 - **2026-08-19**: 状态变更 → in_progress。真实 provider trace 复现 `unknown_tool_call_id`：mid-run nudge 在 `tool_execution_end` 阶段以 steer 消息插入 assistant tool calls 与真实 tool results 之间，Pi 的消息转换随后为未闭合 tool calls 合成 `No result provided`，真实结果到来后形成重复 `function_call_output`。修复策略：只在 `turn_end`（完整工具批次已落地）后排队 nudge，不修改 Pi Core。
 - **2026-08-19**: 状态变更 → done。Todo mid-run nudge 已迁移到 `turn_end`，system Pi load、直接源码行为 harness、agent-loop 顺序核对与 `git diff --check` 均通过。
+- **2026-08-22**: 状态变更 → done。扩展拆为 `PI_GROK_TODO_VERSION=v1|v2` 双版本三文件（index/v1/v2）：v1 对齐 Grok 原生 todo_write（默认），v2 保留本期全部 steering 行为；注入器改为 TempDir bundle 并扩展回归断言；快照互不串扰，adapter/Pager 零改动。验证：tsgo 0 错误、system Pi RPC 加载 v1/v2 exit 0、`cargo-shared test -p xai-grok-pager-bin todo --bin grok-pi` 2/2。
+- **2026-08-22**: 状态变更 → done。补齐同会话跨版本切换兼容：latest-snapshot-wins 回放 + 异版快照读时迁移（v2→v1 字符串化/丢墓碑；v1→v2 重编号/cancelled→deleted），`compat.test.mjs` 行为回归 4/4 通过，tsgo 与 system Pi RPC 加载复验通过。
