@@ -1,0 +1,27 @@
+{
+  "extends": "../../pi-main/tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "*": ["../../pi-main/*"],
+      "@earendil-works/pi-ai": ["../../pi-main/packages/ai/src/index.ts"],
+      "@earendil-works/pi-ai/oauth": ["../../pi-main/packages/ai/src/oauth.ts"],
+      "@earendil-works/pi-ai/*": ["../../pi-main/packages/ai/src/*.ts", "../../pi-main/packages/ai/src/providers/*.ts"],
+      "@earendil-works/pi-ai/dist/*": ["../../pi-main/packages/ai/src/*"],
+      "@earendil-works/pi-agent-core": ["../../pi-main/packages/agent/src/index.ts"],
+      "@earendil-works/pi-agent-core/*": ["../../pi-main/packages/agent/src/*"],
+      "@earendil-works/pi-agent-sqlite-node": ["../../pi-main/packages/storage/sqlite-node/src/index.ts"],
+      "@earendil-works/pi-coding-agent": ["../../pi-main/packages/coding-agent/src/index.ts"],
+      "@earendil-works/pi-coding-agent/hooks": ["../../pi-main/packages/coding-agent/src/core/hooks/index.ts"],
+      "@earendil-works/pi-coding-agent/*": ["../../pi-main/packages/coding-agent/src/*"],
+      "@earendil-works/pi-server": ["../../pi-main/packages/server/src/index.ts"],
+      "@earendil-works/pi-server/*": ["../../pi-main/packages/server/src/*"],
+      "typebox": ["../../pi-main/node_modules/typebox/build/index.d.mts"],
+      "@earendil-works/pi-tui": ["../../pi-main/packages/tui/src/index.ts"],
+      "@earendil-works/pi-tui/*": ["../../pi-main/packages/tui/src/*"],
+      "@earendil-works/pi-agent-old": ["../../pi-main/packages/agent-old/src/index.ts"],
+      "@earendil-works/pi-agent-old/*": ["../../pi-main/packages/agent-old/src/*"]
+    }
+  },
+  "include": ["index.ts", "shared.ts", "control.ts", "scheduler.ts", "command.ts", "tools.ts", "typebox.d.ts"],
+  "exclude": []
+}

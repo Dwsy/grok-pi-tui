@@ -1,49 +1,144 @@
 use anyhow::{Context, Result};
-use std::{fs::File, io::Write};
-use tempfile::NamedTempFile;
+use std::{
+    fs::File,
+    io::Write,
+    path::{Path, PathBuf},
+};
+use tempfile::TempDir;
+
+/// Materialized Pi auth extension bundle. `_source_dir` must stay alive for
+/// the Pi process lifetime so relative imports resolve.
+pub(super) struct AuthExtension {
+    _source_dir: TempDir,
+    source_path: PathBuf,
+}
+
+impl AuthExtension {
+    pub(super) fn source_path(&self) -> &Path {
+        &self.source_path
+    }
+}
+
+fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
+    let path = dir.join(name);
+    let mut file =
+        File::create(&path).with_context(|| format!("create Pi auth extension module {name}"))?;
+    file.write_all(source.as_bytes())
+        .with_context(|| format!("write Pi auth extension module {name}"))?;
+    file.flush()
+        .with_context(|| format!("flush Pi auth extension module {name}"))?;
+    file.sync_all().ok();
+    Ok(path)
+}
 
 /// Materialize default-on Pi auth commands (`/login` / `/logout`).
 ///
-/// Requires system Pi >= 0.80.10 (`modelRuntime.login` + Remote TUI).
-/// Bare names: Grok external profile does not reserve login/logout.
-pub(super) fn write_auth_extension() -> Result<NamedTempFile> {
-    let mut file = tempfile::Builder::new()
+/// Requires system Pi >= 0.80.10 (`modelRuntime.login` + Remote TUI). Every
+/// authored module must be materialized here because this injector owns the
+/// transitive closure of `index.ts`'s relative imports.
+pub(super) fn write_auth_extension() -> Result<AuthExtension> {
+    let source_dir = tempfile::Builder::new()
         .prefix("pi-grok-auth-")
-        .suffix(".ts")
-        .tempfile()
-        .context("create Pi auth extension tempfile")?;
-    const SOURCE: &str = include_str!("../../../../../../extensions/pi-grok-auth/index.ts");
-    file.write_all(SOURCE.as_bytes())
-        .context("write Pi auth extension source")?;
-    file.flush().context("flush Pi auth extension source")?;
-    File::open(file.path())
-        .and_then(|source| source.sync_all())
-        .ok();
-    Ok(file)
+        .tempdir()
+        .context("create Pi auth extension source directory")?;
+    let source_path = write_source_file(
+        source_dir.path(),
+        "index.ts",
+        include_str!("../../../../../../extensions/pi-grok-auth/index.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "shared.ts",
+        include_str!("../../../../../../extensions/pi-grok-auth/shared.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "runtime.ts",
+        include_str!("../../../../../../extensions/pi-grok-auth/runtime.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "providers.ts",
+        include_str!("../../../../../../extensions/pi-grok-auth/providers.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "login.ts",
+        include_str!("../../../../../../extensions/pi-grok-auth/login.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "logout.ts",
+        include_str!("../../../../../../extensions/pi-grok-auth/logout.ts"),
+    )?;
+    Ok(AuthExtension {
+        _source_dir: source_dir,
+        source_path,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    struct Bundle {
+        index: String,
+        shared: String,
+        runtime: String,
+        providers: String,
+        login: String,
+        logout: String,
+    }
+
+    fn write_bundle() -> (AuthExtension, Bundle) {
+        let extension = write_auth_extension().expect("write extension");
+        let dir = extension.source_path().parent().expect("source dir");
+        let read = |name: &str| {
+            std::fs::read_to_string(dir.join(name)).unwrap_or_else(|e| panic!("read {name}: {e}"))
+        };
+        let bundle = Bundle {
+            index: read("index.ts"),
+            shared: read("shared.ts"),
+            runtime: read("runtime.ts"),
+            providers: read("providers.ts"),
+            login: read("login.ts"),
+            logout: read("logout.ts"),
+        };
+        (extension, bundle)
+    }
+
     #[test]
-    fn auth_extension_source_is_a_loadable_typescript_module() {
-        let file = write_auth_extension().expect("write extension");
-        let source = std::fs::read_to_string(file.path()).expect("read extension");
-        assert!(source.contains("registerCommand(\"login\""));
-        assert!(source.contains("registerCommand(\"logout\""));
-        assert!(source.contains("modelRuntime") || source.contains("resolveRuntime"));
-        assert!(source.contains("OAuthSelectorComponent"));
-        assert!(source.contains("LoginDialogComponent"));
-        assert!(source.contains("PI_GROK_REMOTE_TUI"));
-        // Nested openCustom would tear down LoginDialog during Grok CLI method select.
-        assert!(source.contains("showOverlay"));
-        assert!(source.contains("showAuthPrompt"));
-        assert!(source.contains("prompt.signal"));
-        assert!(source.contains("value: success"));
+    fn auth_extension_materializes_every_module_of_the_entry_closure() {
+        let (extension, bundle) = write_bundle();
+        assert!(bundle.index.contains("from \"./login.ts\""));
+        assert!(bundle.index.contains("from \"./logout.ts\""));
+        assert!(bundle.login.contains("from \"./providers.ts\""));
+        assert!(bundle.login.contains("from \"./runtime.ts\""));
+        assert!(bundle.login.contains("from \"./shared.ts\""));
+        assert!(bundle.logout.contains("from \"./providers.ts\""));
+        assert!(bundle.logout.contains("from \"./runtime.ts\""));
+        assert!(bundle.logout.contains("from \"./shared.ts\""));
+        assert!(bundle.providers.contains("from \"./shared.ts\""));
+        assert!(bundle.runtime.contains("from \"./shared.ts\""));
+        assert!(bundle.shared.contains("ModelRuntimeLike"));
+        assert!(bundle.runtime.contains("loadComponents"));
+        assert!(bundle.providers.contains("loginProviders"));
+        assert!(bundle.login.contains("registerCommand(\"login\""));
+        assert!(bundle.logout.contains("registerCommand(\"logout\""));
         assert_eq!(
-            file.path().extension().and_then(|value| value.to_str()),
+            extension
+                .source_path()
+                .extension()
+                .and_then(|value| value.to_str()),
             Some("ts")
         );
+    }
+
+    #[test]
+    fn auth_extension_source_preserves_remote_tui_login_contract() {
+        let extension = write_auth_extension().expect("write extension");
+        let source = std::fs::read_to_string(extension.source_path()).expect("read extension");
+        assert!(source.contains("registerLoginCommand"));
+        assert!(source.contains("registerLogoutCommand"));
     }
 }

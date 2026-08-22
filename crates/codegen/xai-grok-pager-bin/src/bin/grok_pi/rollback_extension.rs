@@ -1,23 +1,82 @@
 use anyhow::{Context, Result};
-use std::{fs::File, io::Write};
-use tempfile::NamedTempFile;
+use std::{
+    fs::File,
+    io::Write,
+    path::{Path, PathBuf},
+};
+use tempfile::TempDir;
+
+/// Materialized rollback extension bundle. `_source_dir` must stay alive for
+/// the Pi process lifetime so relative imports between the TypeScript modules
+/// keep resolving.
+pub(super) struct RollbackExtension {
+    _source_dir: TempDir,
+    source_path: PathBuf,
+}
+
+impl RollbackExtension {
+    pub(super) fn source_path(&self) -> &Path {
+        &self.source_path
+    }
+}
+
+fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
+    let path = dir.join(name);
+    let mut file = File::create(&path)
+        .with_context(|| format!("create Pi rollback extension module {name}"))?;
+    file.write_all(source.as_bytes())
+        .with_context(|| format!("write Pi rollback extension module {name}"))?;
+    file.flush()
+        .with_context(|| format!("flush Pi rollback extension module {name}"))?;
+    file.sync_all().ok();
+    Ok(path)
+}
 
 /// Materialize the Pi tree file rollback checkpoint extension.
 /// Only injected when F2 `pi_tree_file_rollback` is enabled.
-pub(super) fn write_rollback_extension() -> Result<NamedTempFile> {
-    let mut file = tempfile::Builder::new()
+///
+/// Every authored module must be materialized here — the injector owns the
+/// transitive closure of `index.ts`'s relative imports (see AGENTS.md
+/// "Diagnosing Pi RPC bootstrap / extension failures").
+pub(super) fn write_rollback_extension() -> Result<RollbackExtension> {
+    let source_dir = tempfile::Builder::new()
         .prefix("pi-grok-rollback-")
-        .suffix(".ts")
-        .tempfile()
-        .context("create Pi rollback extension tempfile")?;
-    const SOURCE: &str = include_str!("../../../../../../extensions/pi-grok-rollback/index.ts");
-    file.write_all(SOURCE.as_bytes())
-        .context("write Pi rollback extension source")?;
-    file.flush().context("flush Pi rollback extension source")?;
-    File::open(file.path())
-        .and_then(|source| source.sync_all())
-        .ok();
-    Ok(file)
+        .tempdir()
+        .context("create Pi rollback extension source directory")?;
+    let source_path = write_source_file(
+        source_dir.path(),
+        "index.ts",
+        include_str!("../../../../../../extensions/pi-grok-rollback/index.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "shared.ts",
+        include_str!("../../../../../../extensions/pi-grok-rollback/shared.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "store.ts",
+        include_str!("../../../../../../extensions/pi-grok-rollback/store.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "journal.ts",
+        include_str!("../../../../../../extensions/pi-grok-rollback/journal.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "rollback.ts",
+        include_str!("../../../../../../extensions/pi-grok-rollback/rollback.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "bridge.ts",
+        include_str!("../../../../../../extensions/pi-grok-rollback/bridge.ts"),
+    )?;
+    Ok(RollbackExtension {
+        _source_dir: source_dir,
+        source_path,
+    })
 }
 
 /// Read the F2 `pi_tree_file_rollback` setting from the effective config.
@@ -83,16 +142,69 @@ fn uuid_v4_short() -> String {
 mod tests {
     use super::*;
 
+    struct Bundle {
+        index: String,
+        shared: String,
+        store: String,
+        journal: String,
+        rollback: String,
+        bridge: String,
+    }
+
+    fn write_bundle() -> (RollbackExtension, Bundle) {
+        let extension = write_rollback_extension().expect("write extension");
+        let dir = extension.source_path().parent().expect("source dir");
+        let read = |name: &str| {
+            std::fs::read_to_string(dir.join(name)).unwrap_or_else(|e| panic!("read {name}: {e}"))
+        };
+        let bundle = Bundle {
+            index: read("index.ts"),
+            shared: read("shared.ts"),
+            store: read("store.ts"),
+            journal: read("journal.ts"),
+            rollback: read("rollback.ts"),
+            bridge: read("bridge.ts"),
+        };
+        (extension, bundle)
+    }
+
     #[test]
-    fn rollback_extension_source_is_valid_ts_module() {
-        let file = write_rollback_extension().expect("write rollback extension");
-        let source = std::fs::read_to_string(file.path()).expect("read extension");
-        assert!(source.contains("PI_GROK_ROLLBACK"));
-        assert!(source.contains("createWriteToolDefinition"));
-        assert!(source.contains("createEditToolDefinition"));
-        assert!(source.contains("__pi_rollback_preview"));
-        assert!(source.contains("__pi_rollback_execute"));
-        assert_eq!(file.path().extension().and_then(|e| e.to_str()), Some("ts"));
+    fn rollback_extension_materializes_every_module_of_the_entry_closure() {
+        let (extension, bundle) = write_bundle();
+        // Entry gates on the env flag and registers tool wrappers + commands.
+        assert!(bundle.index.contains("PI_GROK_ROLLBACK"));
+        assert!(bundle.index.contains("createWriteToolDefinition"));
+        assert!(bundle.index.contains("createEditToolDefinition"));
+        assert!(bundle.index.contains("__pi_rollback_preview"));
+        assert!(bundle.index.contains("__pi_rollback_execute"));
+        // Every relative import of the entry closure is materialized.
+        assert!(bundle.index.contains("from \"./journal.ts\""));
+        assert!(bundle.index.contains("from \"./bridge.ts\""));
+        assert!(bundle.index.contains("from \"./rollback.ts\""));
+        assert!(bundle.index.contains("from \"./store.ts\""));
+        assert!(bundle.index.contains("from \"./shared.ts\""));
+        assert!(bundle.journal.contains("from \"./store.ts\""));
+        assert!(bundle.journal.contains("from \"./shared.ts\""));
+        assert!(bundle.rollback.contains("from \"./store.ts\""));
+        assert!(bundle.rollback.contains("from \"./shared.ts\""));
+        assert!(bundle.bridge.contains("from \"./rollback.ts\""));
+        assert!(bundle.bridge.contains("from \"./shared.ts\""));
+        assert!(bundle.store.contains("from \"./shared.ts\""));
+        // Per-module load-bearing symbols.
+        assert!(bundle.shared.contains("toolCallStorage"));
+        assert!(bundle.store.contains("writeBlob"));
+        assert!(bundle.journal.contains("captureMutation"));
+        assert!(bundle.journal.contains("bindTreeEntries"));
+        assert!(bundle.rollback.contains("computeRollbackPlan"));
+        assert!(bundle.rollback.contains("executeRollback"));
+        assert!(bundle.bridge.contains("pollBridgeRequests"));
+        assert_eq!(
+            extension
+                .source_path()
+                .extension()
+                .and_then(|value| value.to_str()),
+            Some("ts")
+        );
     }
 
     #[test]
