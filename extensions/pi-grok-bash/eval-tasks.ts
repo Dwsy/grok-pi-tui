@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import path from "node:path";
 import { join } from "node:path";
 
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 
-import type { EvalExecution, EvalSkillMetadata, PersistentEvalKernel } from "./eval.ts";
+import type { EvalDisplayImage, EvalExecution, EvalSkillMetadata, PersistentEvalKernel } from "./eval.ts";
 import { formatTaskOutput, truncateTaskOutput } from "./shared.ts";
 
 const TASK_STATUS_KEY = "__pi_grok_bash_task__";
@@ -48,6 +49,27 @@ function systemTime(milliseconds: number) {
 
 function boundedTaskOutput(task: EvalBackgroundTask) {
 	return truncateTaskOutput(task.output, task.truncated);
+}
+
+function imageFileExtension(mimeType: string): string {
+	if (mimeType.includes("jpeg") || mimeType.includes("jpg")) return "jpg";
+	if (mimeType.includes("gif")) return "gif";
+	if (mimeType.includes("webp")) return "webp";
+	return "png";
+}
+
+/** Persist displayed images next to the output log; background tasks report file paths instead of base64. */
+async function saveDisplayedImages(task: EvalBackgroundTask, images: EvalDisplayImage[]): Promise<void> {
+	const directory = path.dirname(task.outputFile);
+	const saved: string[] = [];
+	for (const [index, image] of images.entries()) {
+		const file = join(directory, `display-${index + 1}.${imageFileExtension(image.mimeType)}`);
+		await writeFile(file, Buffer.from(image.data, "base64"));
+		saved.push(file);
+	}
+	if (saved.length > 0) {
+		task.output = `${task.output}\n${saved.map((file) => `[display image saved: ${file}]`).join("\n")}`;
+	}
 }
 
 function snapshot(task: EvalBackgroundTask) {
@@ -150,10 +172,11 @@ export async function startEvalBackgroundTask(params: {
 			params.skills,
 			(chunk) => log.write(chunk),
 		)
-		.then((result: EvalExecution) => {
+		.then(async (result: EvalExecution) => {
 			task.result = result;
 			task.output = result.output;
 			task.truncated = result.truncated;
+			if (result.images && result.images.length > 0) await saveDisplayedImages(task, result.images);
 		})
 		.catch((error) => {
 			if (!task.explicitlyKilled) task.error = error instanceof Error ? error.message : String(error);

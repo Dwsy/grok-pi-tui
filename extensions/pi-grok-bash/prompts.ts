@@ -32,7 +32,7 @@ const EVAL_V1_PROMPTS: EvalPromptBundle = {
 };
 
 const EVAL_V2_HOST_GUIDELINE =
-	"Eval Bridge v2 host calls must be awaited. When data needed for an ongoing computation is available through an active session tool, call it inside eval with tool.<name>(...) instead of doing a top-level tool round trip. Discover tools synchronously with tools.list()/search()/describe(name); tool.<name>.schema/.description expose the same per-tool metadata snapshot. In JavaScript Object.keys(tool) is also available; in Python use tool.keys(). Use skills.list()/search()/describe() to discover Pi-loaded model-invokable skills, then await skills.read(name) to read only an admitted skill file.";
+	"Eval Bridge v2 host calls must be awaited. When data needed for an ongoing computation is available through an active session tool, call it inside eval with tool.<name>(...) instead of doing a top-level tool round trip. Discover tools synchronously with tools.list()/search(regex)/describe(name); search treats the query as a case-insensitive regular expression matched against injected tool names, descriptions, and guidelines, and throws on invalid patterns; tool.<name>.schema/.description expose the same per-tool metadata snapshot. In JavaScript Object.keys(tool) is also available; in Python use tool.keys(). Use skills.list()/search()/describe() to discover Pi-loaded model-invokable skills, then await skills.read(name) to read only an admitted skill file.";
 const EVAL_V2_CONCURRENCY_GUIDELINE =
 	"In Eval Bridge v2, use parallel([...]) for independent async operations and pipeline(items, ...stages) for staged fan-out/fan-in work. Set is_background=true for long-running isolated Eval work; manage the returned task_id with get_task_output, wait_tasks, or kill_task. Do not invoke eval recursively through tool.eval.";
 const EVAL_V2_AGENT_GUIDELINE =
@@ -56,6 +56,7 @@ function buildEvalV2Prompts(completionAvailable: boolean, selection: EvalV2Langu
 		"Eval v2 cells do not inherit prior cell-local bindings, so reuse local names freely. Persist only the minimal data needed by later cells with store/load; reset clears that stored state.",
 		`Do not use bash with inline interpreters, heredocs, or temporary scripts for ordinary ${languageLabel} computation that eval can perform; reserve bash for shell-native filesystem/process/git/build/package/pipeline work.`,
 		EVAL_V2_HOST_GUIDELINE,
+		"display(imageBlock) forwards an image (for example a { type: \"image\", data, mimeType } block from tool.read content) to the model as vision content, like the native read tool; never print base64 image data as text.",
 	];
 
 	if (completionAvailable) {
@@ -73,7 +74,7 @@ function buildEvalV2Prompts(completionAvailable: boolean, selection: EvalV2Langu
 		description:
 			`Run a ${languageLabel} computation in Eval Bridge v2 with an isolated lexical scope per cell. ` +
 			EVAL_COMMON_DESCRIPTION +
-			"Eval Bridge v2 can call active session tools from inside a cell with await tool.<name>(...); discover active tools with tools.list()/search()/describe(), inspect schema/description with tools.describe(name) or tool.<name>.schema/.description, and use Object.keys(tool) in JavaScript or tool.keys() in Python. Discover loaded model-invokable skills with skills.list()/search()/describe() and read a trusted skill with await skills.read(name). Persist JSON-serializable data explicitly across cells with store(key, value) and load(key). Helpers parallel(...), pipeline(items, ...stages), and agent(prompt, options) are also available. Long-running foreground Eval may automatically become a background task; is_background=true starts one immediately. Manage task_id with get_task_output/wait_tasks/kill_task. Always await host calls. " +
+			"Eval Bridge v2 can call active session tools from inside a cell with await tool.<name>(...); discover active tools with tools.list()/search(regex)/describe(), inspect schema/description with tools.describe(name) or tool.<name>.schema/.description, and use Object.keys(tool) in JavaScript or tool.keys() in Python. Discover loaded model-invokable skills with skills.list()/search(regex)/describe() and read a trusted skill with await skills.read(name). Persist JSON-serializable data explicitly across cells with store(key, value) and load(key). Helpers parallel(...), pipeline(items, ...stages), and agent(prompt, options) are also available. Long-running foreground Eval may automatically become a background task; is_background=true starts one immediately. Manage task_id with get_task_output/wait_tasks/kill_task. Always await host calls. " +
 			completionDescription +
 			EVAL_BASH_BOUNDARY +
 			"Values saved with store/load survive across foreground cells until reset, timeout, abort, process failure, cwd change, automatic background promotion, or session shutdown.",

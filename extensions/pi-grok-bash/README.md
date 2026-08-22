@@ -433,6 +433,10 @@ When launched through `grok-pi`, `--bash-max-wait-mins <MIN>` has highest preced
 
 The 4.5-minute default leaves roughly 30 seconds of headroom against a 5-minute prompt-cache TTL; lower it if model/tool-turn latency regularly consumes that margin.
 
+### Eval v2-only injected tools (F2)
+
+In eval v2-only mode (`PI_GROK_EVAL_V2_ONLY=1`), every registered host tool is injected into eval cells by default. Press <kbd>F2</kbd> to override the injected set with a comma-separated tool list. Names are validated against the session's registered tools; invalid names keep the previous configuration (no save, automatic rollback). An empty input restores the default. The override persists across sessions in `$GROK_HOME/eval-v2-tools.json`.
+
 ### `PI_GROK_BUILTIN_TOOLS`
 
 Optional comma-separated allow-list used by this extension when deciding whether the host Bash tool is enabled. If provided and `bash` is absent, enhanced Bash is not registered.

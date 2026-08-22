@@ -5,7 +5,9 @@
  * promote an active foreground tool call into its existing background-task UI
  * without rerunning the command. Pager still owns all visible task surfaces.
  */
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
 
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import {
@@ -74,6 +76,33 @@ function hostToolNameEnabled(name: string): boolean {
 	return !excluded.has(name);
 }
 
+/**
+ * Persisted override for the host tools injected into eval v2-only cells.
+ * Stored under the grok-pi home (default ~/.grok-pi) for product isolation.
+ * An empty array or a missing file means "default": every registered tool.
+ */
+function evalV2ToolsOverrideFile(): string {
+	const grokHome = process.env.GROK_HOME?.trim() || path.join(homedir(), ".grok-pi");
+	return path.join(grokHome, "eval-v2-tools.json");
+}
+
+async function loadEvalV2ToolsOverride(): Promise<string[] | undefined> {
+	try {
+		const parsed = JSON.parse(await readFile(evalV2ToolsOverrideFile(), "utf8")) as unknown;
+		if (!Array.isArray(parsed)) return undefined;
+		const names = parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+		return names.length > 0 ? names : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function saveEvalV2ToolsOverride(names: string[]): Promise<void> {
+	const file = evalV2ToolsOverrideFile();
+	await mkdir(path.dirname(file), { recursive: true });
+	await writeFile(file, `${JSON.stringify(names, null, 2)}\n`, "utf8");
+}
+
 export default async function (pi: ExtensionAPI) {
 	const bashEnabled = envFlagDefaultOn("PI_GROK_BASH") && hostToolNameEnabled("bash");
 	const maxWaitMs = resolveMaxWaitMs();
@@ -95,8 +124,46 @@ export default async function (pi: ExtensionAPI) {
 	const evalV2Languages: EvalLanguage[] =
 		evalV2Language === "all" ? ["js", "py"] : [evalV2Language];
 	const evalV2Only = evalVersion === "v2" && process.env.PI_GROK_EVAL_V2_ONLY === "1";
+	let evalV2ToolsOverride: string[] | undefined;
 	if (evalV2Only) {
 		pi.on("session_start", () => pi.setActiveTools(["eval"]));
+		void loadEvalV2ToolsOverride().then((names) => {
+			if (!names) return;
+			evalV2ToolsOverride = names;
+			evalToolBridge?.setAllowedTools(names);
+		});
+		if (typeof pi.registerShortcut === "function") pi.registerShortcut("f2", {
+			description: "Configure Eval v2-only injected host tools (comma-separated)",
+			async handler(ctx) {
+				if (!evalToolBridge) return;
+				const known = new Set(pi.getAllTools().map((tool) => tool.name));
+				known.delete("eval");
+				const current = evalV2ToolsOverride ?? [...known].sort();
+				const raw = await ctx.ui.input(
+					`Eval v2 注入工具（逗号分隔）\n当前: ${current.join(", ") || "无"}\n可用: ${[...known].sort().join(", ")}`,
+					"输入工具名列表；留空恢复默认（全部内置工具）；Esc 取消",
+				);
+				if (raw === undefined) return;
+				const names = [...new Set(raw.split(",").map((value) => value.trim()).filter(Boolean))];
+				if (names.length === 0) {
+					evalV2ToolsOverride = undefined;
+					evalToolBridge.setAllowedTools(undefined);
+					await saveEvalV2ToolsOverride([]);
+					ctx.ui.notify("Eval v2 注入工具已恢复默认（全部内置工具）", "info");
+					return;
+				}
+				const invalid = names.filter((name) => !known.has(name));
+				if (invalid.length > 0) {
+					// 校验失败：不保存，保持原配置不变（自动回滚）。
+					ctx.ui.notify(`保存失败：未知工具 ${invalid.join(", ")}\n已保留原配置: ${(evalV2ToolsOverride ?? [...known].sort()).join(", ")}`, "error");
+					return;
+				}
+				evalV2ToolsOverride = names;
+				evalToolBridge.setAllowedTools(names);
+				await saveEvalV2ToolsOverride(names);
+				ctx.ui.notify(`Eval v2 注入工具已保存: ${names.join(", ")}`, "info");
+			},
+		});
 	}
 	const evalToolBridge = evalVersion === "v2" ? new EvalSessionToolBridge(pi) : undefined;
 	let evalSkills: EvalSkillMetadata[] = [];
@@ -321,9 +388,17 @@ export default async function (pi: ExtensionAPI) {
 				);
 			}
 			const language = params.language === "py" ? "python" : "js";
+			// Mirror the native read tool: displayed images ride along as ImageContent
+			// blocks (vision); the text output only carries short "[display image]" notes.
+			const images = (result.images ?? []).map((image) => ({
+				type: "image" as const,
+				data: image.data,
+				mimeType: image.mimeType,
+			}));
 			return {
 				content: [
 					{ type: "text" as const, text: result.output || "(no output)" },
+					...images,
 				],
 				details: {
 					language,

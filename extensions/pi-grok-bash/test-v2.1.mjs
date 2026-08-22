@@ -863,6 +863,14 @@ console.log(JSON.stringify({
       new AbortController().signal,
     );
     assert.match(evalOnlyResult.content[0].text, /\"probe\"/);
+    evalOnlyBridge.setAllowedTools(["other_tool"]);
+    assert.deepEqual(evalOnlyBridge.catalog(), []);
+    await assert.rejects(
+      evalOnlyBridge.invoke("notes_list", { limit: 1 }, new AbortController().signal),
+      /inactive tool/,
+    );
+    evalOnlyBridge.setAllowedTools(undefined);
+    assert.deepEqual(evalOnlyBridge.catalog().map((tool) => tool.name), ["notes_list"]);
   } finally {
     fallbackActiveTools = ["notes_list", "eval"];
     if (previousBridgeEvalV2Only === undefined) delete process.env.PI_GROK_EVAL_V2_ONLY;
@@ -883,6 +891,66 @@ console.log(JSON.stringify({
     await isolated.close();
   }
   console.log("PASS 16 eval-v2-only collapses only the top-level active tool set at session start");
+
+  const searchHarness = await createHarness(register, "v2", {
+    evalV2Only: true,
+    evalV2Language: "all",
+    toolInfo: [{ name: "notes_list" }, { name: "eval" }],
+    activeToolNames: ["notes_list", "eval"],
+  });
+  try {
+    const jsRegex = await searchHarness.run({
+      language: "js",
+      code: "JSON.stringify(tools.search('^no').map((item) => item.name));",
+      timeout: 5,
+    });
+    assert.match(jsRegex.content[0].text, /notes_list/);
+    const pyRegex = await searchHarness.run({
+      language: "py",
+      code: "import json\nprint(json.dumps([item['name'] for item in tools.search('list$')]))",
+      timeout: 5,
+    });
+    assert.match(pyRegex.content[0].text, /notes_list/);
+    const invalid = await searchHarness.run({
+      language: "js",
+      code: "try { tools.search('('); } catch (error) { error.constructor.name; }",
+      timeout: 5,
+    });
+    assert.match(invalid.content[0].text, /TypeError/);
+  } finally {
+    await searchHarness.close();
+  }
+  console.log("PASS 17 tools.search treats queries as case-insensitive regexes and rejects invalid patterns");
+
+  const png1x1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const imageHarness = await createHarness(register, "v2", {
+    evalV2Only: true,
+    evalV2Language: "all",
+    toolInfo: [{ name: "notes_list" }, { name: "eval" }],
+    activeToolNames: ["notes_list", "eval"],
+  });
+  try {
+    const jsImage = await imageHarness.run({
+      language: "js",
+      code: `display({ type: "image", data: "${png1x1}", mimeType: "image/png" });`,
+      timeout: 5,
+    });
+    const imageBlock = jsImage.content.find((block) => block.type === "image");
+    assert(imageBlock, "displayed image must ride along as an image content block");
+    assert.equal(imageBlock.mimeType, "image/png");
+    assert.equal(imageBlock.data, png1x1);
+    assert.match(jsImage.content[0].text, /\[display image image\/png\]/);
+    assert.doesNotMatch(jsImage.content[0].text, new RegExp(png1x1.slice(0, 24)), "base64 must never leak into text output");
+    const pyImage = await imageHarness.run({
+      language: "py",
+      code: `display({"type": "image", "data": "${png1x1}", "mimeType": "image/png"})`,
+      timeout: 5,
+    });
+    assert(pyImage.content.some((block) => block.type === "image" && block.data === png1x1));
+  } finally {
+    await imageHarness.close();
+  }
+  console.log("PASS 18 display(image) forwards vision content like the native read tool without base64 text");
 } finally {
   await rm(tempDir, { recursive: true, force: true });
   if (previousPackageDir === undefined) delete process.env.PI_PACKAGE_DIR;

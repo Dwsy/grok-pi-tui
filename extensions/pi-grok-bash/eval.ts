@@ -26,9 +26,16 @@ export type EvalParams = {
 	is_background?: boolean;
 };
 
+export type EvalDisplayImage = {
+	type: "image";
+	data: string;
+	mimeType: string;
+};
+
 export type EvalExecution = {
 	output: string;
 	truncated: boolean;
+	images?: EvalDisplayImage[];
 };
 
 type EvalWorkerReply = {
@@ -36,6 +43,7 @@ type EvalWorkerReply = {
 	ok: boolean;
 	value?: string;
 	error?: string;
+	displayOutputs?: unknown;
 };
 
 type EvalV2ToolHostCall = {
@@ -320,6 +328,7 @@ pending_host = {}
 stored_values = {}
 current_eval_id = None
 active_tool_catalog = {}
+display_outputs = []
 active_skill_catalog = {}
 
 
@@ -386,6 +395,31 @@ class ToolProxy:
         return list(active_tool_catalog.keys())
 
 
+def _search_catalog(catalog, query, api):
+    import re
+    source = query.strip()
+    if not source:
+        return list(catalog.values())
+    try:
+        pattern = re.compile(source, re.IGNORECASE)
+    except re.error as error:
+        raise TypeError(f"{api}(query) invalid regular expression: {error}")
+
+    def matches(value):
+        return isinstance(value, str) and bool(pattern.search(value))
+
+    selected = []
+    for item in catalog.values():
+        guidelines = item.get("guidelines")
+        if (
+            matches(item.get("name", ""))
+            or matches(item.get("description") or "")
+            or (isinstance(guidelines, list) and any(matches(entry) for entry in guidelines))
+        ):
+            selected.append(item)
+    return selected
+
+
 class ToolsHelper:
     def list(self):
         return list(active_tool_catalog.values())
@@ -398,10 +432,7 @@ class ToolsHelper:
     def search(self, query):
         if not isinstance(query, str):
             raise TypeError("tools.search(query) requires a string")
-        needle = query.strip().lower()
-        if not needle:
-            return self.list()
-        return [item for item in active_tool_catalog.values() if needle in item.get("name", "").lower() or needle in str(item.get("description", "")).lower()]
+        return _search_catalog(active_tool_catalog, query, "tools.search")
 
 
 class SkillsHelper:
@@ -416,10 +447,7 @@ class SkillsHelper:
     def search(self, query):
         if not isinstance(query, str):
             raise TypeError("skills.search(query) requires a string")
-        needle = query.strip().lower()
-        if not needle:
-            return self.list()
-        return [item for item in active_skill_catalog.values() if needle in item.get("name", "").lower() or needle in str(item.get("description", "")).lower()]
+        return _search_catalog(active_skill_catalog, query, "skills.search")
 
     async def read(self, name):
         if not isinstance(name, str) or not name.strip():
@@ -435,6 +463,13 @@ skills = SkillsHelper()
 
 
 def display(value):
+    # Mirror the native read tool: images travel as image blocks (vision),
+    # never as base64 text; the text channel only carries a short note.
+    if isinstance(value, dict) and value.get("type") == "image" and isinstance(value.get("data"), str):
+        mime_type = value.get("mimeType") if isinstance(value.get("mimeType"), str) else "image/png"
+        display_outputs.append({"type": "image", "data": value["data"], "mimeType": mime_type})
+        print(f"[display image {mime_type}]")
+        return
     print(repr(value))
 
 
@@ -546,16 +581,17 @@ async def evaluate(code):
 
 
 async def run_eval(message):
-    global current_eval_id, active_tool_catalog, active_skill_catalog
+    global current_eval_id, active_tool_catalog, active_skill_catalog, display_outputs
     eval_id = message.get("id", "")
     current_eval_id = eval_id
+    display_outputs = []
     active_tool_catalog = {item["name"]: item for item in message.get("tools", []) if isinstance(item, dict) and isinstance(item.get("name"), str)}
     active_skill_catalog = {item["name"]: item for item in message.get("skills", []) if isinstance(item, dict) and isinstance(item.get("name"), str)}
     try:
         value = await evaluate(message.get("code", ""))
-        reply({"type": "eval_result", "id": eval_id, "ok": True, "value": "" if value is None else repr(value)})
+        reply({"type": "eval_result", "id": eval_id, "ok": True, "value": "" if value is None else repr(value), "displayOutputs": display_outputs})
     except BaseException:
-        reply({"type": "eval_result", "id": eval_id, "ok": False, "error": traceback.format_exc()})
+        reply({"type": "eval_result", "id": eval_id, "ok": False, "error": traceback.format_exc(), "displayOutputs": display_outputs})
     finally:
         for future in list(pending_host.values()):
             if not future.done():
@@ -636,6 +672,7 @@ const server = repl.start({
 });
 let activeToolCatalog = new Map();
 let activeSkillCatalog = new Map();
+let displayOutputs = [];
 const toolFunctionCache = new Map();
 const inspectSymbol = util.inspect.custom;
 function withDeepInspect(value) {
@@ -688,9 +725,38 @@ function cloneStoredValue(value, key) {
   return JSON.parse(serialized);
 }
 
+function compileSearchRegex(query, api) {
+  const source = query.trim();
+  if (!source) return null;
+  try {
+    return new RegExp(source, "i");
+  } catch (error) {
+    throw new TypeError(api + "(query) invalid regular expression: " + ((error && error.message) || String(error)));
+  }
+}
+
+function searchCatalog(catalog, query, api) {
+  const regex = compileSearchRegex(query, api);
+  if (!regex) return [...catalog.values()];
+  const matches = value => typeof value === "string" && regex.test(value);
+  return [...catalog.values()].filter(item =>
+    matches(item.name) ||
+    matches(item.description) ||
+    (Array.isArray(item.guidelines) && item.guidelines.some(matches))
+  );
+}
+
 function installContextGlobals() {
   const context = server.context;
   context.display = value => {
+    // Mirror the native read tool: images travel as ImageContent blocks (vision),
+    // never as base64 text; the text channel only carries a short note.
+    if (value && typeof value === "object" && value.type === "image" && typeof value.data === "string") {
+      const mimeType = typeof value.mimeType === "string" ? value.mimeType : "image/png";
+      displayOutputs.push({ type: "image", data: value.data, mimeType });
+      console.log("[display image " + mimeType + "]");
+      return;
+    }
     console.log(util.inspect(value, { depth: 8, colors: false, maxArrayLength: 200 }));
   };
   context.output = context.display;
@@ -721,11 +787,7 @@ function installContextGlobals() {
     },
     search(query) {
       if (typeof query !== "string") throw new TypeError("tools.search(query) requires a string");
-      const needle = query.trim().toLowerCase();
-      if (!needle) return [...activeToolCatalog.values()];
-      return [...activeToolCatalog.values()].filter(item =>
-        item.name.toLowerCase().includes(needle) || String(item.description || "").toLowerCase().includes(needle)
-      );
+      return searchCatalog(activeToolCatalog, query, "tools.search");
     },
   });
   context.skills = Object.freeze({
@@ -738,11 +800,7 @@ function installContextGlobals() {
     },
     search(query) {
       if (typeof query !== "string") throw new TypeError("skills.search(query) requires a string");
-      const needle = query.trim().toLowerCase();
-      if (!needle) return [...activeSkillCatalog.values()];
-      return [...activeSkillCatalog.values()].filter(item =>
-        item.name.toLowerCase().includes(needle) || String(item.description || "").toLowerCase().includes(needle)
-      );
+      return searchCatalog(activeSkillCatalog, query, "skills.search");
     },
     async read(name) {
       if (typeof name !== "string" || !name.trim()) throw new TypeError("skills.read(name) requires a non-empty skill name");
@@ -802,7 +860,7 @@ function finishEval(id, message) {
   if (currentEvalId !== id) return false;
   currentEvalId = "";
   pendingHost.clear();
-  reply({ type: "eval_result", id, ...message });
+  reply({ type: "eval_result", id, displayOutputs: displayOutputs.splice(0), ...message });
   return true;
 }
 
@@ -1028,7 +1086,10 @@ export class PersistentEvalKernel {
 			this.input = undefined;
 			this.cwd = undefined;
 			this.protocolBuffer = "";
-			this.takePending()?.reject(new Error(reason));
+			const pending = this.takePending();
+			// Surface the worker's own stderr: a crashed kernel is otherwise undiagnosable.
+			const stderrTail = pending?.output.toString("utf8").trimEnd().slice(-800);
+			pending?.reject(new Error(stderrTail ? `${reason}\n${stderrTail}` : reason));
 		});
 	}
 
@@ -1122,7 +1183,11 @@ export class PersistentEvalKernel {
 				? `[output truncated to ${MAX_OUTPUT_BYTES} bytes]\n${output}`
 				: output;
 		if (reply.ok) {
-			pending.resolve({ output: rendered, truncated: bounded?.truncated ?? pending.truncated });
+			pending.resolve({
+				output: rendered,
+				truncated: bounded?.truncated ?? pending.truncated,
+				images: extractDisplayImages(reply),
+			});
 			return;
 		}
 		pending.reject(new Error([reply.error || "Eval failed", rendered].filter(Boolean).join("\n")));
@@ -1152,6 +1217,19 @@ export class PersistentEvalKernel {
 	}
 }
 
+
+function extractDisplayImages(reply: EvalWorkerReply): EvalDisplayImage[] | undefined {
+	if (!Array.isArray(reply.displayOutputs)) return undefined;
+	const images = reply.displayOutputs.filter(
+		(item): item is EvalDisplayImage =>
+			typeof item === "object" &&
+			item !== null &&
+			(item as EvalDisplayImage).type === "image" &&
+			typeof (item as EvalDisplayImage).data === "string" &&
+			typeof (item as EvalDisplayImage).mimeType === "string",
+	);
+	return images.length > 0 ? images : undefined;
+}
 
 export function evalHostToolValue(content: Array<{ type: string; text?: string; [key: string]: unknown }>) {
 	const text = content

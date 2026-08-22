@@ -188,8 +188,25 @@ export class EvalSessionToolBridge {
 	private runtimeModule?: PiRuntimeModule;
 	private registered = new Map<string, { registeredTool: RegisteredToolLike; wrappedTool: WrappedToolLike }>();
 	private disposers: Array<() => void> = [];
+	private allowedTools?: Set<string>;
 
 	constructor(private readonly pi: ExtensionAPI) {}
+
+	/**
+	 * Restrict the host tools injected into eval cells (catalog + invoke).
+	 * undefined/empty restores the default: every registered tool in eval v2-only mode.
+	 */
+	setAllowedTools(names: string[] | undefined) {
+		this.allowedTools = names && names.length > 0 ? new Set(names) : undefined;
+	}
+
+	getAllowedTools(): string[] | undefined {
+		return this.allowedTools ? [...this.allowedTools] : undefined;
+	}
+
+	private isAllowed(toolName: string): boolean {
+		return !this.allowedTools || this.allowedTools.has(toolName);
+	}
 
 	async install(anchor: object | string) {
 		this.modules = await runtimeModules();
@@ -249,7 +266,7 @@ export class EvalSessionToolBridge {
 		const includeRegistered = evalV2OnlyHostToolsEnabled();
 		return this.pi
 			.getAllTools()
-			.filter((tool) => (includeRegistered || active.has(tool.name)) && tool.name !== "eval")
+			.filter((tool) => (includeRegistered || active.has(tool.name)) && tool.name !== "eval" && this.isAllowed(tool.name))
 			.map((tool) => {
 				const captured = this.registered.get(tool.name)?.registeredTool;
 				const runtimeInfo = tool as typeof tool & { executionMode?: BridgeExecutionMode };
@@ -286,7 +303,7 @@ export class EvalSessionToolBridge {
 		throwIfAborted(signal);
 		const active = this.pi.getActiveTools().includes(toolName);
 		const registered = this.pi.getAllTools().some((tool) => tool.name === toolName);
-		if (!active && !(evalV2OnlyHostToolsEnabled() && registered)) {
+		if (!active && !(evalV2OnlyHostToolsEnabled() && registered && this.isAllowed(toolName))) {
 			throw new Error(`Eval v2 cannot invoke inactive tool ${JSON.stringify(toolName)}`);
 		}
 

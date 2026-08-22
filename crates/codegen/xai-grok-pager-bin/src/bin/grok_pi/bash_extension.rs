@@ -139,7 +139,7 @@ mod tests {
         assert!(eval_source.contains("PYTHON_EVAL_WORKER"));
         assert!(eval_source.contains("PI_GROK_EVAL_VERSION"));
         assert!(eval_source.contains("JS_EVAL_WORKER_V2"));
-        assert!(!eval_source.contains("PYTHON_EVAL_WORKER_V2"));
+        assert!(eval_source.contains("PYTHON_EVAL_WORKER_V2"));
         assert!(eval_source.contains("HostCallGate"));
         assert!(eval_source.contains("type: \"host_call\""));
 
