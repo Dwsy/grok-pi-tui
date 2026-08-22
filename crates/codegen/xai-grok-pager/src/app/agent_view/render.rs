@@ -395,10 +395,12 @@ impl AgentView {
     }
     pub(crate) fn sync_timeline_hover_preview(&mut self) {
         self.timeline_hover_preview = match self.timeline_hover {
-            Some(crate::views::timeline::TimelineHit::Tick(turn_idx)) => self
-                .scrollback
-                .turn_preview(turn_idx)
-                .map(|text| (turn_idx, text)),
+            Some(crate::views::timeline::TimelineHit::Tick(turn_idx)) => {
+                self.scrollback.turn_preview(turn_idx).map(|text| {
+                    let created_at = self.scrollback.turn_created_at(turn_idx);
+                    (turn_idx, text, created_at)
+                })
+            }
             _ => None,
         };
     }
@@ -2256,7 +2258,8 @@ impl AgentView {
                 );
                 if let Some(crate::views::timeline::TimelineHit::Tick(turn_idx)) =
                     self.timeline_hover
-                    && let Some((preview_turn, preview)) = self.timeline_hover_preview.as_ref()
+                    && let Some((preview_turn, preview, created_at)) =
+                        self.timeline_hover_preview.as_ref()
                     && *preview_turn == turn_idx
                 {
                     crate::views::timeline::render_tick_hover_popup(
@@ -2265,6 +2268,7 @@ impl AgentView {
                         layout.scrollback,
                         turn_idx,
                         preview,
+                        *created_at,
                         &theme,
                     );
                 }

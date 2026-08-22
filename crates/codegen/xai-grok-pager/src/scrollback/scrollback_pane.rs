@@ -708,7 +708,7 @@ impl ScrollbackPane {
                 &entry.block,
                 RenderBlock::UserPrompt(_) | RenderBlock::AgentMessage(_) | RenderBlock::Btw(_)
             ) {
-            10
+            super::TIMESTAMP_RESERVE
         } else {
             0
         };
@@ -948,9 +948,9 @@ impl ScrollbackPane {
                     && mx < content_area.x + content_area.width
             });
             let ts_str = if ts_hovered {
-                ts.format("  %H:%M:%S | %b %d").to_string()
+                super::message_timestamp_label(ts, true)
             } else {
-                ts.format("  %-I:%M %p").to_string()
+                super::message_timestamp_label(ts, false)
             };
             let ts_width = ts_str.len() as u16;
             if content_area.width > ts_width + 1

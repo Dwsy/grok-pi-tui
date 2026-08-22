@@ -87,6 +87,12 @@ impl ScrollbackState {
         Some(preview)
     }
 
+    /// Prompt creation time for one turn, used by the timeline rail hover card.
+    pub fn turn_created_at(&self, turn_idx: usize) -> Option<chrono::DateTime<chrono::Local>> {
+        let turn = self.turns.get(turn_idx)?;
+        self.entries.get_index(turn.prompt_index)?.1.created_at
+    }
+
     /// The turn owning the viewport top, if any.
     pub fn active_turn_for_viewport(&self) -> Option<usize> {
         if self.view_mode == ViewMode::SingleTurn {

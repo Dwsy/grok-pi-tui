@@ -63,7 +63,7 @@ fn timestamp_reserved_for_block(block: &RenderBlock, appearance: &AppearanceConf
             RenderBlock::UserPrompt(_) | RenderBlock::AgentMessage(_) | RenderBlock::Btw(_)
         )
     {
-        10
+        super::TIMESTAMP_RESERVE
     } else {
         0
     }

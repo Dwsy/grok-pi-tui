@@ -43,3 +43,31 @@ pub use selection::{RenderOutput, SelectionBox};
 pub use state::{EntryLayoutInfo, ScrollbackState};
 pub use text_selection::*;
 pub use types::*;
+
+/// Reserved right-gutter columns for message-block timestamp overlays.
+///
+/// Covers the widest non-hover label (`  MM-DD HH:MM`). Keep in sync with the
+/// three reservation sites: `EntryRenderer::timestamp_reserved()`,
+/// `scrollback_pane.rs`'s sticky-header reservation, and
+/// [`render::timestamp_reserved_for_block`].
+pub(crate) const TIMESTAMP_RESERVE: u16 = 13;
+
+/// Timestamp label overlaid on the first content row of message blocks.
+///
+/// Today's messages show time only; earlier messages prefix the numeric date.
+/// Hover appends seconds. Numeric, locale-free formats throughout — no English
+/// month names or AM/PM markers. The two leading spaces match the historical
+/// overlay offset from the content edge.
+pub(crate) fn message_timestamp_label(
+    ts: chrono::DateTime<chrono::Local>,
+    hovered: bool,
+) -> String {
+    let is_today = ts.date_naive() == chrono::Local::now().date_naive();
+    let base = match (is_today, hovered) {
+        (true, false) => ts.format("%H:%M"),
+        (true, true) => ts.format("%H:%M:%S"),
+        (false, false) => ts.format("%m-%d %H:%M"),
+        (false, true) => ts.format("%m-%d %H:%M:%S"),
+    };
+    format!("  {base}")
+}

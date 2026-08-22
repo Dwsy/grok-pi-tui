@@ -139,21 +139,30 @@ pub fn render_tick_hover_popup(
     scrollback_area: Rect,
     turn_idx: usize,
     preview: &str,
+    timestamp: Option<chrono::DateTime<chrono::Local>>,
     theme: &Theme,
 ) {
     if !rail.window.contains(&turn_idx) {
         return;
     }
-    let max_text = ((scrollback_area.width / 2).clamp(16, 32)) as usize;
-    let mut lines = Vec::new();
+    // Wider card than the original text-only popup: the timestamp line and a
+    // longer preview need more room to stay readable.
+    let max_text = ((scrollback_area.width / 2).clamp(24, 48)) as usize;
+    let mut lines: Vec<(String, bool)> = Vec::new();
+    if let Some(ts) = timestamp {
+        lines.push((ts.format("%Y-%m-%d %H:%M").to_string(), true));
+    }
     let mut rest = preview.trim();
-    while !rest.is_empty() && lines.len() < 2 {
-        if lines.len() == 1 {
-            lines.push(crate::render::line_utils::truncate_str(rest, max_text));
+    while !rest.is_empty() && lines.len() < 4 {
+        if lines.len() == 3 {
+            lines.push((
+                crate::render::line_utils::truncate_str(rest, max_text),
+                false,
+            ));
             break;
         }
         let end = crate::render::line_utils::byte_offset_at_width(rest, max_text);
-        lines.push(rest[..end].to_string());
+        lines.push((rest[..end].to_string(), false));
         rest = rest[end..].trim_start();
     }
     if lines.is_empty() {
@@ -161,7 +170,7 @@ pub fn render_tick_hover_popup(
     }
     let text_width = lines
         .iter()
-        .map(|line| unicode_width::UnicodeWidthStr::width(line.as_str()))
+        .map(|(text, _)| unicode_width::UnicodeWidthStr::width(text.as_str()))
         .max()
         .unwrap_or_default() as u16;
     let card_height = lines.len() as u16 + 2;
@@ -191,12 +200,19 @@ pub fn render_tick_hover_popup(
     let inner = block.inner(card_area);
     block.render(card_area, buf);
     for (index, line) in lines.into_iter().enumerate() {
+        let (text, is_timestamp) = line;
         buf.set_line(
             inner.x + 1,
             inner.y + index as u16,
             &Line::from(Span::styled(
-                line,
-                Style::default().fg(theme.text_primary).bg(background),
+                text,
+                Style::default()
+                    .fg(if is_timestamp {
+                        theme.gray
+                    } else {
+                        theme.text_primary
+                    })
+                    .bg(background),
             )),
             text_width,
         );

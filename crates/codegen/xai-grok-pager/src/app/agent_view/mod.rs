@@ -1467,7 +1467,10 @@ pub struct AgentView {
     /// Timeline geometry built during render and consumed by mouse input.
     pub(crate) timeline_rail: Option<crate::views::timeline::TimelineRail>,
     pub(crate) timeline_hover: Option<crate::views::timeline::TimelineHit>,
-    pub(crate) timeline_hover_preview: Option<(usize, String)>,
+    /// Turn index, prompt preview text, and prompt creation time for the rail
+    /// hover card.
+    pub(crate) timeline_hover_preview:
+        Option<(usize, String, Option<chrono::DateTime<chrono::Local>>)>,
     /// Running agent definition for this session (`x.ai/session/info` `agentName`).
     pub session_agent_name: Option<String>,
     /// Map of child session IDs to subagent metadata. Populated on
