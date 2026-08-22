@@ -151,7 +151,11 @@ pub(super) struct Args {
 
     /// Minutes before foreground Bash auto-backgrounds and each blocking task wait is capped.
     /// CLI overrides PI_GROK_BASH_MAX_WAIT_MINS; 0 or negative disables both behaviors.
-    #[arg(long = "bash-max-wait-mins", value_name = "MIN", allow_hyphen_values = true)]
+    #[arg(
+        long = "bash-max-wait-mins",
+        value_name = "MIN",
+        allow_hyphen_values = true
+    )]
     pub(super) bash_max_wait_mins: Option<f64>,
 
     /// Comma-separated allowlist of tool names to enable.

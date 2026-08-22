@@ -671,7 +671,8 @@ impl FuzzyFileMatcherDaemon {
                                 }
                                 (false, true) => {
                                     tracing::trace!("restarting ignored, hidden-filtered walk");
-                                    matcher.restart_walk_with(|w| w.ignore(false).git_ignore(false));
+                                    matcher
+                                        .restart_walk_with(|w| w.ignore(false).git_ignore(false));
                                 }
                             }
                             generation += 1;
@@ -893,7 +894,11 @@ mod tests {
         assert!(with_ignored.iter().any(|p| p == Path::new("ignored.txt")));
         for paths in [&hidden_only, &with_ignored] {
             assert!(!paths.iter().any(|p| p.starts_with(".git")));
-            assert!(!paths.iter().any(|p| p.components().any(|c| c.as_os_str() == "node_modules")));
+            assert!(
+                !paths
+                    .iter()
+                    .any(|p| p.components().any(|c| c.as_os_str() == "node_modules"))
+            );
             assert!(!paths.iter().any(|p| p.starts_with(".pnpm-store")));
         }
     }

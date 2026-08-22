@@ -51,7 +51,12 @@ impl PiAgent {
     /// respawn from the original launch config, re-bootstrap, and re-attach
     /// the session that was active before the crash.
     pub(super) async fn recover_rpc_connection(&self) {
-        if !self.state.borrow_mut().rpc_recovery.try_begin(Instant::now()) {
+        if !self
+            .state
+            .borrow_mut()
+            .rpc_recovery
+            .try_begin(Instant::now())
+        {
             self.send_ui_notification(
                 "Pi RPC crashed repeatedly; automatic restart is paused. Quit and relaunch grok-pi.",
                 Some("error"),
@@ -101,9 +106,10 @@ impl PiAgent {
             )
         };
         self.rpc.respawn().await?;
-        let bootstrap = tokio::time::timeout(RESTART_BOOTSTRAP_DEADLINE, PiBootstrap::load(&self.rpc))
-            .await
-            .map_err(|_| anyhow!("Pi bootstrap timed out after restart"))??;
+        let bootstrap =
+            tokio::time::timeout(RESTART_BOOTSTRAP_DEADLINE, PiBootstrap::load(&self.rpc))
+                .await
+                .map_err(|_| anyhow!("Pi bootstrap timed out after restart"))??;
         // Bind to the fresh child's (new, empty) session first so the adapter
         // is consistent even when the old session cannot be reattached.
         self.replace_bootstrap(bootstrap);

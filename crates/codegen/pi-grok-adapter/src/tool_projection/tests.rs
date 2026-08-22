@@ -455,8 +455,7 @@ fn search_like_tool_output_is_not_grep_parsed() {
         false,
     );
     assert_eq!(
-        raw,
-        result,
+        raw, result,
         "web_search must pass through unchanged, not be rewritten to GrepSearch"
     );
     assert_ne!(raw.get("type").and_then(Value::as_str), Some("GrepSearch"));

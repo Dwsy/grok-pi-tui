@@ -109,13 +109,8 @@ pub(crate) fn parse_bridge_message(
                     update[target] = value.clone();
                 }
             }
-            let mut lifecycle = session_update_envelope(
-                root_session_id,
-                update,
-                replay,
-                &subagent_id,
-                sequence,
-            );
+            let mut lifecycle =
+                session_update_envelope(root_session_id, update, replay, &subagent_id, sequence);
             lifecycle["_meta"]["subagentBackground"] = Value::Bool(background);
             vec![
                 BridgeOperation::ParentTaskMetadata {

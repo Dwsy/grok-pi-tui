@@ -63,7 +63,7 @@ fn load_catalog_from_db(
                 s.parent_session_path
            FROM sessions s LEFT JOIN session_details_cache d ON d.path = s.path
           ORDER BY s.modified DESC"
-        .to_string()
+            .to_string()
     } else {
         format!(
             "SELECT s.id, s.path, s.cwd, s.name, s.created, s.modified, s.message_count,
@@ -260,7 +260,8 @@ fn run_psm_message_fts(
           WHERE message_fts MATCH ?1
             AND (?2 IS NULL OR s.cwd = ?2{CWD_COLLATION})
           ORDER BY score DESC, julianday(m.timestamp) DESC
-          LIMIT ?3");
+          LIMIT ?3"
+    );
 
     let mut stmt = connection.prepare(&sql)?;
     let rows = stmt.query_map(params![fts_query, cwd_val, fetch], |row| {
@@ -325,7 +326,8 @@ fn run_resume_x_like_search(
                  OR lower(COALESCE(s.last_message, '')) LIKE ?1)
                 AND (?2 IS NULL OR s.cwd = ?2{CWD_COLLATION})
               ORDER BY s.modified DESC
-              LIMIT ?3");
+              LIMIT ?3"
+        );
         let mut stmt = connection.prepare(&sql)?;
         let rows = stmt.query_map(params![q, cwd_val, limit as i64], |row| {
             Ok((
@@ -370,7 +372,8 @@ fn run_resume_x_like_search(
               WHERE lower(me.content) LIKE ?1
                 AND (?2 IS NULL OR s.cwd = ?2{CWD_COLLATION})
               ORDER BY me.timestamp DESC
-              LIMIT ?3");
+              LIMIT ?3"
+        );
         let mut stmt = connection.prepare(&sql)?;
         let rows = stmt.query_map(params![q, cwd_val, fetch], |row| {
             Ok((

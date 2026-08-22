@@ -576,11 +576,8 @@ impl PiAgent {
             .as_ref()
             .is_some_and(|host| host.continuation_guard_armed(&control));
         if guard_armed {
-            let blocked = self
-                .goal_host
-                .borrow_mut()
-                .as_mut()
-                .and_then(|host| match host.block_continuation_loop(&control) {
+            let blocked = self.goal_host.borrow_mut().as_mut().and_then(|host| {
+                match host.block_continuation_loop(&control) {
                     Ok(blocked) => Some(blocked),
                     Err(error) => {
                         tracing::warn!(
@@ -589,7 +586,8 @@ impl PiAgent {
                         );
                         None
                     }
-                });
+                }
+            });
             if let Some(blocked) = blocked {
                 self.emit_goal_updated_from_control(&blocked).await;
             }

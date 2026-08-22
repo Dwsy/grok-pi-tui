@@ -1478,10 +1478,7 @@ pub fn render_context_info_overlay(
                             other => other,
                         };
                         lines.push(ratatui::text::Line::from(vec![
-                            ratatui::text::Span::styled(
-                                format!("{label}: "),
-                                theme.muted(),
-                            ),
+                            ratatui::text::Span::styled(format!("{label}: "), theme.muted()),
                             ratatui::text::Span::styled(
                                 field.value.clone(),
                                 ratatui::style::Style::default().fg(theme.text_primary),

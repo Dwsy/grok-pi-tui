@@ -328,8 +328,7 @@ fn attach_child(
         .context("Pi RPC stderr is unavailable")?;
 
     let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<Value>();
-    let stderr_ring: Arc<Mutex<StderrRingBuffer>> =
-        Arc::new(Mutex::new(StderrRingBuffer::new(32)));
+    let stderr_ring: Arc<Mutex<StderrRingBuffer>> = Arc::new(Mutex::new(StderrRingBuffer::new(32)));
 
     tokio::spawn(async move {
         while let Some(value) = writer_rx.recv().await {
@@ -701,10 +700,7 @@ fn fail_pending(pending: &PendingMap, generation: u64, message: &str) {
         .filter(|(_, request)| request.generation <= generation)
         .map(|(id, _)| id.clone())
         .collect();
-    let drained: Vec<_> = stale
-        .into_iter()
-        .filter_map(|id| map.remove(&id))
-        .collect();
+    let drained: Vec<_> = stale.into_iter().filter_map(|id| map.remove(&id)).collect();
     drop(map);
     for request in drained {
         let _ = request.sender.send(Err(message.to_string()));

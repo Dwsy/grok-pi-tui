@@ -148,7 +148,8 @@ impl PiAgent {
                 acp::SessionUpdate::AgentMessageChunk(text_chunk(text))
             }
             PiHistoryItem::CompactionSummary(summary) => {
-                self.send_compaction_summary(&summary, true, timestamp_ms).await;
+                self.send_compaction_summary(&summary, true, timestamp_ms)
+                    .await;
                 return;
             }
             PiHistoryItem::AgentThought(text) => {
