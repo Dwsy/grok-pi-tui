@@ -9,11 +9,6 @@ if ! command -v cargo >/dev/null 2>&1; then
   echo "error: Rust/Cargo is required" >&2
   exit 1
 fi
-if [[ ! -e "$PI_BIN" ]] && ! command -v "$PI_BIN" >/dev/null 2>&1; then
-  echo "error: Pi executable not found: $PI_BIN" >&2
-  echo "install Pi >= 0.80.10: npm i -g @earendil-works/pi-coding-agent" >&2
-  exit 1
-fi
 
 "$ROOT/scripts/setup-shared-cargo-target.sh"
 
