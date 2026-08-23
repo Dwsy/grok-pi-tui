@@ -90,7 +90,7 @@ grok-pi update
 | 产品教程 | `/tutorial`（别名 `/tour`、`/onboarding`）展示 18 个 grok-pi 能力域：Pager 原生工作流、Pi Provider/模型/工具/会话、扩展/Skill/Package 生态、产品桥接、可选自动化与明确边界 |
 | **Remote TUI 桥接** | Pi `ctx.ui.custom` 组件通过 Grok Build 原生 Pager 渲染，不创建第二套 TUI |
 | Shell 执行 | Bash 集成、后台任务、输出限制、超时和进程树清理 |
-| 并行工作 | Pi 子代理，支持前台/后台执行和原生任务视图；`/subagents` 维护产品隔离的项目/全局 agent 定义。可选 Subagents V2（`PI_GROK_SUBAGENTS_V2=1`）增加在当前 root session 内稳定的 `/root/...` agent path、主/子与子/子消息、嵌套 spawn，以及 `.grok-pi/teams` / `~/.grok-pi/teams` 外置 team preset |
+| 并行工作 | Pi 子代理，支持前台/后台执行和原生任务视图；`/subagents` 维护产品隔离的项目/全局 agent 定义。可选 Subagents V2（F2 → Agent →「Pi subagents V2」开关，或 `PI_GROK_SUBAGENTS_V2=1`）增加在当前 root session 内稳定的 `/root/...` agent path、主/子与子/子消息、嵌套 spawn，以及 `.grok-pi/teams` / `~/.grok-pi/teams` 外置 team preset |
 | Rhai Workflow | 上游 `xai-workflow` 宿主（F2 **Pi workflows**）；`/workflow`、`/workflows`、`/create-workflow`；脚本目录 `~/.grok-pi/workflows` 与 `<repo>/.grok-pi/workflows` |
 | 会话流程 | Resume、树导航、标签、回顾、上下文查看和会话选择器 |
 | 资源管理 | Pi 扩展、skills、prompt 和主题的原生管理器 |
@@ -125,7 +125,7 @@ flowchart LR
 | `PI_GROK_REMOTE_TUI` | `1` | 启用 Pi `ctx.ui.custom` 组件 |
 | `PI_GROK_BASH` | `1` | 启用 Grok-owned Bash 集成 |
 | `PI_GROK_NATIVE_COMMANDS` | `0` | 启用实验性的 `/pi-*` 命令 |
-| `PI_GROK_SUBAGENTS_V2` | `0` | 在 Pi subagents 上启用可选 V2 team tools（`spawn_team`、稳定 agent path、peer messaging、nested spawn） |
+| `PI_GROK_SUBAGENTS_V2` | `0` | 在 Pi subagents 上启用可选 V2 team tools（`spawn_team`、稳定 agent path、peer messaging、nested spawn）；与 F2「Pi subagents V2」开关等效 |
 | `GROK_HOME` | `~/.grok-pi` | 用户状态根目录（与 stock Grok 的 `~/.grok` 隔离） |
 | `GROK_PROJECT_DIR` | `.grok-pi` | 仓库内项目配置/workflows/hooks 目录名 |
 | `GROK_PI_NO_AUTO_UPDATE` | 未设置 | 禁用后台更新检查 |
@@ -143,7 +143,7 @@ Subagents V2 的 team preset 使用 JSON，放在 `<repo>/.grok-pi/teams` 或 `~
 }
 ```
 
-启动 grok-pi 前设置 `PI_GROK_SUBAGENTS_V2=1`；用 `/subagent-teams` 查看 preset。`spawn_team` 启动整组 preset，`spawn_team_agent`、`team_send_message`、`team_followup_task`、`team_wait`、`team_list`、`team_interrupt` 提供底层协作面。Rhai Workflow 仍负责确定性编排；Team V2 负责 session-scoped、可跨单次 run 复用的 agent identity 和 peer messaging。
+启动 grok-pi 前用 F2「Pi subagents V2」开关或设置 `PI_GROK_SUBAGENTS_V2=1`；用 `/subagent-teams` 查看 preset。`spawn_team` 启动整组 preset，`spawn_team_agent`、`team_send_message`、`team_followup_task`、`team_wait`、`team_list`、`team_interrupt` 提供底层协作面。Rhai Workflow 仍负责确定性编排；Team V2 负责 session-scoped、可跨单次 run 复用的 agent identity 和 peer messaging。
 
 Rhai Workflow **默认关闭**（F2 → Agent → **Pi workflows**，改完后需**整进程重启**）。细节见 [功能矩阵](FEATURE_MATRIX.zh-CN.md)、[AGENTS.md 产品态隔离](AGENTS.md#product-state-isolation)。
 
@@ -212,7 +212,7 @@ flowchart LR
 | **Q&A 桌面通知**（`pi_ask_user_question_notifications`） | F2 → Agent → Q&A desktop notifications | 开 | — |
 | **Pi goal mode**（`pi_goal`） | F2 → Agent → Pi goal mode（需重启） | 关 | `pi-codex-goal`、`@narumitw/pi-goal`、`@misunders2d/pi-goal`、`pi-goal`、`pi-goal-x` |
 | **Pi workflows**（`pi_workflows`） | F2 → Agent → Pi workflows（需重启） | 关 | `@quintinshaw/pi-dynamic-workflows` |
-| **Pi subagents**（`pi_subagents`） | F2 → Agent → Pi subagents（需重启） | 开 | `pi-subagents`、`@tintinweb/pi-subagents`；原生 `/subagents` 管理隔离的项目/全局 Markdown agent 定义。V2 另用 `PI_GROK_SUBAGENTS_V2=1` 开启；`/subagent-teams` 发现 project/global/bundled JSON preset |
+| **Pi subagents**（`pi_subagents`） | F2 → Agent → Pi subagents（需重启） | 开 | `pi-subagents`、`@tintinweb/pi-subagents`；原生 `/subagents` 管理隔离的项目/全局 Markdown agent 定义。V2 另用 F2「Pi subagents V2」开关或 `PI_GROK_SUBAGENTS_V2=1` 开启；`/subagent-teams` 发现 project/global/bundled JSON preset |
 | **`/btw`**（`pi_btw`） | F2 → Agent → Pi /btw（需重启）；已保存答案可用 `/btw-history` 查看 | 关 | `pi-btw`、`@narumitw/pi-btw`、`@juicesharp/rpiv-btw` |
 | **用户消息 Markdown**（`pi_user_markdown`） | F2 → Agent → Markdown user messages | 开 | — |
 
