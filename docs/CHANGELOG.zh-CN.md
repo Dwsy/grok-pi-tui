@@ -2,7 +2,7 @@
 
 **grok-pi**（在 Grok Build 生产级 TUI 中运行 Pi Agent Core）的版本说明。
 
-- 英文完整版（含历史版本）：[CHANGELOG.MD](CHANGELOG.MD)
+- 英文完整版（含历史版本）：[CHANGELOG.MD](../CHANGELOG.MD)
 - 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)
 
 ---
@@ -11,20 +11,39 @@
 
 ### 新增
 
+- 可选启用的 **Subagents V2 团队协作**：支持可配置 agent 定义、内置 implementation/research/review 团队、team-aware runtime 与 transport、配置 UI、兼容性测试，以及中英文使用/架构文档。
 - Eval Bridge v2 新增语言选择器：`[ui].pi_eval_v2_language = "js" | "py" | "all"`（默认 `js`，需重启）；Python 与 JavaScript 共用同一套 host-RPC、skills、completion、store/load 与 task 契约。
 - Eval v2 后台任务与 Bash 对齐：支持显式后台、达到共享最大等待阈值后自动由前台转后台、`get_task_output` / `wait_tasks` / `kill_task`、模型输出限长与完整输出临时文件。
+- Eval v2 新增实时 display mode 控制，并接入原生 settings 与 slash-command 路径，无需重建 extension runtime 即可调整展示方式。
+- Timeline 消息使用稳定时间戳，hover 时显示完整日期；行重新渲染后仍保持同一消息时间。
+- Todo 拆分为可配置 V1/V2 runtime，并提供跨版本迁移与兼容性覆盖，升级行为时不会丢弃已有任务状态。
+- 基于 manifest 的扩展 UI 注册：内置 Pi 扩展可在 `grok-pi.json` 中声明 F2 category/section/order，宿主自动导入到原生设置表面。
+- 新增 grok-pi leader 生命周期的 CLI 管理命令。
 
 ### 修复
 
 - Recap 与 `/btw` 桥接流量不再泄漏进 agent loop context：两个扩展的摘要、delta 和答案一律通过 `appendEntry` 写入 custom entry（不再产生 custom message），adapter 解析对应的 `entry_appended` 事件，并由 `context` hook 把旧会话中 sendMessage 时代的遗留条目从 LLM context 中剔除。
 - `tools.describe(name)` 在 JavaScript REPL 中会深层展示嵌套 tool schema，不再把 `properties` 折叠为 `[Object]`。
 - Bash `timeout: 0` 现在统一表示“不设置超时”，与 Eval v2 的 escape hatch 语义一致；嵌套 `tool.bash(...)` 不再因 0 值触发校验失败。
-- Eval v2 前台任务自动转后台后会立即补充新的前台 kernel，后续 cell 不再被已转后台任务阻塞。
+- Eval v2 前台任务自动转后台后会立即补充新的前台 kernel，后续 cell 不再被已转后台任务阻塞；同时加固 task wait 与 timeout 默认值，减少前后台切换竞态。
+- Eval v2 host-tool 投影与 palette 启动现在能正确保留注入工具目录，并补齐 Pager 原生渲染 input-only tool 所需的参数信息。
+- Pi Bash 扩展不再为 Eval v2 注入工具编辑器注册 `F2`，因此不会再抢占宿主保留的原生 Settings 快捷键。
+- PSM session 数据库发现、resume 与 search 路径改为跨平台解析，不再依赖单一平台目录布局。
+- Steer row 会等待 safe point 再派发，避免排队 steering input 在不安全时机跨越 adapter turn 边界。
+- Provider ID 含 `/` 的模型现在能正确解析，不再被错误拆成 provider/model 分隔结构。
+- 大段粘贴确认改用原生 prompt dropdown；阻塞式 question card 会随所属 turn 一起取消，不再残留到 teardown 之后。
+- Write/Edit hover popup 在鼠标停留内部时保持打开并支持滚动，检查较长工具详情时不会意外消失。
+- Response stream 会在 turn teardown 前关闭，避免延迟 stream state 与完成流程竞态；同一轮 Pager 生命周期工作也扩展了 session review 导航。
+- 本地构建不再要求机器上预先安装 Pi runtime，干净开发环境可直接进入构建流程。
 
 ### 变更
 
 - Eval v2 `agent()` 明确为 blocking leaf；`background=true` 会快速失败，并发 leaf agent 通过 `parallel([...])` 执行。
 - Eval v2 任务状态复用增强 Bash 相同的 Pager 原生 task channel 与统一等待/输出限制。
+- 高价值内置 Pi bridge（auth、BTW、loop、recap、Remote TUI、rollback、shortcut、subagent 等 runtime）拆成职责明确的 TypeScript 模块与独立 host wrapper，缩小单体 extension entrypoint，同时保持原有行为。
+- grok-pi 启动与原生设置改由 host/extension manifest 驱动，并将 runtime config、extension self-heal、host-feature registration 与 Pi subagent transport 从主二进制接线中拆分出来。
+- Session review 导航、block viewer、timeline 交互和 tool-detail 检查针对长会话进一步打磨。
+- 本地 Cargo 开发构建采用更快的 incremental 配置与共享 target 维护；仓库参考资料统一迁移到 `docs/`，并同步更新相关链接。
 
 ## [0.1.0] - 2026-08-21
 

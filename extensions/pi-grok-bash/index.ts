@@ -5,7 +5,7 @@
  * promote an active foreground tool call into its existing background-task UI
  * without rerunning the command. Pager still owns all visible task surfaces.
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -97,12 +97,6 @@ async function loadEvalV2ToolsOverride(): Promise<string[] | undefined> {
 	}
 }
 
-async function saveEvalV2ToolsOverride(names: string[]): Promise<void> {
-	const file = evalV2ToolsOverrideFile();
-	await mkdir(path.dirname(file), { recursive: true });
-	await writeFile(file, `${JSON.stringify(names, null, 2)}\n`, "utf8");
-}
-
 export default async function (pi: ExtensionAPI) {
 	const bashEnabled = envFlagDefaultOn("PI_GROK_BASH") && hostToolNameEnabled("bash");
 	const maxWaitMs = resolveMaxWaitMs();
@@ -131,38 +125,6 @@ export default async function (pi: ExtensionAPI) {
 			if (!names) return;
 			evalV2ToolsOverride = names;
 			evalToolBridge?.setAllowedTools(names);
-		});
-		if (typeof pi.registerShortcut === "function") pi.registerShortcut("f2", {
-			description: "Configure Eval v2-only injected host tools (comma-separated)",
-			async handler(ctx) {
-				if (!evalToolBridge) return;
-				const known = new Set(pi.getAllTools().map((tool) => tool.name));
-				known.delete("eval");
-				const current = evalV2ToolsOverride ?? [...known].sort();
-				const raw = await ctx.ui.input(
-					`Eval v2 注入工具（逗号分隔）\n当前: ${current.join(", ") || "无"}\n可用: ${[...known].sort().join(", ")}`,
-					"输入工具名列表；留空恢复默认（全部内置工具）；Esc 取消",
-				);
-				if (raw === undefined) return;
-				const names = [...new Set(raw.split(",").map((value) => value.trim()).filter(Boolean))];
-				if (names.length === 0) {
-					evalV2ToolsOverride = undefined;
-					evalToolBridge.setAllowedTools(undefined);
-					await saveEvalV2ToolsOverride([]);
-					ctx.ui.notify("Eval v2 注入工具已恢复默认（全部内置工具）", "info");
-					return;
-				}
-				const invalid = names.filter((name) => !known.has(name));
-				if (invalid.length > 0) {
-					// 校验失败：不保存，保持原配置不变（自动回滚）。
-					ctx.ui.notify(`保存失败：未知工具 ${invalid.join(", ")}\n已保留原配置: ${(evalV2ToolsOverride ?? [...known].sort()).join(", ")}`, "error");
-					return;
-				}
-				evalV2ToolsOverride = names;
-				evalToolBridge.setAllowedTools(names);
-				await saveEvalV2ToolsOverride(names);
-				ctx.ui.notify(`Eval v2 注入工具已保存: ${names.join(", ")}`, "info");
-			},
 		});
 	}
 	const evalToolBridge = evalVersion === "v2" ? new EvalSessionToolBridge(pi) : undefined;
