@@ -33,6 +33,280 @@ Each entry records:
 
 <!-- entries below this line -->
 
+## [07b2f714] — 2026-08-23
+
+> **Status:** Pending — not yet merged into grok-pi.
+
+- **Sync range:** `e5fd481..07b2f714` (`e5fd4816d43260c15ba785f103990c1ed6cea230` → `07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8`)
+- **Upstream commits:** 8 (`Synced from monorepo`)
+- **SOURCE_REV (monorepo SHA):** `956313d459bee15ae8f17bf73e0633605e18dddd` (was `ea094a8c369475f97c85540d01730baec0dce5d6`)
+- **Diff size:** 1002 files changed, +110382 / −26245
+
+### Summary
+
+Eight monorepo syncs substantially rework Pager, Shell, worktree, workflow, MCP, permission, auth and subagent behavior. The largest grok-pi opportunities are in-process screen-mode switching, workflow/subagent concurrency improvements, MCP elicitation, prompt stash, status-line work, projected worktrees and reliability hardening. The merge is high risk for the fork because 173 files changed on both sides and a static three-way preview reports 49 conflicts, concentrated exactly on Pager app/dispatch/workflow/screen-mode and product-isolation seams.
+
+### Areas touched
+
+| Area | Files | +/− | Added / Deleted | Notes |
+|------|------:|----:|-----------------|-------|
+| Shell (agent runtime) | 308 | +32427/−11602 | 71/1 | auth, session, subagent, workflow, retry and compaction changes |
+| Pager (TUI) | 346 | +36424/−5658 | 54/0 | in-process screen switching, elicitation, queue, status line, workflows and prompt UI |
+| Worktree / GC | 49 | +13767/−3907 | 0/0 | projected worktrees and fail-closed automatic GC |
+| Other crates | 116 | +8114/−2392 | 8/0 | supporting runtime, protocol and infrastructure changes |
+| Workspace / Permission | 37 | +4612/−594 | 1/0 | permission defaults, grants and sandbox quota handling |
+| Telemetry / Mixpanel | 37 | +3838/−206 | 13/0 | process metrics, prompt latency and compaction analytics |
+| Tools | 44 | +3558/−302 | 10/0 | MCP elicitation, browser parity, app-builder and shared HTTP |
+| Config | 16 | +2673/−507 | 0/0 | GROK_CONFIG, typed registry, consent and managed settings |
+| MCP | 7 | +1909/−714 | 0/0 | elicitation and managed server discovery/ownership |
+| Textarea / Inline | 5 | +871/−94 | 0/0 | bidi and selection behavior |
+| Hooks / Plugins | 9 | +742/−148 | 0/0 | hook input updates and custom plugin marketplace |
+| Computer Hub | 6 | +529/−31 | 0/0 | registration and connection lifecycle |
+| Chat state | 8 | +506/−18 | 0/0 | typed input provenance and compaction support |
+| Root / meta | 4 | +168/−41 | 0/0 | lockfile and source revision metadata |
+| Agent lifecycle | 6 | +188/−14 | 0/0 | turn lifecycle and agent plumbing |
+| Models / Sampling | 1 | +45/−5 | 2/0 | model-family and sampler behavior |
+| Update / Version | 3 | +11/−12 | 0/0 | version/update support |
+| **Total** | **1002** | **+110382/−26245** | **159/1** | |
+
+### Added
+
+- Grok 4.6 becomes the bundled default model and model catalogs can carry `model_family`.
+- `GROK_CONFIG` / `GROK_CONFIG_PATH` can override the config location.
+- Consent notices can gate sessions, propagate from remote settings, and be recorded server-side.
+- Automatic worktree garbage collection uses a fail-closed safety gate; projected-worktree cloning is supported.
+- MCP elicitation gains a human-in-the-loop popup and protocol icons; `mcp add` infers HTTP transport for http(s) URLs.
+- Workflows gain remote-bundle discovery, autocomplete, child effort and `agent_budget`; plugin-provided agents appear in `/agents`.
+- Pager gains in-process `/minimal` ↔ `/fullscreen` switching, Ctrl+S prompt stash/restore, periodic status-line refresh and queue-focused Up navigation.
+- Telemetry adds process CPU/memory snapshots, heap/tool-result size, prompt timing/retry/output-token fields and compaction mode/two-pass timing.
+- Feedback supports image attachments end-to-end.
+- App builder gains `init_or_update_app`; Grok Build config-file reference docs are generated.
+
+### Changed
+
+- Reasoning effort is passed via `_meta.reasoningEffort` on session/new and session/load.
+- Managed MCP matching is keyed and hardened by server name; stdio MCP startup no longer blocks session startup.
+- Pre-session permission mode is applied; interactive TUI soft-defaults to Auto and remember-tool-approvals defaults on.
+- Typed memory configuration, typed input provenance/queue policy, and canonical shell attempt records replace looser compatibility paths.
+- Queued messages can interject immediately; goal mode no longer blocks queued messages/edits.
+- Subagents drop spawn-time `capability_mode`, avoid parent-session serialization, defer transcript replay, retry proxy 429 bursts and memoize tool schemas under fan-out.
+- `/copy` uses source Markdown; slash menu ordering, `/plugin` alias and expanded `/edit-prompt` update command UX.
+- TLS trust/custom CA handling is consolidated across HTTPS/WebSocket clients and the OS trust store is read once per process.
+- Authentication startup/refresh lock handling is bounded and stale auth locks are recovered in place.
+- Doom-loop handling is expanded, including higher thresholds and guided sampler retries.
+
+### Fixed
+
+- Filesystem operations resolve against the bound session working directory and Grok home resolution is corrected on Windows.
+- Plan-mode prompt drafts survive approval; queued-row commands and hook stop/update notifications are preserved.
+- List-pane empty rebuild scrolling no longer panics; `grok inspect` handles closed stdout pipes.
+- Still-streaming replies no longer freeze when thinking interleaves.
+- Session HEAD metadata resolves from refs only, never by probing the object database.
+- Imagine/video zero-data-retention storage messaging/errors are corrected.
+- Sibling worktree registrations are preserved when removing a worktree.
+- Identical tool-call loops are interrupted earlier in two tiers.
+- Invalid certificate classification and WebSocket ALPN handling are corrected.
+- Stale MCP `init_failed` records clear on config updates; stale same-server computer-hub registrations are superseded.
+
+### Authoritative `Changes:` by upstream commit
+
+The bullets below are transcribed verbatim from the eight upstream commit messages so no upstream capability is lost during deduplication/triage.
+
+
+#### `eb267fef` — 2026-08-13
+- Resolve client filesystem operations against the bound session's working directory
+- Surface image capabilities on conversation metadata
+- Resolve Grok home from USERPROFILE on Windows
+- Preserve plan-mode prompt drafts across approval
+- Make grok-4.6 the bundled default model
+- Bound toolOverrides echo so session creation cannot hang on a wedged actor
+- Open free-tier upgrade CTA on Apple Terminal Ctrl+O
+- Add SuperGrok Plus to free-usage upsell
+- Hooks: support updatedInput on PreToolUse
+- Run pager commands typed into a queued-row edit
+- Tell hooks when the user stops a turn
+- Surface silent scheduled-task expiry in the transcript with a typed removal reason
+- Send queued messages immediately via interject
+- Drag-select to copy on /session-info
+- Preserve late subagent lifecycle events
+- Default text selection to word select; triple-click selects paragraph
+- Let hosts turn off the session-search index
+- Add web_search allowed/excluded domain configuration
+#### `d6a22a1a` — 2026-08-15
+- Pass reasoning effort via `_meta.reasoningEffort` on session/new and session/load
+- Unicode bidi reordering for Arabic and Persian in the TUI
+- Add `GROK_CONFIG` / `GROK_CONFIG_PATH` env override for config location
+- Warn on a non-numeric port behind a bracketed IPv6 allow entry
+- Always send `x-grok-client-mode` so usage can split interactive vs headless
+- Make merge-build CI reliability-first and Windows e2e blocking
+- Name first-party writing tools in the preparing spinner
+- Remove the queue badge from the status bar
+- Fix list-pane out-of-bounds panic on scroll after an empty rebuild
+- Harden managed MCP allow and deny URL and name matching
+- Accept and forward `computer_sessions[].git_source` in the gateway
+- Remove the todo badge from the status bar
+- Hook-denied turns report blocked by a hook, not cancelled by user
+- Spawn tools from a cached null descriptor instead of the `/dev/null` path
+- Resolve agent home directories via the standard home-dir lookup
+- Raise doom-loop max threshold default to 64
+- Don't panic when `grok inspect` stdout is a closed pipe
+- Consolidate Grok home resolution in a shared crate
+- Use typed memory configuration
+- Collapse memory CLI compatibility override
+- Name the MCP dispatch tools in the preparing spinner
+- Choose sharing settings at publish time; deploy applies them
+- Classify OpenCode edit dynamic input as Edit for permissions
+- Atomic `response.create` with embedded item in the gateway
+- Evict finished subagent transcripts and reload evicted inline media on demand
+- Apply pre-session permission mode
+- mTLS and managed settings for external OTEL export
+#### `5163763e` — 2026-08-15
+- Add memory rollout telemetry
+- Preserve agent message anchors
+- Preserve typed input provenance
+- Add typed input queue policy
+- Block sessions behind a consent notice until it is accepted
+- Carry a consent notice in remote settings and record the answer locally
+- Fix TTS decode window span export under concurrent decode
+- Add automatic worktree garbage collection with a fail-closed safety gate
+- Restrict login to a team via GROK_FORCE_LOGIN_TEAM_ID environment override
+- Add optional model_family to the model catalog schema
+- Cap parallel media-generation tool calls (image ≤8, video ≤4)
+- Deny unwrap/expect/panic on session resource-release paths
+- Revert authentication straddle hardening
+- Refresh session auto title early and show recap/last-turn on resume
+- Fix still-streaming replies freezing when thinking interleaves
+#### `9fabadea` — 2026-08-16
+- Deflake bash full-output double-click fold in the PTY pager
+- Load one session summary for the /session-info title row instead of scanning all sessions
+- Expand command output when unfolding folded sections
+- Fix consent notice link styling and review findings
+- Drop yanked prompt on Ctrl+C rewind
+- Style notice body links
+- Require in-repo tests for /goal planner and verifier changes
+- Reflow /goal prompts and drop pin tests
+- Add canonical attempt record schema
+#### `d71f6e0c` — 2026-08-17
+- Fix session HEAD metadata to resolve from refs only, never the object database
+#### `d92c5b0b` — 2026-08-19
+- Clone straight into a projected worktree
+- Expand `$CLAUDE_PROJECT_DIR` before Windows PowerShell hook spawn
+- Drop spawn-time `capability_mode` for subagents
+- Fix Imagine zero-data-retention messaging
+- Unblock queued messages and queue edits during goal mode
+- Add shell completion directory accounting
+- Add remaining shell intent codecs
+- Add shell registration intent codecs
+- Add shell recovery codecs
+- Add shell completion codecs
+- Add shell attempt journal accounting
+- Add shell rewind reference codecs
+- Add strict shell attempt record decoder
+- Browser-style shift-extended selection in the textarea
+- Fix video API zero-data-retention storage errors
+- Forward MCP protocol icons on MCP list responses
+- Record consent acceptances server-side, verified against what was served
+#### `19d42e35` — 2026-08-19
+- Pager: re-run a command status line on a timer via refresh_interval
+- Gate /goal verification on objective-named CI oracles
+- Default remember_tool_approvals to on
+- Permission analytics: granular prompt outcomes and remember-gate state
+- Permission prompts: persistent "Never allow" for MCP tools and web-fetch domains
+- Compact on model family switch
+- Keep the page-flip prompt pin through scroll
+- Let sandbox sessions delete loops
+- Render emails as mailto links in the pager
+- Keep the ask-user tool out of subagents
+- Do not delete a sibling worktree registration when removing a worktree
+- Interrupt identical tool-call loops earlier, in two tiers
+- Keep paused workflows visible
+- Docs: Bash allow rules match per-segment, with wrapper peeling
+- Delete a scheduled loop from the background-tasks tray
+- Adopt sibling auth tokens before the auth lock; bound startup-path refreshes
+- GROK_CONNECT_UI_TIMEOUT_SECS override for the startup connect budget
+- Status line
+- Long-poll the preview-state document with env-driven cadence knobs
+#### `07b2f714` — 2026-08-23
+- Support a custom marketplace for plugin CTAs via config
+- Switch between /minimal and /fullscreen in-process instead of re-executing
+- Add heap-allocated bytes and tool result size to performance events
+- Split compaction timing around the model call
+- Remove dead managed-client refresh helpers keyed by URL
+- Pin the startup refresh bound under a held auth lock
+- Key MCP merge and discovery by server name, not URL
+- Stop startup from waiting on the machine id
+- Emit compaction mode and two-pass fields on product analytics events
+- Default the hunk tracker to off
+- Show plugin-provided agents in the /agents modal
+- Address dashboard store review follow-ups
+- Load workflows from the remote subagent bundle
+- Infer HTTP transport in `mcp add` for http(s):// URLs
+- Feedback image attachments end-to-end (TUI paste → base64 wire → Slack image blocks)
+- Up-arrow jumps to queued prompts instead of history
+- Suppress the /feedback trace-consent card for team accounts and deployment-key installs
+- Honor effort on workflow child agents
+- Honor agent_budget on /workflow and JSON workflow runs
+- Enrich prompt latency with response timing, retry count, and output tokens
+- Add /plugin as an alias of /plugins
+- Read the OS trust store once per process
+- Close residual TypeScript parity gaps in the Rust browser tools
+- Pass typed sandbox quota denials through to tool errors
+- Supersede stale same-server computer-hub registrations across instances
+- Clear stale MCP init_failed records on config updates
+- Memoize tool schema generation so subagent boot stays flat under fan-out
+- Align hints above the composer with its prompt arrow
+- Interactive TUI soft-defaults to auto permission mode
+- List discovered workflows under the skill catalog
+- Document that project permission rules are trust-gated and document the grants file
+- Narrow bash allow rules clear the FileWrite floor for word-operand writes
+- Widen /edit-prompt to the full TUI
+- Spawn stdio MCP servers without blocking session startup
+- /copy uses source markdown instead of rendered text
+- Send default User-Agent grok-cli/<version> on MCP requests
+- Keep last-used effort across /new and /clear
+- Recover timed-out git tags from the Slack prompt
+- Remove em-dashes from the TUI's user-facing text
+- Esc from a dashboard peek closes the modal, not the conversation
+- Back off and retry subagent turns to survive proxy 429 bursts
+- Enable Auto in the dashboard Shift+Tab permission cycle
+- Ship generated Grok Build config-file reference as CLI docs
+- Put rule bodies on their own line
+- Stop prompt dropdowns indenting three columns into their own border
+- Order the slash menu instead of leaving it to registry order
+- Add init_or_update_app tool for app-builder deployer
+- Keep provider context authoritative
+- Support MCP elicitation via human-in-the-loop popup
+- Defer subagent transcript replay so spawn bursts do not freeze the TUI
+- Stash and restore the prompt draft with Ctrl+S
+- Fast-worktree: give the Windows stub the create_latency_stamp module
+- Serve the scheduler tools in the grok-computer preset
+- /feedback trace-consent card: turn on trace upload or send report alone
+- Fall back to SSL_CERT_FILE for TLS trust configuration
+- Autocomplete saved workflows on /workflow
+- Guide sampler doom-loop retries
+- Send through a wait even after /btw
+- Stamp product events with CPU and memory snapshots
+- Fix invalid-cert classification and WebSocket ALPN
+- Stop concurrent subagents from serializing behind the parent session
+- Show workflow agent context in the pager
+- Worktree surface for projected worktrees
+- Nest single-folder downloads under the folder name in zips
+- Resolve stale auth locks in place so recovery cannot log the whole machine out
+- Extend TLS trust and custom CA handling across HTTPS and WebSocket clients
+- Auto mode: honor explicit user request for force-push
+- Label unknown tool calls instead of a bare red-dot name
+- Status line porting notes for the pager
+
+### Merge risk for grok-pi
+
+- Static `git merge-tree --write-tree HEAD upstream/main` predicts **49 conflicts** and **173 files modified on both sides**.
+- Highest-risk Pager seams: `app/acp_handler`, `app/agent_view`, `app/dispatch`, `app/event_loop.rs`, `app/effects`, `slash/commands/screen_mode_switch.rs`, `slash/commands/workflow.rs`, dashboard/settings/session views and PTY mode-switch tests.
+- Product isolation conflicts directly in `xai-grok-config/src/paths.rs`; preserve `$GROK_HOME` / `~/.grok-pi` and project `.grok-pi` routing.
+- Workflow conflicts reach `xai-grok-shell/src/session/workflow/host_service.rs`; grok-pi must keep `ExternalWorkflowRuntime` with Pi spawning and must not transfer agent/session ownership back to stock Grok Shell.
+- Upstream does **not** directly modify `pi-grok-adapter` or the `grok-pi.rs`/`grok_pi/` composition entry, so those should remain narrow seams rather than targets for structural rewrites.
+- The upstream in-process `/minimal` ↔ `/fullscreen` design is desirable only if the external-profile process and Pi argv/session remain intact; existing fork behavior deliberately excluded the old re-exec implementation for that reason.
+
+
 ## [e5fd481] — 2026-08-13
 
 > **Status:** Merged — integrated on `sync/upstream-e5fd481` as merge commit `300a6539`, on top of the delivered `75e73f3` sync. Cargo-verified this time: `./build.sh`, `pi-grok-adapter` (160 passed), and `grok-pi` bin tests (75 passed) are green. `xai-grok-pager --lib` compiles for the first time since `a5589e9` (pre-sync `main` failed to build that target at all) and reports 8722 passed / 52 failed; those 52 have no pre-sync baseline and are still to be triaged.
