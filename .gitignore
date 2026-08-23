@@ -35,3 +35,6 @@ compaction-results/
 # Fabric mesh runtime state (local-only, contains session IDs / paths)
 .pi/fabric.json
 .pi/fabric/
+
+# Local Pi session HTML exports
+/pi-session-*.html
