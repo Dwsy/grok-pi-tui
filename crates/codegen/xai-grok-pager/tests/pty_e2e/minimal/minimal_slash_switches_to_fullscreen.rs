@@ -2,9 +2,8 @@
 #[allow(unused_imports)]
 use crate::common::*;
 
-/// `/fullscreen` from a minimal session re-execs the pager without `--minimal`
-/// and with `--resume <id>`, reopening the same conversation under the
-/// fullscreen alt-screen TUI. The reverse of `minimal_slash_switches_from_fullscreen`.
+/// `/fullscreen` from a minimal session switches in place (no re-exec); the
+/// in-memory conversation renders in the alt-screen scrollback pane.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn minimal_slash_switches_to_fullscreen() {
@@ -26,28 +25,25 @@ async fn minimal_slash_switches_to_fullscreen() {
         .wait_for_full_text(&sentinel, Duration::from_secs(30))
         .expect("turn committed in minimal");
 
-    // Switch back to fullscreen. Wait for the dropdown row so Enter confirms
-    // the command (not a bare paste of the text).
     inject_keys_paced(&mut harness, b"/fullscreen");
     harness
         .wait_for_text(
-            "Reopen this session in fullscreen mode",
+            "Switch this session to fullscreen mode",
             Duration::from_secs(5),
         )
         .expect("slash dropdown offers /fullscreen");
     harness.update(Duration::from_millis(150));
     harness.inject_keys(b"\r").expect("submit /fullscreen");
 
-    // Prior turn content is already on the minimal screen, so we cannot use
-    // `wait_for_text(sentinel)` as the transition signal — it would return
-    // immediately. Wait until the minimal idle status line is gone (proves we
-    // left scrollback-native mode) while the prior turn remains visible.
+    // The sentinel is already visible pre-switch, so the transition signal is
+    // the minimal idle status disappearing while history stays present.
     let deadline = Instant::now() + Duration::from_secs(45);
     loop {
         harness.update(Duration::from_millis(100));
         let screen = harness.screen_contents();
         let left_minimal = !screen.contains(MINIMAL_IDLE_SENTINEL)
-            && !screen.contains("Reopen this session in fullscreen mode");
+            && !screen.contains(MINIMAL_SWITCH_BACK_IDLE_SENTINEL)
+            && !screen.contains("Switch this session to fullscreen mode");
         let history_present = screen.contains(&sentinel) || harness.full_text().contains(&sentinel);
         if left_minimal && history_present {
             break;
@@ -67,20 +63,26 @@ async fn minimal_slash_switches_to_fullscreen() {
         harness.screen_contents()
     );
 
-    // Sticky screen mode: the relaunch argv carries `--fullscreen`, which the
-    // relaunched process persists to `[ui] screen_mode` (fire-and-forget at
-    // startup — poll while pumping the PTY). The minimal direction is covered
-    // by `minimal_sticky_screen_mode_persists`.
+    // "Reopening session…" only prints on the legacy exec path.
+    assert!(
+        !harness.full_text().contains("Reopening session"),
+        "in-process /fullscreen must not re-exec; found reopen text:\n{}",
+        harness.full_text()
+    );
+
+    harness
+        .wait_for_text("Switched to fullscreen mode", Duration::from_secs(10))
+        .unwrap_or_else(|e| {
+            panic!(
+                "fullscreen switch hint missing: {e}\nscreen:\n{}",
+                harness.screen_contents()
+            )
+        });
+
+    // Mode switches are session-scoped: must not write `[ui] screen_mode`.
     let config_path = content.home().join(".grok").join("config.toml");
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        let body = std::fs::read_to_string(&config_path).unwrap_or_default();
-        if body.contains("screen_mode = \"fullscreen\"") {
-            break;
-        }
-        if Instant::now() >= deadline {
-            panic!("/fullscreen never persisted [ui] screen_mode; config.toml:\n{body}");
-        }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
         harness.update(Duration::from_millis(100));
     }
 

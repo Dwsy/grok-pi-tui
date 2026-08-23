@@ -94,6 +94,7 @@ impl ExternalWorkflowRuntime {
                 objective,
                 args,
                 agent_budget,
+                effort: None,
                 resume_run_id: None,
             },
         )
@@ -114,6 +115,7 @@ impl ExternalWorkflowRuntime {
                 objective,
                 args,
                 agent_budget,
+                effort: None,
                 resume_run_id: None,
             },
         )

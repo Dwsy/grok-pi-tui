@@ -514,8 +514,8 @@ async fn reindex_all(
                 .await
                 .expect("semaphore is never closed");
 
-            // A successor owns the index. These upserts are idempotent,
-            // not fenced; stopping just avoids contending with it.
+            // A successor owns the index once the claim is lost. These upserts are idempotent,
+            // not fenced, so stopping just avoids contending with it.
             if claim_lost.load(Ordering::Acquire) {
                 return;
             }

@@ -70,8 +70,9 @@ pub use xai_grok_workspace_types::rpc::skills::DiscoverSkillsReq;
 pub use xai_grok_workspace_types::rpc::workspace::WorkspaceInfoReq;
 pub use xai_grok_workspace_types::rpc::worktree::{
     CreateWorktreeFromWorktreeRequestWire, CreateWorktreeFromWorktreeSyncReq,
-    PrepareWorktreeFromWorktreeResponse, WorktreeDbPathReq, WorktreeDbPathResponse,
-    WorktreeDbRebuildReq, WorktreeDbStatsReq, WorktreeGcReq, WorktreeListReq, WorktreeShowReq,
+    PrepareWorktreeFromWorktreeResponse, WorktreeCleanArtifactsReq, WorktreeDbPathReq,
+    WorktreeDbPathResponse, WorktreeDbRebuildReq, WorktreeDbStatsReq, WorktreeDetachReq,
+    WorktreeGcReq, WorktreeListReq, WorktreeSalvageReq, WorktreeShowReq,
 };
 pub use xai_grok_workspace_types::rpc::{RpcActivityClass, WorkspaceRpc};
 /// Implements [`WorkspaceRpc`] for request types whose responses
@@ -102,6 +103,12 @@ pub trait WorkspaceOp: WorkspaceRpc + DeserializeOwned + Send + Sync {
 }
 /// Prepare a worktree fork from an existing worktree (validation + path resolution).
 /// Returns a serialized result with `spawn_task` flag and the response.
+fn hub_transfer_client() -> WorkspaceResult<reqwest::Client> {
+    xai_grok_extra_ca::build_reqwest_client(|builder| {
+        builder.timeout(std::time::Duration::from_secs(600))
+    })
+    .map_err(|e| WorkspaceError::HubError(format!("failed to create HTTP client: {e}")))
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrepareWorktreeFromWorktreeReq {
     pub inner: crate::worktree::CreateWorktreeFromWorktreeRequest,
@@ -1063,9 +1070,9 @@ impl WorkspaceOp for PutFilesReq {
     async fn execute(
         &self,
         ws: &WorkspaceHandle,
-        _session_id: Option<&str>,
+        session_id: Option<&str>,
     ) -> WorkspaceResult<Self::Response> {
-        ws.put_files(self.files.clone()).await
+        ws.put_files(session_id, self.files.clone()).await
     }
 }
 #[async_trait]
@@ -1073,9 +1080,9 @@ impl WorkspaceOp for GetFilesReq {
     async fn execute(
         &self,
         ws: &WorkspaceHandle,
-        _session_id: Option<&str>,
+        session_id: Option<&str>,
     ) -> WorkspaceResult<Self::Response> {
-        ws.get_files(self.files.clone()).await
+        ws.get_files(session_id, self.files.clone()).await
     }
 }
 #[async_trait]
@@ -1083,9 +1090,9 @@ impl WorkspaceOp for ClientFsListReq {
     async fn execute(
         &self,
         ws: &WorkspaceHandle,
-        _session_id: Option<&str>,
+        session_id: Option<&str>,
     ) -> WorkspaceResult<Self::Response> {
-        crate::file_system::client_fs::list(ws, self).await
+        crate::file_system::client_fs::list(ws, session_id, self).await
     }
 }
 #[async_trait]
@@ -1093,9 +1100,9 @@ impl WorkspaceOp for ClientFsStatReq {
     async fn execute(
         &self,
         ws: &WorkspaceHandle,
-        _session_id: Option<&str>,
+        session_id: Option<&str>,
     ) -> WorkspaceResult<Self::Response> {
-        crate::file_system::client_fs::stat(ws, self).await
+        crate::file_system::client_fs::stat(ws, session_id, self).await
     }
 }
 #[async_trait]
@@ -1103,9 +1110,9 @@ impl WorkspaceOp for ClientFsReadFileReq {
     async fn execute(
         &self,
         ws: &WorkspaceHandle,
-        _session_id: Option<&str>,
+        session_id: Option<&str>,
     ) -> WorkspaceResult<Self::Response> {
-        crate::file_system::client_fs::read_file(ws, self).await
+        crate::file_system::client_fs::read_file(ws, session_id, self).await
     }
 }
 /// Resolve the index root for a code-nav op. Prefers the explicit per-session
@@ -1365,6 +1372,57 @@ impl WorkspaceOp for WorktreeGcReq {
         .await
         .map_err(|e| WorkspaceError::HubError(e.to_string()))?
         .map_err(|e| WorkspaceError::HubError(e.to_string()))?;
+        serde_json::to_value(report).map_err(|e| WorkspaceError::HubError(e.to_string()))
+    }
+}
+#[async_trait]
+impl WorkspaceOp for WorktreeDetachReq {
+    async fn execute(
+        &self,
+        _ws: &WorkspaceHandle,
+        _session_id: Option<&str>,
+    ) -> WorkspaceResult<Self::Response> {
+        let id = self.id_or_path.clone();
+        let allow_copy = self.allow_copy;
+        let report = tokio::task::spawn_blocking(move || {
+            crate::worktree::detach_worktree_mgmt(&id, allow_copy)
+        })
+        .await
+        .map_err(|e| WorkspaceError::HubError(e.to_string()))?
+        .map_err(|e| WorkspaceError::HubError(e.to_string()))?;
+        serde_json::to_value(report).map_err(|e| WorkspaceError::HubError(e.to_string()))
+    }
+}
+#[async_trait]
+impl WorkspaceOp for WorktreeSalvageReq {
+    async fn execute(
+        &self,
+        _ws: &WorkspaceHandle,
+        _session_id: Option<&str>,
+    ) -> WorkspaceResult<Self::Response> {
+        let id = self.id_or_path.clone();
+        let out = self.out.clone();
+        let report =
+            tokio::task::spawn_blocking(move || crate::worktree::salvage_worktree_mgmt(&id, &out))
+                .await
+                .map_err(|e| WorkspaceError::HubError(e.to_string()))?
+                .map_err(|e| WorkspaceError::HubError(e.to_string()))?;
+        serde_json::to_value(report).map_err(|e| WorkspaceError::HubError(e.to_string()))
+    }
+}
+#[async_trait]
+impl WorkspaceOp for WorktreeCleanArtifactsReq {
+    async fn execute(
+        &self,
+        _ws: &WorkspaceHandle,
+        _session_id: Option<&str>,
+    ) -> WorkspaceResult<Self::Response> {
+        let id = self.id_or_path.clone();
+        let report =
+            tokio::task::spawn_blocking(move || crate::worktree::clean_artifacts_mgmt(&id))
+                .await
+                .map_err(|e| WorkspaceError::HubError(e.to_string()))?
+                .map_err(|e| WorkspaceError::HubError(e.to_string()))?;
         serde_json::to_value(report).map_err(|e| WorkspaceError::HubError(e.to_string()))
     }
 }
@@ -2157,6 +2215,7 @@ mod tests {
                 E::SessionEnd => HookEventNameWire::SessionEnd,
                 E::Stop => HookEventNameWire::Stop,
                 E::StopFailure => HookEventNameWire::StopFailure,
+                E::StopCancelled => HookEventNameWire::StopCancelled,
                 E::PreToolUse => HookEventNameWire::PreToolUse,
                 E::PostToolUse => HookEventNameWire::PostToolUse,
                 E::PostToolUseFailure => HookEventNameWire::PostToolUseFailure,
@@ -2175,6 +2234,7 @@ mod tests {
             E::SessionEnd,
             E::Stop,
             E::StopFailure,
+            E::StopCancelled,
             E::PreToolUse,
             E::PostToolUse,
             E::PostToolUseFailure,
@@ -2274,6 +2334,7 @@ mod tests {
             git_ref: Some("main".to_string()),
             worktree_type: Some(crate::worktree::WorktreeType::Linked),
             label: None,
+            grove_worktree: None,
             cancellation_token: None,
             resolved_dest_path: None,
         };

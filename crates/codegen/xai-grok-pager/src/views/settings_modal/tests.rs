@@ -703,6 +703,7 @@ fn rows_contain_categories_and_settings_through_pr_14() {
             // both the pager drain and the shell promote. Registered before
             // multiline_mode, so it renders first).
             "combine_queued_prompts",
+            "follow_up_behavior",
             "confirm_before_rewind",
             // PAGER-owned multiline (Editor category).
             "multiline_mode",
@@ -1862,7 +1863,7 @@ fn render_editing_value_paints_validation_error_row_and_buffer_red() {
 /// Empty buffer renders a
 /// low-contrast placeholder hint. The cursor block (`▏`) lands
 /// at col 0 and overdraws the placeholder's leading `<`, so the
-/// assertion targets the unique "empty — use shell default"
+/// assertion targets the unique "empty: uses shell default"
 /// substring that survives the cursor overdraw.
 #[test]
 fn render_editing_value_empty_buffer_shows_placeholder() {
@@ -1883,11 +1884,11 @@ fn render_editing_value_empty_buffer_shows_placeholder() {
             input_row.push_str(cell.symbol());
         }
     }
-    // Placeholder for KnownModel ends with "use shell default>".
+    // Placeholder for KnownModel ends with "uses shell default>".
     // The cursor at col 0 overdraws the leading `<`, so we match
     // on the body substring.
     assert!(
-        input_row.contains("use shell default"),
+        input_row.contains("uses shell default"),
         "empty buffer must render the KnownModel placeholder, got {input_row:?}",
     );
 }

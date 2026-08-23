@@ -41,11 +41,21 @@ async fn save_config_locked(config: &Config) -> Result<()> {
     } else {
         merge_section(table, "privacy", &config.privacy);
     }
+    if config.consent == super::consent::ConsentConfig::default() {
+        table.remove("consent");
+    } else {
+        if let Some(TomlValue::Table(section)) = table.get_mut("consent") {
+            section.remove("answers");
+        }
+        merge_section(table, "consent", &config.consent);
+    }
     if config.skills == SkillsConfig::default() {
         table.remove("skills");
     } else {
         merge_section(table, "skills", &config.skills);
     }
+    merge_section(table, "telemetry", &config.telemetry);
+    merge_section(table, "features", &config.features);
     let toml_str = toml::to_string_pretty(&root)?;
     if let Some(parent) = path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;

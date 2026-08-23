@@ -2432,9 +2432,65 @@ fn activity_writing_tool_call_labels_and_redraws() {
     let Some(TurnActivity::WritingToolCall(writing)) = tracker.activity() else {
         panic!("expected WritingToolCall activity");
     };
-    assert_eq!(writing.label(), "Preparing write…");
+    assert_eq!(writing.label(), "Writing file…");
     assert!(!tracker.note_tool_call_arguments_delta(None, 0));
     assert!(!tracker.note_tool_call_arguments_delta(Some("write"), 0));
+}
+/// First-party tools with long argument streams read as friendly phrases
+/// (wire spellings pinned per toolset); tiny-payload read-style tools keep
+/// the raw-name fallback.
+#[test]
+fn activity_writing_tool_call_labels_first_party_writing_tools() {
+    for (name, expected) in [
+        ("write", "Writing file…"),
+        ("search_replace", "Writing edit…"),
+        ("edit", "Writing edit…"),
+        ("hashline_edit", "Writing edit…"),
+        ("apply_patch", "Writing edit…"),
+        ("run_terminal_command", "Writing command…"),
+        ("run_terminal_cmd", "Writing command…"),
+        ("bash", "Writing command…"),
+        ("todo_write", "Updating todo list…"),
+        ("todowrite", "Updating todo list…"),
+        ("workflow", "Writing workflow…"),
+        ("image_gen", "Writing image prompt…"),
+        ("image_edit", "Writing image prompt…"),
+        ("image_to_video", "Writing video prompt…"),
+        ("reference_to_video", "Writing video prompt…"),
+        ("ask_user_question", "Preparing question…"),
+        ("read_file", "Preparing read_file…"),
+    ] {
+        let mut tracker = AcpUpdateTracker::new();
+        tracker.note_tool_call_arguments_delta(Some(name), 0);
+        let Some(TurnActivity::WritingToolCall(writing)) = tracker.activity() else {
+            panic!("expected WritingToolCall activity for {name:?}");
+        };
+        assert_eq!(writing.label(), expected, "label for {name:?}");
+    }
+    let mut tracker = AcpUpdateTracker::new();
+    tracker.note_tool_call_arguments_delta(Some("search_replace"), 0);
+    tracker.note_tool_call_arguments_delta(Some("search_replace"), 1);
+    let Some(TurnActivity::WritingToolCall(writing)) = tracker.activity() else {
+        panic!("expected WritingToolCall activity");
+    };
+    assert_eq!(writing.label(), "Writing edit (2)…");
+}
+/// Every taxonomy-mapped spelling must have copy here: a spelling whose kind
+/// misses the copy match would silently keep the raw-name fallback.
+#[test]
+fn activity_writing_tool_call_copy_covers_taxonomy_map() {
+    for (name, _) in xai_grok_tools::tool_taxonomy::WRITING_TOOL_WIRE_NAMES {
+        let mut tracker = AcpUpdateTracker::new();
+        tracker.note_tool_call_arguments_delta(Some(name), 0);
+        let Some(TurnActivity::WritingToolCall(writing)) = tracker.activity() else {
+            panic!("expected WritingToolCall activity for {name:?}");
+        };
+        assert_ne!(
+            writing.label(),
+            format!("Preparing {name}…"),
+            "mapped spelling {name:?} fell back to the raw name"
+        );
+    }
 }
 /// A silent delta stream expires from the spinner but stays visible to
 /// lost-response recovery as a dead-stream signal; a new delta re-reveals.
@@ -2466,6 +2522,27 @@ fn activity_writing_tool_call_prettifies_qualified_mcp_names() {
         panic!("expected WritingToolCall activity");
     };
     assert_eq!(writing.label(), "Preparing (Linear) List Issues…");
+}
+/// The MCP dispatch/discovery wire names read as friendly phrases, not raw ids.
+#[test]
+fn activity_writing_tool_call_names_mcp_dispatch_tools() {
+    let mut tracker = AcpUpdateTracker::new();
+    tracker.note_tool_call_arguments_delta(Some("use_tool"), 0);
+    let Some(TurnActivity::WritingToolCall(writing)) = tracker.activity() else {
+        panic!("expected WritingToolCall activity");
+    };
+    assert_eq!(writing.label(), "Preparing MCP tool…");
+    tracker.note_tool_call_arguments_delta(Some("use_tool"), 1);
+    let Some(TurnActivity::WritingToolCall(writing)) = tracker.activity() else {
+        panic!("expected WritingToolCall activity");
+    };
+    assert_eq!(writing.label(), "Preparing MCP tool (2)…");
+    let mut tracker = AcpUpdateTracker::new();
+    tracker.note_tool_call_arguments_delta(Some("search_tool"), 0);
+    let Some(TurnActivity::WritingToolCall(writing)) = tracker.activity() else {
+        panic!("expected WritingToolCall activity");
+    };
+    assert_eq!(writing.label(), "Searching MCP tools…");
 }
 #[test]
 fn activity_writing_subagent_prompt_for_task_tools() {
@@ -2598,7 +2675,7 @@ fn writing_tool_call_ordinal_counts_parallel_calls() {
         &mut sb,
     );
     assert!(tracker.note_tool_call_arguments_delta(Some("write"), 0));
-    assert_eq!(label(&tracker), "Preparing write…");
+    assert_eq!(label(&tracker), "Writing file…");
 }
 #[test]
 fn waiting_payload_and_writing_churn_are_not_phase_transitions() {
@@ -2688,7 +2765,7 @@ fn writing_tool_call_ordinal_ranks_observed_indexes() {
         writing.label()
     };
     tracker.note_tool_call_arguments_delta(Some("write"), 3);
-    assert_eq!(label(&tracker), "Preparing write…");
+    assert_eq!(label(&tracker), "Writing file…");
     tracker.note_tool_call_arguments_delta(Some("read_file"), 7);
     assert_eq!(label(&tracker), "Preparing read_file (2)…");
 }
@@ -2723,11 +2800,11 @@ fn writing_tool_call_interleaved_indexes_restore_names() {
         writing.label()
     };
     assert!(tracker.note_tool_call_arguments_delta(Some("write"), 0));
-    assert_eq!(label(&tracker), "Preparing write…");
+    assert_eq!(label(&tracker), "Writing file…");
     assert!(tracker.note_tool_call_arguments_delta(Some("read_file"), 1));
     assert_eq!(label(&tracker), "Preparing read_file (2)…");
     assert!(tracker.note_tool_call_arguments_delta(None, 0));
-    assert_eq!(label(&tracker), "Preparing write…");
+    assert_eq!(label(&tracker), "Writing file…");
     assert!(!tracker.note_tool_call_arguments_delta(None, 0));
     assert!(!tracker.note_tool_call_arguments_delta(Some("write"), 0));
     assert!(tracker.note_tool_call_arguments_delta(None, 1));
@@ -3967,6 +4044,35 @@ fn handle_user_message_finishes_pending_tool_entries() {
     assert!(
         !sb.needs_animation(),
         "no entries should be animating after user message",
+    );
+}
+/// A send-now interrupt must not finalize the freshly armed page-flip pin.
+#[test]
+fn handle_user_message_does_not_finalize_fresh_pin() {
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    for i in 0..30 {
+        sb.push_block(RenderBlock::agent_message(format!("history {i}")));
+    }
+    sb.push_block(RenderBlock::user_prompt("new question"));
+    let prompt_idx = sb.len() - 1;
+    sb.prepare_layout(80, 8);
+    sb.follow_new_turn(Some(prompt_idx), true);
+    sb.prepare_layout(80, 8);
+    assert!(sb.is_pin_reserve_active(), "pin armed for the new turn");
+    assert!(
+        !sb.is_pin_reserve_after_turn(),
+        "fresh pin is not finalized"
+    );
+    tracker.handle_update(agent_chunk("responding..."), &meta(), &mut sb);
+    tracker.handle_update(user_message("interrupt"), &meta(), &mut sb);
+    assert!(
+        sb.is_pin_reserve_active(),
+        "the interrupt must not drop the pin"
+    );
+    assert!(
+        !sb.is_pin_reserve_after_turn(),
+        "a send-now must not finalize the fresh pin (that blocks the overflow chase)"
     );
 }
 /// Regression: finish_turn must call finish_running even for tools that are

@@ -431,6 +431,22 @@ pub(crate) enum SwapOutcome {
 pub struct WorkspaceHandle {
     pub(crate) shared: Arc<WorkspaceShared>,
 }
+type AcknowledgedNotifyChannel = (
+    xai_grok_tools::notification::types::ToolNotificationHandle,
+    tokio::sync::mpsc::UnboundedReceiver<
+        xai_grok_tools::notification::AcknowledgedToolNotification,
+    >,
+);
+/// Builds with no forwarder. They must not open the channel, because an unread one blocks every delete.
+fn acknowledged_notify_channel(_enabled: bool) -> Option<AcknowledgedNotifyChannel> {
+    None
+}
+/// Client-fs resolution base: request paths resolve against `base`,
+/// `canonical` is the matching canonicalization-containment boundary.
+pub(crate) struct ClientFsBase {
+    pub(crate) base: PathBuf,
+    pub(crate) canonical: PathBuf,
+}
 impl WorkspaceHandle {
     /// `None` when not connected. Never hands out an owned
     /// `ToolServer` — a clone-drop begins server teardown.
@@ -638,6 +654,9 @@ impl WorkspaceHandle {
                         .status_config
                         .effective_presence_activity_window()
                         .as_millis() as u64,
+                )
+                .with_scheduled_task_keep_awake_window_ms(
+                    config.status_config.scheduled_task_keep_awake.as_millis() as u64,
                 ),
             );
         activity_tracker.set_event_writers(session_event_writers.clone());
@@ -672,6 +691,7 @@ impl WorkspaceHandle {
             client_ext_sink: arc_swap::ArcSwap::new(Arc::new(None)),
             local_registry,
             activity_tracker,
+            scheduler_poll_started: std::sync::atomic::AtomicBool::new(false),
             status_config: config.status_config,
             server_metadata: config.server_metadata,
             identity,
@@ -852,19 +872,20 @@ impl WorkspaceHandle {
         if session_id.is_empty() {
             return Err(WorkspaceError::EmptyAgentId);
         }
-        let mut sessions = self.shared.sessions.write();
-        if self.shared.activity_tracker.is_draining() {
-            return Err(WorkspaceError::ShuttingDown);
-        }
-        if sessions.contains_key(&session_id) {
-            return Err(WorkspaceError::SessionAlreadyExists(session_id));
+        {
+            let sessions = self.shared.sessions.read();
+            if self.shared.activity_tracker.is_draining() {
+                return Err(WorkspaceError::ShuttingDown);
+            }
+            if sessions.contains_key(&session_id) {
+                return Err(WorkspaceError::SessionAlreadyExists(session_id));
+            }
         }
         let session_env = Arc::new(std::collections::HashMap::new());
         let config = tool_config.unwrap_or_else(|| self.shared.default_tool_config.clone());
         let mcp_snapshot = self.shared.mcp_tools_snapshot.load_full();
         let hub_snapshot = self.shared.hub_tools_snapshot.load_full();
-        let system_notify_channel = system_notifications
-            .then(xai_grok_tools::notification::types::ToolNotificationHandle::channel);
+        let system_notify_channel = acknowledged_notify_channel(system_notifications);
         let system_notify_handle = system_notify_channel.as_ref().map(|(h, _)| h.clone());
         let (effective, toolset, terminal_backend) = {
             let _span = LocalSpan::enter_with_local_parent("tool_server.toolset_resolve")
@@ -901,14 +922,37 @@ impl WorkspaceHandle {
             system_notifications,
             system_notify_channel,
         ));
-        tracing::info!(session_id = %session_id, "create_session: new session created");
-        sessions.insert(session_id, session.clone());
+        self.insert_session_guarded(&session)?;
+        tracing::info!(session_id = %session.session_id(), "create_session: new session created");
         record_toolset_swap(
             &self.shared.activity_tracker,
             "create",
             session.session_id(),
         );
         Ok(session)
+    }
+    /// Insert under the write lock the evict drain shares, so a racing insert is
+    /// seen by the evict or rejected here; rejection tears down what resolve spawned.
+    fn insert_session_guarded(&self, session: &Arc<WorkspaceSession>) -> WorkspaceResult<()> {
+        let rejection = {
+            let mut sessions = self.shared.sessions.write();
+            if self.shared.activity_tracker.is_draining() {
+                Some(WorkspaceError::ShuttingDown)
+            } else if sessions.contains_key(session.session_id()) {
+                Some(WorkspaceError::SessionAlreadyExists(
+                    session.session_id().to_owned(),
+                ))
+            } else {
+                sessions.insert(session.session_id().to_owned(), Arc::clone(session));
+                None
+            }
+        };
+        if let Some(err) = rejection {
+            session.cancel_hunk_tracker();
+            session.shutdown_terminal_backend();
+            return Err(err);
+        }
+        Ok(())
     }
     /// Update a session's tool config with auth and serialization; the RPC
     /// handler derives `caller_session_id` from the server-bound envelope.
@@ -1773,13 +1817,8 @@ impl WorkspaceHandle {
     /// Resolve a caller-provided path safely. Accepts a path relative to the
     /// workspace root, or an absolute path that resolves within the root;
     /// either form is confined to the root (paths that escape are rejected).
-    /// Two-layer defense: textual normalization + symlink containment.
-    ///
-    /// # TOCTOU caveat
-    /// The symlink check is point-in-time. If a symlink is created between
-    /// resolution and I/O, containment is not guaranteed. Defense-in-depth
-    /// (e.g., `O_NOFOLLOW`, mount namespaces) would be needed for hostile
-    /// workspace environments, which is out of scope for this service-level API.
+    /// See [`Self::resolve_path_within_root`] for the confinement contract
+    /// and its TOCTOU caveat.
     pub(crate) async fn resolve_service_path(
         &self,
         req_path: &str,
@@ -1788,9 +1827,73 @@ impl WorkspaceHandle {
         let root = self.root_cwd()?;
         Self::resolve_path_within_root(req_path, &root, canonical_root).await
     }
-    /// Core of [`Self::resolve_service_path`], parameterized over the
-    /// confinement root (see [`Self::confine_to_root`]).
-    async fn resolve_path_within_root(
+    /// Resolution base for the client-facing fs ops: the bound session's
+    /// cwd when it extends the workspace root by a plain path suffix (e.g.
+    /// a bind cwd of `<root>/artifacts`), else the root. A suffix that is
+    /// missing on disk, not a directory, non-`Normal` (`..`), or whose
+    /// canonicalization leaves the root falls back to the root base rather
+    /// than failing every op with a confinement error (the bind cwd is
+    /// caller-supplied and the artifacts mount is asynchronous).
+    pub(crate) async fn client_fs_base(
+        &self,
+        session_id: Option<&str>,
+    ) -> WorkspaceResult<ClientFsBase> {
+        let root = self.root_cwd()?;
+        let canonical_root = self.canonical_root().await?;
+        let suffix = session_id
+            .and_then(|id| self.session(id))
+            .and_then(|session| {
+                let cwd = session.cwd();
+                cwd.strip_prefix(&root)
+                    .or_else(|_| cwd.strip_prefix(&canonical_root))
+                    .ok()
+                    .filter(|s| {
+                        !s.as_os_str().is_empty()
+                            && s.components()
+                                .all(|c| matches!(c, std::path::Component::Normal(_)))
+                    })
+                    .map(std::path::Path::to_path_buf)
+            });
+        let root_base = || ClientFsBase {
+            base: root.clone(),
+            canonical: canonical_root.clone(),
+        };
+        let Some(suffix) = suffix else {
+            return Ok(root_base());
+        };
+        let base = root.join(&suffix);
+        #[allow(clippy::disallowed_methods)]
+        let canonical = match tokio::fs::canonicalize(&base).await {
+            Ok(c) => dunce::simplified(&c).to_path_buf(),
+            Err(error) => {
+                tracing::warn!(session_id, base = %base.display(), %error,
+                    "client-fs base unusable; falling back to the workspace root");
+                return Ok(root_base());
+            }
+        };
+        let is_dir = tokio::fs::metadata(&canonical)
+            .await
+            .is_ok_and(|m| m.is_dir());
+        if !canonical.starts_with(&canonical_root) || !is_dir {
+            tracing::warn!(session_id, base = %base.display(), canonical = %canonical.display(),
+                "client-fs base leaves the root or is not a directory; falling back to the workspace root");
+            return Ok(root_base());
+        }
+        tracing::info!(session_id, base = %base.display(),
+            "client-fs ops rebased to the session cwd");
+        Ok(ClientFsBase { base, canonical })
+    }
+    /// Resolve a caller-provided path against an explicit base, confining
+    /// it there with two-layer defense: textual normalization + symlink
+    /// containment (see [`Self::confine_to_root`]). Entry point for the
+    /// client-facing fs ops, and the core of [`Self::resolve_service_path`].
+    ///
+    /// # TOCTOU caveat
+    /// The symlink check is point-in-time. If a symlink is created between
+    /// resolution and I/O, containment is not guaranteed. Defense-in-depth
+    /// (e.g., `O_NOFOLLOW`, mount namespaces) would be needed for hostile
+    /// workspace environments, which is out of scope for this service-level API.
+    pub(crate) async fn resolve_path_within_root(
         req_path: &str,
         root: &std::path::Path,
         canonical_root: &std::path::Path,
@@ -1931,31 +2034,32 @@ impl WorkspaceHandle {
     /// Files are written sequentially. If file N fails, files 1..N-1 are
     /// already on disk and will NOT be rolled back. Callers must inspect
     /// per-file results in the response to detect partial failures.
-    pub async fn put_files(&self, files: Vec<PutFileEntry>) -> WorkspaceResult<PutFilesRes> {
-        let canonical_root = self.canonical_root().await?;
+    pub async fn put_files(
+        &self,
+        session_id: Option<&str>,
+        files: Vec<PutFileEntry>,
+    ) -> WorkspaceResult<PutFilesRes> {
+        let base = self.client_fs_base(session_id).await?;
         let mut results = Vec::with_capacity(files.len());
         for entry in files {
-            let result = self.put_single_file(&entry, &canonical_root).await;
+            let result = self.put_single_file(&entry, &base).await;
             results.push(result);
         }
         Ok(PutFilesRes { results })
     }
-    async fn put_single_file(
-        &self,
-        entry: &PutFileEntry,
-        canonical_root: &std::path::Path,
-    ) -> PutFileResult {
-        let resolved = match self.resolve_service_path(&entry.path, canonical_root).await {
-            Ok(p) => p,
-            Err(e) => {
-                return PutFileResult {
-                    path: entry.path.clone(),
-                    ok: false,
-                    error: Some(e.to_string()),
-                    hash: None,
-                };
-            }
-        };
+    async fn put_single_file(&self, entry: &PutFileEntry, base: &ClientFsBase) -> PutFileResult {
+        let resolved =
+            match Self::resolve_path_within_root(&entry.path, &base.base, &base.canonical).await {
+                Ok(p) => p,
+                Err(e) => {
+                    return PutFileResult {
+                        path: entry.path.clone(),
+                        ok: false,
+                        error: Some(e.to_string()),
+                        hash: None,
+                    };
+                }
+            };
         if entry.create_dirs
             && let Some(parent) = resolved.parent()
             && let Err(e) = tokio::fs::create_dir_all(parent).await
@@ -2009,34 +2113,35 @@ impl WorkspaceHandle {
     /// - `hash`: SHA-256 hex digest of the **full** file content.
     /// - `matched`: true if `if_none_match` matched the current hash.
     /// - `size`: total file size in bytes.
-    pub async fn get_files(&self, files: Vec<GetFileEntry>) -> WorkspaceResult<GetFilesRes> {
-        let canonical_root = self.canonical_root().await?;
+    pub async fn get_files(
+        &self,
+        session_id: Option<&str>,
+        files: Vec<GetFileEntry>,
+    ) -> WorkspaceResult<GetFilesRes> {
+        let base = self.client_fs_base(session_id).await?;
         let mut results = Vec::with_capacity(files.len());
         for entry in files {
-            let result = self.get_single_file(&entry, &canonical_root).await;
+            let result = self.get_single_file(&entry, &base).await;
             results.push(result);
         }
         Ok(GetFilesRes { results })
     }
-    async fn get_single_file(
-        &self,
-        entry: &GetFileEntry,
-        canonical_root: &std::path::Path,
-    ) -> GetFileResult {
-        let resolved = match self.resolve_service_path(&entry.path, canonical_root).await {
-            Ok(p) => p,
-            Err(e) => {
-                return GetFileResult {
-                    path: entry.path.clone(),
-                    exists: false,
-                    content: None,
-                    hash: None,
-                    matched: false,
-                    size: None,
-                    error: Some(e.to_string()),
-                };
-            }
-        };
+    async fn get_single_file(&self, entry: &GetFileEntry, base: &ClientFsBase) -> GetFileResult {
+        let resolved =
+            match Self::resolve_path_within_root(&entry.path, &base.base, &base.canonical).await {
+                Ok(p) => p,
+                Err(e) => {
+                    return GetFileResult {
+                        path: entry.path.clone(),
+                        exists: false,
+                        content: None,
+                        hash: None,
+                        matched: false,
+                        size: None,
+                        error: Some(e.to_string()),
+                    };
+                }
+            };
         let is_chunked = entry.offset.is_some() || entry.length.is_some();
         let metadata = match tokio::fs::metadata(&resolved).await {
             Ok(m) => m,
@@ -2914,18 +3019,7 @@ impl WorkspaceHandle {
             false,
             None,
         ));
-        {
-            let mut sessions = self.shared.sessions.write();
-            if self.shared.activity_tracker.is_draining() {
-                session.cancel_hunk_tracker();
-                return Err(WorkspaceError::ShuttingDown);
-            }
-            if sessions.contains_key(&config.agent_id) {
-                session.cancel_hunk_tracker();
-                return Err(WorkspaceError::SessionAlreadyExists(config.agent_id));
-            }
-            sessions.insert(config.agent_id.clone(), session.clone());
-        }
+        self.insert_session_guarded(&session)?;
         record_toolset_swap(&self.shared.activity_tracker, "fork", session.session_id());
         self.finalize_session_setup(&session).await;
         Ok(session)
@@ -3383,6 +3477,7 @@ impl WorkspaceHandle {
         self.shared
             .activity_notify_handle
             .store(Arc::new(Some(activity_notify_handle)));
+        crate::scheduler_liveness::spawn_scheduler_liveness_poll(&self.shared);
         let server = handle.server.clone();
         let server_task = tokio::spawn(async move {
             if let Err(e) = server.run().await {
@@ -4361,7 +4456,24 @@ async fn persist_and_enqueue_tool_state(
     upload_queue: Arc<xai_file_utils::queue::UploadQueue>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let toolset = session.toolset();
-    let state_path = toolset.save_and_flush_persistence().await.to_path_buf();
+    let Some(state_path) = toolset
+        .save_and_flush_persistence()
+        .await
+        .map(std::path::Path::to_path_buf)
+    else {
+        dc_log!(
+            debug,
+            session_id = %session_id,
+            turn_number,
+            phase = "tool_state",
+            outcome = "skipped",
+            skip_reason = "no_state_path",
+            "workspace: tool_state upload skipped, session has no state directory"
+        );
+        crate::upload::record_upload_outcome("tool_state", "skipped");
+        crate::upload::record_upload_skipped("tool_state", "no_state_path");
+        return Ok(());
+    };
     let bytes = tokio::fs::read(&state_path).await.map_err(|e| {
         format!(
             "failed to read flushed tool_state from {}: {e}",

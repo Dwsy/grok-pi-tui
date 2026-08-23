@@ -10,6 +10,7 @@ base64 = { workspace = true }
 futures = { workspace = true }
 indicatif = { workspace = true }
 reqwest = { workspace = true }
+xai-grok-extra-ca = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

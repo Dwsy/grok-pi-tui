@@ -286,12 +286,17 @@ impl AgentView {
             &self.session.cwd,
         );
         self.paste_probe_in_flight += 1;
+        let from_feedback_pane = self
+            .question_view
+            .as_ref()
+            .is_some_and(crate::views::question_view::QuestionViewState::is_feedback_report);
         self.pending_effects
             .push(crate::app::actions::Effect::ProbeClipboardAttachment {
                 ctx: crate::app::actions::ClipboardPasteContext {
                     target: crate::app::actions::ClipboardPasteTarget::AgentPrompt {
                         agent_id: self.session.id,
                         images_dir,
+                        from_feedback_pane,
                     },
                     source,
                 },
@@ -347,6 +352,22 @@ impl AgentView {
             ClipboardPasteCompletion, ClipboardPasteFailure, ProbedAttachment,
         };
         self.paste_probe_in_flight = self.paste_probe_in_flight.saturating_sub(1);
+        if matches!(
+            &ctx.target,
+            crate::app::actions::ClipboardPasteTarget::AgentPrompt {
+                from_feedback_pane: true,
+                ..
+            }
+        ) && !self
+            .question_view
+            .as_ref()
+            .is_some_and(crate::views::question_view::QuestionViewState::is_feedback_report)
+        {
+            if let ProbedAttachment::Image(pasted) = &image {
+                crate::prompt_images::cleanup_temp_file(pasted);
+            }
+            return ClipboardPasteCompletion::Dropped;
+        }
         let insert_deferred_text = matches!(
             &image,
             ProbedAttachment::NoRaster
@@ -419,23 +440,17 @@ impl AgentView {
         }
         completion
     }
-    /// After a deferred paste probe completes, take the kind of any send
-    /// stashed while the probe(s) were in flight. Returns `None` while probes
-    /// remain in flight or nothing is stashed. The stash is always cleared; the
-    /// caller builds the action (via [`Self::build_deferred_send_action`]) only
-    /// when it actually reissues, so a dropped reissue keeps the draft intact.
+    /// Take the kind of any action held back while the paste probes were in flight.
+    /// The caller resumes it (via [`Self::resume_deferred_send`]) only when it actually reissues, so a dropped reissue keeps the draft intact.
     pub(crate) fn take_deferred_send_after_paste(&mut self) -> Option<AgentDeferredSend> {
         if self.paste_probe_in_flight != 0 {
             return None;
         }
         self.deferred_send.take()
     }
-    /// Build the reissue action for a drained stash, re-deriving the payload
-    /// from the now-updated prompt so the freshly attached image chip (and its
-    /// aligned range) travels with it. Call only when actually reissuing — the
-    /// interject variant consumes the draft (drain images + clear) exactly like
-    /// the `InterjectPrompt` arm it was stashed from.
-    pub(crate) fn build_deferred_send_action(&mut self, kind: AgentDeferredSend) -> Option<Action> {
+    /// Resume a drained deferred action, re-deriving the payload from the now-updated prompt so the freshly attached image chip (and its
+    /// aligned range) travels with it. Call only when actually reissuing: the interject variant consumes the draft.
+    pub(crate) fn resume_deferred_send(&mut self, kind: AgentDeferredSend) -> Option<Action> {
         match kind {
             AgentDeferredSend::SendPrompt => {
                 let text = self.prompt.text().to_string();
@@ -451,7 +466,25 @@ impl AgentView {
                 }
                 let images = self.prompt.drain_images();
                 self.prompt.set_text("");
+                self.note_draft_consumed();
                 Some(Action::SendPromptNow { text, images })
+            }
+            AgentDeferredSend::SubmitFeedback => {
+                if !self
+                    .question_view
+                    .as_ref()
+                    .is_some_and(crate::views::question_view::QuestionViewState::is_feedback_report)
+                {
+                    return None;
+                }
+                match self.submit_question_answers(false) {
+                    crate::app::app_view::InputOutcome::Action(action) => Some(action),
+                    _ => None,
+                }
+            }
+            AgentDeferredSend::Stash => {
+                self.handle_stash_prompt_key();
+                None
             }
         }
     }
@@ -484,6 +517,62 @@ impl AgentView {
         }
         let _ = self.prompt.handle_paste(text);
         InputOutcome::Changed
+    }
+    /// The feedback report pane mirrors the composer's bracketed-paste
+    /// attachment probe (terminals that deliver Cmd+V as `Event::Paste`
+    /// never hit the key path); every other question view stays text-only,
+    /// including the trace-consent stage (same invariant as the key path:
+    /// a paste there would land in the hidden prompt and never reach the
+    /// committed report).
+    pub(super) fn route_question_paste(&mut self, text: &str) -> InputOutcome {
+        if !self
+            .question_view
+            .as_ref()
+            .is_some_and(crate::views::question_view::QuestionViewState::is_feedback_report)
+        {
+            return self.route_popup_paste(text);
+        }
+        if let Some((outcome, _)) = self.try_handle_dropped_paths_paste(text) {
+            return outcome;
+        }
+        self.probe_attachment_around_bracketed_insert(text, |view| {
+            let insertion = match view.prompt.handle_paste(text) {
+                PromptEvent::Edited => crate::app::actions::ClipboardTextInsertion::Inserted,
+                PromptEvent::Ignored => crate::app::actions::ClipboardTextInsertion::Failed,
+            };
+            (InputOutcome::Changed, insertion)
+        })
+    }
+    /// The bracketed-paste attachment-probe protocol, shared by the composer
+    /// arm and the feedback pane: snapshot the clipboard gate BEFORE the text
+    /// insertion, insert, then enqueue the off-thread probe carrying the
+    /// insertion outcome. Owns both cfg arms so the platform conditioning
+    /// cannot drift between call sites.
+    pub(super) fn probe_attachment_around_bracketed_insert<R>(
+        &mut self,
+        text: &str,
+        insert: impl FnOnce(&mut Self) -> (R, crate::app::actions::ClipboardTextInsertion),
+    ) -> R {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        let change_count = if super::bracketed_paste_should_probe(text) {
+            crate::clipboard::attachment_probe_gate(Some(text))
+        } else {
+            None
+        };
+        let (result, insertion) = insert(self);
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if let Some(change_count) = change_count {
+            self.enqueue_clipboard_attachment_probe(
+                crate::app::actions::ClipboardPasteSource::BracketedInserted {
+                    text: text.to_owned(),
+                    insertion,
+                },
+                change_count,
+            );
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let _ = (text, insertion);
+        result
     }
     /// Returns redraw and completion outcomes only when at least one path resolves.
     ///
@@ -1505,38 +1594,21 @@ pub(super) mod paste_key_tests {
     }
     #[test]
     fn regression_question_modal_fullscreen_overcommit() {
-        use crate::appearance::{LayoutConfig, ScrollbarConfig};
+        use crate::views::agent::AgentViewLayoutParams;
         use ratatui::layout::Rect;
         let area = Rect::new(0, 0, 80, 25);
-        let reserved: u16 = 1 + 5 + 1 + 3;
+        let params = AgentViewLayoutParams {
+            area,
+            shortcuts_height: 1,
+            ..Default::default()
+        };
         let unclamped: u16 = area.height + 3 + 5;
         assert!(unclamped > area.height);
-        let clamped = unclamped.min(area.height.saturating_sub(reserved));
-        assert!(clamped + reserved <= area.height);
-        let layout_cfg = LayoutConfig::default();
-        let scrollbar_cfg = ScrollbarConfig::default();
-        let layout = AgentViewLayout::compute(
-            area,
-            &layout_cfg,
-            &scrollbar_cfg,
-            clamped,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
-            false,
-        );
+        let clamped = unclamped.min(AgentViewLayout::rows_available_for_prompt(params));
+        let layout = AgentViewLayout::compute(AgentViewLayoutParams {
+            prompt_height: clamped,
+            ..params
+        });
         assert!(layout.prompt.y + layout.prompt.height <= area.height);
     }
     /// Wiping a substantial main-prompt draft routes `Action::ShowUndoTip`:
@@ -1774,6 +1846,7 @@ pub(super) mod paste_key_tests {
             std::path::Path::new("/nonexistent"),
             &HashMap::new(),
             &crate::app::bundle::BundleState::default(),
+            None,
             None,
             None,
         ));
@@ -2138,7 +2211,7 @@ pub(super) mod paste_key_tests {
         )
         .expect("full chrome fits");
         assert_eq!(full.panel.x, area.x + layout_cfg.eff_hpad_left(false));
-        assert_eq!(full.items.x, prompt.x + 1 + layout_cfg.eff_hpad_left(false));
+        assert_eq!(full.items.x, prompt.x + crate::glyphs::PROMPT_ARROW_WIDTH);
         let _reset = EmbedReset;
         crate::views::modal_window::set_embedded(true);
         let mut buf = Buffer::empty(area);
@@ -2176,21 +2249,7 @@ pub(super) mod paste_key_tests {
         agent
             .inline_media_cache
             .insert(path.clone(), make_test_png(40, 20));
-        let placement = crate::scrollback::render::InlineMediaPlacement {
-            info: crate::prompt_images::InlineMediaInfo {
-                path: path.clone(),
-                width: 40,
-                height: 20,
-                is_video: false,
-                alt_text: String::new(),
-            },
-            screen_rect: ratatui::layout::Rect::new(0, 0, 20, 6),
-            full_rows: 6,
-            top_crop_rows: 0,
-            filepath_screen_rect: None,
-            open_button_screen_rect: None,
-            has_button_row: true,
-        };
+        let placement = tool_media_placement(path.clone());
         let first = agent
             .build_inline_media_escapes(&placement)
             .expect("first frame emits escapes");
@@ -2214,6 +2273,122 @@ pub(super) mod paste_key_tests {
             !second.contains("a=t"),
             "second frame must not re-transmit the bytes: {second:?}",
         );
+    }
+    fn tool_media_placement(
+        path: std::path::PathBuf,
+    ) -> crate::scrollback::render::InlineMediaPlacement {
+        crate::scrollback::render::InlineMediaPlacement {
+            info: crate::prompt_images::InlineMediaInfo {
+                path,
+                width: 40,
+                height: 20,
+                is_video: false,
+                alt_text: String::new(),
+            },
+            screen_rect: ratatui::layout::Rect::new(0, 0, 20, 6),
+            full_rows: 6,
+            top_crop_rows: 0,
+            filepath_screen_rect: None,
+            open_button_screen_rect: None,
+            has_button_row: true,
+        }
+    }
+    /// A place-only frame after the byte cache was dropped with the id kept
+    /// (subagent eviction, cap eviction) must reload the bytes from disk
+    /// instead of dead-ending on a permanent loading spinner.
+    #[test]
+    fn tool_media_place_only_frame_reloads_bytes_after_cache_drop() {
+        use crate::terminal::image::{GraphicsProtocol, set_protocol_for_test};
+        let _g = set_protocol_for_test(GraphicsProtocol::Kitty);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("evicted.png");
+        std::fs::write(&path, make_test_png(40, 20)).unwrap();
+        let mut agent = make_agent();
+        let placement = tool_media_placement(path.clone());
+        let first = agent
+            .build_inline_media_escapes(&placement)
+            .expect("first frame loads from disk and emits escapes");
+        assert!(first.contains("a=t"), "first frame transmits: {first:?}");
+        agent.inline_media_cache.clear();
+        let second = agent
+            .build_inline_media_escapes(&placement)
+            .expect("place-only frame must reload the bytes, not dead-end");
+        assert!(second.contains("a=p"), "reloaded frame places: {second:?}");
+        assert!(
+            !second.contains("a=t"),
+            "id kept → no re-transmit: {second:?}"
+        );
+        assert!(
+            agent.inline_media_cache.contains_key(&path),
+            "the reload must repopulate the byte cache"
+        );
+    }
+    /// A missing file keeps polling (generation may still be writing it);
+    /// a present-but-undecodable file is negative-cached by its `(len,
+    /// mtime)` so decode work doesn't re-run every frame while the file is
+    /// unchanged, but a rewrite (e.g. a file caught mid-write, finished
+    /// later) self-heals without needing an eviction.
+    #[test]
+    fn tool_media_load_failure_negative_cached_until_file_changes() {
+        use crate::terminal::image::{GraphicsProtocol, set_protocol_for_test};
+        let _g = set_protocol_for_test(GraphicsProtocol::Kitty);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.png");
+        let mut agent = make_agent();
+        let placement = tool_media_placement(path.clone());
+        assert!(agent.build_inline_media_escapes(&placement).is_none());
+        assert!(!agent.inline_media_load_failed.contains_key(&path));
+        std::fs::write(&path, b"not a png").unwrap();
+        assert!(agent.build_inline_media_escapes(&placement).is_none());
+        assert!(agent.inline_media_load_failed.contains_key(&path));
+        assert!(
+            agent.build_inline_media_escapes(&placement).is_none(),
+            "an unchanged broken file must not be re-decoded every frame"
+        );
+        std::fs::write(&path, make_test_png(40, 20)).unwrap();
+        assert!(
+            agent.build_inline_media_escapes(&placement).is_some(),
+            "a changed file must retry and recover"
+        );
+        assert!(
+            !agent.inline_media_load_failed.contains_key(&path),
+            "a successful load must drop the stale failure marker"
+        );
+    }
+    /// A same-length in-place rewrite whose mtime does not move (coarse
+    /// clock) must still retry a negative-cached failure: the Unix stamp
+    /// includes inode + ctime, which a rewrite always advances.
+    #[cfg(unix)]
+    #[test]
+    fn tool_media_same_length_same_mtime_rewrite_retries_failed_load() {
+        use crate::terminal::image::{GraphicsProtocol, set_protocol_for_test};
+        let _g = set_protocol_for_test(GraphicsProtocol::Kitty);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("slow-write.png");
+        let png = make_test_png(40, 20);
+        let mtime =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let pin_mtime = |p: &std::path::Path| {
+            std::fs::File::options()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(mtime))
+                .unwrap();
+        };
+        std::fs::write(&path, vec![0u8; png.len()]).unwrap();
+        pin_mtime(&path);
+        let mut agent = make_agent();
+        let placement = tool_media_placement(path.clone());
+        assert!(agent.build_inline_media_escapes(&placement).is_none());
+        assert!(agent.inline_media_load_failed.contains_key(&path));
+        std::fs::write(&path, &png).unwrap();
+        pin_mtime(&path);
+        assert!(
+            agent.build_inline_media_escapes(&placement).is_some(),
+            "a same-length same-mtime rewrite must retry and recover"
+        );
+        assert!(!agent.inline_media_load_failed.contains_key(&path));
     }
     /// Draining an agent with live inline-media placements returns delete
     /// escapes for every placed id — including ids placed by subagent
@@ -2453,6 +2628,7 @@ pub(super) mod paste_key_tests {
             target: crate::app::actions::ClipboardPasteTarget::AgentPrompt {
                 agent_id: agent.session.id,
                 images_dir: None,
+                from_feedback_pane: false,
             },
             source: crate::app::actions::ClipboardPasteSource::ClipboardKey {
                 text: crate::app::actions::ClipboardTextRead::Success(
@@ -2461,6 +2637,43 @@ pub(super) mod paste_key_tests {
                 tip_showing: false,
             },
         }
+    }
+    /// A probe the feedback pane started must not attach into whatever
+    /// replaced the pane: Esc restores the pre-slash composer draft, and the
+    /// completion has to drop the screenshot (and its staged file) instead.
+    #[test]
+    fn feedback_pane_probe_completing_after_dismissal_is_dropped() {
+        let mut agent = make_agent();
+        let ctx = crate::app::actions::ClipboardPasteContext {
+            target: crate::app::actions::ClipboardPasteTarget::AgentPrompt {
+                agent_id: agent.session.id,
+                images_dir: None,
+                from_feedback_pane: true,
+            },
+            source: crate::app::actions::ClipboardPasteSource::ClipboardKey {
+                text: crate::app::actions::ClipboardTextRead::Success(None),
+                tip_showing: false,
+            },
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let staged = dir.path().join("staged.png");
+        std::fs::write(&staged, b"staged").unwrap();
+        let mut pasted = crate::prompt_images::from_clipboard_data(&test_image_data());
+        pasted.staged_temp_path = Some(staged.clone());
+        let completion = agent.complete_clipboard_attachment_paste(
+            ctx,
+            crate::app::actions::ProbedAttachment::Image(pasted),
+            None,
+        );
+        assert_eq!(
+            completion,
+            crate::app::actions::ClipboardPasteCompletion::Dropped
+        );
+        assert!(
+            agent.prompt.images.is_empty(),
+            "the screenshot must not become a composer chip"
+        );
+        assert!(!staged.exists(), "the staged temp file must be deleted");
     }
     /// Drive a real Cmd+V that finds a raster (defers), then complete the probe
     /// with a decoded image — the full shipped image-paste path through the

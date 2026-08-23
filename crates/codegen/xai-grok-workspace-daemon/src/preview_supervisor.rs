@@ -121,6 +121,10 @@ pub struct PreviewArgs {
     pub allow_public: bool,
     /// → proxy `--workspace-server-port`.
     pub workspace_server_port: Option<u16>,
+    /// → proxy `--discovery-refresh-ms` (candidate-scan cadence). `None` omits
+    /// the flag — a proxy binary predating it rejects the unknown flag and
+    /// would crash-loop — so the env stays unset until the proxy release rolls.
+    pub discovery_refresh_ms: Option<u64>,
     /// `current_dir` for the spawned child. Not forwarded as an arg.
     pub workspace_dir: PathBuf,
 }
@@ -157,6 +161,10 @@ impl PreviewArgs {
         if let Some(port) = self.workspace_server_port {
             argv.push("--workspace-server-port".to_owned());
             argv.push(port.to_string());
+        }
+        if let Some(refresh_ms) = self.discovery_refresh_ms {
+            argv.push("--discovery-refresh-ms".to_owned());
+            argv.push(refresh_ms.to_string());
         }
         argv
     }
@@ -215,6 +223,30 @@ fn open_truncated_log(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
+/// Async-signal-safe write of a fixed `oom_score_adj` for use inside `pre_exec`.
+/// Always returns `Ok(())`: missing procfs and short/failed writes must not
+/// block proxy spawn. On a short or failed write after a successful open,
+/// logs a static warning to stderr (async-signal-safe).
+#[cfg(target_os = "linux")]
+fn write_oom_score_adj_raw(value: &'static [u8]) -> io::Result<()> {
+    const PATH: &[u8] = b"/proc/self/oom_score_adj\0";
+    const WARN: &[u8] = b"WARN preview-proxy: failed to write oom_score_adj\n";
+    // SAFETY: PATH/WARN are static NUL-terminated / static bytes; value is 'static.
+    unsafe {
+        let fd = libc::open(PATH.as_ptr().cast(), libc::O_WRONLY | libc::O_CLOEXEC);
+        if fd < 0 {
+            // Missing procfs must not block spawn.
+            return Ok(());
+        }
+        let n = libc::write(fd, value.as_ptr().cast(), value.len());
+        libc::close(fd);
+        if n < 0 || n as usize != value.len() {
+            let _ = libc::write(2, WARN.as_ptr().cast(), WARN.len());
+        }
+    }
+    Ok(())
+}
+
 /// Build the unspawned proxy command. Secrets (`GROK_SERVER_KEY` /
 /// `GROK_SESSION_ID`) reach the proxy by env inheritance — never argv.
 fn build_preview_command(cfg: &PreviewArgs) -> io::Result<tokio::process::Command> {
@@ -241,24 +273,23 @@ fn build_preview_command(cfg: &PreviewArgs) -> io::Result<tokio::process::Comman
         // the workspace-server's session/pgid to share its reap-escape, so the
         // setsid that detach_command performs would be actively wrong here (and
         // the daemonized server owns no controlling TTY, so the detach rationale
-        // does not apply).
+        // does not apply). This raw path is also deliberately exempt from the
+        // shared child OOM reset: the proxy sets -500 (or resets to 0) below.
         //
         // PDEATHSIG keys off the spawning thread, so capture our PID to also
         // close the fork→exec race in the child.
         let parent_pid = std::process::id();
+        // Read env pre-fork: env access is not async-signal-safe inside pre_exec.
+        // Armed when always-on protect succeeds and/or `--oom-protect` forces it.
+        let oom_protect = std::env::var_os(xai_tty_utils::RESET_CHILD_OOM_ENV).is_some();
         // SAFETY: the closure runs in the forked child between fork and exec, so
         // it calls only async-signal-safe libc functions (`prctl`, `getppid`,
-        // `_exit`) and touches no allocation/locks/Rust runtime state. Its error
-        // path returns `io::Error::last_os_error()`, which only wraps the raw
-        // errno (no allocation) — never use `io::Error::new`/`other` here, as
-        // they allocate.
+        // `open`/`write`/`close`, `_exit`) and touches no allocation/locks/Rust
+        // runtime state. Its error path returns `io::Error::last_os_error()`,
+        // which only wraps the raw errno (no allocation). Never use
+        // `io::Error::new`/`other` here, as they allocate.
         unsafe {
             cmd.pre_exec(move || {
-                // This raw hook bypasses `detach_pre_exec_hook`, so undo the
-                // server's inherited OOM protection here (async-signal-safe:
-                // raw open/write/close only); the proxy must stay an ordinary
-                // OOM candidate.
-                xai_tty_utils::reset_oom_score_adj()?;
                 // Bind the proxy's lifetime to the workspace-server: a WS crash
                 // makes the kernel SIGKILL the proxy so it can't orphan and hold
                 // the preview/control ports. This binding survives the proxy's
@@ -272,6 +303,16 @@ fn build_preview_command(cfg: &PreviewArgs) -> io::Result<tokio::process::Comman
                 // exec rather than orphan.
                 if libc::getppid() as u32 != parent_pid {
                     libc::_exit(0);
+                }
+                // OOM score: when protect env is on, raise inherited -900 to -500
+                // (no CAP_SYS_RESOURCE). Reset-to-0 then lower would fail in nested
+                // userns. When env is off, reset to 0 so we never inherit -900.
+                if oom_protect {
+                    // "-500\n" matches PREVIEW_PROXY_OOM_SCORE_ADJ; static for
+                    // async-signal-safety (no formatting/allocation in pre_exec).
+                    write_oom_score_adj_raw(b"-500\n")?;
+                } else {
+                    xai_tty_utils::reset_oom_score_adj()?;
                 }
                 Ok(())
             });
@@ -542,6 +583,7 @@ async fn scrape_activity_loop(
     let url = activity_url(control_port);
     // A fixed loopback control endpoint never redirects, so a 3xx is anomalous —
     // don't follow it; it classifies as `BadResponse`.
+    #[allow(clippy::disallowed_methods)] // localhost preview server; TLS policy N/A
     let client = match reqwest::Client::builder()
         .timeout(PREVIEW_ACTIVITY_SCRAPE_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
@@ -651,6 +693,7 @@ async fn scrape_metrics_loop(
         return;
     }
     let url = metrics_url(control_port);
+    #[allow(clippy::disallowed_methods)] // localhost preview server; TLS policy N/A
     let client = match reqwest::Client::builder()
         .timeout(PREVIEW_ACTIVITY_SCRAPE_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
@@ -783,6 +826,7 @@ mod tests {
             auth_redirect: Some("https://grok.com/preview-auth".to_owned()),
             allow_public: true,
             workspace_server_port: Some(8470),
+            discovery_refresh_ms: Some(250),
             workspace_dir: PathBuf::from("/workspace"),
         }
     }
@@ -806,6 +850,8 @@ mod tests {
                 "--allow-public",
                 "--workspace-server-port",
                 "8470",
+                "--discovery-refresh-ms",
+                "250",
             ],
         );
     }
@@ -821,11 +867,13 @@ mod tests {
             auth_redirect: None,
             allow_public: false,
             workspace_server_port: None,
+            discovery_refresh_ms: None,
             workspace_dir: PathBuf::from("/workspace"),
         };
         assert!(
             cfg.to_argv().is_empty(),
-            "absent options + false allow_public ⇒ the proxy uses its own defaults"
+            "absent options + false allow_public ⇒ the proxy uses its own \
+             defaults; --discovery-refresh-ms in particular must be omitted"
         );
     }
 
@@ -909,6 +957,68 @@ mod tests {
             0,
             "the log must be truncated to 0 on each (re)start"
         );
+    }
+
+    #[test]
+    fn preview_proxy_oom_adj_is_between_user_and_workspace() {
+        // Static pre_exec write uses b"-500\n"; keep the constant in lockstep.
+        assert_eq!(crate::daemonize::PREVIEW_PROXY_OOM_SCORE_ADJ, -500);
+        const {
+            assert!(
+                crate::daemonize::PREVIEW_PROXY_OOM_SCORE_ADJ
+                    > crate::daemonize::WORKSPACE_SERVER_OOM_SCORE_ADJ
+            );
+            assert!(crate::daemonize::PREVIEW_PROXY_OOM_SCORE_ADJ < 0);
+        }
+    }
+
+    /// The proxy uses a raw `pre_exec`, not `detach_pre_exec_hook`, so the
+    /// shared child-OOM reset never runs on it. Documented by construction:
+    /// `build_preview_command` is the only spawn path and is the raw path.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn write_oom_score_adj_raw_lowers_when_permitted() {
+        let _guard = crate::daemonize::TEST_OOM_SCORE_ADJ_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let own = std::fs::read_to_string("/proc/self/oom_score_adj").expect("read");
+        let restore = own.trim().to_owned();
+        // Best-effort lower via the same path as pre_exec.
+        write_oom_score_adj_raw(b"-500\n").unwrap();
+        let after = std::fs::read_to_string("/proc/self/oom_score_adj").unwrap();
+        if after.trim() == "-500" {
+            // success under CAP_SYS_RESOURCE
+        } else {
+            // without CAP the open/write is best-effort Ok and score stays put
+            assert_eq!(after.trim(), restore);
+        }
+        let _ = std::fs::write("/proc/self/oom_score_adj", format!("{restore}\n"));
+    }
+
+    /// Nested userns path: parent is already at -900; raise to -500 needs no CAP.
+    /// Reset-then-lower would fail there (cannot re-lower from 0 without CAP).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn raise_preview_score_from_workspace_score() {
+        let _guard = crate::daemonize::TEST_OOM_SCORE_ADJ_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let own = std::fs::read_to_string("/proc/self/oom_score_adj").expect("read");
+        let restore = own.trim().to_owned();
+        // Plant workspace score first (needs CAP); skip when unavailable.
+        if crate::daemonize::set_oom_score_adj(crate::daemonize::WORKSPACE_SERVER_OOM_SCORE_ADJ)
+            .is_err()
+        {
+            return;
+        }
+        write_oom_score_adj_raw(b"-500\n").unwrap();
+        let after = std::fs::read_to_string("/proc/self/oom_score_adj").unwrap();
+        assert_eq!(
+            after.trim(),
+            crate::daemonize::PREVIEW_PROXY_OOM_SCORE_ADJ.to_string(),
+            "raise from -900 to -500 must land at preview score"
+        );
+        let _ = std::fs::write("/proc/self/oom_score_adj", format!("{restore}\n"));
     }
 
     #[test]
@@ -1226,6 +1336,7 @@ mod tests {
     }
 
     fn scrape_client() -> reqwest::Client {
+        #[allow(clippy::disallowed_methods)] // localhost preview server; TLS policy N/A
         reqwest::Client::builder()
             .timeout(Duration::from_secs(2))
             .redirect(reqwest::redirect::Policy::none())
@@ -1352,6 +1463,7 @@ mod tests {
     #[tokio::test]
     async fn scrape_activity_treats_a_hung_endpoint_as_absent() {
         let port = serve_accept_then_hang().await;
+        #[allow(clippy::disallowed_methods)] // localhost preview server; TLS policy N/A
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(150))
             .redirect(reqwest::redirect::Policy::none())

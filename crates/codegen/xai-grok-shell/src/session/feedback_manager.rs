@@ -104,6 +104,24 @@ pub(crate) async fn submit_feedback_workflow(
     }
 
     if let Some(tx) = persistence_tx {
+        // Persist the image inventory, never the payloads: feedback.jsonl
+        // rides in trace archives with a hard per-file size cap (one
+        // screenshot's base64 would sink the whole record), and the bytes
+        // are cleartext terminal captures. Take/restore around the clone so
+        // the megabytes are never copied either.
+        let images = std::mem::take(&mut submission.images);
+        let mut persisted = submission.clone();
+        persisted.images = images
+            .iter()
+            .map(
+                |i| prod_mc_cli_chat_proxy_types::feedback_types::FeedbackImage {
+                    data: format!("<{} base64 bytes stripped>", i.data.len()),
+                    mime_type: i.mime_type.clone(),
+                    file_name: i.file_name.clone(),
+                },
+            )
+            .collect();
+        submission.images = images;
         let entry = LocalFeedbackEntry::UserFeedback(UserFeedbackEntry {
             submitted_at: chrono::Utc::now(),
             session_id: submission.session_id.clone(),
@@ -111,7 +129,7 @@ pub(crate) async fn submit_feedback_workflow(
             solicited,
             request_id: submission.request_id.clone(),
             dismissed: false,
-            submission: Some(submission.clone()),
+            submission: Some(persisted),
         });
         if tx.send(PersistenceMsg::Feedback(entry)).is_err() {
             tracing::warn!(
@@ -970,7 +988,7 @@ impl FeedbackManager {
 
 /// Bound on the final signals POST at process exit. Prefer a fast exit over
 /// waiting out a hung analytics endpoint — session metrics are best-effort.
-const SHUTDOWN_SIGNAL_SYNC_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const SHUTDOWN_SIGNAL_SYNC_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Default ceiling on non-empty upload-queue drain at process exit.
 /// Keeps sync+drain under [`crate::agent::activity::SESSION_FLUSH_GRACE`] with
@@ -978,9 +996,9 @@ const SHUTDOWN_SIGNAL_SYNC_TIMEOUT: Duration = Duration::from_secs(2);
 /// (still hard-capped by [`SHUTDOWN_DRAIN_HARD_MAX`]).
 const SHUTDOWN_DRAIN_CAP: Duration = Duration::from_secs(5);
 
-/// Absolute max non-empty drain at process exit: leave ≥1s residual under the
-/// 10s flush grace after the 2s signal-sync budget (10 − 2 − 1 = 7).
-const SHUTDOWN_DRAIN_HARD_MAX: Duration = Duration::from_secs(7);
+/// Absolute max non-empty drain at process exit: 10s flush grace, less the 2s signal-sync budget
+/// and the turn-end queue's two 250ms waits, leaves 7.5s; held at 7s for residual.
+pub(crate) const SHUTDOWN_DRAIN_HARD_MAX: Duration = Duration::from_secs(7);
 
 /// When nothing is pending, only wait this long for the upload worker to exit
 /// after the shutdown signal — should be milliseconds in practice.
@@ -1175,6 +1193,7 @@ fn tier_to_priority(tier: crate::session::feedback::FeedbackTier) -> i32 {
     }
 }
 
+#[allow(clippy::disallowed_methods)] // test clients hit localhost mocks
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1860,7 +1879,9 @@ mod tests {
                 &self,
                 _reason: crate::auth::refresh::RefreshReason,
             ) -> crate::auth::refresh::RefreshOutcome {
-                crate::auth::refresh::RefreshOutcome::transient("noop")
+                crate::auth::refresh::RefreshOutcome::TransientFailure {
+                    message: "noop".into(),
+                }
             }
         }
 
@@ -1881,6 +1902,7 @@ mod tests {
     }
 }
 
+#[allow(clippy::disallowed_methods)] // test clients hit localhost mocks
 #[cfg(test)]
 mod author_identity_tests {
     use super::*;

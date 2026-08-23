@@ -75,6 +75,7 @@
                 "x.ai/session/update",
                 XaiSessionUpdate::ScheduledTaskDeleted {
                     task_id: "loop-1".into(),
+                    reason: Default::default(),
                 },
             ),
             &mut app,

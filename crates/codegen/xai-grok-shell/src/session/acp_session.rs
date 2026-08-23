@@ -20,7 +20,7 @@ use crate::extensions::notification::{
     RetryState, SessionNotification as XaiSessionNotification, is_reauthable_failure,
 };
 use crate::sampling::error::map_sampling_err_to_acp;
-use crate::sampling::types::{ChatRequestMessage, ToolCallResponse, ToolDefinition};
+use crate::sampling::types::{ToolCallResponse, ToolDefinition};
 use crate::sampling::{
     ContentPart, ConversationItem, ConversationRequest, ConversationResponse, SamplingError,
     SyntheticReason, ToolSpec, conversation_truncate_for_prompt,
@@ -93,6 +93,8 @@ pub(crate) use types::*;
 pub use types::{TodoGateDecision, TodoGateReason};
 #[path = "acp_session_impl/goal.rs"]
 mod goal;
+#[path = "acp_session_impl/named_workflow_args.rs"]
+mod named_workflow_args;
 #[path = "acp_session_impl/tool_layer_images.rs"]
 mod tool_layer_images;
 #[path = "acp_session_impl/turn.rs"]
@@ -105,6 +107,11 @@ mod auth_retry;
 pub(crate) use auth_retry::{
     AuthRetryDecision, AuthRetrySchedule, human_duration, pace_uncharged_resubmit,
 };
+#[path = "acp_session_impl/rate_limit_waits.rs"]
+mod rate_limit_waits;
+pub(crate) use rate_limit_waits::{
+    RateLimitWaitBudget, RateLimitWaitConfig, RateLimitWaitDecision,
+};
 #[path = "acp_session_impl/image_strip.rs"]
 mod image_strip;
 #[path = "acp_session_impl/interjection.rs"]
@@ -116,6 +123,9 @@ pub(crate) use interjection::*;
 mod laziness;
 #[cfg(test)]
 pub(crate) use laziness::*;
+#[path = "acp_session_impl/queue_mutation.rs"]
+mod queue_mutation;
+use queue_mutation::{InputOrigin, QueueMutationPolicy};
 #[path = "acp_session_impl/prompt_queue.rs"]
 mod prompt_queue;
 pub(super) use prompt_queue::QueueInputRequest;
@@ -131,7 +141,6 @@ use super::PromptOrigin;
 use super::acp_types;
 use super::chat_persistence;
 use super::compaction_config;
-use super::helpers;
 use super::memory_state;
 use super::telemetry;
 #[path = "acp_session_impl/prompt_build.rs"]
@@ -174,6 +183,12 @@ pub(crate) use goal_support::*;
 #[path = "acp_session_impl/hook_dispatch.rs"]
 mod hook_dispatch;
 use hook_dispatch::*;
+#[path = "acp_session_impl/turn_report_slot.rs"]
+mod turn_report_slot;
+use turn_report_slot::{CommitOutcome, TurnEpoch, TurnReportClaim};
+#[path = "acp_session_impl/turn_end_hooks.rs"]
+mod turn_end_hooks;
+use turn_end_hooks::TurnEnd;
 #[path = "acp_session_impl/stop_gate.rs"]
 mod stop_gate;
 pub use stop_gate::MAX_STOP_HOOK_CONTINUATIONS_PER_TURN;
@@ -187,6 +202,10 @@ mod run_loop;
 mod session_setup;
 #[path = "acp_session_impl/side_call.rs"]
 mod side_call;
+#[path = "acp_session_impl/status_line.rs"]
+pub(crate) mod status_line;
+#[path = "acp_session_impl/title_refresh.rs"]
+mod title_refresh;
 #[path = "acp_session_impl/turn_end.rs"]
 mod turn_end;
 #[path = "acp_session_impl/turn_summary.rs"]
@@ -214,8 +233,8 @@ pub(crate) struct InputItem {
     /// See [`SessionCommand::Prompt::verbatim`].
     pub(crate) verbatim: bool,
     pub(crate) json_schema: Option<serde_json::Value>,
-    /// Who originated this prompt — user or auto-wake system.
-    pub(crate) origin: super::PromptOrigin,
+    /// Authoritative typed provenance for this input.
+    pub(crate) input_origin: InputOrigin,
     /// Typed deferred completion retained while an admitted task wake is queued.
     /// Consumed by an interactive stop if it removes the wake before the
     /// turn starts.
@@ -231,6 +250,7 @@ pub(crate) struct InputItem {
     /// user-originated prompts (they appear in the shared queue); `None` for
     /// synthetic / system inputs (auto-wake, nudges, notification drains).
     pub(crate) queue_meta: Option<crate::session::prompt_queue::QueueEntryMeta>,
+    pub(crate) queue_mutation_policy: QueueMutationPolicy,
     /// Whether this prompt entered via the send-now path (explicit, derived
     /// during a blocking wait, or an interjection fallback). Send-now inserts
     /// land behind earlier still-queued send-now prompts so stacked sends
@@ -393,14 +413,14 @@ impl State {
     }
 }
 /// Canonical "session is idle and safe to inject a synthetic turn"
-/// predicate. The post-turn idle consumers — `maybe_drain_notifications`
-/// (notification batching), `maybe_fire_laziness_check` (Layer 3 classifier),
-/// and `arm_idle_notification` (idle-notification debounce) — all consult this
-/// so they share one definition of idleness, with no drift between them.
+/// predicate. Two post-turn idle consumers share it so they cannot drift:
+/// `maybe_drain_notifications` (notification batching) and
+/// `maybe_fire_laziness_check` (the Layer 3 classifier).
 ///
 /// Returns `true` exactly when: no turn is running, no user prompt is
 /// queued, and an interactive stop has not suppressed notifications pending
-/// genuine user re-engagement.
+/// genuine user re-engagement. Idle *reporting* uses `state_is_busy` instead,
+/// because after an interrupt the session really is idle.
 pub(crate) fn is_session_idle_for_injection(state: &State) -> bool {
     state.running_task.is_none()
         && state.pending_inputs.is_empty()
@@ -408,7 +428,8 @@ pub(crate) fn is_session_idle_for_injection(state: &State) -> bool {
 }
 /// Predicate behind `SessionCommand::IsBusy`: the session has work in flight
 /// when a turn is running **or** inputs are queued. Consulted by the leader's
-/// idle-unload decision on client disconnect. Kept as a free function so
+/// idle-unload decision on client disconnect, and by
+/// `emit_session_idle_if_idle`. Kept as a free function so
 /// it can be unit-tested directly against a `State` without spawning a full
 /// actor + leader.
 pub(crate) fn state_is_busy(state: &State) -> bool {
@@ -496,6 +517,7 @@ fn managed_gateway_error_to_tool_error(
         }
     }
 }
+#[allow(clippy::disallowed_methods)]
 #[cfg(test)]
 mod managed_gateway_error_tests {
     use super::*;
@@ -718,6 +740,9 @@ pub(crate) struct SessionActor {
     pub(crate) rewind_pending_prompt: std::sync::Mutex<Option<String>>,
     /// Startup hints for the session: currently responsible for customizing the user message prefix and the git status mode (fast no untracked for non-interactive mode)
     pub(crate) startup_hints: StartupHints,
+    /// Wakes the status-line emitter task, and on drop ends it. See
+    /// [`status_line::run_status_emitter`] and the `Drop` beside it.
+    pub(crate) status_wake: status_line::StatusWake,
     /// Delivery-tool names for the CURRENT attachment, seeded from the spawn
     /// `startupHints.deliveryTools` and re-applied when a resident
     /// `session/load` carries explicit hints (`UpdateAttachPolicy`). Kept
@@ -726,12 +751,9 @@ pub(crate) struct SessionActor {
     /// per-attachment policy may.
     pub(crate) delivery_tools: std::cell::RefCell<Vec<String>>,
     /// `nonInteractive` for the CURRENT attachment (same lifecycle as
-    /// `delivery_tools`). Drives operational can-a-human-act-now decisions —
-    /// today the MCP OAuth interactivity on (re)init, which pairs with the
-    /// `UpdateMcpServers` sent by the same resident load. The frozen
     /// `startup_hints.non_interactive` keeps governing spawn-time structure
     /// (system prompt variant, user-message prefix, git-status mode).
-    pub(crate) attach_non_interactive: std::cell::Cell<bool>,
+    pub(crate) attach_non_interactive: std::rc::Rc<std::cell::Cell<bool>>,
     /// Verbatim mirror-fork override: when `Some`, every turn sends this exact
     /// parent tool schema instead of the locally-built toolset, keeping the
     /// child's request prefix byte-identical to the parent for radix cache reuse.
@@ -743,11 +765,11 @@ pub(crate) struct SessionActor {
     pub(crate) memory: super::memory_state::SessionMemory,
     /// Telemetry counters for session summary.
     pub(crate) session_start: std::time::Instant,
-    /// Per-chunk idle timeout for inference streaming. If no SSE chunk is received
-    /// within this duration, the stream is aborted with a non-retryable error.
-    /// Resolved at construction: per-model config.toml → remote settings → 300s default.
+    /// Per-chunk idle timeout for inference streaming; a stall aborts the stream.
     pub(crate) inference_idle_timeout: Duration,
     pub(crate) max_retries: u32,
+    /// Fixed bounds on a subagent turn's 429 waiting.
+    pub(crate) rate_limit_waits: RateLimitWaitConfig,
     /// Maximum tool-use turns before the session stops. `None` = unlimited.
     pub(crate) max_turns: Option<usize>,
     /// Pending mid-turn interjections from the user (Ctrl+Enter).
@@ -791,6 +813,15 @@ pub(crate) struct SessionActor {
     /// Client opted into `x.ai/gitHeadChanged`. When false (headless/SDK),
     /// `maybe_notify_git_branch` no-ops — no git subprocess.
     git_head_enabled: bool,
+    /// A client that will draw a status row has attached (`x.ai/statusLine`).
+    /// While false, the emitter wakes and returns without building anything: no
+    /// git discovery, no chat-state round trips.
+    ///
+    /// Live rather than fixed at spawn, because a resident session outlives the
+    /// client that created it and a later attach may be the one that draws a
+    /// row. Assigned from the attaching client's capability; see
+    /// [`crate::session::handle::SessionHandle::set_status_line_wanted`].
+    pub(crate) status_line_enabled: Arc<std::sync::atomic::AtomicBool>,
     /// Shared models manager for etag-triggered refresh from response headers.
     pub(crate) models_manager: crate::agent::models::ModelsManager,
     /// Stable display path for forked sessions (original project path).
@@ -980,6 +1011,14 @@ pub(crate) struct SessionActor {
     /// Safe: session actor is single-threaded (LocalSet), no concurrent access.
     pub(crate) hook_registry:
         std::cell::RefCell<Option<Arc<xai_grok_hooks::discovery::HookRegistry>>>,
+    /// The turn's single end-of-turn hook report. Actor-scoped rather than turn-local because the
+    /// gate runs on the turn task while a cancel runs on the command loop.
+    pub(crate) turn_report: turn_report_slot::TurnReportSlot,
+    /// Keyed on the same turn epoch as `turn_report`: a turn announces its abort at most once.
+    pub(crate) turn_abort: turn_report_slot::AbortAnnouncement,
+    /// Set once by [`turn_end_hooks::TurnEndQueue::spawn`]; `None` before the loop starts.
+    pub(crate) turn_end_tx:
+        std::cell::RefCell<Option<tokio::sync::mpsc::UnboundedSender<turn_end_hooks::QueueItem>>>,
     /// Client hooks from `session/new` `_meta["x.ai/hooks"]`; gated in
     /// [`crate::session::acp_session::hooks`]. `RefCell` so `load_session` reconnect can
     /// replace the set on the live actor (see `SessionCommand::SetClientHooks`).
@@ -1027,8 +1066,23 @@ pub(crate) struct SessionActor {
     /// each spawn so a finishing older task cannot clear a newer slot.
     pub(crate) turn_summary_generation: std::cell::Cell<u64>,
     /// Turn-summary gate, resolved once at spawn (env / config / remote
-    /// settings — see `Config::resolve_turn_summary`).
+    /// settings, from the `turn_summary` feature).
     pub(crate) turn_summary_enabled: bool,
+    /// Early-session title-refresh gate, resolved once at spawn (defaults to
+    /// `turn_summary_enabled`; see `Config::resolve_title_refresh`).
+    pub(crate) title_refresh_enabled: bool,
+    /// The in-flight title-refresh side-call, if any. Only one runs at a time
+    /// (a newer completion skips rather than aborts); aborted on rename,
+    /// rewind, and shutdown. See `maybe_refresh_title`.
+    pub(crate) title_refresh_task: std::cell::RefCell<Option<tokio::task::JoinHandle<()>>>,
+    /// Generation of the currently registered title-refresh task. A finishing
+    /// task whose generation no longer matches must not persist its result.
+    pub(crate) title_refresh_generation: std::cell::Cell<u64>,
+    /// Index into `TITLE_REFRESH_TURNS` of the next checkpoint to apply.
+    /// Advanced when an attempt completes — success *or* failure — (with
+    /// catch-up past skipped checkpoints), and persisted to the watermark;
+    /// once it reaches the end the title is frozen.
+    pub(crate) next_title_refresh_idx: std::cell::Cell<usize>,
     /// True while THIS session has a prompt turn in flight (RAII-guarded in
     /// `handle_prompt`, like `tool_context.is_turn_active` — which is the
     /// agent-wide coordinator flag shared by all sessions and so unusable
@@ -1958,6 +2012,9 @@ mod mcp_connecting_reminder_tests;
 #[path = "acp_session_tests/media_gen_auth_retry_tests.rs"]
 mod media_gen_auth_retry_tests;
 #[cfg(test)]
+#[path = "acp_session_tests/media_gen_batch_limit_tests.rs"]
+mod media_gen_batch_limit_tests;
+#[cfg(test)]
 #[path = "acp_session_tests/memory_config_tests.rs"]
 mod memory_config_tests;
 #[cfg(test)]
@@ -1967,14 +2024,23 @@ mod parallel_dispatch_tests;
 #[path = "acp_session_tests/prompt_context_persistence_tests.rs"]
 mod prompt_context_persistence_tests;
 #[cfg(test)]
+#[path = "acp_session_tests/turn/rate_limit_backoff_tests.rs"]
+mod rate_limit_backoff_tests;
+#[cfg(test)]
 #[path = "acp_session_tests/session_thread_tests.rs"]
 mod session_thread_tests;
+#[cfg(test)]
+#[path = "acp_session_tests/status_line_payload_tests.rs"]
+mod status_line_payload_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/tool_layer_images_bridge_tests.rs"]
 mod tool_layer_images_bridge_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/turn/turn_end_guard_tests.rs"]
 mod turn_end_guard_tests;
+#[cfg(test)]
+#[path = "acp_session_tests/turn_end_reporting_tests.rs"]
+mod turn_end_reporting_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/wait_for_mcp_prefix_tests.rs"]
 mod wait_for_mcp_prefix_tests;

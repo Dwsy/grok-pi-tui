@@ -103,7 +103,7 @@ tracing-subscriber = { workspace = true }
 # "enable" required for the SDK's spans to record at all.
 fastrace = { workspace = true, features = ["enable"] }
 xai-tracing = { workspace = true }
-rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+xai-grok-extra-ca = { workspace = true }
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
 tempfile = { workspace = true }
 zstd = { workspace = true }

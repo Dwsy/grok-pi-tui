@@ -31,7 +31,7 @@ pub(crate) fn worktree_add_no_checkout(source: &Path, dest: &str, git_ref: &str)
 
 /// Which stale registrations [`remove_stale_worktree_registrations`] removes.
 #[derive(Clone, Copy, Debug)]
-pub enum StaleWorktreeMatch<'a> {
+enum StaleWorktreeMatch<'a> {
     /// Exactly the registration whose recorded worktree path is this path.
     Path(&'a Path),
     /// Every registration whose recorded worktree path is under this prefix
@@ -40,20 +40,19 @@ pub enum StaleWorktreeMatch<'a> {
 }
 
 /// Remove stale `.git/worktrees/<id>` registrations matching `match_rule`.
+/// Best-effort; returns the count removed.
 ///
-/// Deliberately not `git worktree prune`: prune deletes every registration
-/// whose worktree path is not visible from the current mount namespace (git
-/// applies no expiry protection to that case) and deletes `.git/worktrees`
-/// itself once emptied — under a container that does not mount the user's
-/// linked worktrees, that wiped them all. Best-effort: failures are logged,
-/// never returned. Returns the number of registrations removed (git suffixes
-/// ids on basename collisions, so an id may differ from the basename).
-pub fn remove_stale_worktree_registrations(
+/// Not `git worktree prune`: prune also drops registrations whose worktree is
+/// merely invisible in the current mount namespace, wiping live linked worktrees
+/// inside a container that does not mount them.
+fn remove_stale_worktree_registrations(
     source_repo: &Path,
     match_rule: StaleWorktreeMatch<'_>,
 ) -> u64 {
+    // Only a definitively-absent path is stale; a stat error keeps the
+    // registration (its reflog may hold the last copy of a commit).
     if let StaleWorktreeMatch::Path(p) = match_rule
-        && p.exists()
+        && !matches!(p.try_exists(), Ok(false))
     {
         return 0;
     }
@@ -98,7 +97,10 @@ pub fn remove_stale_worktree_registrations(
     let mut removed = 0u64;
     for entry in entries.flatten() {
         let registration = entry.path();
-        if !registration.is_dir() || registration.join("locked").exists() {
+        // Keep on a `locked` marker, or if we cannot tell whether one exists
+        // (a stat error must not be read as unlocked).
+        if !registration.is_dir() || !matches!(registration.join("locked").try_exists(), Ok(false))
+        {
             continue;
         }
         let Ok(backlink) = std::fs::read_to_string(registration.join("gitdir")) else {
@@ -116,7 +118,8 @@ pub fn remove_stale_worktree_registrations(
         let Some(recorded) = backlink_abs.parent() else {
             continue;
         };
-        if recorded.exists() {
+        // Present, or a stat error we cannot see past: keep the registration.
+        if !matches!(recorded.try_exists(), Ok(false)) {
             continue;
         }
         let recorded = normalized_for_match(recorded);
@@ -127,6 +130,12 @@ pub fn remove_stale_worktree_registrations(
         if !matched {
             continue;
         }
+        // Removing the registration also drops its `logs/` reflog. The recorded
+        // working tree is confirmed gone (checked above), the registration is
+        // not `locked`, and this scrub is opt-in (`include_rebuild`, off by
+        // default); a reflog-only commit under a vanished worktree is accepted
+        // as lost here rather than named (the age-GC delete path names via
+        // reclaimed.rs; this cleanup does not).
         match std::fs::remove_dir_all(&registration) {
             Ok(()) => {
                 tracing::debug!(
@@ -148,20 +157,37 @@ pub fn remove_stale_worktree_registrations(
     removed
 }
 
-/// [`remove_stale_worktree_registrations`] scoped to exactly one worktree path.
+/// Remove the stale registration for exactly one worktree path.
 pub fn remove_stale_worktree_registration(source_repo: &Path, worktree_path: &Path) -> u64 {
     remove_stale_worktree_registrations(source_repo, StaleWorktreeMatch::Path(worktree_path))
 }
 
-/// [`remove_stale_worktree_registrations`] scoped to a tool-owned base directory.
+/// Remove stale registrations for every worktree under a tool-owned base directory.
+///
+/// Deliberately not `git worktree prune`: prune also deletes registrations whose
+/// worktree path is merely invisible from the current mount namespace (e.g. a
+/// container that does not mount the user's worktrees), which would wipe live
+/// ones; this only removes registrations whose recorded path is confirmed gone.
 pub fn remove_stale_worktree_registrations_under(source_repo: &Path, prefix: &Path) -> u64 {
     remove_stale_worktree_registrations(source_repo, StaleWorktreeMatch::UnderPrefix(prefix))
 }
 
-/// Canonicalize the deepest existing ancestor and re-append the missing
-/// tail: git records the realpath at `worktree add` time, so a symlinked
-/// spelling must compare equal even after the path itself is deleted.
-fn normalized_for_match(path: &Path) -> PathBuf {
+/// Normalized worktree path a registration's `gitdir` backlink names, or `None`
+/// if missing or malformed. The backlink may be relative (`worktree.useRelativePaths`).
+pub(crate) fn registration_worktree_path(registration: &Path) -> Option<PathBuf> {
+    let backlink = std::fs::read_to_string(registration.join("gitdir")).ok()?;
+    let backlink_path = Path::new(backlink.trim());
+    let backlink_abs = if backlink_path.is_relative() {
+        registration.join(backlink_path)
+    } else {
+        backlink_path.to_path_buf()
+    };
+    Some(normalized_for_match(backlink_abs.parent()?))
+}
+
+/// Canonicalize the deepest existing ancestor and re-append the missing tail, so
+/// a symlinked spelling still compares equal after the path is deleted.
+pub(crate) fn normalized_for_match(path: &Path) -> PathBuf {
     let mut missing = Vec::new();
     let mut cursor = path;
     loop {
@@ -186,26 +212,17 @@ fn normalized_for_match(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
+    /// Hermetic git (pinned binary, masked global/system config) so a
+    /// developer's `~/.gitconfig` cannot steer these registration tests.
     fn run_git(cwd: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .expect("run git");
-        assert!(
-            out.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        let _ = xai_test_utils::git::run_git(cwd, args);
     }
 
     fn init_repo_with_worktrees() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::TempDir::new().unwrap();
         let repo = tmp.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
-        run_git(&repo, &["init"]);
-        run_git(&repo, &["config", "user.email", "t@test"]);
-        run_git(&repo, &["config", "user.name", "t"]);
+        xai_test_utils::git::init_git_repo(&repo);
         std::fs::write(repo.join("f.txt"), b"x").unwrap();
         run_git(&repo, &["add", "f.txt"]);
         run_git(&repo, &["commit", "-m", "init"]);

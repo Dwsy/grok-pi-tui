@@ -17,6 +17,7 @@ use xai_grok_shell::extensions::notification::{
     SessionNotification, SessionUpdate as XaiSessionUpdate, is_reauthable_failure,
 };
 use xai_grok_shell::tools::todo::todo_item_from_plan_entry;
+use xai_grok_tools::notification::ScheduledTaskRemovedReason;
 use xai_grok_workspace::permission::bash_command_splitting::BashCommandHighlights;
 
 use crate::acp::meta::NotificationMeta;
@@ -48,6 +49,7 @@ mod routing;
 mod session_notification;
 mod settings;
 mod subagent_activity;
+mod subagent_lifecycle;
 mod workflow_ingest;
 
 #[cfg(test)]
@@ -71,15 +73,20 @@ pub(crate) use prompt_origin::{
 
 pub(crate) use subagent_activity::finalize_killed_subagent;
 use subagent_activity::{subagent_activity_label, sync_subagent_activity};
+use subagent_lifecycle::{
+    LifecycleDelivery, LifecycleOrigin, classify_subagent_lifecycle, gate_subagent_lifecycle,
+    redispatched_subagent_finish, take_deferred_subagent_finish,
+};
 
 use workflow_ingest::ingest_workflow_update;
 
+pub(crate) use session_notification::apply_child_view_session_event;
 #[cfg(test)]
 pub(crate) use session_notification::apply_session_event_for_test;
 pub(crate) use session_notification::drop_unexpected_replay;
 use session_notification::{
     advance_reconnect_cursor, confirm_context_used, detect_plan_mode_change,
-    handle_session_notification,
+    handle_session_notification, handle_session_notification_with_origin,
 };
 
 pub(crate) use queue::PendingRunningAdoption;
@@ -93,10 +100,10 @@ use background::{
 };
 use follow_ups::handle_follow_ups;
 pub(crate) use interactions::handle_ask_user_question;
-use interactions::handle_exit_plan_mode;
+use interactions::{handle_exit_plan_mode, handle_mcp_elicit};
 use mcp::{
-    handle_mcp_init_progress, handle_mcp_server_status, handle_mcp_servers_updated,
-    handle_mcp_tools_changed, push_server_status_enabled,
+    handle_mcp_elicit_complete, handle_mcp_init_progress, handle_mcp_server_status,
+    handle_mcp_servers_updated, handle_mcp_tools_changed, push_server_status_enabled,
 };
 use settings::{
     handle_announcements_update, handle_models_update, handle_sessions_changed,
@@ -531,8 +538,7 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
 
                     let activity_label = {
                         let child_view = parent
-                            .subagent_views
-                            .get_mut(child_key)
+                            .child_view_for_live_update_mut(child_key)
                             .expect("find_session_match returned an existing subagent_views key");
                         if let Some(tokens) = meta.total_tokens {
                             confirm_context_used(child_view, tokens);
@@ -736,6 +742,7 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         "x.ai/mcp/server_status" if push_server_status_enabled() => {
             handle_mcp_server_status(notif, app)
         }
+        "x.ai/mcp/elicit_complete" => handle_mcp_elicit_complete(notif, app),
         "x.ai/mcp/servers_updated" => handle_mcp_servers_updated(notif, app),
         // Pi RPC extension UI is projected onto native Grok pager surfaces.
         // info → SystemMessage scrollback (Pi showStatus / chat append);
@@ -1202,6 +1209,10 @@ fn handle_pi_ui_session_catalog(notif: &acp::ExtNotification, app: &mut AppView)
                     .get("lastTurnSummary")
                     .and_then(serde_json::Value::as_str)
                     .map(ToOwned::to_owned),
+                last_recap: session
+                    .get("lastRecap")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned),
                 card_detail: None,
             })
         })
@@ -1327,6 +1338,7 @@ fn handle_ext_method(ext: xai_acp_lib::AcpArgs<acp::ExtRequest>, app: &mut AppVi
     match ext.request.method.as_ref() {
         "x.ai/ask_user_question" => handle_ask_user_question(ext, app),
         "x.ai/exit_plan_mode" => handle_exit_plan_mode(ext, app),
+        "x.ai/mcp/elicit" => handle_mcp_elicit(ext, app),
         unknown => {
             tracing::warn!("Unknown ext_method: {unknown}");
             ext.response_tx

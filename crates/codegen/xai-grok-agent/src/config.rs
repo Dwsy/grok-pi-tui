@@ -204,6 +204,9 @@ fn grok_computer_toolset() -> ToolServerConfig {
         (&grok_build::GrepTool).into(),
         (&grok_build::KillTerminalCommandTool).into(),
         (&grok_build::GetTerminalCommandOutputTool).into(),
+        (&grok_build::SchedulerCreateTool).into(),
+        (&grok_build::SchedulerDeleteTool).into(),
+        (&grok_build::SchedulerListTool).into(),
     ];
     ToolServerConfig {
         tools,
@@ -1719,6 +1722,18 @@ mod tests {
             .name_override
             .expect("task tool is renamed");
         assert!(xai_grok_tools::is_task_tool_id(&name));
+    }
+    /// Pins the `run_terminal_command` rename to the writing-phase taxonomy
+    /// so a future rename can't silently degrade the spinner label.
+    #[test]
+    fn bash_tool_rename_matches_writing_tool_kind() {
+        let name = bash_tool_config()
+            .name_override
+            .expect("bash tool is renamed");
+        assert_eq!(
+            xai_grok_tools::tool_taxonomy::writing_tool_kind(&name),
+            Some(xai_grok_tools::types::tool::ToolKind::Execute)
+        );
     }
     /// Native presets only.
     #[test]

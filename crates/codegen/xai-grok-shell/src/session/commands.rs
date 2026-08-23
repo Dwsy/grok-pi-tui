@@ -59,6 +59,44 @@ pub enum PromptCompletionKind {
     /// `MvpAgent::prompt`'s short-circuit and `respond_removed_prompt`.
     RemovedFromQueue,
 }
+/// `_meta.cancellationCategory` of a hook-denied cancel; the pager matches it
+/// to render the blocked-by-a-hook marker.
+pub const HOOK_DENIED_CATEGORY: &str = "HookDenied";
+/// `_meta.cancellationCategory` of a max-turns end; headless matches it to
+/// drive the max-turns exit code.
+pub const MAX_TURNS_REACHED_CATEGORY: &str = "max_turns_reached";
+/// `_meta.cancellationCategory` of a stationarity end.
+pub const ACTION_STATIONARITY_CATEGORY: &str = "action_stationarity";
+/// `_meta.cancellationCategory` wire name of a cancel category — an explicit
+/// match so a variant rename cannot silently change the wire. Deliberately a
+/// second vocabulary next to the serde snake_case of the events.jsonl /
+/// after-turn rails: `_meta` shipped PascalCase and clients match it.
+pub fn meta_category_str(
+    category: xai_grok_session_events::types::CancellationCategory,
+) -> &'static str {
+    use xai_grok_session_events::types::CancellationCategory;
+    match category {
+        CancellationCategory::HookDenied => HOOK_DENIED_CATEGORY,
+        CancellationCategory::PermissionRejected => "PermissionRejected",
+        CancellationCategory::PermissionCancelled => "PermissionCancelled",
+        CancellationCategory::MidTurnAbort => "MidTurnAbort",
+    }
+}
+impl PromptCompletionKind {
+    /// The completion's `_meta.cancellationCategory`, shared by every terminal
+    /// rail (`PromptResponse` `_meta`, legacy `prompt_complete`, durable
+    /// `TurnCompleted`) so the wires never disagree.
+    pub fn cancellation_category_meta(&self) -> Option<String> {
+        match self {
+            Self::Cancelled { category, .. } => {
+                category.map(|cat| meta_category_str(cat).to_string())
+            }
+            Self::MaxTurnsReached { .. } => Some(MAX_TURNS_REACHED_CATEGORY.to_string()),
+            Self::StationarityEnded => Some(ACTION_STATIONARITY_CATEGORY.to_string()),
+            Self::Completed | Self::Rewound | Self::RemovedFromQueue => None,
+        }
+    }
+}
 /// Successful prompt/turn payload returned to the ACP layer and trace uploaders.
 #[derive(Debug, Clone)]
 pub struct PromptTurnOk {
@@ -151,6 +189,13 @@ pub enum CancelTrigger {
     SessionDelete,
     Client(String),
 }
+/// What a cancel means for the session, derived from its trigger by [`CancelTrigger::kind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelKind {
+    StopGesture,
+    Replace,
+    Teardown,
+}
 impl CancelTrigger {
     /// Parse a client's `_meta.cancelTrigger`. Internal spellings land in
     /// [`Self::Client`], so a client-supplied string never maps to an
@@ -162,9 +207,14 @@ impl CancelTrigger {
             other => Self::Client(other.to_string()),
         }
     }
-    /// Stop gesture (Esc/Ctrl+C/`Client`); unrecognized wire names fail closed.
-    pub fn is_stop_gesture(&self) -> bool {
-        matches!(self, Self::Esc | Self::CtrlC | Self::Client(_))
+    /// The one place a trigger is classified, so a new variant is a single decision.
+    /// `Client(_)` lands on `StopGesture`, so an unrecognized wire name fails closed.
+    pub fn kind(&self) -> CancelKind {
+        match self {
+            Self::Esc | Self::CtrlC | Self::Client(_) => CancelKind::StopGesture,
+            Self::SendNow => CancelKind::Replace,
+            Self::Shutdown | Self::SessionClose | Self::SessionDelete => CancelKind::Teardown,
+        }
     }
     pub fn as_str(&self) -> &str {
         match self {
@@ -178,14 +228,22 @@ impl CancelTrigger {
         }
     }
 }
+/// What a cancel does to the in-memory conversation history.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum CancelHistoryDisposition {
+    /// Leave the cancelled turn's user message in history.
+    #[default]
+    Keep,
+    /// Pop the named front if the no-output window is still open. `None` is a legacy client.
+    RewindIfNoOutput { prompt_id: Option<String> },
+}
 #[derive(Debug, Clone, Default)]
 pub struct CancelOptions {
     pub cancel_subagents: bool,
     pub kill_background_tasks: bool,
-    pub rewind_if_no_output: bool,
-    /// [`CancelTrigger::is_stop_gesture`] arms the task-wake barrier.
+    pub history: CancelHistoryDisposition,
     pub trigger: Option<CancelTrigger>,
-    /// Drives the cancel-rate metric.
+    /// Drives the cancel-rate metric, and marks an untriggered cancel as the user's.
     pub user_initiated: bool,
 }
 pub enum SessionCommand {
@@ -199,11 +257,22 @@ pub enum SessionCommand {
     ReplaceSystemPrompt {
         system_prompt: String,
     },
+    /// Push a fresh status-line snapshot. Sent when a client attaches to a
+    /// resident session, which the transient `SessionStatus` notification would
+    /// otherwise never reach.
+    EmitStatusSnapshot,
     /// Resume hook: after a session is restored with
     /// `awaiting_plan_approval == true`, re-issue the `exit_plan_mode`
     /// reverse-request so the client re-shows approval chrome over a real live
     /// waiter. Fire-and-forget; the actor spawns the round-trip + decision.
     RestorePlanApproval,
+    /// A `/rename` landed for this resident session. `manual: true` (a user
+    /// title) freezes the auto title refresh and aborts any in-flight one;
+    /// `manual: false` (`/rename --auto`) reopens it so the whole-conversation
+    /// refresh can re-title.
+    TitleRenamed {
+        manual: bool,
+    },
     GetToolOverrides {
         respond_to: oneshot::Sender<Option<xai_grok_sampling_types::ToolOverrides>>,
     },
@@ -258,6 +327,8 @@ pub enum SessionCommand {
     SetSessionModel {
         sampling_config: xai_grok_sampler::SamplerConfig,
         use_concise: bool,
+        /// Models declare differing `model_family`s → compact (lossy) at switch end.
+        is_family_switch: bool,
         /// When `false`, skip the system prompt rewrite (concise/default swap).
         /// Set to `false` for forked sessions so mid-session model switches
         /// cannot contaminate the inherited prompt configuration.
@@ -842,17 +913,74 @@ pub enum SessionCommand {
     },
 }
 #[cfg(test)]
-mod cancel_trigger_tests {
-    use super::CancelTrigger;
+mod cancellation_category_meta_tests {
+    use super::PromptCompletionKind;
+    use xai_grok_session_events::types::CancellationCategory;
+    /// Pins every `_meta.cancellationCategory` wire name: shipped clients
+    /// string-match these, so a rename is a wire break the compiler can't see.
     #[test]
-    fn only_stop_gestures_arm_the_wake_barrier() {
-        assert!(!CancelTrigger::SendNow.is_stop_gesture());
-        assert!(!CancelTrigger::SessionDelete.is_stop_gesture());
-        assert!(!CancelTrigger::Shutdown.is_stop_gesture());
-        assert!(!CancelTrigger::SessionClose.is_stop_gesture());
-        assert!(CancelTrigger::Esc.is_stop_gesture());
-        assert!(CancelTrigger::CtrlC.is_stop_gesture());
-        assert!(CancelTrigger::from_client("mouse").is_stop_gesture());
-        assert!(CancelTrigger::from_client("some_future_gesture").is_stop_gesture());
+    fn pins_every_wire_name() {
+        let cancelled = |category| PromptCompletionKind::Cancelled {
+            category,
+            context: None,
+        };
+        for (kind, expected) in [
+            (
+                cancelled(Some(CancellationCategory::HookDenied)),
+                Some("HookDenied"),
+            ),
+            (
+                cancelled(Some(CancellationCategory::MidTurnAbort)),
+                Some("MidTurnAbort"),
+            ),
+            (
+                cancelled(Some(CancellationCategory::PermissionRejected)),
+                Some("PermissionRejected"),
+            ),
+            (
+                cancelled(Some(CancellationCategory::PermissionCancelled)),
+                Some("PermissionCancelled"),
+            ),
+            (cancelled(None), None),
+            (
+                PromptCompletionKind::MaxTurnsReached { limit: 1 },
+                Some("max_turns_reached"),
+            ),
+            (
+                PromptCompletionKind::StationarityEnded,
+                Some("action_stationarity"),
+            ),
+            (PromptCompletionKind::Completed, None),
+            (PromptCompletionKind::Rewound, None),
+            (PromptCompletionKind::RemovedFromQueue, None),
+        ] {
+            assert_eq!(
+                kind.cancellation_category_meta().as_deref(),
+                expected,
+                "{kind:?}"
+            );
+        }
+    }
+}
+#[cfg(test)]
+mod cancel_trigger_tests {
+    use super::{CancelKind, CancelTrigger};
+    #[test]
+    fn classifies_every_trigger() {
+        for (trigger, expected) in [
+            (CancelTrigger::Esc, CancelKind::StopGesture),
+            (CancelTrigger::CtrlC, CancelKind::StopGesture),
+            (CancelTrigger::from_client("mouse"), CancelKind::StopGesture),
+            (
+                CancelTrigger::from_client("some_future_gesture"),
+                CancelKind::StopGesture,
+            ),
+            (CancelTrigger::SendNow, CancelKind::Replace),
+            (CancelTrigger::Shutdown, CancelKind::Teardown),
+            (CancelTrigger::SessionClose, CancelKind::Teardown),
+            (CancelTrigger::SessionDelete, CancelKind::Teardown),
+        ] {
+            assert_eq!(trigger.kind(), expected, "{trigger:?}");
+        }
     }
 }

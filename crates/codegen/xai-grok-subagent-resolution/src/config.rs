@@ -27,7 +27,7 @@ pub struct SubagentRole {
     pub description: String,
     /// Default capability mode for agents using this role.
     /// One of: "read-only", "read-write", "execute", "all".
-    /// Can be overridden per-spawn via `capability_mode` in the task tool.
+    /// Not a model-facing spawn argument; `general-purpose` stays `all`.
     #[serde(default)]
     pub default_capability_mode: Option<String>,
     /// Model override for this role. If set, agents using this role

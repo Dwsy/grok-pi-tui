@@ -1,5 +1,6 @@
 //! Conversation rewind dispatchers and prompt-entry lookup helpers.
 
+use super::ctx::NO_SESSION_NOTICE;
 use crate::app::actions::Effect;
 use crate::app::agent::AgentId;
 use crate::app::app_view::{ActiveView, AppView};
@@ -105,7 +106,7 @@ pub(super) fn dispatch_rewind(app: &mut AppView) -> Vec<Effect> {
         return vec![];
     };
     let Some(session_id) = agent.session.session_id.clone() else {
-        app.show_toast("No active session");
+        app.show_toast(NO_SESSION_NOTICE);
         return vec![];
     };
 
@@ -151,7 +152,7 @@ pub(super) fn dispatch_rewind_show_picker(app: &mut AppView) -> Vec<Effect> {
         return vec![];
     };
     let Some(session_id) = agent.session.session_id.clone() else {
-        app.show_toast("No active session");
+        app.show_toast(NO_SESSION_NOTICE);
         return vec![];
     };
 
@@ -242,7 +243,7 @@ pub(super) fn dispatch_rewind_cancel_offer(app: &mut AppView) -> Vec<Effect> {
         trigger: None,
         // The rewind picker owns history via `handle_rewind`; this pre-cancel
         // must not also pop the in-flight prompt.
-        rewind_if_no_output: false,
+        rewind_prompt_id: None,
     }];
     effects.push(Effect::FetchRewindPoints {
         agent_id: id,
@@ -383,7 +384,7 @@ pub(super) fn dispatch_inline_edit_submit(app: &mut AppView) -> Vec<Effect> {
         return vec![];
     };
     let Some(session_id) = agent.session.session_id.clone() else {
-        app.show_toast("No active session");
+        app.show_toast(NO_SESSION_NOTICE);
         return vec![];
     };
     let Some(edit) = agent.inline_edit.as_ref() else {
@@ -480,7 +481,7 @@ pub(super) fn dispatch_rewind_success(
         // their render caches — potentially most of a long transcript)
         // must be freed for the release below to return its pages.
         drop(removed);
-        crate::memory_release::release_retained_memory_with("rewind-truncate");
+        crate::memory_release::release_retained_memory("rewind-truncate");
     }
 
     // An inline resubmit skips the confirmation — the edited prompt

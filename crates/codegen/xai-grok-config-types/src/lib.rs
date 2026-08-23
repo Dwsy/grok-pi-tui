@@ -7,6 +7,8 @@
 )]
 mod flags;
 pub use flags::*;
+mod registry;
+pub use registry::*;
 mod memory;
 pub use memory::*;
 mod mcp;
@@ -42,7 +44,7 @@ pub struct DoomLoopRecoverySettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     /// Highest `tail_repetition` threshold considered confident (clamped to
-    /// 2..=64). Absent ⇒ client default (32). CLIENT-side filter over the
+    /// 2..=64). Absent ⇒ client default (64). CLIENT-side filter over the
     /// trigger labels the server returns — the server emits every fired
     /// threshold; this is never sent as a request parameter.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -394,51 +396,47 @@ fn de_opt_max_age_by_kind_tolerant<'de, D: serde::Deserializer<'de>>(
         _ => Ok(None),
     }
 }
-/// Nested `worktree_auto_gc` object: present-but-malformed → `None` (warn) so
-/// one bad nested value cannot fail the whole [`RemoteSettings`] parse.
-fn deserialize_tolerant_worktree_auto_gc<'de, D>(
-    deserializer: D,
-) -> Result<Option<WorktreeAutoGcSettings>, D::Error>
+/// Present-but-malformed nested value: `None` plus a warning, so one bad
+/// setting cannot fail the whole [`RemoteSettings`] parse.
+pub fn deserialize_tolerant<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
 {
-    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
-    match value {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(v) => match serde_json::from_value::<WorktreeAutoGcSettings>(v) {
-            Ok(s) => Ok(Some(s)),
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "ignoring malformed remote worktree_auto_gc; falling through to TOML/defaults"
-                );
-                Ok(None)
-            }
-        },
+    let Some(value) =
+        Option::<serde_json::Value>::deserialize(deserializer)?.filter(|v| !v.is_null())
+    else {
+        return Ok(None);
+    };
+    match serde_json::from_value::<T>(value) {
+        Ok(parsed) => Ok(Some(parsed)),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                setting = std::any::type_name::<T>(),
+                "ignoring malformed remote setting; falling through to local defaults"
+            );
+            Ok(None)
+        }
     }
 }
-/// Nested `slash_command_tags` map: present-but-malformed → `None` (warn) so one
-/// bad value cannot fail the whole [`RemoteSettings`] parse.
-fn deserialize_tolerant_slash_command_tags<'de, D>(
-    deserializer: D,
-) -> Result<Option<std::collections::BTreeMap<String, String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
-    match value {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(v) => match serde_json::from_value::<std::collections::BTreeMap<String, String>>(v) {
-            Ok(m) => Ok(Some(m)),
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "ignoring malformed remote slash_command_tags; falling through to local/none"
-                );
-                Ok(None)
-            }
-        },
-    }
+/// Consent notice from `grok_build_settings.consent_gate`. Which accounts see it is a targeting
+/// decision, not a property of the payload.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ConsentGate {
+    /// Keys the stored answer and the upstream record. A payload without one is dropped whole.
+    pub id: String,
+    /// Acceptance version for this notice. Only comparable against an answer to the same `id`.
+    #[serde(default)]
+    pub version: Option<i32>,
+    #[serde(default)]
+    pub title: Option<String>,
+    /// `[label](https://…)` links are painted inline; there is no scrolling, so keep it short.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// The only way past the notice.
+    #[serde(default)]
+    pub accept_label: Option<String>,
 }
 /// Remote settings fetched from cli-chat-proxy `GET /v1/settings`.
 ///
@@ -562,6 +560,8 @@ pub struct RemoteSettings {
     /// Fallback when no per-model `inference_idle_timeout_secs` is set in config.toml.
     #[serde(default)]
     pub inference_idle_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub subagent_rate_limit_max_attempts: Option<u32>,
     /// Global default MCP startup-handshake timeout (seconds); lowest-precedence
     /// fallback (per-server config, env, and requirements/managed override it).
     #[serde(default)]
@@ -585,7 +585,7 @@ pub struct RemoteSettings {
     /// falls through per-field. Present-but-malformed nested value is dropped
     /// to `None` (does not fail the whole `RemoteSettings` parse). Platform
     /// age-expiry policy is client-hardcoded and not remote-overridable.
-    #[serde(default, deserialize_with = "deserialize_tolerant_worktree_auto_gc")]
+    #[serde(default, deserialize_with = "deserialize_tolerant")]
     pub worktree_auto_gc: Option<WorktreeAutoGcSettings>,
     /// Enable/disable the runtime turn-end TodoGate remotely.
     /// Precedence: CLI `--todo-gate` > this field > built-in default (`false`).
@@ -733,6 +733,9 @@ pub struct RemoteSettings {
     /// by `telemetry_enabled`.
     #[serde(default)]
     pub feedback_enabled: Option<bool>,
+    /// Gradual rollout of the `/feedback` trace-consent card.
+    #[serde(default)]
+    pub feedback_trace_card_enabled: Option<bool>,
     /// Two-pass (prefire) compaction. When approaching the auto-compact
     /// threshold the shell speculatively summarizes the history prefix in the
     /// background (pass 1 → NOTE₁); at compaction it summarizes NOTE₁ + the
@@ -751,7 +754,7 @@ pub struct RemoteSettings {
     /// label in the slash dropdown, keyed by canonical command name. Present-but-
     /// malformed → `None` (does not fail the whole parse); local
     /// `[slash_command_tags]` overrides per key. See `resolve_slash_command_tags`.
-    #[serde(default, deserialize_with = "deserialize_tolerant_slash_command_tags")]
+    #[serde(default, deserialize_with = "deserialize_tolerant")]
     pub slash_command_tags: Option<std::collections::BTreeMap<String, String>>,
     /// When present, controls the non-Git-repo warning at session start.
     /// Controlled via remote settings (`non_git_warning` in `grok_build_settings`).
@@ -853,6 +856,10 @@ pub struct RemoteSettings {
     /// `[cli] worktree_type` is set in config.toml.
     #[serde(default)]
     pub worktree_type: Option<String>,
+    /// Grove-projected worktree strategy (`true` = grove-fuse/grove-nfs, `false` = copy).
+    /// `Some(false)` is the remote kill switch. `nfs_worktree` is a deserialize alias.
+    #[serde(default, alias = "nfs_worktree")]
+    pub grove_worktree: Option<bool>,
     /// Server-recommended default for `restore_code` in worktree resume.
     /// Applied only when the client omits `restoreCode`.
     #[serde(default)]
@@ -865,11 +872,21 @@ pub struct RemoteSettings {
     /// Optional remote kill-switch; shell defaults ON when unset (set `false` to disable).
     #[serde(default)]
     pub session_recap: Option<bool>,
+    /// Enables the session search index (`/load` deep search).
+    /// Optional remote kill-switch; shell defaults ON when unset (set `false` to disable).
+    #[serde(default)]
+    pub session_search: Option<bool>,
     /// Enables the per-turn dashboard summary (one-line "what happened last
     /// turn" generated at turn end). Optional remote kill-switch; shell
     /// defaults ON when unset (set `false` to disable).
     #[serde(default)]
     pub turn_summary: Option<bool>,
+    /// Enables the early-session auto-title refresh (regenerate the title from
+    /// the whole conversation at a couple of early turns, then freeze). Optional
+    /// remote kill-switch; when unset the shell defers to `turn_summary` so the
+    /// two sibling post-turn side-calls default together without being coupled.
+    #[serde(default)]
+    pub title_refresh: Option<bool>,
     /// Enables the `ask_user_question` tool. Optional remote kill-switch:
     /// `Some(false)` strips the tool; `Some(true)` or absent → the shell
     /// default (ON). Feature-flagged via remote settings.
@@ -918,7 +935,7 @@ pub struct RemoteSettings {
     pub privacy_banner_reshow_days: Option<u64>,
     /// remote settings tier of the `remember_tool_approvals` gate (whether per-tool
     /// "Always allow …" prompt options are shown). Lowest precedence; typically
-    /// targeted per-org. Default `false`.
+    /// targeted per-org. Default `true`; `Some(false)` is a kill-switch.
     #[serde(default)]
     pub remember_tool_approvals: Option<bool>,
     /// remote settings tier of the crash-handler install gate. Lowest precedence in
@@ -972,6 +989,9 @@ pub struct RemoteSettings {
     pub gate_url: Option<String>,
     #[serde(default)]
     pub gate_label: Option<String>,
+    /// A usable `id`, non-empty `body` and positive `version` arm it; anything else fails open.
+    #[serde(default, deserialize_with = "deserialize_tolerant")]
+    pub consent_gate: Option<ConsentGate>,
     /// Whether the session picker groups entries by repo name.
     /// When `None` or `Some(false)`, sessions are shown in a flat list.
     #[serde(default)]
@@ -1021,6 +1041,14 @@ pub struct RemoteSettings {
     pub subagents_limit_behavior: Option<String>,
     #[serde(default)]
     pub workflow_max_concurrent_agents: Option<u32>,
+    /// Max parallel `image_gen` / `image_edit` tool calls in one model step
+    /// (`grok_build_settings.max_parallel_image_gen_calls`).
+    #[serde(default)]
+    pub max_parallel_image_gen_calls: Option<u32>,
+    /// Max parallel video-gen tool calls in one model step
+    /// (`grok_build_settings.max_parallel_video_gen_calls`).
+    #[serde(default)]
+    pub max_parallel_video_gen_calls: Option<u32>,
     /// Global system-prompt identity label. Per-model override wins; see
     /// `resolve_system_prompt_label`.
     #[serde(default)]
@@ -1055,6 +1083,15 @@ pub struct RemoteSettings {
     /// `Some(true)` enables it; `None`/`Some(false)` (the default) keep it off.
     #[serde(default)]
     pub workspace_command_enabled: Option<bool>,
+    #[serde(default)]
+    pub workspace_dashboard_enabled: Option<bool>,
+    /// Soft default for `keep_text_selection` (`"flash"` / `"hold"` / `"word_select"`), from
+    /// `grok_build_settings.keep_text_selection_default`. Applied only when the user has set no
+    /// local text-selection preference; an explicit local `keep_text_selection` always wins. An
+    /// absent or unrecognized value keeps the client default (`flash`). Set remotely to stage a
+    /// new default to a segment, cut everyone over, or revert it for a customer.
+    #[serde(default)]
+    pub keep_text_selection_default: Option<String>,
     /// Master switch for jemalloc heap sampling + threshold dumps.
     /// `Some(true)` enables, `Some(false)` kill-switch, `None` = client default off.
     #[serde(default)]
@@ -1402,6 +1439,45 @@ mod tests {
                 persistent: None,
             }])
         );
+    }
+    #[test]
+    fn remote_settings_consent_gate_round_trip() {
+        let json = r#"{
+            "consent_gate": {
+                "id": "tos-2026-08",
+                "version": 3,
+                "title": "Updated terms",
+                "body": "Review our [Terms of Service](https://x.ai/legal/tos) before continuing.",
+                "accept_label": "Accept and continue"
+            }
+        }"#;
+        let settings: RemoteSettings = serde_json::from_str(json).unwrap();
+        let gate = settings.consent_gate.expect("gate present");
+        assert_eq!(gate.id, "tos-2026-08");
+        assert_eq!(gate.version, Some(3));
+        assert!(
+            gate.body
+                .as_deref()
+                .is_some_and(|b| b.contains("https://x.ai/legal/tos"))
+        );
+    }
+    /// A poisoned response would leave `zdr_access_enabled` false and hard-block ZDR users.
+    #[test]
+    fn remote_settings_malformed_consent_gate_does_not_poison() {
+        for gate in [
+            r#"{"id": "tos", "version": "not-a-number"}"#,
+            r#"{"version": 3, "body": "Review our terms."}"#,
+        ] {
+            let json = format!(r#"{{"consent_gate": {gate}, "tips": ["still parsed"]}}"#);
+            let settings: RemoteSettings = serde_json::from_str(&json).unwrap();
+            assert!(settings.consent_gate.is_none(), "{gate} must be dropped");
+            assert_eq!(settings.tips, Some(vec!["still parsed".to_string()]));
+        }
+    }
+    #[test]
+    fn remote_settings_consent_gate_absent_is_none() {
+        let settings: RemoteSettings = serde_json::from_str("{}").unwrap();
+        assert!(settings.consent_gate.is_none());
     }
     #[test]
     fn remote_settings_goal_role_models_absent_default_clean() {
@@ -1864,6 +1940,31 @@ mod tests {
         let json = r#"{}"#;
         let s: RemoteSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.workspace_command_enabled, None);
+    }
+    #[test]
+    fn remote_settings_workspace_dashboard_enabled_parses_all_states() {
+        let on: RemoteSettings =
+            serde_json::from_str(r#"{"workspace_dashboard_enabled": true}"#).unwrap();
+        assert_eq!(on.workspace_dashboard_enabled, Some(true));
+        let off: RemoteSettings =
+            serde_json::from_str(r#"{"workspace_dashboard_enabled": false}"#).unwrap();
+        assert_eq!(off.workspace_dashboard_enabled, Some(false));
+        let absent: RemoteSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(absent.workspace_dashboard_enabled, None);
+    }
+    #[test]
+    fn remote_settings_keep_text_selection_default_round_trips() {
+        let ws: RemoteSettings =
+            serde_json::from_str(r#"{"keep_text_selection_default": "word_select"}"#).unwrap();
+        assert_eq!(
+            ws.keep_text_selection_default.as_deref(),
+            Some("word_select")
+        );
+        let flash: RemoteSettings =
+            serde_json::from_str(r#"{"keep_text_selection_default": "flash"}"#).unwrap();
+        assert_eq!(flash.keep_text_selection_default.as_deref(), Some("flash"));
+        let absent: RemoteSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(absent.keep_text_selection_default, None);
     }
     #[test]
     fn remote_settings_permission_mode_deserializes() {

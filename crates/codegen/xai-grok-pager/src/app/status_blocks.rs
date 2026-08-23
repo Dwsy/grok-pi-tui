@@ -218,9 +218,9 @@ pub(crate) fn session_usage_block_text(
         rows.push("  By model:".to_string());
         for (model, m) in &usage.model_usage {
             rows.push(format!(
-                "    {model} — {} in / {} out · {}",
-                format_token_k(m.input_tokens),
-                format_token_k(m.output_tokens),
+                "    {model}: {} in / {} out · {}",
+                group_thousands(m.input_tokens),
+                group_thousands(m.output_tokens),
                 format_cost(m),
             ));
         }
@@ -266,7 +266,7 @@ fn format_cost(m: &xai_grok_shell::extensions::notification::PromptUsageModel) -
 
 /// First non-empty, trimmed line of `text` (empty string if none). Collapses a
 /// multi-line prompt/command to a single display line.
-fn first_nonempty_line(text: &str) -> &str {
+pub(crate) fn first_nonempty_line(text: &str) -> &str {
     text.lines()
         .map(str::trim)
         .find(|l| !l.is_empty())
@@ -364,8 +364,8 @@ mod tests {
             .insert("grok-4".into(), model_row(50, 5, None));
         let text = session_usage_block_text(&usage);
         assert!(text.contains("By model:"), "{text}");
-        assert!(text.contains("grok-build — 100 in / 10 out"), "{text}");
-        assert!(text.contains("grok-4 — 50 in / 5 out"), "{text}");
+        assert!(text.contains("grok-build: 100 in / 10 out"), "{text}");
+        assert!(text.contains("grok-4: 50 in / 5 out"), "{text}");
     }
 
     #[test]

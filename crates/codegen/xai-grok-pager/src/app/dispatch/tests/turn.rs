@@ -435,7 +435,7 @@ fn lost_cancel_is_resent_while_still_cancelling() {
             resent.as_slice(),
             [Effect::CancelTurn {
                 trigger: Some(CancelTrigger::Mouse),
-                rewind_if_no_output: false,
+                rewind_prompt_id: None,
                 ..
             }]
         ),
@@ -462,6 +462,7 @@ fn lost_cancel_is_resent_while_still_cancelling() {
             stop_reason: Some("cancelled".into()),
             agent_result: None,
             cancel_trigger: None,
+            cancellation_category: None,
             received_at: std::time::Instant::now(),
         });
     }
@@ -533,6 +534,7 @@ fn cancel_retry_reuses_recorded_subagent_choice() {
             stop_reason: Some("cancelled".into()),
             agent_result: None,
             cancel_trigger: None,
+            cancellation_category: None,
             received_at: std::time::Instant::now(),
         });
     assert!(reconcile_overdue_cancels(&mut app).is_none());
@@ -577,6 +579,7 @@ fn confirmed_stop_retry_does_not_rearm_auto_resend() {
             stop_reason: Some("cancelled".into()),
             agent_result: None,
             cancel_trigger: None,
+            cancellation_category: None,
             received_at: std::time::Instant::now(),
         });
     }
@@ -715,7 +718,7 @@ fn cancel_after_local_send_during_wake_does_not_arm_resend() {
             effects.as_slice(),
             [Effect::CancelTurn {
                 trigger: Some(CancelTrigger::Esc),
-                rewind_if_no_output: false,
+                rewind_prompt_id: None,
                 ..
             }]
         ),
@@ -785,7 +788,7 @@ fn do_cancel_turn_cancels_running_wake_turn() {
             effects.as_slice(),
             [Effect::CancelTurn {
                 cancel_subagents: true,
-                rewind_if_no_output: false,
+                rewind_prompt_id: None,
                 trigger: None,
                 ..
             }]
@@ -826,7 +829,7 @@ fn stop_click_cancels_running_wake_turn() {
             effects.as_slice(),
             [Effect::CancelTurn {
                 trigger: Some(CancelTrigger::Mouse),
-                rewind_if_no_output: false,
+                rewind_prompt_id: None,
                 ..
             }]
         ),
@@ -1118,7 +1121,7 @@ fn cancel_turn_in_subagent_overlay_cancels_child_while_parent_idle() {
             [Effect::CancelTurn {
                 session_id,
                 cancel_subagents: true,
-                rewind_if_no_output: false,
+                rewind_prompt_id: None,
                 ..
             }] if session_id.0.as_ref() == child_sid
         ),
@@ -1263,7 +1266,7 @@ fn cancel_turn_in_subagent_overlay_retries_when_child_already_cancelling() {
             [Effect::CancelTurn {
                 session_id,
                 cancel_subagents: true,
-                rewind_if_no_output: false,
+                rewind_prompt_id: None,
                 ..
             }] if session_id.0.as_ref() == child_sid
         ),
@@ -1450,7 +1453,7 @@ fn reconcile_overdue_cancels_resends_for_overlay_child() {
             [Effect::CancelTurn {
                 session_id,
                 trigger: Some(CancelTrigger::Mouse),
-                rewind_if_no_output: false,
+                rewind_prompt_id: None,
                 ..
             }] if session_id.0.as_ref() == child_sid
         ),
@@ -1626,6 +1629,46 @@ fn reconcile_suppresses_send_now_cancel_marker() {
     );
 }
 
+/// A lost-RPC reconcile for a hook-denied cancel consumes the parked
+/// `cancellationCategory` and renders the blocked-by-a-hook marker, not
+/// "cancelled by user".
+#[test]
+fn reconcile_renders_hook_denied_marker_from_parked_category() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.state = AgentState::TurnRunning;
+        agent.session.current_prompt_id = Some("pid-stuck".into());
+    }
+    arm_reconcile_with_meta(
+        &mut app,
+        id,
+        "pid-stuck",
+        "cancelled",
+        None,
+        Some(crate::app::turn_completion::HOOK_DENIED_CATEGORY),
+        TURN_END_RECONCILE_GRACE + std::time::Duration::from_secs(1),
+    );
+
+    let fired = reconcile_overdue_turn_ends(&mut app);
+
+    assert!(fired.is_some(), "the overdue reconcile must fire");
+    let agent = &app.agents[&id];
+    assert!(agent.session.state.is_idle());
+    let has_blocked_marker = (0..agent.scrollback.len()).any(|i| {
+        matches!(
+            agent.scrollback.entry(i).map(|e| &e.block),
+            Some(RenderBlock::SessionEvent(ev))
+                if matches!(ev.event, SessionEvent::TurnBlockedByHook { .. })
+        )
+    });
+    assert!(
+        has_blocked_marker,
+        "the reconcile must surface the blocked-by-a-hook marker"
+    );
+}
+
 /// Older-shell fallback on the reconcile rail: no wire trigger, armed expectation.
 #[test]
 fn reconcile_suppresses_expected_send_now_cancel_without_wire_trigger() {
@@ -1793,6 +1836,7 @@ fn reconcile_error_formats_marker_and_defers_to_banner() {
                 stop_reason: Some("error".into()),
                 agent_result: Some("boom".into()),
                 cancel_trigger: None,
+                cancellation_category: None,
                 received_at: std::time::Instant::now()
                     - (TURN_END_RECONCILE_GRACE + std::time::Duration::from_secs(1)),
             });
@@ -1816,7 +1860,7 @@ fn reconcile_error_formats_marker_and_defers_to_banner() {
 
     assert_eq!(
         run(false).as_deref(),
-        Some("Request failed \u{2014} boom. Try sending again."),
+        Some("Request failed: boom. Try sending again."),
         "the raw agent_result must render as a formatted marker"
     );
     assert_eq!(

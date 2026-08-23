@@ -590,6 +590,42 @@ fn model_show_model_fingerprint_reads_catalog_flag() {
 }
 
 #[test]
+fn reasoning_effort_helpers_resolve_wire_name_to_catalog_key() {
+    let mgr = test_manager();
+
+    let mut custom = ModelEntry {
+        info: config::ModelInfo::fallback("enterprise-slug"),
+        api_key: None,
+        env_key: None,
+        auth_provider: None,
+        api_base_url: None,
+    };
+    custom.info.supports_reasoning_effort = true;
+    custom.info.reasoning_effort = Some(ReasoningEffort::High);
+    custom.info.reasoning_efforts = vec![ReasoningEffortOption {
+        id: "high".into(),
+        value: ReasoningEffort::High,
+        label: "High".into(),
+        description: None,
+        default: true,
+    }];
+    mgr.insert_test_entry("enterprise-key", custom);
+
+    for id in ["enterprise-key", "enterprise-slug"] {
+        assert!(mgr.model_supports_reasoning_effort(id));
+        assert_eq!(
+            mgr.model_default_reasoning_effort(id),
+            Some(ReasoningEffort::High)
+        );
+        assert_eq!(mgr.model_reasoning_efforts(id).len(), 1);
+    }
+
+    assert!(!mgr.model_supports_reasoning_effort("missing-model"));
+    assert_eq!(mgr.model_default_reasoning_effort("missing-model"), None);
+    assert!(mgr.model_reasoning_efforts("missing-model").is_empty());
+}
+
+#[test]
 fn default_model_honors_allowlist_when_no_default_set() {
     let cfg = config_from_toml(
         r#"
@@ -958,6 +994,11 @@ fn config_menu_only_model_derives_support_and_default() {
     assert_eq!(mgr.model_reasoning_efforts("menu-only").len(), 2);
     assert!(!mgr.model_supports_reasoning_effort("plain"));
     assert_eq!(mgr.model_default_reasoning_effort("plain"), None);
+
+    mgr.set_current_model_id(acp::ModelId::new("plain"));
+    assert_eq!(mgr.current_model_id().0.as_ref(), "plain");
+    assert_eq!(mgr.model_reasoning_efforts("menu-only").len(), 2);
+    assert!(mgr.model_reasoning_efforts("plain").is_empty());
 }
 
 #[test]
@@ -1983,6 +2024,7 @@ fn make_entry_config_with_id(
 ) -> config::ModelEntryConfig {
     config::ModelEntryConfig {
         id: id.map(|s| s.to_owned()),
+        model_family: None,
         model: model.to_owned(),
         base_url: "https://test.api/v1".to_owned(),
         name: name.map(|n| n.to_owned()),
@@ -2002,6 +2044,7 @@ fn make_entry_config_with_id(
         agent_type: config::default_agent_type(),
         inference_idle_timeout_secs: None,
         max_retries: None,
+        subagent_rate_limit_max_attempts: None,
         hidden: false,
         supported_in_api: true,
         auth_scheme: None,

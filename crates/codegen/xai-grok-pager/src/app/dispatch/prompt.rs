@@ -26,6 +26,9 @@ use crate::slash::command::DoctorRequest;
 use agent_client_protocol as acp;
 use xai_grok_telemetry::session_ctx::log_event;
 
+/// Shared by every submit guard that refuses while the session reconnects.
+pub(super) const RECONNECTING_NOTICE: &str = "Reconnecting, please wait...";
+
 /// Chat kind for the next create: CLI `--chat` (`app.chat_mode`) or one-shot
 /// `/chat` (`deferred_startup.pending_chat`, consumed here).
 pub(super) fn consume_chat_kind(app: &mut AppView) -> bool {
@@ -184,11 +187,15 @@ pub(super) fn dispatch_send_prompt(app: &mut AppView, text: String) -> Vec<Effec
 /// Clear the active prompt and record non-empty text in prompt history (Esc Esc).
 pub(super) fn dispatch_clear_prompt(app: &mut AppView) -> Vec<Effect> {
     with_active_agent(app, |agent| {
-        let text = agent.prompt.text().to_string();
-        // Same move-to-front / cap as send / interject.
-        interject::record_interject_prompt_history(agent, &text);
-        // Clears chips/images via PromptWidget::set_text empty path.
-        agent.prompt.set_text("");
+        // Prefixed the way the stash entry is, or a `!` draft shows up twice in the Up browse.
+        let text = crate::app::agent_view::prompt_history_text(
+            agent.prompt.text(),
+            agent.prompt_input_mode,
+        );
+        crate::app::agent::remember_prompt(&mut agent.session.prompt_history, &text);
+
+        // Recoverable with the stash chord, but Esc-Esc is a discard: it never comes back on its own.
+        agent.stash_prompt_draft(crate::app::agent_view::StashCause::ClearedDraft);
     });
     vec![]
 }
@@ -444,7 +451,7 @@ pub(super) fn dispatch_send_prompt_inner(
     };
 
     if app.reconnect_pending {
-        app.show_toast("Reconnecting, please wait...");
+        app.show_toast(RECONNECTING_NOTICE);
         return vec![];
     }
 
@@ -613,6 +620,9 @@ pub(super) fn dispatch_send_prompt_inner(
                     // filtered out of every completion surface, but it stays
                     // resolvable so a fully-typed invocation earns a hint that
                     // names the way out instead of leaking to the model.
+                    // A refusal added here must also extend the pre-check in `EditedCommandGate`
+                    // (`dispatch::queue`): that caller has to know the command will be refused
+                    // before it drops the queued row the text came from.
                     if let Some(refusal) = command
                         .mode_support()
                         .refusal(invocation.token, ctx.screen_mode)
@@ -670,15 +680,16 @@ pub(super) fn dispatch_send_prompt_inner(
                 }
                 return dispatch(Action::ExitSession, app);
             }
-            CommandResult::Action(Action::EditPromptExternal) => {
-                // Typed slash input occupies the composer; the palette route preserves an existing draft.
+            CommandResult::Action(mut action) => {
                 if consume_input {
-                    agent.prompt.set_text("");
-                }
-                return dispatch(Action::EditPromptExternal, app);
-            }
-            CommandResult::Action(action) => {
-                if consume_input {
+                    // Inline `/feedback` composed alongside pasted images:
+                    // the chips belong to the report, so drain them into the
+                    // action before the composer wipe destroys them.
+                    if let Action::SendFeedback { images, .. }
+                    | Action::OpenFeedbackPane { images, .. } = &mut action
+                    {
+                        *images = agent.prompt.drain_images().into();
+                    }
                     agent.prompt.set_text("");
                 }
                 return dispatch(action, app);
@@ -759,6 +770,7 @@ pub(super) fn dispatch_send_prompt_inner(
             // Drain prompt images before clearing prompt state.
             drain_prompt_state_to_last_queued(agent);
             agent.prompt.set_text("");
+            agent.note_draft_consumed();
         }
     } else if !literal && crate::slash::commands::exit::is_exit_alias(trimmed) {
         if consume_input {
@@ -848,6 +860,7 @@ pub(super) fn dispatch_send_prompt_inner(
             let images = agent.prompt.drain_images();
             if consume_input {
                 agent.prompt.set_text("");
+                agent.note_draft_consumed();
             }
             // A new prompt is taking the wheel (same contract as the
             // immediate-send branch below).
@@ -875,17 +888,8 @@ pub(super) fn dispatch_send_prompt_inner(
                 // Plain prompt: no images to drain. Clear textarea + record
                 // up-arrow history (same as the local path's history insert).
                 agent.prompt.set_text("");
-                let trimmed_key = text.trim().to_string();
-                if !trimmed_key.is_empty() {
-                    agent
-                        .session
-                        .prompt_history
-                        .retain(|p| p.trim() != trimmed_key);
-                    agent.session.prompt_history.insert(0, text.clone());
-                    if agent.session.prompt_history.len() > 200 {
-                        agent.session.prompt_history.truncate(200);
-                    }
-                }
+                agent.note_draft_consumed();
+                crate::app::agent::remember_prompt(&mut agent.session.prompt_history, &text);
             }
 
             // A new prompt is taking the wheel: the previous response's
@@ -905,9 +909,13 @@ pub(super) fn dispatch_send_prompt_inner(
                 Some(&sid_str),
                 Some(serde_json::json!({ "kind": "prompt", "len": text.len() })),
             );
-            if queued_while_running && !parked_sendable_wait {
+            if queued_while_running
+                && !parked_sendable_wait
+                && !crate::appearance::cache::load_follow_up_steer()
+            {
                 maybe_show_send_now_tip(app);
             }
+
             return vec![Effect::SendPrompt {
                 agent_id,
                 session_id,
@@ -924,6 +932,7 @@ pub(super) fn dispatch_send_prompt_inner(
             // Drain prompt images before clearing prompt state.
             drain_prompt_state_to_last_queued(agent);
             agent.prompt.set_text("");
+            agent.note_draft_consumed();
         }
         // Local queue while a turn is running (e.g. images attached): tip after
         // this branch so the agent mut-borrow is released first.
@@ -955,21 +964,9 @@ pub(super) fn dispatch_send_prompt_inner(
             root_agent
         };
 
-        // Insert into local prompt history (move-to-front dedup, cap at 200).
-        // Skipped for modal-driven dispatch: the user didn't type these
-        // commands and shouldn't see them in up-arrow history.
+        // Skipped for modal-driven dispatch: the user didn't type these commands and shouldn't see them in up-arrow history.
         if consume_input {
-            let trimmed_key = text.trim().to_string();
-            if !trimmed_key.is_empty() {
-                agent
-                    .session
-                    .prompt_history
-                    .retain(|p| p.trim() != trimmed_key);
-                agent.session.prompt_history.insert(0, text.clone());
-                if agent.session.prompt_history.len() > 200 {
-                    agent.session.prompt_history.truncate(200);
-                }
-            }
+            crate::app::agent::remember_prompt(&mut agent.session.prompt_history, &text);
         }
         maybe_drain_queue(agent)
     };
@@ -999,6 +996,14 @@ pub(super) fn dispatch_send_prompt_inner(
     };
     effects.extend(drain_effects);
     note_peek_page_flip(app, id, drain.page_flip_entry);
+    // A prompt queued while the turn is already busy (wait / live watcher /
+    // running tool) would otherwise sit locally until the next ACP batch.
+    // An open /btw overlay does not produce that batch, so a send after
+    // `/btw` would stay queued for the rest of the wait. Release here —
+    // same helper the ACP re-check uses; a no-op when the turn is not busy.
+    effects.extend(super::queue::maybe_release_queued_prompt_into_turn(
+        app, None,
+    ));
     effects
 }
 
@@ -1009,7 +1014,7 @@ pub(super) fn dispatch_send_prompt_inner(
 /// the execute block from the shell IS the visual entry.
 pub(super) fn dispatch_send_bash_command(app: &mut AppView, command: String) -> Vec<Effect> {
     if app.reconnect_pending {
-        app.show_toast("Reconnecting, please wait...");
+        app.show_toast(RECONNECTING_NOTICE);
         return vec![];
     }
 
@@ -1023,16 +1028,13 @@ pub(super) fn dispatch_send_bash_command(app: &mut AppView, command: String) -> 
     // Submitting a bash command retires any edit-contextual ephemeral tip.
     agent.ephemeral_tip.clear_on_submit();
 
-    // Store in prompt history with `! ` prefix for restore semantics.
-    let history_key = format!("! {}", command.trim());
-    agent
-        .session
-        .prompt_history
-        .retain(|p| p.trim() != history_key);
-    agent.session.prompt_history.insert(0, history_key);
-    if agent.session.prompt_history.len() > 200 {
-        agent.session.prompt_history.truncate(200);
-    }
+    crate::app::agent::remember_prompt(
+        &mut agent.session.prompt_history,
+        &crate::app::agent_view::prompt_history_text(
+            &command,
+            crate::app::agent_view::PromptInputMode::Bash,
+        ),
+    );
 
     // ── Server-authoritative immediate send for bash while running ──
     // A bash command typed while a turn is RUNNING is sent to the agent
@@ -1066,6 +1068,7 @@ pub(super) fn dispatch_send_bash_command(app: &mut AppView, command: String) -> 
         // deltas ours in the ACP gate once it becomes the running turn.
         agent.note_self_originated_prompt(&prompt_id);
         agent.prompt.set_text("");
+        agent.note_draft_consumed();
 
         let sid_str = session_id.0.to_string();
         push_server_queue_echo(app, agent_id, &sid_str, &prompt_id, &command, "bash");
@@ -1084,6 +1087,7 @@ pub(super) fn dispatch_send_bash_command(app: &mut AppView, command: String) -> 
 
     agent.session.enqueue_bash_command(command.clone());
     agent.prompt.set_text("");
+    agent.note_draft_consumed();
 
     let drain = maybe_drain_queue(agent);
     note_peek_page_flip(app, id, drain.page_flip_entry);
@@ -1342,7 +1346,7 @@ pub(super) fn handle_prompt_response(
         let wire_cancel_trigger = result.as_ref().ok().and_then(|pr| {
             pr.meta
                 .as_ref()?
-                .get("cancelTrigger")?
+                .get(crate::app::turn_completion::CANCEL_TRIGGER_KEY)?
                 .as_str()
                 .map(str::to_string)
         });
@@ -1351,6 +1355,15 @@ pub(super) fn handle_prompt_response(
                 Some(trigger) => trigger == "send_now",
                 None => expected_send_now.is_some(),
             };
+        // A hook-denied end rides the cancelled stop reason but is a policy
+        // block, not a user cancel — `cancelled_turn_event` picks the marker.
+        let wire_cancellation_category = result.as_ref().ok().and_then(|pr| {
+            pr.meta
+                .as_ref()?
+                .get(crate::app::turn_completion::CANCELLATION_CATEGORY_KEY)?
+                .as_str()
+                .map(str::to_string)
+        });
         let rate_limited = agent.session.rate_limited;
         // Fallback mirroring the credit-limit race guard below: if the retry
         // notification lost the race with (or never reached) this
@@ -1380,7 +1393,7 @@ pub(super) fn handle_prompt_response(
         // detect credit-limit denials (legacy 403 or pool 402) from
         // the PromptResponse error + HTTP status. Covers races where
         // the retry notification arrives after the PromptResponse.
-        // The error text is already banner-formatted ("Request failed (402) —
+        // The error text is already banner-formatted ("Request failed (402):
         // …"), so recover the status from it when the field is absent.
         let credit_limit_blocked = agent.session.credit_limit_blocked
             || result.as_ref().err().is_some_and(|e| {
@@ -1393,7 +1406,7 @@ pub(super) fn handle_prompt_response(
         // runs before this PromptResponse). Suppress the redundant
         // "Turn failed" block + error toast so only the prompt shows.
         // "(401)" matches both the raw "Unauthorized (401)" dump and the
-        // banner-formatted "Request failed (401) — …" text.
+        // banner-formatted "Request failed (401): …" text.
         let reauth_prompted = scrollback_has_recent_reauth_prompt(&agent.scrollback)
             || (http_status == Some(401)
                 && result.as_ref().err().is_some_and(|e| e.contains("(401)")));
@@ -1478,9 +1491,10 @@ pub(super) fn handle_prompt_response(
             // Send-now cancel: no marker (the new prompt is the next turn); the
             // `None` still flushes any held stop hooks standalone.
             (Ok(_), true) if send_now_cancel => None,
-            (Ok(_), true) => Some(SessionEvent::TurnCancelled {
-                elapsed: elapsed.unwrap_or_default(),
-            }),
+            (Ok(_), true) => Some(crate::app::turn_completion::cancelled_turn_event(
+                wire_cancellation_category.as_deref(),
+                elapsed.unwrap_or_default(),
+            )),
             (Ok(_), false) if agent.bash_turn => None,
             (Ok(_), false) => Some(SessionEvent::TurnCompleted {
                 // Legacy copy on purpose: unknown elapsed keeps the "in 0.0s"
@@ -1731,7 +1745,7 @@ pub(super) fn handle_prompt_response(
         effects.push(Effect::FetchBilling {
             agent_id,
             silent: true,
-            nonce: 0,
+            nonce: Default::default(),
         });
         note_peek_page_flip(app, agent_id, page_flip_entry);
         return effects;

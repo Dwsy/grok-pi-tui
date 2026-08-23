@@ -102,7 +102,7 @@ pub(in crate::app::dispatch) fn focus_if_session_already_open(
         Some(*id)
     })?;
     if let Some(agent) = app.agents.get_mut(&existing_id) {
-        agent.active_subagent = None;
+        agent.close_subagent_fullscreen();
     }
     let retarget_overlay = match app.active_view {
         ActiveView::AgentDashboard => true,
@@ -1223,7 +1223,7 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
         effects.push(Effect::FetchBilling {
             agent_id,
             silent: true,
-            nonce: 0,
+            nonce: Default::default(),
         });
         if let Some(switch) = deferred {
             agent.session.model_switch_pending = true;
@@ -1249,7 +1249,7 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
             cwd: agent.session.cwd.display().to_string(),
         });
         notify_session_ready(&app.notification_service, agent);
-        crate::memory_release::release_retained_memory_with("session-load-replay");
+        crate::memory_release::release_retained_memory("session-load-replay");
         note_peek_page_flip(app, agent_id, page_flip_entry);
         return effects;
     }

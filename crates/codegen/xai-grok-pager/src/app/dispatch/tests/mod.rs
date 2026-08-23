@@ -8,11 +8,13 @@ mod modes;
 mod notes;
 mod permissions;
 mod prompt;
+mod queue_release;
 mod rewind;
 mod router;
 mod session;
 mod settings;
 mod status;
+mod status_line;
 mod task_result;
 mod transcript;
 mod turn;
@@ -40,7 +42,7 @@ use super::dashboard::{
 };
 use super::modes::{
     YOLO_ON_UNDER_PLAN_TOAST, active_agent_plan_nudge_state, dispatch_cycle_mode_and_sync,
-    permission_mode_toast,
+    downgrade_displayed_auto_if_gated, permission_mode_toast,
 };
 use super::permissions::drain_permission_queue;
 use super::prompt::{dispatch_doctor, dispatch_send_prompt, dispatch_send_prompt_inner};
@@ -95,6 +97,7 @@ fn test_app() -> AppView {
         scroll_config: crate::input::mouse::ScrollConfig::default(),
         appearance: crate::appearance::AppearanceConfig::default(),
         notification_service: crate::notifications::NotificationService::new(Default::default()),
+        status_line: Default::default(),
         pending_notification_escapes: None,
         deferred_notification: None,
         tracing_rx: None,
@@ -150,6 +153,11 @@ fn test_app() -> AppView {
         ))],
         auth_state: AuthState::Done,
         trust_state: TrustState::Done,
+        consent_state: crate::app::consent::ConsentState::Done,
+        account_email: None,
+        welcome_consent_link_rects: Vec::new(),
+        welcome_consent_hover_link: None,
+        consent_answered: None,
         login_label: None,
         login_method_id: None,
         auth_start_mode: AuthMode::Pending,
@@ -223,7 +231,7 @@ fn test_app() -> AppView {
         welcome_on_privacy_banner: false,
         welcome_on_upgrade_cta: false,
         auth_show_raw_url: false,
-        auth_mouse_disabled: false,
+        native_select_hold: false,
         session_picker_entries: None,
         session_picker_loading: false,
         session_picker_state: crate::views::picker::PickerState::with_mode(
@@ -254,6 +262,7 @@ fn test_app() -> AppView {
         import_claude_modal: None,
         welcome_doc_viewer: None,
         screen_mode: crate::app::ScreenMode::Inline,
+        pending_screen_mode_switch: None,
         pending_effects: Vec::new(),
         pending_editor: None,
         pending_pager_path: None,
@@ -263,6 +272,8 @@ fn test_app() -> AppView {
         show_resolved_model: true,
         sharing_enabled: false,
         plugin_cta_enabled: false,
+        plugin_cta_marketplace: None,
+        workspace_dashboard_enabled: false,
         usage_visible: true,
         has_external_auth_provider: false,
         tier_restricted_commands: Vec::new(),
@@ -280,6 +291,9 @@ fn test_app() -> AppView {
         scheduler_background_loops_seed: true,
         cancel_rewind_enabled: true,
         session_recap_available: false,
+        shell_feedback_trace_offer: false,
+        feedback_trace_choice_latched: false,
+        feedback_trace_upload_pending: None,
         tutorial: None,
         dashboard: None,
         dashboard_return: None,
@@ -412,7 +426,7 @@ fn make_test_subagent(child_sid: &str, sa_id: &str) -> crate::app::subagent::Sub
         prompt: None,
         child_cwd: None,
         worktree_path: None,
-        child_updates_replayed: false,
+        transcript: Default::default(),
     }
 }
 fn cta_entry(name: &str, status: &str) -> xai_hooks_plugins_types::MarketplacePluginEntry {
@@ -494,12 +508,27 @@ fn arm_reconcile_with_trigger(
     cancel_trigger: Option<&str>,
     age: std::time::Duration,
 ) {
+    arm_reconcile_with_meta(app, id, prompt_id, stop_reason, cancel_trigger, None, age);
+}
+/// [`arm_reconcile`] with explicit `_meta.cancelTrigger` /
+/// `_meta.cancellationCategory`.
+#[allow(clippy::too_many_arguments)]
+fn arm_reconcile_with_meta(
+    app: &mut AppView,
+    id: AgentId,
+    prompt_id: &str,
+    stop_reason: &str,
+    cancel_trigger: Option<&str>,
+    cancellation_category: Option<&str>,
+    age: std::time::Duration,
+) {
     app.agents.get_mut(&id).unwrap().pending_turn_end_reconcile =
         Some(crate::app::agent_view::PendingTurnEnd {
             prompt_id: prompt_id.into(),
             stop_reason: Some(stop_reason.into()),
             agent_result: None,
             cancel_trigger: cancel_trigger.map(str::to_string),
+            cancellation_category: cancellation_category.map(str::to_string),
             received_at: std::time::Instant::now() - age,
         });
 }
@@ -781,6 +810,7 @@ fn make_picker_entry(id: &str, cwd: &str) -> crate::app::app_view::SessionPicker
         worktree_label: None,
         parent_session_path: None,
         last_turn_summary: None,
+        last_recap: None,
         card_detail: None,
     }
 }

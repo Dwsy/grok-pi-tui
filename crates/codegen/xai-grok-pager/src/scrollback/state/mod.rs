@@ -6,6 +6,7 @@
 pub mod groups;
 mod layout;
 mod nav;
+mod pin_reserve;
 mod selection;
 mod timeline;
 mod types;
@@ -140,6 +141,32 @@ pub struct ScrollbackState {
     /// prompt at the viewport top while still enabling follow for new content.
     follow_preserve_scroll: bool,
 
+    /// Extra rows under the latest user prompt so a page-flip can keep that
+    /// prompt at the top. Independent of follow mode: a user scroll must not
+    /// collapse it (that clamp is the tail-jump). Dropped when the prompt
+    /// scrolls fully below the fold, or when the transcript is cleared.
+    pin_reserve_active: bool,
+
+    /// Rows currently added to `total_height` by [`Self::pin_reserve_active`].
+    /// Kept beside the flag so follow-preserve can still detect real overflow
+    /// against the unpadded content height.
+    pin_reserve_pad: usize,
+
+    /// Scroll offset of the page-flip pin, captured when the reserve is armed.
+    /// Re-deriving it from the last user prompt after a finish-time rebuild
+    /// (thinking collapse, "Worked for…" marker, group fold) can disagree
+    /// with the pose we scrolled to and drop the pad.
+    pin_reserve_target: Option<usize>,
+
+    /// Stable id of the prompt the pin targets, captured when armed. The pin
+    /// tracks this specific prompt, not "the last user prompt", so a mid-turn
+    /// interjection cannot move the above/below boundary the pad shift uses.
+    pin_reserve_prompt_id: Option<EntryId>,
+
+    /// The turn that armed the pin has finished. Midstream overflow still
+    /// chases the tail; after this, a remeasure or terminal marker must not.
+    pin_reserve_after_turn: bool,
+
     // Selection
     /// Currently selected entry index.
     selected: Option<usize>,
@@ -266,6 +293,11 @@ impl ScrollbackState {
             viewport_height: 0,
             follow_mode: true,
             follow_preserve_scroll: false,
+            pin_reserve_active: false,
+            pin_reserve_pad: 0,
+            pin_reserve_target: None,
+            pin_reserve_prompt_id: None,
+            pin_reserve_after_turn: false,
             selected: None,
             selection_box: None,
             turns: Vec::new(),
@@ -417,6 +449,7 @@ impl ScrollbackState {
 
     /// Update the appearance configuration.
     pub fn set_appearance(&mut self, appearance: AppearanceConfig) {
+        crate::render::bidi::set_enabled(appearance.scrollback.display.rtl_bidi);
         self.appearance = appearance;
         // Invalidate caches since appearance affects rendering
         self.layout_cache = None;
@@ -930,10 +963,8 @@ impl ScrollbackState {
         None
     }
 
-    /// Merge a stop/stop_failure hook batch into a turn-terminal marker
-    /// entry and collapse it so the right-justified summary — not the
-    /// fold-out detail — is the resting state. Returns `false` unless the
-    /// entry is a turn-terminal session event the batch can be attributed to
+    /// Fold a turn-end hook batch into a turn-terminal marker and collapse it, so the summary
+    /// rather than the detail is the resting state. `false` unless the entry is such a marker
     /// (see [`Self::latest_turn_marker_accepting`]); re-checked here so a
     /// stray caller can't attach hooks to the wrong entry.
     pub fn attach_stop_hooks_to_marker(
@@ -1156,6 +1187,11 @@ impl ScrollbackState {
         self.turns.clear();
         self.current_turn = None;
         self.scroll_offset = 0;
+        self.pin_reserve_active = false;
+        self.pin_reserve_pad = 0;
+        self.pin_reserve_target = None;
+        self.pin_reserve_prompt_id = None;
+        self.pin_reserve_after_turn = false;
         self.commit_scan_cursor = 0;
         self.commit_expand_ring.clear();
         self.invalidate_layout_cache();
@@ -1689,6 +1725,14 @@ impl ScrollbackState {
             }
             // Full rebuild produces cheap height ESTIMATES for every entry.
             self.ensure_layout_cache(width);
+            // Width changes invalidate the captured row coordinate. Re-pin before the release
+            // logic compares the new target with `scroll_offset`.
+            if resized && self.pin_reserve_active {
+                self.pin_reserve_target = self.pin_reserve_prompt_scroll_target();
+                if let Some(target) = self.pin_reserve_target {
+                    self.scroll_offset = target;
+                }
+            }
             self.compute_total_height_from_cache();
             // Re-pin the anchored content to the viewport top now that virtual_y
             // is rebuilt at the new width (before settle clamps / re-pins to it).
@@ -1731,6 +1775,7 @@ impl ScrollbackState {
             let top_anchor = self.viewport_top_anchor_point();
             let changes = self.update_dirty_entry_heights(width);
             self.dirty_heights.clear();
+            self.shift_pin_reserve_target_for_changes(&changes);
 
             if !changes.is_empty() {
                 if self.gaps_may_be_dirty {
@@ -1744,11 +1789,12 @@ impl ScrollbackState {
                     // Patch virtual_y in O(n-k) where k is the earliest dirty index.
                     // For streaming (dirty entry at end), this is O(1).
                     let total_delta = self.patch_virtual_y_for_dirty(&changes);
-                    // Apply delta directly instead of re-summing entire visible range.
-                    // Clamp at 0 to avoid underflow; no upper cap (total_height is
-                    // usize, so tall sessions are not truncated).
-                    let new_total = (self.total_height as i64 + total_delta as i64).max(0);
-                    self.total_height = new_total as usize;
+                    // Streamed growth must shrink the reserve rather than inflate max_offset.
+                    let content = self.total_height.saturating_sub(self.pin_reserve_pad);
+                    let new_content = (content as i64 + total_delta as i64).max(0) as usize;
+                    self.release_pin_reserve_if_below_fold();
+                    self.pin_reserve_pad = self.pin_reserve_pad_rows(new_content);
+                    self.total_height = new_content.saturating_add(self.pin_reserve_pad);
                 }
             } else if self.gaps_may_be_dirty {
                 // Heights didn't change, but structural state is dirty (e.g.,
@@ -1876,6 +1922,7 @@ impl ScrollbackState {
             .saturating_sub(self.viewport_height as usize);
         self.scroll_offset = offset.min(max_offset);
         self.follow_mode = false;
+        self.maybe_release_pin_reserve();
         self.bump_generation();
     }
 

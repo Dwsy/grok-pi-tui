@@ -321,6 +321,7 @@ async fn spawn_agent_thread_direct(
                 // SessionEnd. Mirrors leader auto-update / relaunch.
                 cancel.cancelled().await;
                 agent_rc.flush_all_sessions(SESSION_FLUSH_GRACE).await;
+                xai_grok_telemetry::session_ctx::drain_at_process_exit().await;
                 anyhow::Result::Ok(())
             })
         })?)

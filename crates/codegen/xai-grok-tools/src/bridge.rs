@@ -545,6 +545,14 @@ impl ToolBridge {
         let _ = self.registry.update_resource(resource).await;
     }
 
+    /// See [`FinalizedToolset::update_resources_with`].
+    pub async fn update_resources_with(
+        &self,
+        seed: impl FnOnce(&mut crate::types::resources::Resources),
+    ) {
+        self.registry.update_resources_with(seed).await;
+    }
+
     /// Kill a background task, recording who initiated the kill.
     pub async fn kill_background_task(
         &self,

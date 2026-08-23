@@ -23,6 +23,7 @@ pub fn bootstrap(
     auth_manager: &Arc<AuthManager>,
     prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> Result<(AgentConfig, ModelsManager), String> {
+    xai_grok_telemetry::id::prefetch_agent_id();
     // Remote kill-switch before the gate (settings-only prefetch — no managed-config
     // sync, so a live server cannot heal a tampered policy before fail-closed).
     xai_grok_telemetry::startup::enter(xai_grok_telemetry::startup::StartupPhase::Bootstrap);
@@ -121,12 +122,7 @@ fn resolve_config(cfg: &AgentConfig, auth_manager: &AuthManager) -> AgentConfig 
         }
     }
 
-    let managed_enforced = crate::config::apply_managed_settings_features(&mut cfg);
-    let requirements_enforced = crate::config::apply_requirements(&mut cfg);
-
-    for e in managed_enforced.iter().chain(&requirements_enforced) {
-        tracing::info!(field = %e.path, value = %e.value, source = %e.source, "policy override");
-    }
+    crate::config::apply_policy(&mut cfg);
 
     // Idempotent: bootstrap may already have fetched + applied side effects for the gate.
     // Full prefetch (with managed-config sync when stale) is allowed after the gate.
@@ -194,7 +190,7 @@ fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
 
         let telemetry_mode = cfg.resolve_telemetry_mode();
         let trace_upload = cfg.resolve_trace_upload();
-        let feedback = cfg.resolve_feedback();
+        let feedback = cfg.feature(config::Feature::Feedback);
         let feedback_url = cfg.endpoints.resolve_feedback_base_url();
         let trace_upload_url = cfg.endpoints.resolve_trace_upload_url();
         tracing::info!(

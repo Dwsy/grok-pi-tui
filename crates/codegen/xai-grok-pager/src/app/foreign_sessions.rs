@@ -454,6 +454,7 @@ pub(crate) fn map_summary(summary: ForeignSessionSummary) -> SessionPickerEntry 
         worktree_label: None,
         parent_session_path: None,
         last_turn_summary: None,
+        last_recap: None,
         card_detail: None,
     }
 }
@@ -570,6 +571,7 @@ mod tests {
             worktree_label: None,
             parent_session_path: None,
             last_turn_summary: None,
+            last_recap: None,
             card_detail: None,
         }
     }

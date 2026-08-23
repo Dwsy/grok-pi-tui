@@ -1,6 +1,6 @@
 [package]
 name = "xai-grok-pager-bin"
-version = "1.0.3"
+version = "1.0.8"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["xAI"]
@@ -68,6 +68,7 @@ rustls = { version = "0.23", default-features = false, features = [
     "std",
     "tls12",
 ] }
+xai-grok-extra-ca = { workspace = true }
 
 # Binary hardening: compile-time string + control-flow obfuscation.
 obfstr = { workspace = true }
@@ -110,4 +111,6 @@ default-bazel = [
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]
 sandbox-enforce = ["xai-grok-pager/sandbox-enforce"]
 local-workspace = ["xai-grok-pager/local-workspace"]
-release-dist = ["xai-grok-pager/release-dist"]
+release-dist = [
+    "xai-grok-pager/release-dist",
+    ]

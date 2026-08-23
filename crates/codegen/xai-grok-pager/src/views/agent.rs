@@ -81,6 +81,9 @@ impl PaneAreas {
 /// prompt (plugin CTA, follow-ups, banner/tip) so the prompt and scrollback
 /// are never starved.
 pub const SHORT_TERMINAL_ROWS: u16 = 16;
+/// The scrollback's floor, pushed as the layout's only `Min`. The solver ranks
+/// it above every `Length`, so an over-committed layout shrinks another row.
+pub const SCROLLBACK_MIN_ROWS: u16 = 5;
 /// Auto-compact threshold: at or below this height the render-value compact
 /// flag is forced on. Deliberately above [`SHORT_TERMINAL_ROWS`], which stays
 /// the hard-degradation gate (tip-row renderability, CTA/follow-up trims).
@@ -96,13 +99,54 @@ const _: () = assert!(SHORT_TERMINAL_ROWS < AUTO_COMPACT_MAX_ROWS);
 pub fn effective_compact(user_compact: bool, terminal_rows: u16) -> bool {
     user_compact || (terminal_rows > 0 && terminal_rows <= AUTO_COMPACT_MAX_ROWS)
 }
+/// Every input [`AgentViewLayout::compute`] reads: the screen area, the
+/// appearance config it lays out under, and the requested height of each row
+/// it stacks.
+///
+/// An optional pane at height 0 is omitted along with the gap above it. The
+/// prompt, the shortcuts bar and their gaps follow their own rules; on a frame
+/// with bottom padding a `status_line_height` of 0 adds the gap above the
+/// shortcuts bar.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AgentViewLayoutParams {
+    pub area: Rect,
+    pub layout_cfg: LayoutConfig,
+    pub scrollbar_cfg: ScrollbarConfig,
+    /// Rail columns taken in place of the scrollbar (0 = hidden). Requires the
+    /// scrollbar's gutter geometry, so a disabled scrollbar forces it to 0.
+    pub timeline_width: u16,
+    pub prompt_height: u16,
+    pub tasks_height: u16,
+    pub catalog_height: u16,
+    pub todo_height: u16,
+    pub queue_height: u16,
+    pub btw_height: u16,
+    pub turn_status_height: u16,
+    pub startup_warning_height: u16,
+    pub external_widgets_above_editor_height: u16,
+    pub banner_height: u16,
+    /// Forced to 0 on short terminals (`area.height <= SHORT_TERMINAL_ROWS`)
+    /// so the prompt and scrollback are never starved.
+    pub cta_height: u16,
+    /// Force-suppressed on short terminals on the same rule as `cta_height`.
+    pub follow_ups_height: u16,
+    /// 0 or 1: the gap row between turn status (or scrollback) and the prompt.
+    pub prompt_gap: u16,
+    pub voice_recording_height: u16,
+    pub external_widgets_below_editor_height: u16,
+    pub shortcuts_height: u16,
+    /// Clamped to the rows left over once every other row and the scrollback
+    /// minimum are counted, so a tall script loses its own rows rather than
+    /// the prompt or the shortcuts bar losing theirs.
+    pub status_line_height: u16,
+    pub compact: bool,
+}
 /// Computed screen layout for the agent view.
 ///
-/// Pure data — no rendering. Computed from screen area + appearance config +
-/// prompt height + todo height. Shared widgets use these rects to render into.
+/// Pure data — no rendering. Computed from [`AgentViewLayoutParams`]. Shared
+/// widgets use these rects to render into.
 pub struct AgentViewLayout {
     pub status_bar: Rect,
-    /// Startup terminal-warning banner (between status bar and bg tasks/scrollback).
     pub startup_warnings: Rect,
     pub tasks: Rect,
     pub catalog: Rect,
@@ -127,50 +171,46 @@ pub struct AgentViewLayout {
     /// Persistent Pi RPC widget rows below the editor.
     pub external_widgets_below_editor: Rect,
     pub shortcuts: Rect,
+    /// Bottom status_line row; zero-area when disabled.
+    pub status_line: Rect,
     /// Scrollback area narrowed for scrollbar (content rendering uses this).
     pub scrollback_content: Rect,
     /// Scrollbar track position (x coordinate).
     pub scrollbar_x: u16,
+    /// Timeline rail left edge.
+    pub timeline_x: u16,
+    /// Columns reserved for the timeline rail (0 = hidden).
+    pub timeline_width: u16,
 }
 impl AgentViewLayout {
-    /// Compute layout from screen area, appearance config, prompt height,
-    /// todo pane height, turn status height, and prompt gap.
+    /// Stack the rows described by `params` into the screen area.
     ///
-    /// When `todo_height` is 0, the todo pane and its gap are omitted.
-    /// When `turn_status_height` is 0, the turn status line is omitted.
-    /// When `banner_height` is 0, the reserved banner row is omitted.
-    /// When `cta_height` is 0, the plugin-CTA row is omitted. It is also
-    /// forced to 0 on short terminals (`area.height <= SHORT_TERMINAL_ROWS`)
-    /// so the prompt and scrollback are never starved.
-    /// When `follow_ups_height` is 0, the follow-up chips row is omitted; it
-    /// is force-suppressed on short terminals on the same `SHORT_TERMINAL_ROWS`
-    /// rule as the CTA row.
-    /// When `startup_warning_height` is 0, the startup warning area is omitted.
-    /// `prompt_gap` is 0 or 1 — controls the gap row between turn status
-    /// (or scrollback) and the prompt widget.
-    #[allow(clippy::too_many_arguments)]
-    pub fn compute(
-        area: Rect,
-        layout_cfg: &LayoutConfig,
-        scrollbar_cfg: &ScrollbarConfig,
-        prompt_height: u16,
-        tasks_height: u16,
-        catalog_height: u16,
-        todo_height: u16,
-        queue_height: u16,
-        btw_height: u16,
-        turn_status_height: u16,
-        external_widgets_above_editor_height: u16,
-        banner_height: u16,
-        cta_height: u16,
-        follow_ups_height: u16,
-        startup_warning_height: u16,
-        prompt_gap: u16,
-        voice_recording_height: u16,
-        external_widgets_below_editor_height: u16,
-        shortcuts_height: u16,
-        compact: bool,
-    ) -> Self {
+    /// Row-by-row semantics live on [`AgentViewLayoutParams`].
+    pub fn compute(params: AgentViewLayoutParams) -> Self {
+        let AgentViewLayoutParams {
+            area,
+            layout_cfg,
+            scrollbar_cfg,
+            timeline_width,
+            prompt_height,
+            tasks_height,
+            catalog_height,
+            todo_height,
+            queue_height,
+            btw_height,
+            turn_status_height,
+            startup_warning_height,
+            external_widgets_above_editor_height,
+            banner_height,
+            cta_height,
+            follow_ups_height,
+            prompt_gap,
+            voice_recording_height,
+            external_widgets_below_editor_height,
+            shortcuts_height,
+            status_line_height,
+            compact,
+        } = params;
         let outer_vpad = layout_cfg.eff_outer_vpad(compact);
         let bottom_vpad = if area.height <= SHORT_TERMINAL_ROWS {
             0
@@ -216,7 +256,7 @@ impl AgentViewLayout {
         }
         let status_gap = if top_vpad == 0 { 0u16 } else { 1 };
         constraints.push(Constraint::Length(status_gap));
-        constraints.push(Constraint::Min(5));
+        constraints.push(Constraint::Min(SCROLLBACK_MIN_ROWS));
         if btw_height > 0 {
             constraints.push(Constraint::Length(1));
             constraints.push(Constraint::Length(btw_height));
@@ -256,9 +296,21 @@ impl AgentViewLayout {
             constraints.push(Constraint::Length(1));
             constraints.push(Constraint::Length(external_widgets_below_editor_height));
         }
-        let shortcuts_gap = if bottom_vpad == 0 { 0u16 } else { 1 };
+        let pushed = constraints
+            .iter()
+            .map(|c| match c {
+                Constraint::Length(n) | Constraint::Min(n) | Constraint::Max(n) => *n,
+                Constraint::Percentage(_) | Constraint::Ratio(_, _) | Constraint::Fill(_) => 0,
+            })
+            .fold(0u16, u16::saturating_add);
+        let reserved = pushed.saturating_add(shortcuts_height);
+        let status_line_height = status_line_height.min(inner_area.height.saturating_sub(reserved));
+        let shortcuts_gap = u16::from(bottom_vpad > 0 && status_line_height == 0);
         if shortcuts_gap > 0 {
             constraints.push(Constraint::Length(shortcuts_gap));
+        }
+        if status_line_height > 0 {
+            constraints.push(Constraint::Length(status_line_height));
         }
         constraints.push(Constraint::Length(shortcuts_height));
         let chunks = Layout::vertical(constraints).split(inner_area);
@@ -378,9 +430,26 @@ impl AgentViewLayout {
         if shortcuts_gap > 0 {
             i += 1;
         }
+        let status_line = if status_line_height > 0 {
+            let r = chunks[i];
+            i += 1;
+            r
+        } else {
+            Rect::default()
+        };
         let shortcuts = chunks[i];
         let scrollbar_x = area.right().saturating_sub(scrollbar_cfg.gap_right + 1);
-        let content_end_x = scrollbar_x.saturating_sub(scrollbar_cfg.gap_left);
+        let timeline_width = if scrollbar_cfg.enabled {
+            timeline_width
+        } else {
+            0
+        };
+        let timeline_x = (scrollbar_x + 1).saturating_sub(timeline_width);
+        let content_end_x = if timeline_width > 0 {
+            timeline_x.saturating_sub(scrollbar_cfg.gap_left)
+        } else {
+            scrollbar_x.saturating_sub(scrollbar_cfg.gap_left)
+        };
         let scrollback_right = scrollback.x + scrollback.width;
         let scrollback_content = if !scrollbar_cfg.enabled || content_end_x >= scrollback_right {
             scrollback
@@ -408,9 +477,26 @@ impl AgentViewLayout {
             prompt,
             external_widgets_below_editor,
             shortcuts,
+            status_line,
             scrollback_content,
             scrollbar_x,
+            timeline_x,
+            timeline_width,
         }
+    }
+    /// Rows a prompt may take before it starts pushing other rows off their
+    /// requested height, given every other row in `params`.
+    ///
+    /// Measured through [`Self::compute`] rather than re-summed: a probe
+    /// layout with a zero-row prompt hands the scrollback every row nothing
+    /// else claimed, so the scrollback's surplus over [`SCROLLBACK_MIN_ROWS`]
+    /// is the most a prompt can take. `params.prompt_height` is ignored.
+    pub fn rows_available_for_prompt(params: AgentViewLayoutParams) -> u16 {
+        let probe = Self::compute(AgentViewLayoutParams {
+            prompt_height: 0,
+            ..params
+        });
+        probe.scrollback.height.saturating_sub(SCROLLBACK_MIN_ROWS)
     }
     /// Inner area width (for prompt height computation before full layout).
     ///
@@ -689,7 +775,7 @@ pub fn render_hook_hover_popup(
         if y >= inner.y + inner.height {
             break;
         }
-        buf.set_line_safe(inner.x, y, &line.content, inner.width);
+        buf.set_line_safe_bidi(inner.x, y, &line.content, inner.width);
     }
 }
 
@@ -979,121 +1065,6 @@ pub fn render_scrollbar(
             thumb_style,
         );
     }
-}
-use crate::appearance::TodoBadgeFormat;
-/// Build the todo badge as styled spans (without rendering).
-///
-/// Returns `None` if there are no items to display.
-pub fn render_todo_badge_spans(
-    counts: &super::todo_pane::TodoCounts,
-    hovered: bool,
-    flash: bool,
-    format: TodoBadgeFormat,
-    theme: &Theme,
-) -> Option<Vec<Span<'static>>> {
-    use ratatui::style::Modifier;
-    if counts.total() == 0 {
-        return None;
-    }
-    let highlighted = hovered || flash;
-    let count_style = if highlighted {
-        Style::default()
-            .fg(theme.text_primary)
-            .bg(theme.bg_base)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.text_secondary).bg(theme.bg_base)
-    };
-    let dim_style = if highlighted {
-        Style::default().fg(theme.text_secondary).bg(theme.bg_base)
-    } else {
-        Style::default().fg(theme.gray_dim).bg(theme.bg_base)
-    };
-    if matches!(format, TodoBadgeFormat::Default) {
-        let total = counts.total_excluding_cancelled();
-        if total == 0 {
-            return None;
-        }
-        return Some(vec![
-            Span::styled(counts.completed.to_string(), count_style),
-            Span::styled("/", dim_style),
-            Span::styled(total.to_string(), count_style),
-            Span::styled(
-                format!(" {}", crate::glyphs::check_mark()),
-                Style::default().fg(theme.text_secondary).bg(theme.bg_base),
-            ),
-        ]);
-    }
-    let icon_mod = if highlighted {
-        Modifier::BOLD
-    } else {
-        Modifier::empty()
-    };
-    let statuses: [(usize, &str, ratatui::style::Color); 4] = [
-        (counts.in_progress, "▶", theme.warning),
-        (counts.pending, "□", theme.text_secondary),
-        (
-            counts.completed,
-            crate::glyphs::check_mark(),
-            theme.accent_success,
-        ),
-        (
-            counts.cancelled,
-            crate::glyphs::ballot_x(),
-            theme.accent_error,
-        ),
-    ];
-    let parts: Vec<(usize, &str, ratatui::style::Color)> =
-        statuses.into_iter().filter(|(n, _, _)| *n > 0).collect();
-    if parts.is_empty() {
-        return None;
-    }
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(parts.len() * 4);
-    for (i, (count, icon, color)) in parts.iter().enumerate() {
-        let icon_style = Style::default()
-            .fg(*color)
-            .bg(theme.bg_base)
-            .add_modifier(icon_mod);
-        let num_style = match format {
-            TodoBadgeFormat::Default => {
-                let mut s = Style::default().fg(*color).bg(theme.bg_base);
-                if highlighted {
-                    s = s.add_modifier(Modifier::BOLD);
-                }
-                s
-            }
-            _ => count_style,
-        };
-        match format {
-            TodoBadgeFormat::Default => {
-                if i > 0 {
-                    spans.push(Span::styled(" ", dim_style));
-                }
-                spans.push(Span::styled(format!("{count}"), num_style));
-            }
-            TodoBadgeFormat::Colon => {
-                if i > 0 {
-                    spans.push(Span::styled(" ", dim_style));
-                }
-                spans.push(Span::styled(*icon, icon_style));
-                spans.push(Span::styled(":", dim_style));
-                spans.push(Span::styled(format!("{count}"), num_style));
-            }
-            TodoBadgeFormat::Comma => {
-                if i > 0 {
-                    spans.push(Span::styled(", ", dim_style));
-                }
-                spans.push(Span::styled(format!("{count}"), num_style));
-                spans.push(Span::styled(" ", dim_style));
-                spans.push(Span::styled(*icon, icon_style));
-            }
-        }
-    }
-    spans.push(Span::styled(
-        format!(" {}", crate::glyphs::check_mark()),
-        Style::default().fg(theme.text_secondary).bg(theme.bg_base),
-    ));
-    Some(spans)
 }
 /// The scrollback's default focus hint: `Space` leaves for the prompt. A
 /// parked blocking card replaces it with its own (pinned) route back.
@@ -2290,97 +2261,209 @@ mod tests {
             key.modifiers
         );
     }
+    fn base_params(area: Rect) -> AgentViewLayoutParams {
+        AgentViewLayoutParams {
+            area,
+            prompt_height: 2,
+            shortcuts_height: 1,
+            ..Default::default()
+        }
+    }
     fn layout_with_rows(
         area: Rect,
         banner_height: u16,
         cta_height: u16,
         follow_ups_height: u16,
     ) -> AgentViewLayout {
-        let layout_cfg = LayoutConfig::default();
-        let scrollbar_cfg = ScrollbarConfig::default();
-        AgentViewLayout::compute(
-            area,
-            &layout_cfg,
-            &scrollbar_cfg,
-            2,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
+        AgentViewLayout::compute(AgentViewLayoutParams {
             banner_height,
             cta_height,
             follow_ups_height,
-            0,
-            0,
-            0,
-            0,
-            1,
-            false,
-        )
+            ..base_params(area)
+        })
     }
     fn layout_with_cta(area: Rect, cta_height: u16) -> AgentViewLayout {
         layout_with_rows(area, 0, cta_height, 0)
     }
-
-    #[test]
-    fn external_widget_rows_stay_on_opposite_sides_of_editor() {
-        let layout = AgentViewLayout::compute(
-            Rect::new(0, 0, 80, 40),
-            &LayoutConfig::default(),
-            &ScrollbarConfig::default(),
-            2,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            1,
-            1,
-            false,
-        );
-
-        assert!(layout.external_widgets_above_editor.bottom() <= layout.prompt.y);
-        assert!(layout.external_widgets_below_editor.y >= layout.prompt.bottom());
-        assert_eq!(layout.external_widgets_above_editor.height, 1);
-        assert_eq!(layout.external_widgets_below_editor.height, 1);
+    fn layout_with_status_line(
+        area: Rect,
+        prompt_height: u16,
+        status_line_height: u16,
+    ) -> AgentViewLayout {
+        AgentViewLayout::compute(AgentViewLayoutParams {
+            prompt_height,
+            status_line_height,
+            ..base_params(area)
+        })
     }
     #[test]
-    fn external_widget_rows_follow_compact_outer_padding() {
+    fn status_line_row_sits_between_prompt_and_shortcuts_bar() {
+        let layout = layout_with_status_line(Rect::new(0, 0, 80, 40), 2, 2);
+        assert_eq!(
+            layout.status_line.height, 2,
+            "a 2-row status row has room at height 40"
+        );
+        assert_eq!(
+            layout.status_line.y,
+            layout.prompt.bottom(),
+            "the row starts where the prompt ends, got {:?} under prompt {:?}",
+            layout.status_line,
+            layout.prompt,
+        );
+        assert_eq!(
+            layout.status_line.bottom(),
+            layout.shortcuts.y,
+            "the shortcuts bar starts where the row ends, got {:?} under row {:?}",
+            layout.shortcuts,
+            layout.status_line,
+        );
+    }
+    #[test]
+    fn status_line_row_yields_to_a_prompt_at_its_cap() {
+        let area = Rect::new(0, 0, 80, 20);
+        let layout = layout_with_status_line(area, area.height / 2, 3);
+        assert_eq!(
+            layout.status_line.height, 0,
+            "no rows are left over for the status row, got {:?}",
+            layout.status_line,
+        );
+        assert!(
+            layout.scrollback.height >= 5,
+            "the scrollback keeps its Min(5), got {:?}",
+            layout.scrollback,
+        );
+        assert!(
+            layout.shortcuts.height == 1 && layout.shortcuts.bottom() <= area.bottom(),
+            "the shortcuts bar keeps its row on screen, got {:?}",
+            layout.shortcuts,
+        );
+    }
+    #[test]
+    fn the_status_row_takes_the_one_row_left_over() {
+        let area = Rect::new(0, 0, 80, 21);
+        let layout = layout_with_status_line(area, area.height / 2, 1);
+        assert_eq!(
+            layout.status_line.height, 1,
+            "the one row left over goes to the status row, got {:?}",
+            layout.status_line,
+        );
+        assert_eq!(
+            layout.status_line.bottom(),
+            layout.shortcuts.y,
+            "the shortcuts bar starts where the row ends, got {:?} under row {:?}",
+            layout.shortcuts,
+            layout.status_line,
+        );
+        assert!(
+            layout.shortcuts.height == 1 && layout.shortcuts.bottom() < area.bottom(),
+            "the shortcuts bar keeps its row inside the padded inner area, got {:?}",
+            layout.shortcuts,
+        );
+        assert!(
+            layout.scrollback.height >= SCROLLBACK_MIN_ROWS,
+            "the row does not come out of the scrollback minimum, got {:?}",
+            layout.scrollback,
+        );
+    }
+    #[test]
+    fn prompt_budget_counts_the_rows_above_the_prompt() {
+        let area = Rect::new(0, 0, 80, 25);
+        let plain = base_params(area);
+        assert_eq!(
+            AgentViewLayout::rows_available_for_prompt(plain),
+            25 - 11,
+            "a frame with no optional row gives everything else to the prompt"
+        );
+        let with_rows = AgentViewLayoutParams {
+            banner_height: 1,
+            turn_status_height: 1,
+            ..plain
+        };
+        assert_eq!(
+            AgentViewLayout::rows_available_for_prompt(with_rows),
+            25 - 11 - 4,
+            "each row above the prompt takes its own height plus the gap above it"
+        );
+    }
+    #[test]
+    fn prompt_budget_excludes_the_prompts_own_requested_height() {
+        let params = AgentViewLayoutParams {
+            todo_height: 3,
+            queue_height: 2,
+            turn_status_height: 1,
+            banner_height: 1,
+            prompt_gap: 1,
+            voice_recording_height: 1,
+            status_line_height: 2,
+            ..base_params(Rect::new(0, 0, 80, 40))
+        };
+        let budget = AgentViewLayout::rows_available_for_prompt(params);
+        assert_eq!(
+            AgentViewLayout::rows_available_for_prompt(AgentViewLayoutParams {
+                prompt_height: 99,
+                ..params
+            }),
+            budget,
+            "the requested prompt height is not part of its own budget"
+        );
+        let at_budget = AgentViewLayout::compute(AgentViewLayoutParams {
+            prompt_height: budget,
+            ..params
+        });
+        assert_eq!(at_budget.prompt.height, budget);
+        assert_eq!(at_budget.todo.height, 3);
+        assert_eq!(at_budget.queue.height, 2);
+        assert_eq!(at_budget.turn_status.height, 1);
+        assert_eq!(at_budget.banner.height, 1);
+        assert_eq!(at_budget.voice_recording.height, 1);
+        assert_eq!(
+            at_budget.status_line.height, 2,
+            "a prompt at its budget leaves the status row whole, got {:?}",
+            at_budget.status_line,
+        );
+        assert_eq!(at_budget.shortcuts.height, 1);
+        assert_eq!(
+            at_budget.scrollback.height, SCROLLBACK_MIN_ROWS,
+            "the budget is the surplus over the scrollback minimum, got {:?}",
+            at_budget.scrollback,
+        );
+        let over_budget = AgentViewLayout::compute(AgentViewLayoutParams {
+            prompt_height: budget + 1,
+            ..params
+        });
+        assert_eq!(
+            over_budget.status_line.height, 1,
+            "the row past the budget comes out of the status row, got {:?}",
+            over_budget.status_line,
+        );
+        assert_eq!(over_budget.scrollback.height, SCROLLBACK_MIN_ROWS);
+    }
+    fn layout_with_rail(
+        area: Rect,
+        timeline_width: u16,
+        scrollbar_cfg: &ScrollbarConfig,
+    ) -> AgentViewLayout {
+        AgentViewLayout::compute(AgentViewLayoutParams {
+            timeline_width,
+            scrollbar_cfg: *scrollbar_cfg,
+            ..base_params(area)
+        })
+    }
+    #[test]
+    fn timeline_rail_replaces_the_scrollbar_column() {
         let area = Rect::new(0, 0, 80, 40);
-        let layout_cfg = LayoutConfig::default();
         let scrollbar_cfg = ScrollbarConfig::default();
-        let normal = AgentViewLayout::compute(
-            area,
-            &layout_cfg,
-            &scrollbar_cfg,
-            2,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            1,
-            false,
+        let without = layout_with_rail(area, 0, &scrollbar_cfg);
+        let with_rail = layout_with_rail(area, 3, &scrollbar_cfg);
+        assert_eq!(with_rail.timeline_width, 3);
+        assert_eq!(with_rail.scrollbar_x, without.scrollbar_x);
+        assert_eq!(with_rail.timeline_x, with_rail.scrollbar_x + 1 - 3);
+        assert!(
+            with_rail.scrollback_content.x + with_rail.scrollback_content.width
+                <= with_rail.timeline_x,
+            "content (ends {}) must not overlap the rail (starts {})",
+            with_rail.scrollback_content.x + with_rail.scrollback_content.width,
+            with_rail.timeline_x,
         );
         let compact = AgentViewLayout::compute(
             area,
@@ -2569,75 +2652,5 @@ mod tests {
         let layout = layout_with_rows(area, 0, 0, 1);
         assert_eq!(layout.follow_ups, Rect::default());
         assert!(layout.scrollback.height >= 5);
-    }
-    /// Default todo badge is a `done/total` fraction: numerator = completed,
-    /// denominator = all tasks except cancelled.
-    #[test]
-    fn todo_badge_default_renders_done_over_total_fraction() {
-        let theme = Theme::current();
-        let counts = super::super::todo_pane::TodoCounts {
-            in_progress: 1,
-            pending: 2,
-            completed: 2,
-            cancelled: 0,
-        };
-        let spans =
-            render_todo_badge_spans(&counts, false, false, TodoBadgeFormat::Default, &theme)
-                .expect("badge renders when there are todos");
-        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            text.starts_with("2/5"),
-            "expected a 2/5 done/total fraction, got {text:?}"
-        );
-        let with_cancelled = super::super::todo_pane::TodoCounts {
-            in_progress: 0,
-            pending: 1,
-            completed: 2,
-            cancelled: 1,
-        };
-        let spans = render_todo_badge_spans(
-            &with_cancelled,
-            false,
-            false,
-            TodoBadgeFormat::Default,
-            &theme,
-        )
-        .expect("badge renders");
-        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            text.starts_with("2/3"),
-            "cancelled tasks are excluded from the total, got {text:?}"
-        );
-    }
-    /// No todos → no badge.
-    #[test]
-    fn todo_badge_absent_when_no_todos() {
-        let theme = Theme::current();
-        let empty = super::super::todo_pane::TodoCounts::default();
-        assert!(
-            render_todo_badge_spans(&empty, false, false, TodoBadgeFormat::Default, &theme)
-                .is_none()
-        );
-    }
-    /// All-cancelled list → no badge (denominator would be 0; nothing to track).
-    #[test]
-    fn todo_badge_absent_when_all_cancelled() {
-        let theme = Theme::current();
-        let all_cancelled = super::super::todo_pane::TodoCounts {
-            in_progress: 0,
-            pending: 0,
-            completed: 0,
-            cancelled: 3,
-        };
-        assert!(
-            render_todo_badge_spans(
-                &all_cancelled,
-                false,
-                false,
-                TodoBadgeFormat::Default,
-                &theme
-            )
-            .is_none()
-        );
     }
 }

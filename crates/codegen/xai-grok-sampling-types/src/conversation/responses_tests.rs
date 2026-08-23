@@ -44,13 +44,16 @@ fn function_tool_colliding_with_hosted_web_search_is_dropped() {
     let responses_req: rs::CreateResponse = (&req).into();
     let tools = responses_req.tools.expect("tools should be set");
 
+    // web_search rides the raw-JSON `extra_tool_entries` channel (so it can carry
+    // `excluded_domains`, which async_openai's typed filter omits), so it never
+    // appears as a native `rs::Tool::WebSearch`.
     let web_search_count = tools
         .iter()
         .filter(|t| matches!(t, rs::Tool::WebSearch(_)))
         .count();
     assert_eq!(
-        web_search_count, 1,
-        "exactly one typed web_search: {tools:?}"
+        web_search_count, 0,
+        "web_search is not a native tool: {tools:?}"
     );
     let function_names: Vec<&str> = tools
         .iter()
@@ -64,6 +67,10 @@ fn function_tool_colliding_with_hosted_web_search_is_dropped() {
         vec!["read_file"],
         "colliding function tool must be dropped"
     );
+
+    // The hosted web_search is emitted as a raw entry instead.
+    let entries = extra_tool_entries(&req.hosted_tools);
+    assert_eq!(entries, vec![serde_json::json!({"type": "web_search"})]);
 }
 
 #[test]
@@ -83,6 +90,49 @@ fn function_tool_colliding_with_hosted_x_search_is_dropped() {
     assert!(tools.is_empty(), "expected no tools, got: {tools:?}");
     let entries = extra_tool_entries(&req.hosted_tools);
     assert_eq!(entries, vec![serde_json::json!({"type": "x_search"})]);
+}
+
+/// The hosted `web_search` domain policy only reaches the API through this raw
+/// entry (async_openai's typed filters model no blocklist), so both filters must
+/// survive the `HostedTool` → `extra_tool_entries` hop, and an empty/absent
+/// policy must stay byte-identical to the bare tool.
+#[test]
+fn web_search_domain_filters_reach_the_tool_entry() {
+    let hosted = |options: Option<WebSearchOptions>| {
+        extra_tool_entries(&[HostedTool::WebSearch { options }])
+    };
+    assert_eq!(
+        hosted(Some(WebSearchOptions {
+            allowed_domains: Some(vec!["docs.x.ai".into(), "arxiv.org".into()]),
+            excluded_domains: None,
+        })),
+        vec![serde_json::json!({
+            "type": "web_search",
+            "filters": { "allowed_domains": ["docs.x.ai", "arxiv.org"] },
+        })]
+    );
+    assert_eq!(
+        hosted(Some(WebSearchOptions {
+            allowed_domains: None,
+            excluded_domains: Some(vec!["reddit.com".into()]),
+        })),
+        vec![serde_json::json!({
+            "type": "web_search",
+            "filters": { "excluded_domains": ["reddit.com"] },
+        })]
+    );
+
+    // No policy (absent, default, or empty lists) emits the bare tool.
+    let bare = vec![serde_json::json!({ "type": "web_search" })];
+    assert_eq!(hosted(None), bare);
+    assert_eq!(hosted(Some(WebSearchOptions::default())), bare);
+    assert_eq!(
+        hosted(Some(WebSearchOptions {
+            allowed_domains: Some(vec![]),
+            excluded_domains: Some(vec![]),
+        })),
+        bare
+    );
 }
 
 #[test]

@@ -182,7 +182,7 @@ pub(crate) async fn complete_prompt_trace(
     use super::manifest::{
         build_manifest, resolve_upload_method, skip_artifact, write_upload_manifest,
     };
-    let upload_method = resolve_upload_method(&ctx);
+    let upload_method = resolve_upload_method(&ctx.gcs_config);
     let method_str = upload_method.as_str();
     xai_grok_telemetry::session_ctx::log_session_event(
         crate::agent::session_metrics::TraceUploadAttempted {
@@ -221,7 +221,7 @@ pub(crate) async fn complete_prompt_trace(
         UploadWait::Confirm => 0,
         UploadWait::Defer { deadline } => super::trace::flush_upload_queue(&ctx, deadline).await,
     };
-    let manifest = build_manifest(&ctx.artifact_tracker, upload_method);
+    let manifest = build_manifest(&ctx.artifact_tracker, upload_method, None);
     let flush_timed_out = flush_remaining > 0 || matches!(upload_outcome, UploadOutcome::Deferred);
     let worker_drops = match wait {
         UploadWait::Confirm => 0,
@@ -324,7 +324,7 @@ pub(crate) fn parse_agent_profile_from_meta(
 /// it to `AgentBuilder::with_ask_user_question_enabled(false)` so the tool
 /// is stripped from the model's advertised tool list. `Some(true)` explicitly
 /// enables the tool for this session. `None` means the field is absent — the
-/// caller falls back to `AgentConfig::resolve_ask_user_question()` (default ON).
+/// caller falls back to the `ask_user_question` feature (default ON).
 pub(crate) fn parse_ask_user_question_from_meta(
     meta: Option<&agent_client_protocol::Meta>,
 ) -> Option<bool> {
@@ -461,7 +461,7 @@ mod tests {
         assert_eq!(parse_ask_user_question_from_meta(None), None);
     }
     /// Non-bool values are ignored (defensive: the shell falls back to the
-    /// resolved default via `resolve_ask_user_question` rather than panicking
+    /// resolved `ask_user_question` feature rather than panicking
     /// on malformed input).
     #[test]
     fn parse_ask_user_question_ignores_non_bool() {

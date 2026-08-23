@@ -4,7 +4,8 @@
 use super::test_agent_view;
 use super::{
     ActivePane, AgentView, InlineMediaHitAreas, InputMode, PaneAreas, PluginCtaState,
-    PromptInputMode, PromptMode, REWOUND_PROMPT_ID_CAP, SELF_ORIGINATED_PROMPT_CAP, SessionReload,
+    PromptInputMode, PromptMode, REWOUND_PROMPT_ID_CAP, ReplayRebuiltState,
+    SELF_ORIGINATED_PROMPT_CAP, SessionReload,
 };
 use crate::app::agent::AgentSession;
 use crate::app::app_view::InputOutcome;
@@ -36,16 +37,43 @@ impl AgentView {
         if self.session.session_id.as_ref() != Some(&session_id) {
             self.session_binding_epoch = self.session_binding_epoch.wrapping_add(1);
             self.last_seen_event_id = None;
+            self.last_seen_event_seq = None;
             self.last_applied_event_seq = None;
             self.last_applied_xai_event_seq = None;
+            self.deferred_subagent_finishes.clear();
             self.clear_minimal_btw_lifecycle();
         }
         self.session.session_id = Some(session_id);
+    }
+    /// Advance the reconnect cursor forward-only. Stores the raw id and its
+    /// parsed sequence together so later compares need not re-parse the string.
+    ///
+    /// A later lower-ID apply (out-of-order lifecycle) must not regress the
+    /// cursor and re-deliver an already-applied tail on reconnect. When the
+    /// incoming id has no parseable sequence the cursor still advances, matching
+    /// the pre-existing "unknown seq always applies" rule, but the known
+    /// highwater counter is retained so later numeric ids stay gated.
+    pub(crate) fn advance_last_seen_event_id(&mut self, event_id: String, event_seq: Option<u64>) {
+        let new_seq = event_seq.or_else(|| crate::acp::meta::event_id_counter(&event_id));
+        let cur_seq = self.last_seen_event_seq.or_else(|| {
+            self.last_seen_event_id
+                .as_deref()
+                .and_then(crate::acp::meta::event_id_counter)
+        });
+        let should_advance = match (new_seq, cur_seq) {
+            (Some(new), Some(cur)) => new > cur,
+            _ => true,
+        };
+        if should_advance {
+            self.last_seen_event_id = Some(event_id);
+            self.last_seen_event_seq = new_seq.or(cur_seq);
+        }
     }
     /// Unbind this view from its current session identity.
     pub(crate) fn unbind_session_id(&mut self) {
         if self.session.session_id.take().is_some() {
             self.session_binding_epoch = self.session_binding_epoch.wrapping_add(1);
+            self.deferred_subagent_finishes.clear();
             self.clear_minimal_btw_lifecycle();
         }
     }
@@ -103,6 +131,8 @@ impl AgentView {
             last_applied_event_seq: None,
             last_applied_xai_event_seq: None,
             last_seen_event_id: None,
+            last_seen_event_seq: None,
+            deferred_subagent_finishes: HashMap::new(),
             session_reload: None,
             unexpected_replay_drops: 0,
             late_replay_until: None,
@@ -119,12 +149,17 @@ impl AgentView {
             bash_turn: false,
             cron_task_id: None,
             stashed_prompt: None,
+            prompt_stash: None,
+            draft_consumed: false,
+            prompt_stash_evicted: Vec::new(),
             credit_limit_stashed_prompt: None,
             reauth_stashed_prompt: None,
             active_modal: None,
             modal_buttons: Vec::new(),
             modal_hovered_key: None,
             context_state: None,
+            status_context: None,
+            last_status_line_size: None,
             chat_kind: false,
             conversation_entry: false,
             app_chat_mode: false,
@@ -198,7 +233,6 @@ impl AgentView {
             last_clipboard_toast_at: None,
             last_context_click_at: None,
             hovered_prompt: false,
-            hit_badge: Default::default(),
             hit_context: Default::default(),
             hit_credits: Default::default(),
             hit_todo_close: Default::default(),
@@ -211,7 +245,6 @@ impl AgentView {
             hit_bg_button: Default::default(),
             last_bg_click: None,
             hit_queue_close: Default::default(),
-            hit_queue_badge: Default::default(),
             hit_plan_button: Default::default(),
             hit_plan_approval_status: Default::default(),
             hit_follow_indicator: Default::default(),
@@ -239,6 +272,7 @@ impl AgentView {
             video_viewer: None,
             gboom: None,
             inline_media_cache: std::collections::HashMap::new(),
+            inline_media_load_failed: std::collections::HashMap::new(),
             inline_media_ids: std::collections::HashMap::new(),
             inline_media_iterm_emitted: std::collections::HashMap::new(),
             next_inline_media_id: 2,
@@ -278,6 +312,9 @@ impl AgentView {
             hit_sb_copy: Default::default(),
             hit_sb_view: Default::default(),
             question_view: None,
+            elicitation_view: None,
+            pending_elicitation: None,
+            elicit_hits: Vec::new(),
             hit_question_scrollbar: Default::default(),
             hovered_question_item: None,
             question_scrollbar_dragging: false,
@@ -300,6 +337,7 @@ impl AgentView {
             permission_queue: VecDeque::new(),
             next_perm_req_id: 0,
             permission_stashed_prompt: None,
+            plan_freeform_prefill_deferred: false,
             permission_stashed_pane: None,
             permission_pattern_edit: None,
             plan_approval_view: None,
@@ -431,6 +469,15 @@ impl AgentView {
     pub(crate) fn arm_late_replay_grace(&mut self) {
         self.late_replay_until = Some(std::time::Instant::now() + Self::LATE_REPLAY_GRACE);
     }
+    /// Whether a replayed (`isReplay`) update should be applied right now: a `session/load`
+    /// replay window is open, or the post-load grace for a late replay tail is still running
+    /// (see `late_replay_until`). Anything else is a misrouted replay against a live transcript.
+    pub(crate) fn accepts_replayed_update(&self) -> bool {
+        self.session.loading_replay
+            || self
+                .late_replay_until
+                .is_some_and(|deadline| std::time::Instant::now() < deadline)
+    }
     /// Enter a `session/load` replay window: flip `loading_replay` on and reset
     /// every field coupled to that transition together, so no site can drift
     /// (e.g. reset one coupled field but miss another). Called at every
@@ -456,6 +503,41 @@ impl AgentView {
         self.cleared_workflow_runs.clear();
         self.workflow_runs.clear();
     }
+    /// Swap every replay-rebuilt field for a fresh value and return the old
+    /// state. Reset together so stale revision gates cannot suppress the
+    /// replayed updates.
+    pub(crate) fn take_replay_rebuilt_state(&mut self) -> ReplayRebuiltState {
+        let fresh = self.scrollback.fresh_continuation();
+        ReplayRebuiltState {
+            scrollback: std::mem::replace(&mut self.scrollback, fresh),
+            tracker: std::mem::replace(
+                &mut self.session.tracker,
+                crate::acp::tracker::AcpUpdateTracker::new(),
+            ),
+            todo: std::mem::take(&mut self.todo),
+            workflow_blocks: std::mem::take(&mut self.workflow_blocks),
+            workflow_runs: std::mem::take(&mut self.workflow_runs),
+            workflow_run_revisions: std::mem::take(&mut self.workflow_run_revisions),
+            cleared_workflow_runs: std::mem::take(&mut self.cleared_workflow_runs),
+        }
+    }
+    /// Put a taken [`ReplayRebuiltState`] back: the counterpart of
+    /// [`Self::take_replay_rebuilt_state`] for callers whose rebuild failed
+    /// and who would otherwise leave a bare view where content used to be.
+    /// Used by the subagent restore path and the reload failure outcome.
+    pub(crate) fn restore_replay_rebuilt_state(&mut self, mut taken: ReplayRebuiltState) {
+        taken.scrollback.raise_id_floor(self.scrollback.id_floor());
+        taken
+            .scrollback
+            .raise_invalidation_floor(self.scrollback.invalidation_generations());
+        self.scrollback = taken.scrollback;
+        self.session.tracker = taken.tracker;
+        self.todo = taken.todo;
+        self.workflow_blocks = taken.workflow_blocks;
+        self.workflow_runs = taken.workflow_runs;
+        self.workflow_run_revisions = taken.workflow_run_revisions;
+        self.cleared_workflow_runs = taken.cleared_workflow_runs;
+    }
     /// Open a reconnect reload window: stash the current transcript/tracker
     /// and point the live fields at fresh state for the incoming
     /// `session/load` replay. The transcript is NOT cleared — it stays
@@ -471,7 +553,7 @@ impl AgentView {
                 "session reload superseded without finalize; restoring previous stash first"
             );
             if self.apply_reload_outcome(prev, false) {
-                crate::memory_release::release_retained_memory_with("reload-supersede");
+                crate::memory_release::release_retained_memory("reload-supersede");
             }
         }
         while self.scrollback.in_batch() {
@@ -485,24 +567,17 @@ impl AgentView {
         }
         self.session.model_switch_pending = false;
         self.pending_adoption_updates.clear();
-        let fresh = self.scrollback.fresh_continuation();
+        let stash = self.take_replay_rebuilt_state();
         self.session_reload = Some(SessionReload {
             generation,
-            scrollback: std::mem::replace(&mut self.scrollback, fresh),
-            tracker: std::mem::replace(
-                &mut self.session.tracker,
-                crate::acp::tracker::AcpUpdateTracker::new(),
-            ),
-            todo: std::mem::take(&mut self.todo),
-            workflow_blocks: std::mem::take(&mut self.workflow_blocks),
-            workflow_runs: std::mem::take(&mut self.workflow_runs),
-            workflow_run_revisions: std::mem::take(&mut self.workflow_run_revisions),
-            cleared_workflow_runs: std::mem::take(&mut self.cleared_workflow_runs),
+            stash,
             last_seen_event_id: self.last_seen_event_id.clone(),
+            last_seen_event_seq: self.last_seen_event_seq,
             last_applied_event_seq: self.last_applied_event_seq,
             last_applied_xai_event_seq: self.last_applied_xai_event_seq,
             saw_replay: false,
             saw_todo_update: false,
+            replayed_expiry_notices: Vec::new(),
         });
         self.loading_placeholder_id = Some(self.scrollback.push_block(
             crate::scrollback::block::RenderBlock::system("Reloading session after reconnect..."),
@@ -515,6 +590,16 @@ impl AgentView {
     pub(crate) fn mark_reload_replay_seen(&mut self) {
         if let Some(reload) = self.session_reload.as_mut() {
             reload.saw_replay = true;
+        }
+    }
+    /// Record a staged expiry notice for the keep-stash finalize dedupe. No-op outside a
+    /// reconnect reload window (a fresh `session/load` has no stash to duplicate against).
+    pub(crate) fn note_replayed_expiry_notice(
+        &mut self,
+        entry_id: crate::scrollback::entry::EntryId,
+    ) {
+        if let Some(reload) = self.session_reload.as_mut() {
+            reload.replayed_expiry_notices.push(entry_id);
         }
     }
     /// Record that a Plan update applied while a reload window is open.
@@ -564,7 +649,7 @@ impl AgentView {
         if let Some(reload) = self.session_reload.take()
             && self.apply_reload_outcome(reload, false)
         {
-            crate::memory_release::release_retained_memory_with("reload-abort");
+            crate::memory_release::release_retained_memory("reload-abort");
         }
     }
     /// Finalize the reload window opened for `generation`.
@@ -576,7 +661,7 @@ impl AgentView {
         match self.session_reload.take() {
             Some(reload) if reload.generation == generation => {
                 if self.apply_reload_outcome(reload, success) {
-                    crate::memory_release::release_retained_memory_with("reload-finalize");
+                    crate::memory_release::release_retained_memory("reload-finalize");
                 }
                 true
             }
@@ -717,16 +802,50 @@ impl AgentView {
             self.scrollback.end_batch();
             dropped_heavy = true;
         } else if success {
-            let tail = std::mem::replace(&mut self.scrollback, reload.scrollback);
+            let stash = reload.stash;
+            let mut tail = std::mem::replace(&mut self.scrollback, stash.scrollback);
+            let mut dedupe_budget: HashMap<String, usize> = HashMap::new();
+            for entry_id in &reload.replayed_expiry_notices {
+                let staged_text = (0..tail.len()).find_map(|i| {
+                    let entry = tail.get(i)?;
+                    if entry.id != *entry_id {
+                        return None;
+                    }
+                    match &entry.block {
+                        crate::scrollback::block::RenderBlock::System(block) => {
+                            Some(block.text.clone())
+                        }
+                        _ => None,
+                    }
+                });
+                let Some(staged_text) = staged_text else {
+                    continue;
+                };
+                let budget = dedupe_budget.entry(staged_text.clone()).or_insert_with(|| {
+                    (0..self.scrollback.len())
+                        .filter(|i| {
+                            matches!(
+                                self.scrollback.get(*i).map(|e| &e.block),
+                                Some(crate::scrollback::block::RenderBlock::System(block))
+                                    if block.text == staged_text
+                            )
+                        })
+                        .count()
+                });
+                if *budget > 0 {
+                    *budget -= 1;
+                    tail.remove_entry(*entry_id);
+                }
+            }
             self.scrollback.append_entries_from(tail);
-            self.workflow_blocks.extend(reload.workflow_blocks);
+            self.workflow_blocks.extend(stash.workflow_blocks);
             {
                 let mut live_by_id: HashMap<String, _> = std::mem::take(&mut self.workflow_runs)
                     .into_iter()
                     .map(|run| (run.run_id.clone(), run))
                     .collect();
-                let mut merged = Vec::with_capacity(reload.workflow_runs.len() + live_by_id.len());
-                for run in reload.workflow_runs {
+                let mut merged = Vec::with_capacity(stash.workflow_runs.len() + live_by_id.len());
+                for run in stash.workflow_runs {
                     if let Some(live) = live_by_id.remove(&run.run_id) {
                         merged.push(live);
                     } else {
@@ -737,34 +856,24 @@ impl AgentView {
                 live_only.sort_by_key(|run| run.received_at);
                 merged.extend(live_only);
                 self.cleared_workflow_runs
-                    .extend(reload.cleared_workflow_runs);
+                    .extend(stash.cleared_workflow_runs);
                 merged.retain(|run| !self.cleared_workflow_runs.contains(&run.run_id));
                 self.workflow_runs = merged;
             }
-            for (run_id, rev) in reload.workflow_run_revisions {
+            for (run_id, rev) in stash.workflow_run_revisions {
                 self.workflow_run_revisions
                     .entry(run_id)
                     .and_modify(|live| *live = (*live).max(rev))
                     .or_insert(rev);
             }
             if !reload.saw_todo_update {
-                self.todo = reload.todo;
+                self.todo = stash.todo;
             }
             dropped_heavy = false;
         } else {
-            let floor = self.scrollback.id_floor();
-            let staging_generations = self.scrollback.invalidation_generations();
-            self.scrollback = reload.scrollback;
-            self.scrollback.raise_id_floor(floor);
-            self.scrollback
-                .raise_invalidation_floor(staging_generations);
-            self.session.tracker = reload.tracker;
-            self.todo = reload.todo;
-            self.workflow_blocks = reload.workflow_blocks;
-            self.workflow_runs = reload.workflow_runs;
-            self.workflow_run_revisions = reload.workflow_run_revisions;
-            self.cleared_workflow_runs = reload.cleared_workflow_runs;
+            self.restore_replay_rebuilt_state(reload.stash);
             self.last_seen_event_id = reload.last_seen_event_id;
+            self.last_seen_event_seq = reload.last_seen_event_seq;
             self.last_applied_event_seq = reload.last_applied_event_seq;
             self.last_applied_xai_event_seq = reload.last_applied_xai_event_seq;
             dropped_heavy = true;
@@ -1399,6 +1508,30 @@ mod honest_turn_elapsed_tests {
     }
 }
 #[cfg(test)]
+mod advance_last_seen_event_id_tests {
+    use super::*;
+    #[test]
+    fn unparseable_id_preserves_known_highwater_seq() {
+        let mut view = test_agent_view(Some("s1"), std::path::PathBuf::from("/tmp"));
+        view.advance_last_seen_event_id("sess-1-7".into(), Some(7));
+        assert_eq!(view.last_seen_event_id.as_deref(), Some("sess-1-7"));
+        assert_eq!(view.last_seen_event_seq, Some(7));
+        view.advance_last_seen_event_id("sess-1-opaque".into(), None);
+        assert_eq!(view.last_seen_event_id.as_deref(), Some("sess-1-opaque"));
+        assert_eq!(
+            view.last_seen_event_seq,
+            Some(7),
+            "known highwater must survive an unparseable id"
+        );
+        view.advance_last_seen_event_id("sess-1-3".into(), Some(3));
+        assert_eq!(view.last_seen_event_id.as_deref(), Some("sess-1-opaque"));
+        assert_eq!(view.last_seen_event_seq, Some(7));
+        view.advance_last_seen_event_id("sess-1-9".into(), Some(9));
+        assert_eq!(view.last_seen_event_id.as_deref(), Some("sess-1-9"));
+        assert_eq!(view.last_seen_event_seq, Some(9));
+    }
+}
+#[cfg(test)]
 mod resolve_turn_activity_tests {
     use super::*;
     use crate::acp::tracker::{TurnActivity, WaitingReason};
@@ -1963,7 +2096,7 @@ mod resolve_turn_activity_tests {
                 prompt: None,
                 child_cwd: None,
                 worktree_path: None,
-                child_updates_replayed: false,
+                transcript: Default::default(),
             },
         );
         let meta = NotificationMeta::default();

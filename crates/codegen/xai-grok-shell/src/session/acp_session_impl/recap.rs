@@ -3,11 +3,16 @@
 //! Shared cache-aligned request setup lives in [`super::side_call`].
 //! Per-turn dashboard summary lifecycle lives in [`super::turn_summary`].
 
-use super::side_call::{AuxCall, log_prompt_cache_hit};
+use super::side_call::{AuxCall, log_prompt_cache_usage};
 use super::*;
 
 use crate::session::SideQuestionError;
 use xai_grok_sampling_types::SamplingError;
+
+/// Max characters of a recap persisted to `summary.json` for listing surfaces.
+/// The full recap can be long and rides every row of the session-list response;
+/// listing cards only show a short preview, so bound what goes on the wire.
+const RECAP_PERSIST_MAX_CHARS: usize = 240;
 
 /// Retry policy for the one-shot `/btw` model call: 3 attempts total
 /// (1 try + 2 retries), 500ms → 1s jittered backoff. Deliberately short —
@@ -52,14 +57,17 @@ impl SessionActor {
             .await
             .map_err(|e| SideQuestionError::PrepareClient(e.to_string()))?;
 
-        // Full conversation snapshot including system prompt, tool calls, and results.
-        let conversation = self.chat_state_handle.get_conversation().await;
-        let mut items: Vec<ConversationItem> =
-            if sampling_client.api_backend().requires_reasoning_strip() {
-                xai_chat_state::compaction_utils::strip_reasoning_blocks(conversation)
-            } else {
-                conversation
-            };
+        // Full conversation snapshot including system prompt, reasoning, tool calls, and results.
+        let mut items = self.chat_state_handle.get_conversation().await;
+
+        let sampling_config = self.chat_state_handle.get_sampling_config().await;
+        let reasoning_effort = sampling_config.as_ref().and_then(|c| c.reasoning_effort);
+        if super::side_call::should_strip_side_call_reasoning(
+            sampling_client.api_backend(),
+            reasoning_effort,
+        ) {
+            items = xai_chat_state::compaction_utils::strip_reasoning_blocks(items);
+        }
 
         // /btw fires mid-turn, so the snapshot may end with an assistant message whose tool_calls have no matching ToolResult yet.
         crate::session::helpers::session_recap::pop_trailing_tool_run(&mut items);
@@ -68,8 +76,6 @@ impl SessionActor {
             self.side_question_prompt_and_tools(question).await;
         items.push(instruction);
 
-        let sampling_config = self.chat_state_handle.get_sampling_config().await;
-        let reasoning_effort = sampling_config.as_ref().and_then(|c| c.reasoning_effort);
         let model = sampling_config.map(|c| c.model).unwrap_or_default();
 
         let persist = |answer: String, success: bool, error: Option<String>, attempts: u32| {
@@ -120,7 +126,7 @@ impl SessionActor {
 
         match result {
             Ok(response) => {
-                log_prompt_cache_hit("btw", sampling_client.api_backend(), &response);
+                log_prompt_cache_usage("btw", sampling_client.api_backend(), &response);
                 let content = response.assistant_text();
                 if content.is_empty() {
                     let err = SideQuestionError::EmptyResponse;
@@ -263,12 +269,12 @@ impl SessionActor {
         let started_at = chrono::Utc::now().to_rfc3339();
         let x_grok_conv_id = format!("recap-{}", uuid::Uuid::new_v4());
         let x_grok_req_id = format!("xai-recap-{}", uuid::Uuid::new_v4());
-        // Clone the exact request items for the on-disk artifact (recap never
-        // mutates conversation state, so this file is the only durable record).
-        let chat_history_for_artifact = items.clone();
         let request = self
             .side_call_request(&setup, items, x_grok_conv_id.clone(), x_grok_req_id.clone())
             .await;
+        // The artifact records the exact model-facing items after trust
+        // projection; canonical conversation state remains raw.
+        let chat_history_for_artifact = request.items.clone();
 
         let response = match setup.client.conversation_collect(request).await {
             Ok(r) => r,
@@ -296,7 +302,7 @@ impl SessionActor {
             }
         };
 
-        log_prompt_cache_hit("recap", setup.client.api_backend(), &response);
+        log_prompt_cache_usage("recap", setup.client.api_backend(), &response);
         let raw_response = response.assistant_text();
         let summary = session_recap::clean_recap_text(&raw_response);
         if summary.is_empty() {
@@ -395,6 +401,15 @@ impl SessionActor {
             }
             return;
         }
+        // Persist a bounded preview of the committed recap so listing surfaces
+        // (`/resume`, `/session-info`) can show it whenever available. Only a
+        // preview: the full recap can be long and rides every row of the
+        // session-list response, while the card shows a short line. Distinct
+        // from the per-turn `last_turn_summary`; last-writer-wins.
+        let recap_preview: String = summary.chars().take(RECAP_PERSIST_MAX_CHARS).collect();
+        let _ = self.notifications.persistence_tx.send(
+            crate::session::persistence::PersistenceMsg::LastRecap(Some(recap_preview)),
+        );
         self.send_xai_notification(
             crate::extensions::notification::SessionUpdate::SessionRecap { summary, auto },
         )

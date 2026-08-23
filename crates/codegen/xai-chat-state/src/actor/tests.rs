@@ -668,6 +668,21 @@ async fn assistant_response_push_does_not_bump_estimated_delta() {
 }
 
 #[tokio::test]
+async fn provider_counted_model_output_persists_without_bumping_estimate() {
+    let h = TestHarness::new();
+    h.handle.record_token_usage(100_000);
+    h.handle.push_model_output(ConversationItem::Reasoning(
+        xai_grok_sampling_types::synthesized_reasoning_item("r".repeat(4_000)),
+    ));
+
+    assert!(matches!(
+        h.handle.get_conversation().await.as_slice(),
+        [ConversationItem::Reasoning(_)]
+    ));
+    assert_eq!(h.handle.get_estimated_total_tokens().await, 100_000);
+}
+
+#[tokio::test]
 async fn estimated_tokens_resets_on_truncate() {
     let mut h = TestHarness::new();
     h.handle.record_token_usage(100_000);
@@ -1576,6 +1591,34 @@ async fn build_request_includes_all_messages() {
     assert_eq!(request.items.len(), 2);
     assert_eq!(request.x_grok_conv_id, Some("conv-1".to_string()));
     assert_eq!(request.x_grok_req_id, Some("req-1".to_string()));
+}
+
+#[tokio::test]
+async fn build_request_projects_agent_message_for_model_without_mutating_history() {
+    let raw = format!(
+        "{}\npayload starts with the exact label",
+        crate::compaction_utils::AGENT_MESSAGE_MODEL_LABEL
+    );
+    let raw_item = ConversationItem::agent_message(&raw);
+    let raw_bytes = serde_json::to_vec(&raw_item).unwrap();
+    let h = TestHarness::with_conversation(vec![raw_item]);
+
+    let request = h
+        .handle
+        .build_request(vec![], None, false, None, "c".into(), "r".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        request.items[0].text_content(),
+        format!(
+            "{}\n{raw}",
+            crate::compaction_utils::AGENT_MESSAGE_MODEL_LABEL
+        )
+    );
+
+    let persisted = h.handle.get_conversation().await;
+    assert_eq!(persisted[0].text_content(), raw);
+    assert_eq!(serde_json::to_vec(&persisted[0]).unwrap(), raw_bytes);
 }
 
 #[tokio::test]

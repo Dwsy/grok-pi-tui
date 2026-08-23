@@ -77,6 +77,87 @@ fn pi_grok_resource_picker_request(
     }))
 }
 
+/// Resolve a superseded elicitation's reverse-request with `Cancel` so the
+/// awaiting MCP server is released before a replacement takes the slot.
+fn cancel_elicitation_request(
+    response_tx: tokio::sync::oneshot::Sender<xai_acp_lib::AcpResult<acp::ExtResponse>>,
+) {
+    let cancelled = xai_grok_tools::mcp_elicitation::McpElicitExtResponse::Cancel;
+    if let Ok(raw) = serde_json::value::to_raw_value(&cancelled) {
+        response_tx.send(Ok(acp::ExtResponse::new(raw.into()))).ok();
+    }
+}
+
+pub(crate) fn handle_mcp_elicit(
+    ext: xai_acp_lib::AcpArgs<acp::ExtRequest>,
+    app: &mut AppView,
+) -> bool {
+    use crate::views::elicitation_view::ElicitationViewState;
+    use xai_grok_tools::mcp_elicitation::McpElicitExtRequest;
+
+    let ext_req: McpElicitExtRequest = match serde_json::from_str(ext.request.params.get()) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to parse McpElicitExtRequest");
+            ext.response_tx
+                .send(Err(acp::Error::new(-32602, format!("Invalid params: {e}"))))
+                .ok();
+            return false;
+        }
+    };
+
+    let Some(id) = interaction_target_agent(app, &ext_req.session_id) else {
+        tracing::info!(
+            session_id = %ext_req.session_id,
+            "mcp elicit for a session with no local view; parked for leader replay-on-attach"
+        );
+        drop(ext.response_tx);
+        return false;
+    };
+    let is_active = is_matched_agent_active(app, id);
+    let Some(agent) = app.agents.get_mut(&id) else {
+        drop(ext.response_tx);
+        return false;
+    };
+
+    let waiting = agent
+        .elicitation_view
+        .as_ref()
+        .is_some_and(|ev| ev.is_url_waiting());
+    if waiting {
+        if let Some((_, old_tx)) = agent.pending_elicitation.take() {
+            cancel_elicitation_request(old_tx);
+        }
+        agent.pending_elicitation = Some((ext_req, ext.response_tx));
+        return is_active;
+    }
+
+    if let Some((_, old_tx)) = agent.pending_elicitation.take() {
+        cancel_elicitation_request(old_tx);
+    }
+
+    if let Some(mut old) = agent.elicitation_view.take() {
+        if let Some(old_tx) = old.take_response_tx() {
+            cancel_elicitation_request(old_tx);
+        }
+        agent.restore_elicitation_prompt(old.stashed_prompt);
+    }
+
+    let stashed = agent.stash_prompt_for_elicitation();
+    agent.elicitation_view = Some(ElicitationViewState::from_request(
+        ext_req,
+        stashed,
+        Some(ext.response_tx),
+    ));
+    agent.last_active_at = Some(std::time::Instant::now());
+
+    tracing::info!(
+        target_active = is_active,
+        "Opened MCP elicitation view from ext_method"
+    );
+    is_active
+}
+
 /// Handle `x.ai/ask_user_question` ext-method.
 ///
 /// Parses the typed request, creates a `QuestionViewState` with the
@@ -205,24 +286,67 @@ pub(crate) fn handle_ask_user_question(
 
         // Local question displaced by an ACP ask, so surface why it vanished.
         // Any directive it carried is dropped; the user re-issues the command after answering.
-        if let Some(ref kind) = old_qv.local_kind {
+        if let Some(kind) = old_qv.local_kind.take() {
+            use crate::app::actions::FeedbackTraceChoice;
+            use crate::app::dispatch::notes;
             use crate::views::question_view::LocalQuestionKind;
-            let cmd = match kind {
-                LocalQuestionKind::Fork { .. } => "/fork",
-                LocalQuestionKind::NewSession => "/new",
-                LocalQuestionKind::CreditLimitUpsell { .. } => "credit-limit upsell",
-                LocalQuestionKind::FreeUsageUpsell { .. } => "SuperGrok upsell",
-                LocalQuestionKind::AgentTypeMismatch { .. } => "model switch",
-                LocalQuestionKind::DoctorFix { .. } => "/doctor fix",
-                LocalQuestionKind::DeleteCurrentSession => "/delete",
-                LocalQuestionKind::Feedback => "/feedback",
-            };
-            let message = if matches!(kind, LocalQuestionKind::DoctorFix { .. }) {
-                "/doctor fix was cancelled because another question opened.".to_owned()
-            } else {
-                format!("{cmd} cancelled because another question opened.")
-            };
-            agent.scrollback.push_block(RenderBlock::system(message));
+            match kind {
+                // A displaced trace-consent card still carries a committed
+                // report; it must send (like Esc/skip), not silently vanish.
+                LocalQuestionKind::FeedbackTrace { report, images } => {
+                    if let Some(session_id) = agent.session.session_id.clone() {
+                        // The shared committer closes the consent funnel,
+                        // applies the emptiness rule, and picks the
+                        // displaced-card copy.
+                        if let Some(effect) = notes::commit_feedback(
+                            agent,
+                            app.coding_data_retention_opt_out,
+                            id,
+                            session_id,
+                            report,
+                            images,
+                            Some(FeedbackTraceChoice::NoUpload),
+                            true,
+                        ) {
+                            app.pending_effects.push(effect);
+                        }
+                    } else {
+                        // No session to send through: still close the funnel.
+                        // Dropping `images` cleans up its staged temp files.
+                        notes::log_trace_consent_selected(
+                            app.coding_data_retention_opt_out,
+                            FeedbackTraceChoice::NoUpload,
+                        );
+                        agent.scrollback.push_block(RenderBlock::system(
+                            "/feedback cancelled because another question opened.".to_owned(),
+                        ));
+                    }
+                }
+                LocalQuestionKind::DoctorFix { .. } => {
+                    agent.scrollback.push_block(RenderBlock::system(
+                        "/doctor fix was cancelled because another question opened.".to_owned(),
+                    ));
+                }
+                kind => {
+                    // The trace-consent and doctor-fix arms above own their
+                    // variants; their labels here are graceful fallbacks.
+                    let cmd = match kind {
+                        LocalQuestionKind::Fork { .. } => "/fork",
+                        LocalQuestionKind::NewSession => "/new",
+                        LocalQuestionKind::CreditLimitUpsell { .. } => "credit-limit upsell",
+                        LocalQuestionKind::FreeUsageUpsell { .. } => "SuperGrok upsell",
+                        LocalQuestionKind::AgentTypeMismatch { .. } => "model switch",
+                        LocalQuestionKind::DeleteCurrentSession => "/delete",
+                        LocalQuestionKind::Feedback | LocalQuestionKind::FeedbackTrace { .. } => {
+                            "/feedback"
+                        }
+                        LocalQuestionKind::DoctorFix { .. } => "/doctor fix",
+                    };
+                    agent.scrollback.push_block(RenderBlock::system(format!(
+                        "{cmd} cancelled because another question opened."
+                    )));
+                }
+            }
         }
     }
 
@@ -282,8 +406,8 @@ pub(crate) fn handle_ask_user_question(
 ///
 /// Creates a `PlanApprovalViewState` overlay for interactive approval.
 ///
-/// Follows the `handle_ask_user_question` pattern: parse → guard → cancel old
-/// → stash prompt → create state → clear prompt → return true.
+/// Flow: parse → guard → cancel old → capture session draft → create state →
+/// prefill freeform when safe (not under an open permission) → return true.
 pub(super) fn handle_exit_plan_mode(
     ext: xai_acp_lib::AcpArgs<acp::ExtRequest>,
     app: &mut AppView,
@@ -359,8 +483,29 @@ pub(super) fn handle_exit_plan_mode(
         agent.prompt.restore(stashed);
     }
 
-    let stashed = agent.prompt.stash();
-    let state = PlanApprovalViewState::with_source(params, source, stashed, ext.response_tx);
+    // Permission open: session draft is `permission_stashed_prompt` (live is followup).
+    // Otherwise: live composer is the session draft.
+    let permission_still_open = !agent.permission_queue.is_empty();
+    let session_draft = if let Some(perm_draft) = agent.permission_stashed_prompt.take() {
+        let _permission_followup = agent.prompt.stash();
+        perm_draft
+    } else {
+        agent.prompt.stash()
+    };
+
+    let had_session_draft = !session_draft.is_effectively_empty();
+    // Never prefill freeform while permission owns the keyboard: followup would type
+    // into (and could send) the private session draft. Arm deferred prefill so
+    // restore_permission_stashes applies it only when the queue actually drains.
+    if had_session_draft && !permission_still_open {
+        agent.plan_freeform_prefill_deferred = false;
+        agent.prompt.restore(session_draft.clone_for_live_prefill());
+    } else {
+        agent.plan_freeform_prefill_deferred = permission_still_open;
+        agent.prompt.set_text("");
+    }
+
+    let state = PlanApprovalViewState::with_source(params, source, session_draft, ext.response_tx);
 
     agent.plan_comments.clear();
     agent.plan_next_comment_id = 0;
@@ -371,7 +516,6 @@ pub(super) fn handle_exit_plan_mode(
         agent.latest_inline_plan_content = None;
     }
     agent.plan_approval_view = Some(state);
-    agent.prompt.set_text("");
 
     agent.casual_commenting_range = None;
     agent.casual_editing_comment_id = None;
@@ -382,7 +526,13 @@ pub(super) fn handle_exit_plan_mode(
         if let Some(ref mut viewer) = agent.line_viewer {
             viewer.plan_mut().feedback_active = true;
         }
-    } else if let Some(ref mut pav) = agent.plan_approval_view {
+        if had_session_draft
+            && !permission_still_open
+            && let Some(ref mut pav) = agent.plan_approval_view
+        {
+            pav.focus = crate::views::plan_approval_view::PlanApprovalFocus::Prompt;
+        }
+    } else if !permission_still_open && let Some(ref mut pav) = agent.plan_approval_view {
         pav.focus = crate::views::plan_approval_view::PlanApprovalFocus::Prompt;
     }
 

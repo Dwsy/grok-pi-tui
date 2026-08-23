@@ -18,7 +18,7 @@ fn build_compacted_history(
     discovered_agents_md: &[std::path::PathBuf],
 ) -> Vec<ConversationItem> {
     let system_reminder =
-        to_system_reminder_sync(state_context, discovered_agents_md, &[], None, None);
+        to_system_reminder_sync(state_context, discovered_agents_md, &[], None, None, None);
     build_compacted_history_shared(CompactedHistoryInput {
         system_message: ConversationItem::system(system_prompt),
         user_message_prefix: user_message_prefix.to_string(),
@@ -248,6 +248,10 @@ async fn grok_build_compaction_drops_working_tail_regression_206460() {
         dropped.recent_messages.is_empty(),
         "grok-build must drop recent_messages post-compaction",
     );
+    assert!(
+        dropped.agent_message_anchor.is_none(),
+        "a human-only conversation has no agent-message anchor",
+    );
     let compacted = build_compacted_history(
         "You are a helpful assistant.",
         "<user_info>\nOS: macos\n</user_info>",
@@ -316,6 +320,7 @@ fn fallback_minimal_history_has_no_tool_results() {
     let state_context = CompactionStateContext {
         cwd_generation: 0,
         destination_project_instructions: None,
+        agent_message_anchor: None,
         recent_messages: vec![],
         last_user_query: Some("fix the bug".to_string()),
         agent_edited_paths: vec!["src/main.rs".to_string()],
@@ -387,7 +392,7 @@ async fn test_compacted_history_with_running_subagents() {
         cancel: "kill_command_or_subagent".into(),
     };
     let system_reminder =
-        to_system_reminder_sync(&state_context, &[], &[], Some(&tool_names), None);
+        to_system_reminder_sync(&state_context, &[], &[], Some(&tool_names), None, None);
     let reminder = system_reminder.expect("should produce a system-reminder");
     assert!(
         reminder.contains("## Running Subagents"),
@@ -471,7 +476,7 @@ async fn background_tasks_are_labeled_by_creator_tool() {
         },
     )
     .await;
-    let reminder = to_system_reminder_sync(&state_context, &[], &[], None, None)
+    let reminder = to_system_reminder_sync(&state_context, &[], &[], None, None, None)
         .expect("should produce a system-reminder");
     assert!(
         reminder.contains("## Running Background Tasks"),
@@ -509,7 +514,7 @@ async fn no_subagents_means_no_section() {
         },
     )
     .await;
-    let system_reminder = to_system_reminder_sync(&state_context, &[], &[], None, None);
+    let system_reminder = to_system_reminder_sync(&state_context, &[], &[], None, None, None);
     let reminder = system_reminder.expect("should produce a system-reminder for edited files");
     assert!(
         !reminder.contains("## Running Subagents"),
@@ -527,6 +532,7 @@ fn fallback_preserves_subagents() {
     let original = CompactionStateContext {
         cwd_generation: 0,
         destination_project_instructions: None,
+        agent_message_anchor: None,
         recent_messages: vec![ConversationItem::assistant("working")],
         last_user_query: Some("fix the bug".to_string()),
         agent_edited_paths: vec!["src/main.rs".to_string()],
@@ -556,6 +562,7 @@ fn fallback_preserves_subagents() {
     let fallback = CompactionStateContext {
         cwd_generation: original.cwd_generation,
         destination_project_instructions: original.destination_project_instructions.clone(),
+        agent_message_anchor: original.agent_message_anchor.clone(),
         recent_messages: vec![],
         last_user_query: original.last_user_query.clone(),
         agent_edited_paths: original.agent_edited_paths.clone(),

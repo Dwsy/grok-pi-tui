@@ -57,6 +57,8 @@ xai-grok-session-events = { workspace = true }
 # `UploadMethod` enum (small, dependency-light types crate) so the reason->wire
 # mapping lives next to the trace-upload lifecycle events it labels.
 xai-file-utils = { path = "../xai-file-utils" }
+xai-tty-utils = { workspace = true }
+xai-grok-version = { workspace = true }
 whoami = { workspace = true }
 uuid = { workspace = true, features = ["v5", "v7"] }
 obfstr = { workspace = true, optional = true }
@@ -105,6 +107,7 @@ rustls = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 # In-process OTLP collector fixture (tests/external_otlp.rs).
 axum = { workspace = true }
+axum-server = { workspace = true, features = ["tls-rustls"] }
 opentelemetry-proto = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"] }

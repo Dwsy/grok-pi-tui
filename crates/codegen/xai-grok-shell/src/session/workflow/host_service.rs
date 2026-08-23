@@ -86,6 +86,7 @@ pub(crate) struct WorkflowHostParams {
     pub backend: Arc<dyn WorkflowAgentBackend>,
     pub parent_session_id: String,
     pub allow_fork_context: bool,
+    pub effort: Option<xai_grok_sampling_types::ReasoningEffort>,
     pub templates: std::collections::HashMap<String, String>,
     pub telemetry: TelemetryHook,
     pub stats: Arc<WorkflowAgentStats>,
@@ -466,6 +467,19 @@ impl HostService {
             );
         }
 
+        let reasoning_effort = opts
+            .effort
+            .as_deref()
+            .map(|effort| {
+                effort
+                    .parse::<xai_grok_sampling_types::ReasoningEffort>()
+                    .map_err(|error| {
+                        HostError::Failed(format!("invalid workflow agent effort: {error}"))
+                    })
+            })
+            .transpose()?
+            .or(self.params.effort);
+
         let id = uuid::Uuid::now_v7().to_string();
         let explicit_label = opts.label.clone();
         let capability_mode = match opts.capability_mode.as_deref() {
@@ -518,6 +532,36 @@ impl HostService {
             finished: false,
         };
         let cancel_token = CancellationToken::new();
+
+        let spawn_once =
+            |child_id: String, prompt: String, resume_from: Option<String>, fork_context: bool| {
+                SubagentRequest {
+                    id: child_id,
+                    prompt,
+                    description: description.clone(),
+                    subagent_type: subagent_type.clone(),
+                    parent_session_id: self.params.parent_session_id.clone(),
+                    parent_prompt_id: None,
+                    resume_from,
+                    cwd: None,
+                    runtime_overrides: SubagentRuntimeOverrides {
+                        model: opts.model.clone(),
+                        reasoning_effort: reasoning_effort.map(|effort| effort.to_string()),
+                        output_token_budget: None,
+                        model_override_provenance: ModelOverrideProvenance::Tool,
+                        capability_mode,
+                        isolation,
+                        output_schema: None,
+                        ..Default::default()
+                    },
+                    run_in_background: false,
+                    surface_completion: false,
+                    await_to_completion: true,
+                    fork_context,
+                    owner: SubagentOwner::workflow(&self.params.run_id),
+                    cancel_token: cancel_token.clone(),
+                }
+            };
 
         let mut attempts: u32 = 0;
         let mut total_tokens: u64 = 0;
@@ -948,6 +992,7 @@ mod tests {
                 backend,
                 parent_session_id: "parent".into(),
                 allow_fork_context: false,
+                effort: None,
                 templates: Default::default(),
                 telemetry: Arc::new(|_, _, _| {}),
                 stats: Arc::new(WorkflowAgentStats::default()),

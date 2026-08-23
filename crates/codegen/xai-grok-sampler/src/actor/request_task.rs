@@ -24,6 +24,7 @@ use xai_grok_sampling_types::{
 
 use crate::client::{ApiBackend, SamplingClient};
 use crate::config::{RetryPolicy, SamplerConfig};
+use crate::doom_loop_recovery::{FailedResponseCapture, append_recovery_context};
 use crate::events::{SamplingErrorInfo, SamplingErrorKind, SamplingEvent, StripReason};
 use crate::metrics::InferenceLatencyStats;
 use crate::retry::{
@@ -65,7 +66,10 @@ enum AttemptOutcome {
     /// captured (e.g. the failure was synthesised inside the L2
     /// transform), `error` was reconstructed from the
     /// [`SamplingErrorInfo`].
-    Failed { error: SamplingError },
+    Failed {
+        error: SamplingError,
+        recovery_items: Vec<xai_grok_sampling_types::ConversationItem>,
+    },
     /// `cancel_token` fired mid-attempt. The retry loop bails out
     /// without further attempts.
     Cancelled,
@@ -126,9 +130,7 @@ pub(crate) async fn run_request_task(
     let mut retry_count: u32 = 0;
     // Doom-loop recovery keeps its own resample budget, independent of the
     // transport/empty budget above.
-    let doom_policy = (max_retries > 0)
-        .then_some(config.doom_loop_recovery)
-        .flatten();
+    let doom_policy = config.doom_loop_recovery;
     let doom_max_retries = doom_policy.map_or(0, |p| p.max_retries);
     let mut doom_retry_count: u32 = 0;
     let output_observed = Arc::new(AtomicBool::new(false));
@@ -231,11 +233,18 @@ pub(crate) async fn run_request_task(
                     return request_id;
                 }
             }
-            AttemptOutcome::Failed { error } => {
+            AttemptOutcome::Failed {
+                error,
+                recovery_items,
+            } => {
                 // Doom-loop resamples run on their own budget and never
                 // consult the transport classifier, so no classifier change
                 // can silently debit the transport budget for a doom failure.
                 if let SamplingError::DoomLoopDetected { .. } = &error {
+                    // Callers that opted into `retry_only_before_output`
+                    // cannot retract text already handed to them, so a
+                    // resample there would leave the poisoned prefix in the
+                    // accepted output. Fail the request instead.
                     if retry_policy.retry_only_before_output
                         && output_observed.load(Ordering::Relaxed)
                     {
@@ -245,13 +254,14 @@ pub(crate) async fn run_request_task(
                     }
                     let backoff = retry_mod::doom_loop_backoff(doom_retry_count + 1);
                     doom_retry_count += 1;
+                    append_recovery_context(&mut request, recovery_items);
                     tracing::warn!(
                         target: crate::sampling_log::TARGET,
                         reason = %error,
                         attempt = doom_retry_count,
                         max_retries = doom_max_retries,
-                        outcome = "resampled",
-                        "doom-loop recovery: discarding the poisoned attempt and resampling"
+                        outcome = "resampled_with_reminder",
+                        "doom-loop recovery: retaining the failed response and retrying with guidance"
                     );
                     emit_retrying(
                         &event_tx,
@@ -543,6 +553,7 @@ async fn run_one_attempt(
                 cancel_token,
                 captured,
                 None,
+                FailedResponseCapture::default(),
                 output_observed,
             )
             .await
@@ -559,6 +570,13 @@ async fn run_one_attempt(
                 collector.disarm_abort();
             }
             let (teed, captured) = tee_errors(raw);
+            // Only an armed attempt can replay its failed turn, so only an
+            // armed attempt pays for buffering it.
+            let failed_response = if doom_check.is_some() {
+                FailedResponseCapture::armed()
+            } else {
+                FailedResponseCapture::default()
+            };
             let l2 = stream_responses_tracked(
                 teed,
                 metadata,
@@ -566,6 +584,7 @@ async fn run_one_attempt(
                 idle_timeout,
                 doom_loop,
                 Arc::clone(&output_observed),
+                failed_response.clone(),
             );
             drive_l2(
                 l2,
@@ -574,6 +593,7 @@ async fn run_one_attempt(
                 cancel_token,
                 captured,
                 doom_check,
+                failed_response,
                 output_observed,
             )
             .await
@@ -592,6 +612,7 @@ async fn run_one_attempt(
                 cancel_token,
                 captured,
                 None,
+                FailedResponseCapture::default(),
                 output_observed,
             )
             .await
@@ -642,6 +663,7 @@ async fn drive_l2(
     cancel_token: &CancellationToken,
     captured: ErrorCell,
     doom_check: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
+    failed_response: FailedResponseCapture,
     output_observed: Arc<AtomicBool>,
 ) -> AttemptOutcome {
     let mut l2 = pin!(l2);
@@ -664,12 +686,14 @@ async fn drive_l2(
                                     triggers,
                                     aborted_at_chunk: None,
                                 },
+                                recovery_items: failed_response.take_items(),
                             };
                         }
                     }
                     if response.stop_reason == Some(xai_grok_sampling_types::StopReason::Length) {
                         return AttemptOutcome::Failed {
                             error: SamplingError::MaxTokensTruncation,
+                            recovery_items: Vec::new(),
                         };
                     }
                     // A content-filtered turn (Anthropic refusal, OpenAI
@@ -689,7 +713,15 @@ async fn drive_l2(
                         .ok()
                         .and_then(|mut g| g.take());
                     let error = raw.unwrap_or_else(|| synthesize_from_info(&info));
-                    return AttemptOutcome::Failed { error };
+                    let recovery_items = if matches!(error, SamplingError::DoomLoopDetected { .. }) {
+                        failed_response.take_items()
+                    } else {
+                        Vec::new()
+                    };
+                    return AttemptOutcome::Failed {
+                        error,
+                        recovery_items,
+                    };
                 }
                 Some(other) => {
                     if matches!(
@@ -713,6 +745,7 @@ async fn drive_l2(
                         error: SamplingError::EventStreamError(
                             "stream dropped without terminal event".to_string(),
                         ),
+                        recovery_items: Vec::new(),
                     };
                 }
             }

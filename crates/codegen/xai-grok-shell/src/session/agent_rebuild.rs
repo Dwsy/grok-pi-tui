@@ -48,8 +48,8 @@ use xai_grok_agent::prompt::context::PromptAudience;
 use xai_grok_agent::prompt::skills::SkillsConfig;
 use xai_grok_agent::{Agent, AgentBuilder, CompactionPolicy, ReminderPolicy};
 use xai_grok_tools::computer::types::{AsyncFileSystem, TerminalBackend};
+use xai_grok_tools::implementations::grok_build::app_builder::AppBuilderDeployerConfig;
 use xai_grok_tools::implementations::grok_build::ask_user_question::types::UserQuestionRequest;
-use xai_grok_tools::implementations::grok_build::deploy_app::AppBuilderDeployerConfig;
 use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
 use xai_grok_tools::implementations::grok_build::monitor::types::MonitorEventBuffer;
 use xai_grok_tools::implementations::grok_build::task::types::{SubagentEvent, TaskModelValidator};
@@ -92,11 +92,16 @@ pub(crate) struct AgentRebuildSpec {
     pub memory_workspace_path: Option<String>,
     pub memory_backend: Option<Arc<dyn MemoryBackend>>,
     pub web_search_config: WebSearchConfig,
+    /// `[toolset.web_search]` domain policy, resolved once at spawn and applied
+    /// to both search paths (the hosted `tool_overrides` merge and the
+    /// client-side `WebSearchConfig`) so they never diverge.
+    pub web_search_domains: Option<xai_grok_sampling_types::WebSearchOptions>,
     pub backend_search: bool,
     pub web_fetch_config: WebFetchConfig,
     pub image_gen_config: ImageGenConfig,
     pub video_gen_config: VideoGenConfig,
     pub app_builder_deployer_config: AppBuilderDeployerConfig,
+    pub media_gen_batch_limits: xai_grok_tools::media_gen_limits::MediaGenBatchLimits,
     pub write_file_enabled: bool,
     pub subagents_enabled: bool,
     pub subagent_toggle: HashMap<String, bool>,
@@ -151,7 +156,8 @@ impl AgentRebuildSpec {
         self: &Arc<Self>,
         definition: AgentDefinition,
     ) -> Result<Agent, AgentBuildError> {
-        self.build_agent_inner(definition, None, None).await
+        let (agent, _build_elapsed) = self.build_agent_inner(definition, None, None).await?;
+        Ok(agent)
     }
     /// Build an agent with optional one-shot overrides for initial spawn.
     ///
@@ -164,12 +170,16 @@ impl AgentRebuildSpec {
     ///
     /// Both are consumed once — the rebuild path (`build_agent`) passes
     /// `None` for both so zero-turn model switches get fresh discovery.
+    /// Returns the built agent and the pure construction time (entry to
+    /// `SB_BUILDER_DONE`, before the batched resource seed), so the caller can
+    /// attribute `AgentBuild` and `ToolSetup` phases to the same boundaries the
+    /// waterfall marks use.
     pub(crate) async fn build_agent_with_initial_overrides(
         self: &Arc<Self>,
         definition: AgentDefinition,
         persisted_skill_names: Option<std::collections::HashSet<String>>,
         preloaded_skills: Option<Vec<xai_grok_tools::implementations::skills::types::SkillInfo>>,
-    ) -> Result<Agent, AgentBuildError> {
+    ) -> Result<(Agent, std::time::Duration), AgentBuildError> {
         self.build_agent_inner(definition, persisted_skill_names, preloaded_skills)
             .await
     }
@@ -179,7 +189,8 @@ impl AgentRebuildSpec {
         definition: AgentDefinition,
         persisted_skill_names: Option<std::collections::HashSet<String>>,
         preloaded_skills: Option<Vec<xai_grok_tools::implementations::skills::types::SkillInfo>>,
-    ) -> Result<Agent, AgentBuildError> {
+    ) -> Result<(Agent, std::time::Duration), AgentBuildError> {
+        let build_phase_start = std::time::Instant::now();
         let Self {
             working_directory,
             terminal_backend,
@@ -195,11 +206,13 @@ impl AgentRebuildSpec {
             memory_workspace_path,
             memory_backend,
             web_search_config,
+            web_search_domains,
             backend_search,
             web_fetch_config,
             image_gen_config,
             video_gen_config,
             app_builder_deployer_config,
+            media_gen_batch_limits: _,
             write_file_enabled,
             subagents_enabled,
             subagent_toggle,
@@ -239,6 +252,13 @@ impl AgentRebuildSpec {
         #[allow(unused_variables)]
         let is_cursor_template =
             crate::session::is_cursor_system_template(&definition.system_prompt);
+        let mut definition = definition;
+        if let Some(cfg_opts) = web_search_domains.clone() {
+            definition
+                .tool_overrides
+                .get_or_insert_with(Default::default)
+                .web_search = Some(cfg_opts);
+        }
         let session_env = {
             let mut env = session_env.as_ref().clone();
             env.insert("GROK_SESSION_ID".to_string(), session_id_str.clone());
@@ -324,80 +344,79 @@ impl AgentRebuildSpec {
             builder = builder.with_preloaded_skills(skills);
         }
         let agent = builder.build().await?;
+        crate::waterfall::mark(session_id_str, crate::waterfall::stage::SB_BUILDER_DONE);
+        let agent_build_elapsed = build_phase_start.elapsed();
         let model_validator = models_manager.clone();
         agent
             .tool_bridge()
-            .update_resource(TaskModelValidator::new(move |requested| {
-                model_validator.task_model_error(requested)
-            }))
+            .update_resources_with(|resources| {
+                resources
+                    .insert(
+                        TaskModelValidator::new(move |requested| {
+                            model_validator.task_model_error(requested)
+                        }),
+                    );
+                if let Some(event_tx) = subagent_event_tx.clone() {
+                    use xai_grok_tools::implementations::grok_build::task::backend::{
+                        ChannelBackend, SubagentBackendResource,
+                    };
+                    use xai_grok_tools::implementations::grok_build::task::types::{
+                        MaxSubagentDepth, SessionIdResource, SubagentDepthCounter,
+                        SubagentEventSender,
+                    };
+                    resources
+                        .insert(
+                            SubagentBackendResource(
+                                Arc::new(
+                                    ChannelBackend::for_session(
+                                        event_tx.clone(),
+                                        session_id_str.clone(),
+                                    ),
+                                ),
+                            ),
+                        );
+                    resources.insert(SubagentDepthCounter(*subagent_depth));
+                    resources.insert(MaxSubagentDepth(*subagents_max_depth));
+                    resources.insert(SessionIdResource(session_id_str.clone()));
+                    resources.insert(SubagentEventSender(event_tx));
+                    resources
+                        .insert(
+                            crate::tools::tool_context::subagent_foreground_wait(
+                                Arc::clone(blocking_wait_depth),
+                            ),
+                        );
+                    if let Some(buffer) = monitor_event_buffer.clone() {
+                        resources.insert(buffer);
+                    }
+                }
+                resources
+                    .insert(
+                        xai_grok_tools::types::resources::RespectGitignore(
+                            *respect_gitignore,
+                        ),
+                    );
+                resources
+                    .insert(
+                        xai_grok_tools::types::resources::SchedulerBackgroundLoops(
+                            *scheduler_background_loops,
+                        ),
+                    );
+                resources
+                    .insert(
+                        xai_grok_tools::types::resources::PathNotFoundHints(
+                            *path_not_found_hints,
+                        ),
+                    );
+                if let Some(client) = managed_gateway_tool_client.clone() {
+                    resources.insert(client);
+                }
+                {
+                    use xai_grok_tools::implementations::grok_build::ask_user_question::UserQuestionSender;
+                    resources.insert(UserQuestionSender(user_question_tx.clone()));
+                }
+            })
             .await;
-        if let Some(event_tx) = subagent_event_tx.clone() {
-            use xai_grok_tools::implementations::grok_build::task::backend::{
-                ChannelBackend, SubagentBackendResource,
-            };
-            use xai_grok_tools::implementations::grok_build::task::types::{
-                MaxSubagentDepth, SessionIdResource, SubagentDepthCounter, SubagentEventSender,
-            };
-            let backend = SubagentBackendResource(Arc::new(ChannelBackend::for_session(
-                event_tx.clone(),
-                session_id_str.clone(),
-            )));
-            agent.tool_bridge().update_resource(backend).await;
-            agent
-                .tool_bridge()
-                .update_resource(SubagentDepthCounter(*subagent_depth))
-                .await;
-            agent
-                .tool_bridge()
-                .update_resource(MaxSubagentDepth(*subagents_max_depth))
-                .await;
-            agent
-                .tool_bridge()
-                .update_resource(SessionIdResource(session_id_str.clone()))
-                .await;
-            agent
-                .tool_bridge()
-                .update_resource(SubagentEventSender(event_tx))
-                .await;
-            agent
-                .tool_bridge()
-                .update_resource(crate::tools::tool_context::subagent_foreground_wait(
-                    Arc::clone(blocking_wait_depth),
-                ))
-                .await;
-            if let Some(buffer) = monitor_event_buffer.clone() {
-                agent.tool_bridge().update_resource(buffer).await;
-            }
-        }
-        agent
-            .tool_bridge()
-            .update_resource(xai_grok_tools::types::resources::RespectGitignore(
-                *respect_gitignore,
-            ))
-            .await;
-        agent
-            .tool_bridge()
-            .update_resource(xai_grok_tools::types::resources::SchedulerBackgroundLoops(
-                *scheduler_background_loops,
-            ))
-            .await;
-        agent
-            .tool_bridge()
-            .update_resource(xai_grok_tools::types::resources::PathNotFoundHints(
-                *path_not_found_hints,
-            ))
-            .await;
-        if let Some(client) = managed_gateway_tool_client.clone() {
-            agent.tool_bridge().update_resource(client).await;
-        }
-        {
-            use xai_grok_tools::implementations::grok_build::ask_user_question::UserQuestionSender;
-            agent
-                .tool_bridge()
-                .update_resource(UserQuestionSender(user_question_tx.clone()))
-                .await;
-        }
-        Ok(agent)
+        Ok((agent, agent_build_elapsed))
     }
 }
 /// Build a stub [`AgentRebuildSpec`] for unit tests.
@@ -426,11 +445,13 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         memory_workspace_path: None,
         memory_backend: None,
         web_search_config: WebSearchConfig::default(),
+        web_search_domains: None,
         backend_search: false,
         web_fetch_config: WebFetchConfig::Disabled,
         image_gen_config: ImageGenConfig::default(),
         video_gen_config: VideoGenConfig::default(),
         app_builder_deployer_config: AppBuilderDeployerConfig::default(),
+        media_gen_batch_limits: xai_grok_tools::media_gen_limits::MediaGenBatchLimits::default(),
         write_file_enabled: true,
         subagents_enabled: false,
         subagent_toggle: HashMap::new(),
@@ -487,6 +508,84 @@ mod tests {
             .find(|definition| definition.function.name == task_name)
             .and_then(|definition| definition.function.description)
             .expect("GrokBuild Task description should be present")
+    }
+    /// The `[toolset.web_search]` policy is authoritative on the backend-hosted
+    /// path: agent frontmatter is model-writable (`.grok/agents/*.md`), so a
+    /// configured blocklist must survive a frontmatter allowlist, matching the
+    /// client-side `resolve_filters`. With no configured policy, frontmatter
+    /// still applies.
+    #[tokio::test(flavor = "current_thread")]
+    async fn config_web_search_domains_beat_agent_frontmatter() {
+        use xai_grok_sampling_types::{HostedTool, ToolOverrides, WebSearchOptions};
+        let frontmatter = WebSearchOptions {
+            allowed_domains: Some(vec!["attacker.example".into()]),
+            excluded_domains: None,
+        };
+        let configured = WebSearchOptions {
+            allowed_domains: None,
+            excluded_domains: Some(vec!["reddit.com".into()]),
+        };
+        let definition = || {
+            let mut d = AgentDefinition::default_grok_build();
+            d.tool_overrides = Some(ToolOverrides {
+                x_search: None,
+                web_search: Some(frontmatter.clone()),
+            });
+            d
+        };
+        let spec_with = |domains: Option<WebSearchOptions>| {
+            let mut spec = test_rebuild_spec_default();
+            let spec_mut =
+                Arc::get_mut(&mut spec).expect("test rebuild spec should be uniquely owned");
+            spec_mut.web_search_domains = domains;
+            spec_mut.backend_search = true;
+            spec_mut.web_search_config = WebSearchConfig::Enabled {
+                api_key: "test-key".to_string(),
+                base_url: "https://api.x.ai/v1".to_string(),
+                model: "grok-4".to_string(),
+                extra_headers: Default::default(),
+                alpha_test_key: None,
+                allowed_domains: None,
+                excluded_domains: None,
+            };
+            spec
+        };
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let agent = spec_with(Some(configured.clone()))
+                    .build_agent(definition())
+                    .await
+                    .expect("agent build should succeed");
+                assert_eq!(
+                    agent
+                        .definition()
+                        .tool_overrides
+                        .as_ref()
+                        .and_then(|o| o.web_search.clone()),
+                    Some(configured.clone()),
+                    "config must replace the frontmatter allowlist"
+                );
+                assert!(
+                    agent.hosted_tools().contains(&HostedTool::WebSearch {
+                        options: Some(configured.clone()),
+                    }),
+                    "the hosted tool carries the configured policy: {:?}",
+                    agent.hosted_tools()
+                );
+                let agent = spec_with(None)
+                    .build_agent(definition())
+                    .await
+                    .expect("agent build should succeed");
+                assert_eq!(
+                    agent
+                        .definition()
+                        .tool_overrides
+                        .as_ref()
+                        .and_then(|o| o.web_search.clone()),
+                    Some(frontmatter.clone())
+                );
+            })
+            .await;
     }
     #[tokio::test(flavor = "current_thread")]
     async fn rebuild_projects_fresh_public_model_keys_into_task_description() {

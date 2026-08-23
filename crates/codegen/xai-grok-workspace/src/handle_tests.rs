@@ -41,13 +41,38 @@ pub(crate) fn make_handle_with_status_config(
 ) -> WorkspaceHandle {
     make_handle_inner(false, false, status_config, false)
 }
+/// [`make_handle`], but with the empty `state_path` that real sessions get.
+#[allow(dead_code)]
+pub(crate) fn make_handle_without_tool_state() -> WorkspaceHandle {
+    make_handle_with_factory(
+        Arc::new(TestSessionContextFactory::without_tool_state()),
+        false,
+        false,
+        Default::default(),
+        false,
+    )
+}
 fn make_handle_inner(
     rewind_all_outcomes: bool,
     require_explicit_toolset: bool,
     status_config: crate::StatusConfig,
     confine_fs_to_workspace_root: bool,
 ) -> WorkspaceHandle {
-    let factory = Arc::new(TestSessionContextFactory::new());
+    make_handle_with_factory(
+        Arc::new(TestSessionContextFactory::new()),
+        rewind_all_outcomes,
+        require_explicit_toolset,
+        status_config,
+        confine_fs_to_workspace_root,
+    )
+}
+fn make_handle_with_factory(
+    factory: Arc<TestSessionContextFactory>,
+    rewind_all_outcomes: bool,
+    require_explicit_toolset: bool,
+    status_config: crate::StatusConfig,
+    confine_fs_to_workspace_root: bool,
+) -> WorkspaceHandle {
     let cwd = factory.temp.path().to_path_buf();
     let config = WorkspaceConfig {
         root_cwd: cwd,

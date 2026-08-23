@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use xai_grok_telemetry::startup::{AgentKind, PhaseSnapshot, StartupPhase, format_duration};
 
+use crate::app::connect_timeout::CONNECT_UI_TIMEOUT_TRY_COMMAND;
+
 use super::{ConnectAttempt, Context, EarlierAttempt, Reason, StartupFailure};
 
 const WRAP_WIDTH: usize = 76;
@@ -73,6 +75,18 @@ impl Advice {
             );
         }
         let _ = write!(explanation, " {}", self.next_step.text());
+        // Only where waiting longer can help: a wedged leader never becomes
+        // ready, so pairing this with "stop the leader" would contradict it.
+        if matches!(
+            self.next_step,
+            NextStep::Retry | NextStep::CheckNetworkThenRetry
+        ) {
+            let _ = write!(
+                explanation,
+                " On a slow machine or network filesystem, a larger startup \
+                 budget can help. Set it with the command below."
+            );
+        }
         explanation
     }
 }
@@ -150,7 +164,7 @@ impl NextStep {
     /// Kept out of the prose so wrapping can never split it.
     fn command(self) -> Option<&'static str> {
         match self {
-            Self::Retry | Self::CheckNetworkThenRetry => None,
+            Self::Retry | Self::CheckNetworkThenRetry => Some(CONNECT_UI_TIMEOUT_TRY_COMMAND),
             Self::RestartSharedLeader => Some("grok leader kill"),
         }
     }

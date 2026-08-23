@@ -23,7 +23,7 @@ mod import_claude;
 mod interject;
 mod jump;
 mod modes;
-mod notes;
+pub(crate) mod notes;
 mod notifications;
 mod permissions;
 mod prompt;
@@ -45,6 +45,7 @@ pub(crate) use billing::{UPSELL_URL_PAYG, UPSELL_URL_UPGRADE, is_credit_limit_er
 pub(crate) use modes::{downgrade_displayed_auto_if_gated, effective_auto};
 #[cfg(test)]
 pub(crate) use notes::FEEDBACK_QUESTION_LABEL;
+pub(crate) use notes::FEEDBACK_TRACE_UPLOAD_TIMEOUT_MS;
 pub(crate) use notes::{recap_unavailable_toast, scrollback_has_user_messages};
 pub(crate) use permissions::resolve_permission_queue_transition;
 pub(crate) use prompt::dispatch_initial_prompt;

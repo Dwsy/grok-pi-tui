@@ -51,6 +51,29 @@ pub struct Config {
     pub ask_user_question: crate::tools::config::AskUserQuestionToolConfig,
     /// `[privacy]` — local banner ack (not auth-metadata).
     pub privacy: PrivacyConfig,
+    pub consent: super::consent::ConsentConfig,
+    /// `[telemetry]` — only the key the pager persists round-trips.
+    pub telemetry: TelemetryPersistConfig,
+    /// `[features]` — only the key the pager persists round-trips.
+    pub features: FeaturesPersistConfig,
+}
+
+/// The `[telemetry]` slice the pager is allowed to write back. Unmodeled
+/// keys under `[telemetry]` are preserved by the deep merge in
+/// `save_config_locked`.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct TelemetryPersistConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_upload: Option<bool>,
+}
+
+/// The `[features]` slice the pager is allowed to write back. Unmodeled
+/// keys under `[features]` are preserved by the deep merge in
+/// `save_config_locked`.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct FeaturesPersistConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback_trace_card: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -121,8 +144,15 @@ pub(crate) fn load_mcp_servers_with_oauth(
     cwd: &std::path::Path,
     compat: &CompatConfig,
 ) -> (Vec<acp::McpServer>, McpOAuthConfigMap) {
-    let global_config =
-        crate::config::load_from_disk().unwrap_or_else(|_| TomlValue::Table(toml::map::Map::new()));
+    // Read the same effective config that `load_mcp_servers` /
+    // `reload_mcp_servers_merged` start servers from, so the server list and its
+    // parallel OAuth map derive from one snapshot. This aligns the OAuth map
+    // with the effective-config server list, so a managed- or
+    // requirements-defined server cannot start without its OAuth client
+    // settings. (The overlay is stripped of `mcp_servers`, so it never
+    // contributes a server here.)
+    let global_config = crate::config::load_effective_config()
+        .unwrap_or_else(|_| TomlValue::Table(toml::map::Map::new()));
 
     let mut servers_map: IndexMap<String, McpServerConfig> = IndexMap::new();
     for (name, config) in parse_mcp_servers_from_toml(&global_config) {
@@ -1756,16 +1786,19 @@ pub fn cli_known_mcp_server_names(cwd: &std::path::Path) -> std::collections::Ha
 }
 
 /// Plugin registry for one-shot CLI discovery (matches mcp doctor gating).
-fn load_cli_plugin_registry(cwd: &std::path::Path) -> xai_grok_agent::plugins::PluginRegistry {
+///
+/// Resolves the same cwd-effective `[plugins]` table as session startup
+/// (`resolve_effective_plugins_config`), so trusted project `[plugins].paths`
+/// plugins are included, not just the global config. Also used by the pager's
+/// `/agents` modal to list plugin-provided agents without a live session
+/// registry snapshot.
+pub fn load_cli_plugin_registry(cwd: &std::path::Path) -> xai_grok_agent::plugins::PluginRegistry {
     let trust_store = xai_grok_agent::plugins::TrustStore::load();
-    let mut plugins_cfg: crate::agent::config::PluginsConfig =
-        crate::config::load_effective_config()
-            .ok()
-            .and_then(|t| t.get("plugins").and_then(|v| v.clone().try_into().ok()))
-            .unwrap_or_default();
-    plugins_cfg.merge_claude_enabled_plugins(Some(cwd));
-    let mut plugin_config = plugins_cfg.to_discovery_config();
+    // Resolve/record the folder-trust verdict first: the effective-plugins
+    // resolve below gates project [plugins].paths on the cached verdict.
     let project_trusted = crate::agent::folder_trust::resolve_and_record(cwd, None, false);
+    let plugins_cfg = crate::config::resolve_effective_plugins_config(cwd);
+    let mut plugin_config = plugins_cfg.to_discovery_config();
     let discovered = xai_grok_agent::plugins::discover_plugins(
         Some(cwd),
         &plugin_config,
@@ -1942,6 +1975,56 @@ mod tests {
             let _g = xai_grok_test_support::EnvGuard::unset(SESSION_REGISTRY_ENV_VAR);
             assert_eq!(session_registry_local_override_sourced(None), None);
         }
+    }
+
+    /// A trusted project's `[plugins].paths` plugin (session-startup config
+    /// source) must be discovered by the one-shot CLI registry, including its
+    /// agents. Dev builds are folder-trust-inert, so the project path merges.
+    #[test]
+    #[serial_test::serial]
+    fn load_cli_plugin_registry_includes_project_config_path_plugins() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = xai_grok_test_support::EnvGuard::set("GROK_HOME", home.path());
+
+        let repo = tempfile::tempdir().unwrap();
+        git2::Repository::init(repo.path()).unwrap();
+
+        // Project-declared [plugins].paths plugin providing one agent.
+        let plugin_dir = repo.path().join("proj-plugin");
+        let agents_dir = plugin_dir.join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(
+            plugin_dir.join("plugin.json"),
+            r#"{"name": "proj-plugin", "agents": "./agents"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            agents_dir.join("reviewer.md"),
+            "---\nname: reviewer\ndescription: Project reviewer\n---\nBody.\n",
+        )
+        .unwrap();
+
+        let grok = repo.path().join(".grok");
+        std::fs::create_dir_all(&grok).unwrap();
+        std::fs::write(
+            grok.join("config.toml"),
+            format!("[plugins]\npaths = [\"{}\"]\n", plugin_dir.display()),
+        )
+        .unwrap();
+
+        let registry = load_cli_plugin_registry(repo.path());
+        assert!(
+            registry.get("proj-plugin").is_some(),
+            "project [plugins].paths plugin must be discovered"
+        );
+        let agents = xai_grok_agent::discovery::plugin_agents(&registry);
+        assert!(
+            agents
+                .iter()
+                .any(|a| a.qualified_name == "proj-plugin:reviewer"),
+            "project config-path plugin agent must be enumerable, got: {:?}",
+            agents.iter().map(|a| &a.qualified_name).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -2573,7 +2656,7 @@ expose_image_base64 = true
             acp::McpServer::Http(acp::McpServerHttp { url, .. }) => {
                 assert_eq!(url, "https://fallback.example.com/mcp");
             }
-            other => panic!("expected Http, got {:?}", other),
+            _other => panic!("expected Http"),
         }
     }
 

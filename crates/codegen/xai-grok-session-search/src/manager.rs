@@ -21,7 +21,8 @@ use crate::bootstrap::{
     has_completed_bootstrap_marker, try_bootstrap_with_lease,
 };
 use crate::db::{
-    HealAwareLogCounter, log_session_index_failure, search_db_path, with_search_index,
+    HealAwareLogCounter, log_session_index_failure, search_db_path, search_index_exists,
+    with_search_index, with_search_index_blocking,
 };
 use crate::doc::{UpsertOutcome, build_session_doc, upsert_unless_unchanged};
 use crate::fts::{META_KEY_BOOTSTRAP_CLAIM, META_KEY_LAST_BOOTSTRAP, SessionSearchRow};
@@ -54,6 +55,25 @@ pub struct SessionSearchResponse {
     /// Also true when a live claim exists without a completion marker, so a
     /// peer mid-rebuild or a dead claimant within its lease is visible.
     pub bootstrapping: bool,
+}
+
+impl SessionSearchResponse {
+    /// Empty, and not a final answer: the caller should ask again.
+    pub fn still_settling() -> Self {
+        Self {
+            bootstrapping: true,
+            ..Self::empty()
+        }
+    }
+
+    fn empty() -> Self {
+        Self {
+            results: Vec::new(),
+            next_offset: None,
+            total_estimate: Some(0),
+            bootstrapping: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -90,8 +110,7 @@ struct WorkerContext {
 }
 
 impl WorkerContext {
-    /// Same eager-flag-then-send as [`SearchIndexManager::bootstrap_once`],
-    /// reachable from inside a worker.
+    /// Requeue from inside a worker.
     fn bootstrap_once(&self, root: PathBuf) {
         self.progress.begin_bootstrapping();
         let _ = self.tx.send(SearchManagerCmd::BootstrapOnce { root });
@@ -99,7 +118,7 @@ impl WorkerContext {
 }
 
 /// Manages background session indexing for every grok home this process
-/// touches. Callers hold exactly one (the shell keeps a process singleton).
+/// touches.
 ///
 /// Requires an active tokio runtime on construction (spawns tasks).
 pub struct SearchIndexManager {
@@ -120,8 +139,8 @@ pub struct SearchIndexStatus {
 }
 
 impl SearchIndexManager {
-    /// Start the dispatcher. `source_factory` opens the session store for a
-    /// grok home, and `extract` pulls searchable text out of one transcript.
+    /// Start the dispatcher. `source_factory` opens the session store for a grok home and
+    /// `extract` pulls searchable text out of one transcript.
     pub fn start(source_factory: SessionSourceFactory, extract: ContentExtractor) -> Self {
         let progress = Arc::new(BootstrapProgress::default());
         let (tx, mut rx) = mpsc::unbounded_channel::<SearchManagerCmd>();
@@ -168,9 +187,9 @@ impl SearchIndexManager {
         Self { tx, progress }
     }
 
-    /// Queue a bootstrap of all sessions (idempotent per root; repeat calls
-    /// re-verify the on-disk marker). Sets `bootstrapping` eagerly so
-    /// pollers see `true` before the background task starts.
+    /// Queue a bootstrap of all sessions (idempotent per root; repeat calls re-verify the
+    /// on-disk marker). Sets `bootstrapping` eagerly so pollers see `true` before the background
+    /// task starts.
     pub fn bootstrap_once(&self, root: PathBuf) {
         self.progress.begin_bootstrapping();
         let _ = self.tx.send(SearchManagerCmd::BootstrapOnce { root });
@@ -186,7 +205,6 @@ impl SearchIndexManager {
         }
     }
 
-    /// Queue an index update for a single session.
     pub fn enqueue(&self, root: PathBuf, session_id: String, cwd: String) {
         let key = SessionSearchKey { session_id, cwd };
         let _ = self.tx.send(SearchManagerCmd::Enqueue {
@@ -220,19 +238,17 @@ impl SearchIndexManager {
 /// Execute a session search query, waiting up to [`BOOTSTRAP_WAIT_TIMEOUT`]
 /// for a first-call bootstrap so the query runs against a populated index.
 pub async fn execute_search(
-    manager: &SearchIndexManager,
+    manager: Option<&SearchIndexManager>,
     root_dir: &Path,
     req: &SessionSearchRequest,
 ) -> io::Result<SessionSearchResponse> {
     let query = req.query.trim();
     if query.is_empty() {
-        return Ok(SessionSearchResponse {
-            results: Vec::new(),
-            next_offset: None,
-            total_estimate: Some(0),
-            bootstrapping: false,
-        });
+        return Ok(SessionSearchResponse::empty());
     }
+    let Some(manager) = manager else {
+        return Ok(SessionSearchResponse::empty());
+    };
 
     manager.bootstrap_once(root_dir.to_path_buf());
 
@@ -274,6 +290,22 @@ pub async fn execute_search(
         total_estimate: query_result.total_estimate,
         bootstrapping: healed || manager.progress.is_bootstrapping() || claim_in_flight,
     })
+}
+
+/// Remove one session from an index built earlier, whether or not this process
+/// indexes. Best effort: a failure is logged, not returned.
+pub async fn evict_session(root_dir: &Path, session_id: &str) {
+    if !search_index_exists(root_dir) {
+        return;
+    }
+    let id = session_id.to_string();
+    let deleted = with_search_index_blocking(&search_db_path(root_dir), move |index| {
+        index.delete_doc(&id)
+    })
+    .await;
+    if let Err(e) = deleted {
+        log_session_index_failure(session_id, &e, "failed to remove session from search index");
+    }
 }
 
 async fn run_worker(
@@ -487,6 +519,15 @@ mod tests {
         Ok((String::new(), 0))
     }
 
+    fn session_is_indexed(root: &Path, query: &str) -> bool {
+        !with_search_index(&search_db_path(root), |index| {
+            index.query(query, None, 10, 0, false)
+        })
+        .unwrap()
+        .results
+        .is_empty()
+    }
+
     fn test_manager() -> SearchIndexManager {
         SearchIndexManager::start(
             |_root| -> Box<dyn SessionSource> { Box::new(EmptySource) },
@@ -529,7 +570,9 @@ mod tests {
             offset: 0,
             include_content: false,
         };
-        let resp = execute_search(&manager, tmp.path(), &req).await.unwrap();
+        let resp = execute_search(Some(&manager), tmp.path(), &req)
+            .await
+            .unwrap();
         assert!(resp.results.is_empty());
         assert_eq!(resp.total_estimate, Some(0));
     }
@@ -599,7 +642,9 @@ mod tests {
             offset: 0,
             include_content: false,
         };
-        let resp = execute_search(&manager, tmp.path(), &req).await.unwrap();
+        let resp = execute_search(Some(&manager), tmp.path(), &req)
+            .await
+            .unwrap();
         assert!(resp.results.is_empty());
     }
 
@@ -666,6 +711,29 @@ mod tests {
             index.get_content_hash("stub").unwrap(),
             None,
             "the upgrade drop must clear stub rows so their stale hashes cannot block re-indexing"
+        );
+    }
+
+    #[tokio::test]
+    async fn evict_removes_the_row_and_never_creates_the_index() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        evict_session(root, "s1").await;
+        assert!(!search_index_exists(root), "no index may be created");
+
+        let doc = crate::doc::build_session_doc(
+            &test_session("s1", "/ws", "a memorable title"),
+            "indexed body text".to_string(),
+        );
+        with_search_index(&search_db_path(root), |index| index.upsert_doc(&doc)).unwrap();
+        assert!(session_is_indexed(root, "a memorable title"));
+
+        evict_session(root, "s1").await;
+
+        assert!(
+            !session_is_indexed(root, "a memorable title"),
+            "a delete must take the row with it",
         );
     }
 }

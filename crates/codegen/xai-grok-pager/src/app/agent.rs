@@ -698,6 +698,18 @@ pub struct DeferredModelSwitch {
     /// (`Effect::SwitchModel.prev_model_id`) if the switch fails.
     pub prev_model_id: Option<acp::ModelId>,
 }
+/// Cap on remembered prompts, shared by every recall list.
+pub const PROMPT_HISTORY_CAP: usize = 200;
+/// Move `text` to the front of a recall list, deduped by trimmed text and capped. Empty text is not remembered.
+pub fn remember_prompt(list: &mut Vec<String>, text: &str) {
+    let key = text.trim();
+    if key.is_empty() {
+        return;
+    }
+    list.retain(|p| p.trim() != key);
+    list.insert(0, text.to_owned());
+    list.truncate(PROMPT_HISTORY_CAP);
+}
 /// Per-agent business logic (ACP session, models, state).
 ///
 /// External code should use the facade methods (`handle_update`,

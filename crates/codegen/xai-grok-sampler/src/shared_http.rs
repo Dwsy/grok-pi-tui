@@ -1,17 +1,15 @@
-//! Process-wide shared `reqwest::Client`s for sampling requests.
+//! Process-wide shared `reqwest::Client`s for sampling.
 //!
-//! Sharing one client across all `SamplingClient` instances is safe because
-//! the builders below take no config-derived input: auth, extra headers, base
-//! URL, and User-Agent are all applied per-request in `SamplingClient::post`.
-//! Stale-connection exposure is bounded by HTTP/2 keepalive pings (15s
-//! interval, 5s timeout, while idle), the 90s idle-pool eviction, and the
-//! first-retry HTTP/1.1 rebuild escape hatch (that client never pools, so
-//! every use opens a fresh connection).
+//! Safe to share because the builders take no config-derived input: auth,
+//! extra headers, base URL, and User-Agent are applied per-request in
+//! `SamplingClient::post`. Stale connections are bounded by h2 keepalive
+//! (15s ping / 5s timeout while idle), 90s idle-pool eviction, and the
+//! pool-less HTTP/1.1 first-retry rebuild; connections whose per-session
+//! runtime died are discarded by hyper's checkout ready-check, with the
+//! retry loop covering the rest.
 //!
-//! Wire-level behavior (connection reuse, header isolation, pool-less http1
-//! fallback, kill switch) is pinned by the `shared_http_wire` and
-//! `shared_http_kill_switch` integration binaries, which own their process
-//! environment. Extra roots: `GROK_EXTRA_CA_BUNDLE` via `xai_grok_extra_ca`.
+//! Wire behavior is pinned by the `shared_http_wire` and
+//! `shared_http_kill_switch` binaries. Extra roots: `GROK_EXTRA_CA_BUNDLE`.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -83,18 +81,16 @@ fn build_http_client() -> Result<reqwest::Client, reqwest::Error> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(10);
 
-    xai_grok_extra_ca::with_extra_root_certificates(
-        reqwest::Client::builder()
+    xai_grok_extra_ca::build_reqwest_client(|builder| {
+        builder
             .pool_max_idle_per_host(pool_max_idle)
             .pool_idle_timeout(Duration::from_secs(pool_idle_timeout_secs))
             .connect_timeout(Duration::from_secs(connect_timeout_secs))
             .tcp_nodelay(true)
-            // HTTP/2 keep-alive: ping every 15s, timeout after 5s.
             .http2_keep_alive_interval(Duration::from_secs(15))
             .http2_keep_alive_timeout(Duration::from_secs(5))
-            .http2_keep_alive_while_idle(true),
-    )
-    .build()
+            .http2_keep_alive_while_idle(true)
+    })
 }
 
 /// Build a `reqwest::Client` constrained to HTTP/1.1 with pooling disabled.
@@ -105,17 +101,17 @@ fn build_http_client_http1() -> Result<reqwest::Client, reqwest::Error> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(10);
 
-    xai_grok_extra_ca::with_extra_root_certificates(
-        reqwest::Client::builder()
+    xai_grok_extra_ca::build_reqwest_client(|builder| {
+        builder
+            .http1_only()
             .pool_max_idle_per_host(0)
             .pool_idle_timeout(Duration::from_secs(0))
             .connect_timeout(Duration::from_secs(connect_timeout_secs))
             .tcp_nodelay(true)
-            .http1_only(),
-    )
-    .build()
+    })
 }
 
+#[allow(clippy::disallowed_methods)] // test clients hit localhost mocks
 #[cfg(test)]
 mod tests {
     use std::sync::OnceLock;

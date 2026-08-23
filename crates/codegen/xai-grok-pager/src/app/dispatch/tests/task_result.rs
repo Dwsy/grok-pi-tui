@@ -493,6 +493,7 @@ fn x11_primary_hint_requires_canonical_full_miss_outcome() {
     let target = ClipboardPasteTarget::AgentPrompt {
         agent_id: AgentId(0),
         images_dir: None,
+        from_feedback_pane: false,
     };
 
     for completion in [
@@ -559,6 +560,7 @@ fn x11_primary_hint_routes_to_originating_agent() {
     let target = crate::app::actions::ClipboardPasteTarget::AgentPrompt {
         agent_id: origin,
         images_dir: None,
+        from_feedback_pane: false,
     };
 
     maybe_show_x11_primary_paste_hint(
@@ -618,6 +620,7 @@ fn clipboard_failure_routes_to_originating_agent_without_duplicate() {
     let target = crate::app::actions::ClipboardPasteTarget::AgentPrompt {
         agent_id: origin,
         images_dir: None,
+        from_feedback_pane: false,
     };
 
     show_clipboard_failure(

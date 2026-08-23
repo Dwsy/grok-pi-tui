@@ -1,7 +1,18 @@
 //! Turn-completion concern for `SessionActor`: completion handling
 //! and turn-error classification.
 
+use super::turn_end_hooks::{cancel_details, cancel_reason_for_completion};
 use super::*;
+
+fn completion_cancel_trigger(result: &PromptTurnResult) -> Option<&str> {
+    match result.as_ref().ok()?.completion_kind {
+        PromptCompletionKind::Cancelled {
+            context: Some(ref ctx),
+            ..
+        } => ctx.trigger.as_deref(),
+        _ => None,
+    }
+}
 
 impl SessionActor {
     /// Emit a cosmetic `Plan` update at turn end to clear stale spinners.
@@ -124,6 +135,11 @@ impl SessionActor {
                 .gateway
                 .forward_fire_and_forget(notification);
         }
+
+        // The row carries `workspace.branch`, and HEAD has just moved. Inside
+        // the `git_head_enabled` gate above, so a client that did not ask for
+        // HEAD notifications refreshes its row at turn end instead.
+        self.emit_status_snapshot_detached();
     }
 
     /// Live subagents and sticky usage-not-applied. `None` if the query failed.
@@ -216,6 +232,13 @@ impl SessionActor {
             self.set_goal_loop_active_resource(false).await;
         }
 
+        // Read before the lock: the report below runs under it and cannot await.
+        let last_assistant_message = match result.as_ref().ok() {
+            Some(ok) if cancel_reason_for_completion(&ok.completion_kind).is_some() => {
+                self.last_assistant_message_for_cancel().await
+            }
+            _ => None,
+        };
         let mut state = self.state.lock().await;
         // True only when this completion matched the front prompt and dequeued
         // it. The unknown-prompt branch below must NOT emit a terminal: a turn
@@ -245,6 +268,32 @@ impl SessionActor {
                     "prompt_id": prompt_id,
                     "running_prompt_id": state.running_prompt_id(),
                 })),
+            );
+        }
+        // Owned (dequeued at the front) only: the unknown-prompt branch above is a stale
+        // completion the Cancel path already finalized, and `RemovedFromQueue` never ran.
+        let finalizes_turn = owned_completion
+            && !matches!(
+                result,
+                Ok(PromptTurnOk {
+                    completion_kind: PromptCompletionKind::RemovedFromQueue,
+                    ..
+                })
+            );
+        // Under the lock that promotion needs and before the task is cleared, so this
+        // completion's turn is still the current one.
+        if finalizes_turn
+            && let Ok(ok) = &result
+            && let Some(reason) = cancel_reason_for_completion(&ok.completion_kind)
+        {
+            self.report_turn_end(
+                &prompt_id,
+                TurnEnd::Cancelled {
+                    reason,
+                    trigger: completion_cancel_trigger(&result).map(str::to_string),
+                    reason_details: cancel_details(&ok.completion_kind),
+                    last_assistant_message,
+                },
             );
         }
         // Ownership-gated: a stale completion must not null the promoted turn's
@@ -281,21 +330,8 @@ impl SessionActor {
         // replayed `_x.ai/session/update` rail so a viewer that re-attaches
         // mid-turn finalizes from replay instead of stranding on "Waiting…".
         // The caller flushed the replay buffer first, so this lands strictly
-        // after the turn's last `session/update` delta. Emit ONLY for a
-        // completion this handler owned (dequeued at the front): the
-        // unknown-prompt branch above is a stale completion for a turn the
-        // Cancel path already finalized, so emitting there would double-emit a
-        // terminal for the same prompt_id. A `RemovedFromQueue` result never
-        // started a turn, so it emits nothing either.
-        let emit_terminal = owned_completion
-            && !matches!(
-                result,
-                Ok(PromptTurnOk {
-                    completion_kind: PromptCompletionKind::RemovedFromQueue,
-                    ..
-                })
-            );
-        if emit_terminal {
+        // after the turn's last `session/update` delta.
+        if finalizes_turn {
             let mapped = result
                 .as_ref()
                 .map(|ok| ok.stop_reason)
@@ -310,18 +346,21 @@ impl SessionActor {
                     }
                 }
             };
-            // Surface the cancel trigger on the terminal `_meta` as `cancelTrigger`.
-            let cancel_trigger = result
+            // `cancellationCategory` on the terminal `_meta` lets re-attaching
+            // viewers finalize with the same copy as the driver (a hook-denied
+            // turn must not render as "cancelled by user").
+            let cancellation_category = result
                 .as_ref()
                 .ok()
-                .and_then(|ok| match &ok.completion_kind {
-                    PromptCompletionKind::Cancelled {
-                        context: Some(ctx), ..
-                    } => ctx.trigger.as_deref(),
-                    _ => None,
-                });
-            self.emit_turn_completed(prompt_id, &mapped, usage, cancel_trigger)
-                .await;
+                .and_then(|ok| ok.completion_kind.cancellation_category_meta());
+            self.emit_turn_completed(
+                prompt_id,
+                &mapped,
+                usage,
+                completion_cancel_trigger(&result),
+                cancellation_category.as_deref(),
+            )
+            .await;
         }
         owned_completion
     }
@@ -336,19 +375,29 @@ impl SessionActor {
     ///
     /// `cancel_trigger` (when `Some`) rides the `_meta` as `cancelTrigger`;
     /// `"send_now"` marks a cancel-and-send end (marker suppressed).
+    /// `cancellation_category` (when `Some`) rides as `cancellationCategory`
+    /// (`meta_category_str`, e.g. `"HookDenied"`) so viewer rails pick
+    /// category-aware terminal copy.
+    ///
+    /// Both callers queue the turn-end report before this, but the worker can dispatch first,
+    /// so the terminal and the report race. The pager handles either order.
     pub(super) async fn emit_turn_completed(
         &self,
         prompt_id: String,
         mapped: &std::result::Result<acp::StopReason, acp::Error>,
         usage: Option<crate::extensions::notification::PromptUsage>,
         cancel_trigger: Option<&str>,
+        cancellation_category: Option<&str>,
     ) {
         let (stop_reason, agent_result) = crate::sampling::error::prompt_complete_fields(mapped);
-        let extra_meta = cancel_trigger.map(|t| {
-            [("cancelTrigger".to_string(), serde_json::json!(t))]
-                .into_iter()
-                .collect()
-        });
+        let mut extra = serde_json::Map::new();
+        if let Some(t) = cancel_trigger {
+            extra.insert("cancelTrigger".to_string(), serde_json::json!(t));
+        }
+        if let Some(c) = cancellation_category {
+            extra.insert("cancellationCategory".to_string(), serde_json::json!(c));
+        }
+        let extra_meta = (!extra.is_empty()).then_some(extra);
         self.send_xai_notification_with_extra_meta(
             crate::session::turn_completion::build_turn_completed(
                 prompt_id,
@@ -359,6 +408,9 @@ impl SessionActor {
             extra_meta,
         )
         .await;
+
+        // Cost, context occupancy and the turn timer all moved during the turn.
+        self.emit_status_snapshot_detached();
     }
 
     /// Telemetry error category; delegates to `stop_failure_error_type` so the

@@ -16,6 +16,7 @@
 pub mod cache;
 mod config;
 pub mod execute_header_content;
+pub mod follow_up_behavior;
 pub mod permission_cursor;
 pub mod render_mermaid;
 pub mod scroll_mode;
@@ -26,10 +27,11 @@ pub use config::{
     AnimationConfig, AppearanceConfig, BlockBackground, BlocksConfig, EditBlockConfig,
     ExecuteHeaderStyle, FollowIndicator, LayoutConfig, PromptConfig, PromptCursor,
     PromptViewConfig, RawAltScreenMode, RawAppearanceConfig, RawTerminalConfig, ScrollConfig,
-    ScrollbackConfig, ScrollbarConfig, TodoBadgeFormat, TodoConfig, ToolBullet, ToolConfig,
+    ScrollbackConfig, ScrollbarConfig, ToolBullet, ToolConfig,
     persist_prompt_cursor, persist_respect_manual_folds,
 };
 pub use execute_header_content::ExecuteHeaderContent;
+pub use follow_up_behavior::FollowUpBehavior;
 pub use render_mermaid::RenderMermaid;
 pub use scroll_mode::ScrollMode;
 pub use text_selection::TextSelection;
@@ -53,4 +55,15 @@ pub fn tab_width() -> u8 {
 /// Update the global tab width (called when config is loaded/reloaded).
 pub fn set_tab_width(w: u8) {
     TAB_WIDTH.store(w, Ordering::Relaxed);
+}
+
+/// Tabs as spaces at [`tab_width`]. Beside the width because every caller that
+/// paints a tab has to agree on it: ratatui drops a cluster holding a control
+/// character, so a tab left in the text is deleted rather than drawn.
+pub fn expand_tabs(text: &str) -> std::borrow::Cow<'_, str> {
+    let width = tab_width();
+    if width == 0 || !text.contains('\t') {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    std::borrow::Cow::Owned(text.replace('\t', &" ".repeat(usize::from(width))))
 }

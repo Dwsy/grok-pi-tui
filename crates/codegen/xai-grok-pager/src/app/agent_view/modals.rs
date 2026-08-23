@@ -1337,6 +1337,8 @@ impl AgentView {
                     state.skills_collapsed_groups.remove(group_key)
                 }
             }
+            // Workflows tab has no collapsible groups.
+            crate::views::extensions_modal::ExtensionsTab::Workflows => false,
             crate::views::extensions_modal::ExtensionsTab::Marketplace => {
                 let source_has_error = group_key
                     .parse::<usize>()
@@ -1493,12 +1495,9 @@ impl AgentView {
                 }
                 InputOutcome::Changed
             }
-            ButtonAction::ReloadSkills => {
-                if let Some(ref mut state) = self.extensions_modal {
-                    state.skills_data = crate::views::extensions_modal::TabDataState::Loading;
-                }
-                InputOutcome::Action(Action::ReloadSkills)
-            }
+            // For the `r` reload, the router's ReloadSkills arm does the
+            // Loading writes (once a session exists) and both refetches.
+            ButtonAction::ReloadSkills => InputOutcome::Action(Action::ReloadSkills),
             ButtonAction::RefreshMcpList => InputOutcome::Action(Action::RefreshMcpList),
             ButtonAction::OpenManagedConnectors => {
                 InputOutcome::Action(Action::OpenManagedConnectors)
@@ -1849,7 +1848,9 @@ impl AgentView {
                                 }
                             }
                         }
-                        ExtensionsTab::Skills => {
+                        // Workflows rows carry no group keys, so only the
+                        // detail-expansion branch applies on that tab.
+                        ExtensionsTab::Skills | ExtensionsTab::Workflows => {
                             let sel = state.picker_state.selected;
                             if let Some(gk) = state
                                 .entry_group_keys
@@ -2888,6 +2889,7 @@ mod editor_paste_routing_tests {
             cwd.path(),
             &HashMap::new(),
             &BundleState::default(),
+            None,
             None,
             None,
         );

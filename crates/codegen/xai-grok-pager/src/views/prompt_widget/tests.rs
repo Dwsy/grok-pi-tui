@@ -65,6 +65,22 @@
     }
 
     #[test]
+    fn clone_for_live_prefill_restores_without_stealing_session_images() {
+        let mut pw = PromptWidget::new();
+        pw.textarea.insert_str("inspect ");
+        pw.insert_image(test_image()).unwrap();
+        let session = pw.stash();
+        assert!(pw.images.is_empty());
+
+        pw.restore(session.clone_for_live_prefill());
+        assert!(pw.text().contains("[Image #1]"));
+        assert_eq!(pw.images.len(), 1);
+        assert_eq!(session.images.len(), 1);
+        drop(pw);
+        assert_eq!(session.images.len(), 1);
+    }
+
+    #[test]
     fn stash_clear_restore_preserves_image_for_send() {
         let mut pw = PromptWidget::new();
         pw.textarea.insert_str("inspect ");
@@ -1557,6 +1573,21 @@
             "should insert alias command, got: {:?}",
             pw.textarea.text()
         );
+    }
+
+    /// Accepting a completion rewrites the token; an unrelated highlight
+    /// (Shift+arrows while the dropdown is open) must not survive the accept.
+    #[test]
+    fn accept_completion_drops_active_highlight() {
+        let mut pw = PromptWidget::new();
+        let models = crate::acp::model_state::ModelState::default();
+        pw.textarea.insert_str("/mod");
+        pw.refresh_slash(&models);
+        pw.textarea.set_selection(1, 3);
+
+        assert!(pw.accept_slash_completion(&models));
+        assert_eq!(pw.textarea.text(), "/model ");
+        assert!(pw.textarea.selection_range().is_none());
     }
 
     #[test]
@@ -4668,3 +4699,96 @@
         assert_eq!(path, skill_path);
     }
 
+    /// The shift-selection chords must reach the textarea through the widget.
+    #[test]
+    fn shift_movement_chords_extend_selection_through_widget() {
+        let mut pw = PromptWidget::new();
+        pw.textarea.insert_str("alpha beta");
+        pw.textarea.set_cursor(0);
+
+        pw.handle_key(&KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ));
+        assert_eq!(pw.textarea.selection_range(), Some(0..5), "word extend");
+
+        pw.handle_key(&KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::SUPER | KeyModifiers::SHIFT,
+        ));
+        assert_eq!(
+            pw.textarea.selection_range(),
+            Some(0..10),
+            "line-end extend keeps the anchor"
+        );
+
+        pw.handle_key(&KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        assert_eq!(pw.textarea.selection_range(), Some(0..9), "grapheme shrink");
+    }
+
+    /// A selection-only change must report Edited or the highlight goes stale on screen.
+    #[test]
+    fn selection_only_change_reports_edited() {
+        let mut pw = PromptWidget::new();
+        pw.textarea.insert_str("alpha beta");
+        pw.textarea.set_cursor(0);
+        pw.handle_key(&KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ));
+        assert_eq!(pw.textarea.selection_range(), Some(0..5));
+
+        // Cursor (head) is at 5; plain Right collapses to 5 — same text,
+        // same cursor, selection cleared.
+        let event = pw.handle_key(&KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(event, PromptEvent::Edited);
+        assert_eq!(pw.textarea.selection_range(), None);
+        assert_eq!(pw.textarea.cursor(), 5);
+    }
+
+    /// Esc drops the highlight but is never consumed — the same press still cancels.
+    #[test]
+    fn esc_with_selection_clears_highlight_and_declines() {
+        let mut pw = PromptWidget::new();
+        pw.textarea.insert_str("alpha beta");
+        pw.textarea.set_selection(0, 5);
+        let event = pw.handle_key(&key!(Esc).to_key_event());
+        assert_eq!(event, PromptEvent::Ignored);
+        assert_eq!(pw.textarea.selection_range(), None);
+    }
+
+    /// Modified Esc has no structural consumer: the widget consumes it via
+    /// the textarea catch-all so the cleared highlight repaints (Edited).
+    #[test]
+    fn modified_esc_with_selection_clears_and_repaints() {
+        let mut pw = PromptWidget::new();
+        pw.textarea.insert_str("alpha beta");
+        pw.textarea.set_selection(0, 5);
+        let event = pw.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT));
+        assert_eq!(event, PromptEvent::Edited);
+        assert_eq!(pw.textarea.selection_range(), None);
+    }
+
+    /// Same contract for Tab: highlight drops and focus switches on one press.
+    #[test]
+    fn tab_with_selection_clears_highlight_and_declines() {
+        let mut pw = PromptWidget::new();
+        pw.textarea.insert_str("alpha beta");
+        pw.textarea.set_selection(0, 5);
+        let event = pw.handle_key(&key!(Tab).to_key_event());
+        assert_eq!(event, PromptEvent::Ignored);
+        assert_eq!(pw.textarea.selection_range(), None);
+    }
+
+    /// Shift/Alt+Enter replaces the selection like typing does.
+    #[test]
+    fn mod_enter_replaces_selection_with_newline() {
+        let mut pw = PromptWidget::new();
+        pw.textarea.insert_str("alpha beta");
+        pw.textarea.set_selection(0, 5);
+        pw.textarea.set_cursor(5);
+        let event = pw.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        assert_eq!(event, PromptEvent::Edited);
+        assert_eq!(pw.textarea.text(), "\n beta");
+        assert_eq!(pw.textarea.selection_range(), None);
+    }

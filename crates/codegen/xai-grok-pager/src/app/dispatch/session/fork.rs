@@ -285,6 +285,7 @@ pub(in crate::app::dispatch) fn dispatch_fork_resolved(
             git_ref: None,
             // Fork resumes the parent session, which carries its own model.
             model_id: None,
+            permission_mode_override: None,
             preferred_session_id: None,
             chat_kind: parent_chat_kind,
         }]
@@ -377,7 +378,7 @@ pub(in crate::app::dispatch) fn build_child_fork_marker(
 ) -> String {
     let header = if let Some(cmd) = switch_hint {
         format!(
-            "Session {session_id} (forked from {parent_sid}) \u{2014} use {cmd} to switch between sessions",
+            "Session {session_id} (forked from {parent_sid}), use {cmd} to switch between sessions",
         )
     } else {
         format!("Session {session_id} (forked from {parent_sid})")

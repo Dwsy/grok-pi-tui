@@ -5,74 +5,40 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::model::{API_KEY_SCOPE, AuthMode, AuthStore, GrokAuth};
 
-/// RAII guard for an exclusive advisory lock on `auth.json.lock`.
-/// The lock is released when the inner `File` is dropped (closing the FD).
-///
-/// Field order is load-bearing: `_heartbeat` drops before `_file`, so the
-/// heartbeat thread is stopped and joined while the flock is still held — a
-/// late heartbeat can never write holder info into a lock file a sibling has
-/// already re-acquired.
+#[must_use]
 pub(crate) struct AuthFileLock {
-    /// Periodic `PID:TS` re-writer (see `manager::lock::LockHeartbeat`).
-    /// `None` for short holds — non-blocking acquires and async acquires
-    /// below the refresh-sized budget — which never span an IdP exchange
-    /// and don't warrant a thread per acquisition.
-    pub(super) _heartbeat: Option<super::manager::lock::LockHeartbeat>,
-    pub(super) _file: File,
+    pub(super) heartbeat: Option<super::manager::lock::LockHeartbeat>,
+    pub(super) file: File,
+}
+
+impl Drop for AuthFileLock {
+    fn drop(&mut self) {
+        // Join the heartbeat while the flock is held; a late rewrite would stamp a sibling's lock.
+        self.heartbeat.take();
+    }
 }
 
 impl AuthFileLock {
-    /// Returns `true` while this guard still refers to the **live**
-    /// `auth.json.lock` inode.
-    ///
-    /// A waiter that finds a holder stuck past the stale-lock timeout breaks
-    /// the lock by `unlink`ing the file and recreating it on a fresh inode
-    /// (see [`crate::auth::manager::lock`]). The usual cause of a "stuck"
-    /// holder is a process **suspended across system sleep** while holding the
-    /// lock: it stays alive (so the kernel never releases its flock) yet makes
-    /// no progress, so siblings break it. When such a holder resumes, its
-    /// flock lives on the now-deleted inode — it no longer holds the live lock
-    /// even though this `AuthFileLock` still exists.
-    ///
-    /// Callers about to perform an irreversible, lock-protected action
-    /// (sending a refresh token to the IdP, writing `auth.json`) MUST
-    /// re-validate first; otherwise two processes can spend the same refresh
-    /// token and trip token-family revocation.
-    ///
-    /// Non-Unix has no inode concept, so this conservatively returns `true`.
+    // TODO: delete once the token endpoint tolerates racing refreshes; guards the
+    // one-shot refresh-token contract.
+    /// False if the lock file was replaced out from under us.
     #[cfg(unix)]
     pub(crate) fn still_live(&self, auth_json_path: &Path) -> bool {
         use std::os::unix::fs::MetadataExt;
-        let lock_path = auth_json_path.with_file_name("auth.json.lock");
-        let (Ok(fd_meta), Ok(path_meta)) = (self._file.metadata(), std::fs::metadata(&lock_path))
+        let lock_path = auth_json_path.with_file_name(super::manager::lock::LOCK_FILE_NAME);
+        let (Ok(fd_meta), Ok(path_meta)) = (self.file.metadata(), std::fs::metadata(&lock_path))
         else {
-            // Lock file gone or unreadable → we no longer hold the live lock.
             return false;
         };
         fd_meta.ino() == path_meta.ino() && fd_meta.dev() == path_meta.dev()
     }
 
+    /// Non-Unix has no inode identity, so revalidation is deliberately a no-op.
     #[cfg(not(unix))]
     pub(crate) fn still_live(&self, _auth_json_path: &Path) -> bool {
         true
     }
-
-    /// Re-check liveness and mint the witness. `None` means a sibling broke
-    /// this lock as stuck (see [`Self::still_live`]); on non-Unix liveness is
-    /// assumed (no flock-break protocol there).
-    pub(crate) fn live(&self, auth_json_path: &Path) -> Option<LiveAuthFileLock<'_>> {
-        self.still_live(auth_json_path)
-            .then_some(LiveAuthFileLock(self))
-    }
 }
-
-/// Liveness-witnessed borrow of an [`AuthFileLock`], only obtainable via
-/// [`AuthFileLock::live`]: a function requiring it cannot be reached with a
-/// lock whose inode a sibling already broke — the post-suspend case
-/// [`AuthFileLock::still_live`] exists for. Borrowed, so it cannot outlive
-/// the flock it vouches for (though liveness is proved at mint time, not
-/// continuously).
-pub(crate) struct LiveAuthFileLock<'a>(#[allow(dead_code)] &'a AuthFileLock);
 
 pub fn read_auth_json(auth_file: &Path) -> std::io::Result<AuthStore> {
     let mut file = File::open(auth_file)?;

@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use xai_computer_hub_mcp_adapter::McpBridgeHandle;
 use xai_grok_mcp::servers::McpState;
-use xai_grok_tools::notification::types::{ToolNotification, ToolNotificationHandle};
+use xai_grok_tools::notification::AcknowledgedToolNotification;
+use xai_grok_tools::notification::types::ToolNotificationHandle;
 use xai_grok_tools::registry::types::{FinalizedToolset, ToolConfig, ToolServerConfig};
 use xai_hunk_tracker::HunkTrackerHandle;
 use xai_tool_protocol::ToolId;
@@ -129,8 +130,9 @@ pub struct WorkspaceSession {
     system_notify_handle: Option<ToolNotificationHandle>,
     /// Receiver paired with `system_notify_handle`, taken once by the forwarder.
     #[allow(dead_code)]
-    pending_notif_rx:
-        tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ToolNotification>>>,
+    pending_notif_rx: tokio::sync::Mutex<
+        Option<tokio::sync::mpsc::UnboundedReceiver<AcknowledgedToolNotification>>,
+    >,
     /// Spawned system-notify producers (forwarder, preview-state watcher).
     /// Sync mutex so the sync teardown path can abort without an await.
     system_notify_producers: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -167,7 +169,7 @@ impl WorkspaceSession {
         #[allow(dead_code)] system_notifications: bool,
         system_notify_channel: Option<(
             ToolNotificationHandle,
-            tokio::sync::mpsc::UnboundedReceiver<ToolNotification>,
+            tokio::sync::mpsc::UnboundedReceiver<AcknowledgedToolNotification>,
         )>,
     ) -> Self {
         let (system_notify_handle, pending_notif_rx) = match system_notify_channel {
@@ -223,12 +225,11 @@ impl WorkspaceSession {
     pub(crate) fn system_notify_handle(&self) -> Option<ToolNotificationHandle> {
         self.system_notify_handle.clone()
     }
-    /// Take the stashed notification receiver (once) for the per-session
-    /// forwarder to own.
+    /// Hand the notification receiver to the forwarder. Works once.
     #[allow(dead_code)]
     pub(crate) async fn take_pending_notif_rx(
         &self,
-    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<ToolNotification>> {
+    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<AcknowledgedToolNotification>> {
         self.pending_notif_rx.lock().await.take()
     }
     /// True once a producer set has been tracked; finalize spawns at most one
@@ -521,6 +522,8 @@ pub struct WorkspaceShared {
     pub(crate) client_ext_sink: arc_swap::ArcSwap<Option<ClientExtSink>>,
     pub(crate) local_registry: xai_computer_hub_sdk::LocalRegistry,
     pub(crate) activity_tracker: std::sync::Arc<crate::activity::ActivityTracker>,
+    /// True after the scheduler-liveness poll task started; reconnects must not start a second one.
+    pub(crate) scheduler_poll_started: std::sync::atomic::AtomicBool,
     /// Runtime-tunable timing/threshold config for the tool server.
     /// Read by the status publisher task and at shutdown.
     pub(crate) status_config: crate::status_config::StatusConfig,

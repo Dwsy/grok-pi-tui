@@ -227,7 +227,7 @@ fn render_diff_hunks_core(
         let mut new_highlighter = syntect.highlight_lines_by_file_path(path);
         for line in hunk {
             let trimmed = line.text.trim_end_matches(['\r', '\n']);
-            let text = expand_tabs(trimmed);
+            let text = xai_grok_pager_render::appearance::expand_tabs(trimmed);
             // Cold spans render unconditionally so Delete lines and any map
             // miss (text drift) paint exactly like the hunk-only phase.
             let mut content_spans = match line.tag {
@@ -271,7 +271,10 @@ fn hunk_new_line_texts(hunks: &[DiffHunk]) -> HashMap<usize, String> {
         for line in hunk {
             if matches!(line.tag, ChangeTag::Equal | ChangeTag::Insert) && line.ln > 0 {
                 let trimmed = line.text.trim_end_matches(['\r', '\n']);
-                out.insert(line.ln, expand_tabs(trimmed).into_owned());
+                out.insert(
+                    line.ln,
+                    xai_grok_pager_render::appearance::expand_tabs(trimmed).into_owned(),
+                );
             }
         }
     }
@@ -322,7 +325,7 @@ pub fn compute_file_scoped_styles(
         if ln > max_needed {
             break;
         }
-        let expanded = expand_tabs(line);
+        let expanded = xai_grok_pager_render::appearance::expand_tabs(line);
         let owned = format!("{expanded}\n");
         let ranges = highlighter
             .highlight_line(&owned, &syntect.syntax_set)

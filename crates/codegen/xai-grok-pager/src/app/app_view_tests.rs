@@ -71,7 +71,7 @@ fn app_draw_drains_deferred_release_after_flush() {
     )
     .expect("channel-backed terminal requires no tty");
     let mut app = test_app();
-    crate::memory_release::request_release_after_draw_with("unit-test-defer");
+    crate::memory_release::request_release_after_draw("unit-test-defer");
     let before = test_support::calls();
     app.draw(&mut terminal);
     assert_eq!(
@@ -99,6 +99,7 @@ pub(crate) fn test_app() -> AppView {
         registry: ActionRegistry::defaults(),
         settings_registry: std::sync::Arc::new(crate::settings::SettingsRegistry::defaults()),
         current_ui: xai_grok_shell::agent::config::UiConfig::default(),
+        status_line: Default::default(),
         cwd: std::path::PathBuf::from("/tmp"),
         cwd_has_git_ancestor: false,
         acp_tx: tx,
@@ -162,6 +163,11 @@ pub(crate) fn test_app() -> AppView {
         auth_methods: Vec::new(),
         auth_state: AuthState::Done,
         trust_state: TrustState::Done,
+        consent_state: crate::app::consent::ConsentState::Done,
+        account_email: None,
+        welcome_consent_link_rects: Vec::new(),
+        welcome_consent_hover_link: None,
+        consent_answered: None,
         login_label: None,
         login_method_id: None,
         auth_start_mode: AuthMode::Pending,
@@ -235,7 +241,7 @@ pub(crate) fn test_app() -> AppView {
         welcome_on_upgrade_cta: false,
         welcome_changelog_cta_rect: None,
         auth_show_raw_url: false,
-        auth_mouse_disabled: false,
+        native_select_hold: false,
         session_picker_entries: None,
         session_picker_loading: false,
         session_picker_state: crate::views::picker::PickerState::with_mode(
@@ -267,6 +273,7 @@ pub(crate) fn test_app() -> AppView {
         import_claude_modal: None,
         welcome_doc_viewer: None,
         screen_mode: ScreenMode::Inline,
+        pending_screen_mode_switch: None,
         pending_effects: Vec::new(),
         pending_editor: None,
         pending_pager_path: None,
@@ -276,6 +283,8 @@ pub(crate) fn test_app() -> AppView {
         show_resolved_model: true,
         sharing_enabled: false,
         plugin_cta_enabled: false,
+        plugin_cta_marketplace: None,
+        workspace_dashboard_enabled: false,
         usage_visible: true,
         has_external_auth_provider: false,
         tier_restricted_commands: Vec::new(),
@@ -293,6 +302,9 @@ pub(crate) fn test_app() -> AppView {
         scheduler_background_loops_seed: true,
         cancel_rewind_enabled: true,
         session_recap_available: false,
+        shell_feedback_trace_offer: false,
+        feedback_trace_choice_latched: false,
+        feedback_trace_upload_pending: None,
         tutorial: None,
         dashboard: None,
         dashboard_return: None,
@@ -1089,6 +1101,7 @@ fn tick_demand_fast_while_modal_session_picker_loads() {
         worktree_label: None,
         parent_session_path: None,
         last_turn_summary: None,
+        last_recap: None,
         card_detail: None,
     };
     if let Some(crate::views::modal::ActiveModal::SessionPicker { entries, .. }) =
@@ -1563,44 +1576,6 @@ fn needs_animation_gates_btw_loading_spinner() {
     assert!(!app.needs_animation());
 }
 #[test]
-fn needs_animation_gates_todo_badge_flash() {
-    let mut app = test_app_with_agent();
-    let id = super::super::agent::AgentId(0);
-    assert!(!app.needs_animation(), "idle agent must not request ticks");
-    app.agents
-        .get_mut(&id)
-        .unwrap()
-        .todo
-        .update_todos(vec![xai_grok_shell::tools::TodoItem {
-            content: "do the thing".into(),
-            priority: Default::default(),
-            status: xai_grok_shell::tools::TodoStatus::InProgress,
-            meta: None,
-        }]);
-    assert!(
-        app.agents[&id].todo.badge_needs_tick(),
-        "fixture: a counts change must arm the badge flash"
-    );
-    assert!(
-        app.needs_animation(),
-        "an active todo badge flash must request animation ticks"
-    );
-    app.agents
-        .get_mut(&id)
-        .unwrap()
-        .todo
-        .expire_badge_flash_for_test();
-    let _ = app.tick();
-    assert!(
-        !app.agents[&id].todo.badge_needs_tick(),
-        "tick() must clear the expired badge flash (badge_tick)"
-    );
-    assert!(
-        !app.needs_animation(),
-        "a cleared badge flash must stop requesting ticks"
-    );
-}
-#[test]
 fn needs_animation_gates_pending_acp_command_sync() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);
@@ -1650,6 +1625,7 @@ fn needs_animation_gates_pending_turn_end_reconcile() {
             stop_reason: Some("end_turn".into()),
             agent_result: None,
             cancel_trigger: None,
+            cancellation_category: None,
             received_at: std::time::Instant::now()
                 - (TURN_END_RECONCILE_GRACE + std::time::Duration::from_secs(1)),
         });
@@ -2548,6 +2524,7 @@ fn welcome_session_entry(id: &str) -> SessionPickerEntry {
         worktree_label: None,
         parent_session_path: None,
         last_turn_summary: None,
+        last_recap: None,
         card_detail: None,
     }
 }
@@ -2640,6 +2617,273 @@ fn welcome_trust_decline_keys_quit() {
     };
     let outcome = app.handle_input(&key_event(KeyCode::Char('y'), KeyModifiers::NONE));
     assert!(matches!(outcome, InputOutcome::Action(Action::TrustFolder)));
+}
+/// A notice already on screen, with both menu rows and both of its links painted.
+fn consent_pending_app() -> AppView {
+    use crate::app::consent::{ConsentLegibility, ConsentNotice, ConsentSegment};
+    use ratatui::layout::Rect;
+    let mut app = test_app();
+    app.trust_state = TrustState::Pending {
+        workspace: std::path::PathBuf::from("/tmp/x"),
+    };
+    app.consent_state = crate::app::consent::ConsentState::Pending {
+        notice: ConsentNotice {
+            id: "notice".to_string(),
+            version: 1,
+            title: "Title".to_string(),
+            segments: vec![
+                ConsentSegment::Link {
+                    index: 0,
+                    label: "Terms".to_string(),
+                },
+                ConsentSegment::Link {
+                    index: 1,
+                    label: "AUP".to_string(),
+                },
+            ],
+            links: vec![
+                "https://x.ai/legal/tos".to_string(),
+                "https://x.ai/legal/aup".to_string(),
+            ],
+            accept_label: "Accept".to_string(),
+        },
+        legibility: ConsentLegibility::Painted,
+        painted_at: Some(std::time::Instant::now()),
+    };
+    app.welcome_menu_rects = vec![Rect::new(10, 20, 30, 1), Rect::new(10, 21, 30, 1)];
+    app.welcome_consent_link_rects =
+        vec![(0, Rect::new(5, 12, 5, 1)), (1, Rect::new(20, 12, 6, 1))];
+    app
+}
+/// Accept is `a` alone. `y` belongs to the trust question one screen later, Enter may be buffered,
+/// and the rest have no meaning here.
+#[test]
+fn welcome_consent_answers_only_to_its_own_keys() {
+    for code in [
+        KeyCode::Char('y'),
+        KeyCode::Char('n'),
+        KeyCode::Esc,
+        KeyCode::Enter,
+        KeyCode::Char(' '),
+        KeyCode::Tab,
+    ] {
+        let mut app = consent_pending_app();
+        let outcome = app.handle_input(&key_event(code, KeyModifiers::NONE));
+        assert!(
+            matches!(outcome, InputOutcome::Unchanged),
+            "{code:?} must not answer the notice, got {outcome:?}",
+        );
+    }
+    let mut app = consent_pending_app();
+    assert!(matches!(
+        app.handle_input(&key_event(KeyCode::Char('a'), KeyModifiers::NONE)),
+        InputOutcome::Action(Action::AcceptConsent)
+    ));
+    let mut app = consent_pending_app();
+    assert!(matches!(app.handle_input(&ctrl_c()), InputOutcome::Changed));
+    assert!(
+        app.pending_action.is_some(),
+        "the first Ctrl+C must arm the confirmation"
+    );
+    let mut app = consent_pending_app();
+    assert!(
+        matches!(
+            app.handle_input(&key_event(KeyCode::Char('q'), KeyModifiers::NONE)),
+            InputOutcome::Action(Action::Quit)
+        ),
+        "the screen offers Quit, so the key has to work",
+    );
+}
+/// Every event from before the notice painted was aimed at the screen it replaced, and acting on
+/// one would quit and take the composer's text with it. Ctrl+C is the exception, because nothing
+/// else on this screen handles it.
+#[test]
+fn welcome_consent_ignores_everything_from_before_the_paint() {
+    use crate::app::consent::ConsentState;
+    let unpainted = || {
+        let mut app = consent_pending_app();
+        if let ConsentState::Pending { painted_at, .. } = &mut app.consent_state {
+            *painted_at = None;
+        }
+        app
+    };
+    let mut app = consent_pending_app();
+    let painted = match &app.consent_state {
+        ConsentState::Pending { painted_at, .. } => painted_at.expect("painted"),
+        ConsentState::Done => unreachable!(),
+    };
+    let outcome = app.handle_input_at_with_paste_provenance(
+        &key_event(KeyCode::Char('a'), KeyModifiers::NONE),
+        painted - std::time::Duration::from_millis(1),
+        crate::app::app_view::PasteProvenance::Terminal,
+    );
+    assert!(
+        matches!(outcome, InputOutcome::Unchanged),
+        "a key that predates the notice was aimed at the composer, got {outcome:?}",
+    );
+    for ev in [
+        left_mouse(MouseEventKind::Down(MouseButton::Left), 12, 20),
+        key_event(KeyCode::Char('q'), KeyModifiers::NONE),
+    ] {
+        assert!(matches!(
+            unpainted().handle_input(&ev),
+            InputOutcome::Unchanged
+        ));
+    }
+    let mut app = unpainted();
+    assert!(matches!(app.handle_input(&ctrl_c()), InputOutcome::Changed));
+    assert!(
+        app.pending_action.is_some(),
+        "a notice that never painted must still be escapable",
+    );
+}
+#[test]
+fn welcome_consent_answers_and_links_are_reachable_by_key_and_click() {
+    let click = |col, row| left_mouse(MouseEventKind::Down(MouseButton::Left), col, row);
+    let mut app = consent_pending_app();
+    assert!(matches!(
+        app.handle_input(&click(12, 20)),
+        InputOutcome::Action(Action::AcceptConsent)
+    ));
+    let mut app = consent_pending_app();
+    assert!(matches!(
+        app.handle_input(&click(12, 21)),
+        InputOutcome::Action(Action::Quit)
+    ));
+    let mut app = consent_pending_app();
+    assert!(matches!(
+        app.handle_input(&click(21, 12)),
+        InputOutcome::Action(Action::OpenConsentLink(1))
+    ));
+    let mut app = consent_pending_app();
+    assert!(matches!(
+        app.handle_input(&key_event(KeyCode::Char('2'), KeyModifiers::NONE)),
+        InputOutcome::Action(Action::OpenConsentLink(1))
+    ));
+    for code in [KeyCode::Char('0'), KeyCode::Char('3')] {
+        let mut app = consent_pending_app();
+        assert!(
+            matches!(
+                app.handle_input(&key_event(code, KeyModifiers::NONE)),
+                InputOutcome::Unchanged
+            ),
+            "{code:?} addresses no link",
+        );
+    }
+}
+/// What the renderer reports is the only thing standing between a click and an acceptance, so the
+/// three answers it can give have to land in the state exactly.
+#[test]
+fn consent_paint_records_what_the_renderer_reported() {
+    use crate::app::consent::{ConsentLegibility, ConsentNotice, ConsentState};
+    let pending = || ConsentState::Pending {
+        notice: ConsentNotice {
+            id: "notice".to_string(),
+            version: 1,
+            title: "Title".to_string(),
+            segments: Vec::new(),
+            links: Vec::new(),
+            accept_label: "Accept".to_string(),
+        },
+        legibility: ConsentLegibility::Illegible,
+        painted_at: None,
+    };
+    let mut state = pending();
+    record_consent_paint(&mut state, Some(ConsentLegibility::Illegible));
+    let ConsentState::Pending {
+        painted_at,
+        legibility,
+        ..
+    } = &state
+    else {
+        panic!("expected pending");
+    };
+    assert!(painted_at.is_some(), "an illegible paint is still a paint");
+    assert_eq!(*legibility, ConsentLegibility::Illegible);
+    let mut state = pending();
+    record_consent_paint(&mut state, Some(ConsentLegibility::Painted));
+    record_consent_paint(&mut state, None);
+    let ConsentState::Pending {
+        painted_at,
+        legibility,
+        ..
+    } = &state
+    else {
+        panic!("expected pending");
+    };
+    assert_eq!(
+        *legibility,
+        ConsentLegibility::Illegible,
+        "a frame that did not paint the notice cannot leave it acceptable",
+    );
+    assert!(painted_at.is_some(), "the first paint still happened");
+}
+/// An unreadable notice still has to take `q`, so the paint stamp cannot wait for legibility.
+#[test]
+fn welcome_consent_quit_works_while_the_body_is_unreadable() {
+    use crate::app::consent::{ConsentLegibility, ConsentState};
+    let mut app = consent_pending_app();
+    if let ConsentState::Pending { legibility, .. } = &mut app.consent_state {
+        *legibility = ConsentLegibility::Illegible;
+    }
+    app.welcome_menu_rects.truncate(1);
+    assert!(matches!(
+        app.handle_input(&key_event(KeyCode::Char('q'), KeyModifiers::NONE)),
+        InputOutcome::Action(Action::Quit)
+    ));
+    let mut app = consent_pending_app();
+    if let ConsentState::Pending { legibility, .. } = &mut app.consent_state {
+        *legibility = ConsentLegibility::Illegible;
+    }
+    for ev in [
+        key_event(KeyCode::Char('1'), KeyModifiers::NONE),
+        left_mouse(MouseEventKind::Down(MouseButton::Left), 6, 12),
+    ] {
+        assert!(matches!(app.handle_input(&ev), InputOutcome::Unchanged));
+    }
+    let mut app = consent_pending_app();
+    if let ConsentState::Pending { legibility, .. } = &mut app.consent_state {
+        *legibility = ConsentLegibility::Illegible;
+    }
+    assert!(matches!(
+        app.handle_input(&left_mouse(MouseEventKind::Down(MouseButton::Left), 12, 20)),
+        InputOutcome::Action(Action::Quit)
+    ));
+}
+#[test]
+fn welcome_consent_hover_tracks_the_menu_row_and_the_link() {
+    let mut app = consent_pending_app();
+    app.welcome_menu_rects.truncate(1);
+    let moved = |col, row| left_mouse(MouseEventKind::Moved, col, row);
+    assert!(matches!(
+        app.handle_input(&moved(12, 20)),
+        InputOutcome::Changed
+    ));
+    assert_eq!(app.welcome_menu_index, Some(0));
+    assert!(matches!(
+        app.handle_input(&moved(30, 20)),
+        InputOutcome::Unchanged
+    ));
+    assert!(matches!(
+        app.handle_input(&moved(6, 12)),
+        InputOutcome::Changed
+    ));
+    assert_eq!(app.welcome_consent_hover_link, Some(0));
+    assert_eq!(app.welcome_menu_index, None);
+    assert!(matches!(
+        app.handle_input(&moved(21, 12)),
+        InputOutcome::Changed
+    ));
+    assert_eq!(app.welcome_consent_hover_link, Some(1));
+    assert!(matches!(
+        app.handle_input(&moved(0, 0)),
+        InputOutcome::Changed
+    ));
+    assert_eq!(app.welcome_consent_hover_link, None);
+    assert!(matches!(
+        app.handle_input(&moved(1, 0)),
+        InputOutcome::Unchanged
+    ));
 }
 #[test]
 fn welcome_ctrl_c_requires_confirmation() {
@@ -5706,6 +5950,16 @@ fn neutral_overlay_app() -> (AppView, super::super::agent::AgentId) {
     }
     (app, id)
 }
+fn open_agents_modal() -> crate::views::agents_modal::AgentsModalState {
+    crate::views::agents_modal::AgentsModalState::new(
+        std::path::Path::new("/nonexistent"),
+        &std::collections::HashMap::new(),
+        &BundleState::default(),
+        None,
+        None,
+        None,
+    )
+}
 /// With a pending input overlay, neither `q` nor `Esc` is consumed as a
 /// dashboard-overlay exit — both fall through to the agent (the scrollback
 /// handler, not the overlay handler).
@@ -5896,9 +6150,10 @@ fn overlay_left_arrow_in_scrollback_does_not_exit() {
         "Left in scrollback must reach the agent, got {outcome:?}",
     );
 }
-/// An open modal (extensions modal or `active_modal`) makes
-/// `is_empty_focused_prompt` false even on an empty, prompt-focused
-/// composer, so the modal — not the overlay back-out — owns Esc/Left.
+/// An open modal (extensions, `/agents`, persona detail, block viewer, or
+/// `active_modal`) makes `is_empty_focused_prompt` false even on an empty,
+/// prompt-focused composer, so the modal — not the overlay back-out — owns
+/// Esc/Left.
 #[test]
 fn overlay_open_modal_fails_empty_focused_prompt_guard() {
     let (mut app, id) = neutral_overlay_app();
@@ -5916,6 +6171,27 @@ fn overlay_open_modal_fails_empty_focused_prompt_guard() {
         "an open extensions modal must fail the guard",
     );
     agent.extensions_modal = None;
+    agent.agents_modal = Some(open_agents_modal());
+    assert!(
+        !agent.is_empty_focused_prompt(),
+        "an open agents modal must fail the guard",
+    );
+    agent.agents_modal = None;
+    agent.persona_detail =
+        Some(crate::views::persona_detail::PersonaDetailState::from_name_only("researcher"));
+    assert!(
+        !agent.is_empty_focused_prompt(),
+        "an open persona detail must fail the guard",
+    );
+    agent.persona_detail = None;
+    agent.block_viewer = Some(crate::views::block_viewer::BlockViewerPane::for_plain_text(
+        "t", "content",
+    ));
+    assert!(
+        !agent.is_empty_focused_prompt(),
+        "an open block viewer must fail the guard",
+    );
+    agent.block_viewer = None;
     agent.active_modal = Some(crate::views::modal::ActiveModal::CommandPalette {
         entries: Vec::new(),
         state: crate::views::picker::PickerState::default(),
@@ -5988,6 +6264,75 @@ fn overlay_modal_open_esc_left_do_not_exit() {
             "{code:?} with active_modal open must not back out, got {outcome:?}",
         );
     }
+    let (mut app, id) = neutral_overlay_app();
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.active_pane = crate::app::agent_view::AgentPane::Prompt;
+        agent.agents_modal = Some(open_agents_modal());
+    }
+    let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        !matches!(outcome, InputOutcome::Action(Action::DashboardOverlayExit)),
+        "Esc with the agents modal open must not back out, got {outcome:?}",
+    );
+    assert!(
+        app.agents[&id].agents_modal.is_none(),
+        "Esc must reach the agents modal handler and close it",
+    );
+    assert_eq!(
+        app.dashboard.as_ref().and_then(|d| d.attached_agent),
+        Some(id),
+        "closing /agents must leave the dashboard overlay attached",
+    );
+    let (mut app, id) = neutral_overlay_app();
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.active_pane = crate::app::agent_view::AgentPane::Prompt;
+        agent.agents_modal = Some(open_agents_modal());
+    }
+    let outcome = app.handle_input(&key_event(KeyCode::Left, KeyModifiers::NONE));
+    assert!(
+        !matches!(outcome, InputOutcome::Action(Action::DashboardOverlayExit)),
+        "Left with the agents modal open must not back out, got {outcome:?}",
+    );
+    assert!(
+        app.agents[&id].agents_modal.is_some(),
+        "Left must reach the agents modal, keeping it open",
+    );
+}
+/// `/agents` open on a scrollback-focused overlay must own Esc (close the
+/// modal) rather than the neutral-scrollback overlay exit. `is_bare_scrollback`
+/// used to omit `agents_modal`, so this path looped dashboard ↔ conversation.
+#[test]
+fn overlay_agents_modal_owns_esc_from_scrollback() {
+    let (mut app, id) = neutral_overlay_app();
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        assert_eq!(
+            agent.active_pane,
+            crate::app::agent_view::AgentPane::Scrollback,
+            "fixture starts on scrollback (neutral overlay exit state)",
+        );
+        agent.agents_modal = Some(open_agents_modal());
+        assert!(
+            !agent.is_bare_scrollback(),
+            "an open agents modal must fail the bare-scrollback overlay-exit guard",
+        );
+    }
+    let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        !matches!(outcome, InputOutcome::Action(Action::DashboardOverlayExit)),
+        "Esc with /agents open on scrollback must not back out, got {outcome:?}",
+    );
+    assert!(
+        app.agents[&id].agents_modal.is_none(),
+        "Esc must close the agents modal",
+    );
+    assert_eq!(
+        app.dashboard.as_ref().and_then(|d| d.attached_agent),
+        Some(id),
+        "closing /agents must leave the dashboard overlay attached",
+    );
 }
 /// The graduated plan/Q&A back-out also defers to an open modal: with a
 /// single-question Q&A overlay at its back-out top AND a modal open, both
@@ -6017,6 +6362,15 @@ fn graduated_back_out_defers_to_open_modal() {
         );
     }
     app.agents.get_mut(&id).unwrap().extensions_modal = None;
+    app.agents.get_mut(&id).unwrap().agents_modal = Some(open_agents_modal());
+    {
+        let a = app.agents.get(&id).unwrap();
+        assert!(
+            !a.overlay_esc_backs_out() && !a.overlay_left_backs_out(),
+            "an open agents modal must suppress the graduated back-out",
+        );
+    }
+    app.agents.get_mut(&id).unwrap().agents_modal = None;
     app.agents.get_mut(&id).unwrap().active_modal =
         Some(crate::views::modal::ActiveModal::CommandPalette {
             entries: Vec::new(),
@@ -6712,7 +7066,7 @@ fn handle_input_exit_session_action_closes_popup() {
         d.close_popup();
     }
     if let Some(agent) = app.agents.get_mut(&id) {
-        agent.active_subagent = None;
+        agent.close_subagent_fullscreen();
     }
     assert_eq!(app.dashboard.as_ref().unwrap().attached_agent, None);
     assert!(
@@ -6745,6 +7099,7 @@ fn welcome_picker_f_cycle_disabled_under_chat_mode() {
         worktree_label: None,
         parent_session_path: None,
         last_turn_summary: None,
+        last_recap: None,
         card_detail: None,
     };
     let f_key = Event::Key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));

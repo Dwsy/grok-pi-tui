@@ -1073,7 +1073,7 @@ mod tests {
             capability_mode: None,
             workflow_run_id: None,
             context_normalized: false,
-            child_updates_replayed: false,
+            transcript: Default::default(),
             parent_prompt_id: None,
             started_at: now,
             last_progress_at: now,

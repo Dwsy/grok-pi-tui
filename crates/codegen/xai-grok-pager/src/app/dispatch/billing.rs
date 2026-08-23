@@ -288,6 +288,7 @@ fn open_supergrok_upsell(
         auth_method,
     });
 
+    // /supergrok lists all plans; every upgrade option lands there.
     let options = vec![
         QuestionOption {
             label: "Upgrade to SuperGrok".into(),
@@ -296,11 +297,15 @@ fn open_supergrok_upsell(
             id: Some(UPSELL_URL_UPGRADE.into()),
         },
         QuestionOption {
+            label: "Upgrade to SuperGrok Plus".into(),
+            description: "Significantly higher usage and rate limits".into(),
+            preview: None,
+            id: Some(UPSELL_URL_UPGRADE.into()),
+        },
+        QuestionOption {
             label: "Upgrade to SuperGrok Heavy".into(),
             description: "Get the most out of Grok Build. Highest usage limits.".into(),
             preview: None,
-            // No Heavy-specific URL exists; the /supergrok page lists
-            // both plans, so both upgrade options land there.
             id: Some(UPSELL_URL_UPGRADE.into()),
         },
     ];
@@ -536,7 +541,7 @@ pub(super) fn handle_credit_limit_recheck_complete(
     drain.effects.push(Effect::FetchBilling {
         agent_id,
         silent: true,
-        nonce: 0,
+        nonce: Default::default(),
     });
     note_peek_page_flip(app, agent_id, drain.page_flip_entry);
     drain.effects

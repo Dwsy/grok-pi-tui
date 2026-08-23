@@ -39,7 +39,8 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use url::Url;
 use xai_computer_hub_sdk::{
-    AuthProvider, ClientError, HubConnectionPool, ToolServer, ToolServerBuilder, ToolServerHandler,
+    AuthProvider, CLOSE_CODE_SANDBOX_TERMINATED, ClientError, HubConnectionPool, ToolServer,
+    ToolServerBuilder, ToolServerHandler,
 };
 use xai_grok_diag_server::DiagHandle;
 use xai_grok_tools::registry::types::ToolConfig;
@@ -243,10 +244,13 @@ impl HubHandle {
             let on_disconnect = diag.clone();
             let on_terminal_close = diag.clone();
             server_builder = server_builder
+                .reconnect_after_terminal_close_codes([CLOSE_CODE_SANDBOX_TERMINATED])
                 .on_connect(move || on_connect.set_connected())
                 .on_disconnect(move || on_disconnect.set_disconnected())
                 .on_terminal_close(move |code| on_terminal_close.set_terminal_close(code))
-                .on_reconnect_settled(move || diag.set_connected());
+                .on_reconnect_settled(move || {
+                    diag.revive_connected(&[CLOSE_CODE_SANDBOX_TERMINATED]);
+                });
         }
         if let Some(ref id) = config.server_id {
             server_builder = server_builder.server_id(parse_server_id(id)?);

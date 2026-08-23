@@ -7,7 +7,7 @@
 ```text
 origin   https://github.com/Dwsy/grok-pi.git
 upstream https://github.com/xai-org/grok-build.git
-base     e5fd4816d43260c15ba785f103990c1ed6cea230
+base     07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8
 ```
 
 - Work from this directory; do not use its parent wrapper as a repository.

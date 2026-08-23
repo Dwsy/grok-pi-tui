@@ -35,6 +35,7 @@ const ALL_SETTINGS_EXERCISED: &[&str] = &[
     "page_flip_on_send",
     "confirm_before_rewind",
     "combine_queued_prompts",
+    "follow_up_behavior",
     "simple_mode",
     "vim_mode",
     "remember_tool_approvals",
@@ -246,6 +247,7 @@ fn assert_set_bool_action(outcome: SettingsKeyOutcome, key: &str, expected: bool
                 "SetCombineQueuedPrompts value differs from expected"
             )
         }
+
         ("simple_mode", Action::SetSimpleMode(b)) => {
             assert_eq!(b, expected, "SetSimpleMode value differs from expected")
         }
@@ -441,6 +443,48 @@ fn space_on_combine_queued_prompts_dispatches_typed_setter() {
 }
 
 #[test]
+fn enter_on_follow_up_behavior_row_enters_picking_enum() {
+    let mut s = make_state();
+    navigate_to(&mut s, "follow_up_behavior");
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
+    assert!(
+        matches!(outcome, SettingsKeyOutcome::Changed),
+        "Enter on follow_up_behavior row must transition to PickingEnum, got {outcome:?}"
+    );
+    match &s.mode() {
+        SettingsModalMode::PickingEnum {
+            key,
+            original_value,
+            ..
+        } => {
+            assert_eq!(*key, "follow_up_behavior");
+            assert_eq!(
+                original_value,
+                &SettingValue::Enum("queue"),
+                "default follow_up_behavior is queue"
+            );
+        }
+        other => panic!("expected PickingEnum mode, got {other:?}"),
+    }
+}
+
+#[test]
+fn follow_up_behavior_picker_enter_dispatches_set_commit() {
+    let mut s = make_state();
+    navigate_to(&mut s, "follow_up_behavior");
+    let _ = handle_settings_key(&mut s, &press(KeyCode::Enter));
+    // Default is queue (index 0); Down → steer.
+    let _ = handle_settings_key(&mut s, &press(KeyCode::Down));
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
+    match outcome {
+        SettingsKeyOutcome::Action(Action::SetFollowUpBehavior(mode)) => {
+            assert_eq!(mode, xai_grok_pager::appearance::FollowUpBehavior::Steer);
+        }
+        other => panic!("expected SetFollowUpBehavior(Steer), got {other:?}"),
+    }
+}
+
+#[test]
 fn space_on_simple_mode_dispatches_typed_setter() {
     let mut s = make_state();
     navigate_to(&mut s, "simple_mode");
@@ -453,8 +497,8 @@ fn space_on_remember_tool_approvals_dispatches_typed_setter() {
     let mut s = make_state();
     navigate_to(&mut s, "remember_tool_approvals");
     let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
-    // Default is false, so toggling flips it on.
-    assert_set_bool_action(outcome, "remember_tool_approvals", true);
+    // Default is true, so toggling flips it off.
+    assert_set_bool_action(outcome, "remember_tool_approvals", false);
 }
 
 /// The Ask-Question timeout row renders in Agent & Approval directly above
@@ -705,6 +749,28 @@ fn mouse_click_on_combine_queued_prompts_indicator_toggles_in_one_click() {
 }
 
 #[test]
+fn mouse_click_on_follow_up_behavior_indicator_opens_picker() {
+    let mut s = make_state();
+    synth_rects(&mut s);
+    let row_y = row_idx_for(&s, "follow_up_behavior") as u16;
+    let outcome = handle_settings_mouse(
+        &mut s,
+        MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        72,
+        row_y,
+    );
+    assert!(
+        matches!(outcome, SettingsKeyOutcome::Changed),
+        "click on follow_up_behavior indicator should open picker, got {outcome:?}"
+    );
+    assert!(
+        matches!(s.mode(), SettingsModalMode::PickingEnum { key, .. } if key == "follow_up_behavior"),
+        "expected PickingEnum(follow_up_behavior), got {:?}",
+        s.mode()
+    );
+}
+
+#[test]
 fn mouse_click_on_confirm_before_rewind_indicator_toggles_in_one_click() {
     let mut s = make_state();
     synth_rects(&mut s);
@@ -731,7 +797,7 @@ fn mouse_click_on_remember_tool_approvals_indicator_toggles_in_one_click() {
         72,
         row_y,
     );
-    assert_set_bool_action(outcome, "remember_tool_approvals", true);
+    assert_set_bool_action(outcome, "remember_tool_approvals", false);
 }
 
 /// Value-column click toggles the Ask-Question timeout in one click.
@@ -1911,6 +1977,7 @@ fn registry_kind_membership_through_pr_14() {
             "auto_light_theme",
             "coding_data_sharing",
             "default_selected_permission",
+            "follow_up_behavior",
             "hunk_tracker_mode",
             "keep_text_selection",
             "permission_mode",
@@ -1981,6 +2048,7 @@ fn enum_settings_membership() {
             "coding_data_sharing",
             "ctrl_o_tool_expansion",
             "default_selected_permission",
+            "follow_up_behavior",
             "hunk_tracker_mode",
             "keep_text_selection",
             "permission_mode",
@@ -2018,6 +2086,9 @@ fn defaults_round_trip_through_registry() {
     xai_grok_pager::appearance::cache::set_group_tool_verbs(true);
     xai_grok_pager::appearance::cache::set_page_flip_on_send(true);
     xai_grok_pager::appearance::cache::set_combine_queued_prompts(false);
+    xai_grok_pager::appearance::cache::set_follow_up_behavior(
+        xai_grok_pager::appearance::FollowUpBehavior::Queue,
+    );
     xai_grok_pager::appearance::cache::set_scroll_mode(
         xai_grok_pager::appearance::ScrollMode::Auto,
     );
@@ -2035,9 +2106,10 @@ fn defaults_round_trip_through_registry() {
             "page_flip_on_send" => SettingValue::Bool(true),
             "confirm_before_rewind" => SettingValue::Bool(true),
             "combine_queued_prompts" => SettingValue::Bool(false),
+            "follow_up_behavior" => SettingValue::Enum("queue"),
             "simple_mode" => SettingValue::Bool(true),
             "vim_mode" => SettingValue::Bool(false),
-            "remember_tool_approvals" => SettingValue::Bool(false),
+            "remember_tool_approvals" => SettingValue::Bool(true),
             "toolset.ask_user_question.timeout_enabled" => SettingValue::Bool(true),
             "keep_text_selection" => SettingValue::Enum("flash"),
             "theme" => SettingValue::Enum("groknight"),
@@ -2055,7 +2127,7 @@ fn defaults_round_trip_through_registry() {
             "display_refresh_auto_cadence" => SettingValue::Bool(true),
             "coding_data_sharing" => SettingValue::Enum("opt-out"),
             "default_selected_permission" => SettingValue::Enum("always_allow_all_sessions"),
-            "hunk_tracker_mode" => SettingValue::Enum("agent_only"),
+            "hunk_tracker_mode" => SettingValue::Enum("off"),
             "voice_keybind_enabled" => SettingValue::Bool(true),
             "voice_capture_mode" => SettingValue::Enum("hold"),
             "voice_stt_language" => SettingValue::Enum("en"),
@@ -6128,7 +6200,7 @@ fn mouse_click_on_screen_mode_indicator_opens_picker_in_one_click() {
 // ---------------------------------------------------------------------------
 
 /// Enter on the `hunk_tracker_mode` row opens the picker seeded at the
-/// default `agent_only`.
+/// default `off`.
 #[test]
 fn enter_on_hunk_tracker_mode_row_enters_picking_enum() {
     let mut s = make_state();
@@ -6147,8 +6219,8 @@ fn enter_on_hunk_tracker_mode_row_enters_picking_enum() {
             assert_eq!(*key, "hunk_tracker_mode");
             assert_eq!(
                 original_value,
-                &SettingValue::Enum("agent_only"),
-                "default UiConfig hunk_tracker_mode → original 'agent_only'"
+                &SettingValue::Enum("off"),
+                "default UiConfig hunk_tracker_mode → original 'off'"
             );
         }
         other => panic!("expected PickingEnum mode, got {other:?}"),
@@ -6171,8 +6243,9 @@ fn hunk_tracker_mode_picker_nav_does_not_dispatch_preview() {
         let _ = handle_settings_key(&mut s, &press(KeyCode::Enter));
         assert!(matches!(s.mode(), SettingsModalMode::PickingEnum { .. }));
 
-        if matches!(nav_key, KeyCode::Up | KeyCode::Char('k')) {
-            let _ = handle_settings_key(&mut s, &press(KeyCode::Down));
+        // Seed is `off` (last choice), so step off the bottom before a Down/j.
+        if matches!(nav_key, KeyCode::Down | KeyCode::Char('j')) {
+            let _ = handle_settings_key(&mut s, &press(KeyCode::Up));
         }
 
         let outcome = handle_settings_key(&mut s, &press(*nav_key));
@@ -6187,15 +6260,15 @@ fn hunk_tracker_mode_picker_nav_does_not_dispatch_preview() {
 
 /// Enter on the focused picker choice commits via
 /// `Action::SetHunkTrackerMode(String)` carrying the registry canonical. Seed
-/// is `agent_only` (index 0); one Down moves to `all_dirty` (index 1). Pins
-/// the canonical-string payload that `action_for_enum_commit` forwards.
+/// is `off` (index 2); one Up moves to `all_dirty` (index 1). Pins the
+/// canonical-string payload that `action_for_enum_commit` forwards.
 #[test]
 fn hunk_tracker_mode_picker_enter_dispatches_set_commit() {
     let mut s = make_state();
     navigate_to(&mut s, "hunk_tracker_mode");
     let _ = handle_settings_key(&mut s, &press(KeyCode::Enter));
-    // Fresh state seeds the picker at "agent_only"; Down moves to "all_dirty".
-    let _ = handle_settings_key(&mut s, &press(KeyCode::Down));
+    // Fresh state seeds the picker at "off"; Up moves to "all_dirty".
+    let _ = handle_settings_key(&mut s, &press(KeyCode::Up));
     let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
     match outcome {
         SettingsKeyOutcome::Action(Action::SetHunkTrackerMode(mode)) => {
@@ -6750,6 +6823,12 @@ fn enter_on_keep_text_selection_row_enters_picking_enum() {
 
 #[test]
 fn keep_text_selection_picker_nav_does_not_dispatch_preview() {
+    // Pin the cache-backed live value so the picker seeds at flash (idx 0)
+    // regardless of a sibling test that set hold/word_select on this thread.
+    // (word_select is the last choice, so Down would clamp; flash gives room.)
+    xai_grok_pager::appearance::cache::set_keep_text_selection(
+        xai_grok_pager::appearance::TextSelection::Flash,
+    );
     for nav_key in &[
         KeyCode::Down,
         KeyCode::Up,

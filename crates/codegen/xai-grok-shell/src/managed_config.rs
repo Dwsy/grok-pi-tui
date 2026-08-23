@@ -318,12 +318,34 @@ fn apply_managed_config(
 fn map_transport_failure(failure: crate::http::TransportFailure) -> ManagedConfigError {
     use crate::http::TransportFailureKind;
     match failure.kind {
+        TransportFailureKind::CertificateUntrusted => {
+            ManagedConfigError::CertificateUntrusted(certificate_detail(
+                failure.detail,
+                xai_grok_extra_ca::configured_bundle_env(),
+                xai_grok_extra_ca::extra_root_ders().len(),
+            ))
+        }
+        TransportFailureKind::CertificateInvalid => {
+            ManagedConfigError::CertificateInvalid(failure.detail)
+        }
         TransportFailureKind::Unreachable => ManagedConfigError::Network(failure.detail),
         TransportFailureKind::Interrupted => {
             ManagedConfigError::ConnectionInterrupted(failure.detail)
         }
         // A builder/redirect failure is a client-side defect, not a bad server response: terminal.
         TransportFailureKind::Permanent => ManagedConfigError::RequestFailed(failure.detail),
+    }
+}
+
+/// Names the configured bundle variable; loading is fail-open, so this error
+/// can be the only visible symptom.
+fn certificate_detail(detail: String, bundle_env: Option<&str>, loaded_roots: usize) -> String {
+    match bundle_env {
+        Some(env) if loaded_roots == 0 => format!(
+            "{detail}; {env} is set but no usable roots were loaded from it: check that the file is readable, contains PEM certificates, and is under the size cap"
+        ),
+        Some(env) => format!("{detail}; {env} is set: verify it includes the issuing root CA"),
+        None => detail,
     }
 }
 
@@ -478,14 +500,32 @@ fn deployment_key_fingerprint(key: &str) -> String {
 
 /// Whether managed config fetching is enabled (env > config.toml > default true).
 /// Callers doing auto-fetch should check this; explicit user actions (grok setup) skip it.
+///
+/// Overlay-free: reads the raw config layers via
+/// [`crate::config::ConfigLayers::effective_config_base_without_overlay`] rather
+/// than the overlay-inclusive effective config, so a `GROK_CONFIG` overlay cannot
+/// suppress the requirements/managed-config sync (a policy-enforcement gate, like
+/// `remote_fetch`; see the overlay-free contract in `ConfigLayers::env_overlay`).
+/// Requirements/MDM still clamp through the base merge.
 pub fn is_fetch_enabled() -> bool {
     if let Some(v) = crate::agent::config::env_bool("GROK_MANAGED_CONFIG") {
         return v;
     }
-    crate::config::load_effective_config()
+    crate::config::ConfigLayers::load()
         .ok()
-        .and_then(|cfg| cfg.get("features")?.get("managed_config")?.as_bool())
+        .and_then(|layers| managed_config_enabled_from_layers(&layers))
         .unwrap_or(true)
+}
+
+/// `[features] managed_config` from the raw (overlay-free) config layers, or
+/// `None` when unset. Split out so the overlay-free contract is unit-testable
+/// without touching disk.
+fn managed_config_enabled_from_layers(layers: &crate::config::ConfigLayers) -> Option<bool> {
+    layers
+        .effective_config_base_without_overlay()
+        .get("features")?
+        .get("managed_config")?
+        .as_bool()
 }
 
 /// Fetch managed config + requirements and write to `~/.grok/`, trying the

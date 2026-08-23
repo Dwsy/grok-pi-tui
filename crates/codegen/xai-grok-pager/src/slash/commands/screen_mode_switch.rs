@@ -1,15 +1,5 @@
-//! `/minimal` and `/fullscreen` — reopen the current session in the other
-//! screen mode.
-//!
-//! The two commands are exact mirrors, so one parameterized [`SlashCommand`]
-//! backs both: each is offered only while the *other* mode is active, and
-//! `run` dispatches [`Action::RelaunchInScreenMode`], which quits the event
-//! loop and re-execs the pager with `--resume <session_id>` plus an explicit
-//! `--minimal`/`--fullscreen` so the same conversation comes back under the
-//! requested render path. The relaunched process persists the flag as the
-//! sticky `[ui] screen_mode` config.toml preference, so future plain `grok`
-//! invocations reuse the mode. See `crate::app::screen_mode_relaunch` for the
-//! re-exec side.
+//! `/minimal` and `/fullscreen` — session-scoped in-process screen-mode
+//! switch, performed by the event loop via `app::mode_switch`.
 
 use crate::app::actions::Action;
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
@@ -24,13 +14,13 @@ pub struct ScreenModeSwitchCommand {
 
 impl ScreenModeSwitchCommand {
     /// `/minimal`: offered in the full TUI (alt-screen or `--no-alt-screen`
-    /// inline), relaunches with `--minimal`.
+    /// inline), switches this session to scrollback-native rendering.
     pub const fn minimal() -> Self {
         Self { to_minimal: true }
     }
 
-    /// `/fullscreen` (alias `/full`): offered in minimal, relaunches without
-    /// `--minimal`.
+    /// `/fullscreen` (alias `/full`): offered in minimal, switches this
+    /// session to the alt-screen TUI.
     pub const fn fullscreen() -> Self {
         Self { to_minimal: false }
     }
@@ -55,9 +45,9 @@ impl SlashCommand for ScreenModeSwitchCommand {
 
     fn description(&self) -> &str {
         if self.to_minimal {
-            "Reopen this session in minimal (scrollback-native) mode and make it the default"
+            "Switch this session to minimal (scrollback-native) mode, back with /fullscreen"
         } else {
-            "Reopen this session in fullscreen mode and make it the default"
+            "Switch this session to fullscreen mode, back with /minimal"
         }
     }
 

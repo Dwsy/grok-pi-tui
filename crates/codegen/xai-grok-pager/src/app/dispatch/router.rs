@@ -60,7 +60,7 @@ use super::session::fork::{
     dispatch_startup_fork_session,
 };
 use super::session::lifecycle::{
-    clear_startup_actions, dispatch_agent_type_mismatch_answered,
+    clear_startup_actions, dispatch_accept_consent, dispatch_agent_type_mismatch_answered,
     dispatch_delete_current_session_answered, dispatch_exit_session, dispatch_new_session,
     dispatch_new_session_inner, dispatch_new_session_with_id, dispatch_new_worktree_session,
     dispatch_trust_folder, open_delete_current_session_question, open_new_session_question,
@@ -101,7 +101,7 @@ use super::settings::setters::{
     set_show_other_tool_args, set_show_thinking_blocks, set_show_tips, set_side_by_side_edit,
     set_simple_mode, set_theme, set_thinking_border_colors, set_timeline, set_timestamps,
     set_vim_mode, set_voice_capture_mode, set_voice_keybind_enabled, set_voice_stt_language,
-    set_write_edit_hover_popups,
+    set_write_edit_hover_popups, set_follow_up_behavior,
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
@@ -133,6 +133,7 @@ use super::voice::{dispatch_enable_voice_mode, dispatch_voice_stop, dispatch_voi
 use crate::app::actions::{Action, Effect};
 use crate::app::agent_view::ActivePane;
 use crate::app::app_view::{ActiveView, AppView, AuthState};
+use crate::app::consent::ConsentState;
 use crate::scrollback::types::DisplayMode;
 use crate::views::session_picker::CONTENT_EXPAND_OFFSET;
 use xai_grok_telemetry::session_ctx::log_event;
@@ -199,6 +200,14 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             super::dispatch_initial_prompt(app, prompt)
         }
         Action::RelaunchInScreenMode { minimal } => {
+            if !crate::app::screen_mode_relaunch::exec_switch_forced() {
+                app.pending_screen_mode_switch = Some(if minimal {
+                    crate::app::ScreenMode::Minimal
+                } else {
+                    crate::app::ScreenMode::Fullscreen
+                });
+                return vec![];
+            }
             if let Some(session_id) = app.active_session_id().map(str::to_owned) {
                 app.relaunch = Some(crate::app::app_view::ScreenModeRelaunch {
                     minimal,
@@ -475,6 +484,11 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             expected_version,
             new_text,
         } => queue::dispatch_queue_interject_shared(app, id, expected_version, new_text),
+        Action::RunEditedQueuedCommand {
+            local_id,
+            server,
+            text,
+        } => queue::dispatch_run_edited_queued_command(app, local_id, server, text),
         Action::FocusPrompt => {
             with_active_agent(app, |agent| {
                 agent.set_active_pane(ActivePane::Prompt, false);
@@ -663,7 +677,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::ShowDebugStatus => {
             let on = |b: bool| if b { "on" } else { "off" };
             let msg = format!(
-                "debug toggles: scroll {} \u{00b7} fps {} \u{00b7} log {} \u{2014} toggle with /debug <scroll|fps|log>",
+                "debug toggles: scroll {} \u{00b7} fps {} \u{00b7} log {}. Toggle with /debug <scroll|fps|log>",
                 on(app.scroll_debug_hud.enabled()),
                 on(app.fps_hud.enabled()),
                 on(app.scroll_state.scroll_log_active()),
@@ -786,13 +800,13 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             let Some(agent) = app.agents.get_mut(&id) else {
                 return vec![];
             };
+            let Some(session_id) = agent.session.session_id.clone() else {
+                return vec![];
+            };
             if let Some(ref mut modal) = agent.extensions_modal {
                 modal.skills_data = crate::views::extensions_modal::TabDataState::Loading;
                 modal.workflows_data = crate::views::extensions_modal::TabDataState::Loading;
             }
-            let Some(session_id) = agent.session.session_id.clone() else {
-                return vec![];
-            };
             vec![
                 Effect::FetchSkillsList {
                     agent_id: id,
@@ -1153,8 +1167,14 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::ShowPlan => dispatch_show_plan(app),
         Action::EnterPlanMode { description } => dispatch_enter_plan_mode(app, description),
         Action::SetPlanMode(kind) => set_plan_mode(app, kind),
-        Action::OpenFeedbackPane => dispatch_open_feedback_pane(app),
-        Action::SendFeedback(text) => dispatch_send_feedback(app, text),
+        Action::OpenFeedbackPane { prefill, images } => {
+            dispatch_open_feedback_pane(app, prefill, images)
+        }
+        Action::SendFeedback {
+            text,
+            images,
+            trace,
+        } => dispatch_send_feedback(app, text, images, trace),
         Action::EnterRememberMode => dispatch_enter_remember_mode(app),
         Action::SendRememberNote(text) => dispatch_send_remember_note(app, text),
         Action::SaveRememberNoteFromModal => dispatch_save_remember_note_from_modal(app),
@@ -1212,6 +1232,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetPageFlipOnSend(v) => set_page_flip_on_send(app, v),
         Action::SetConfirmBeforeRewind(v) => set_confirm_before_rewind(app, v),
         Action::SetCombineQueuedPrompts(v) => set_combine_queued_prompts(app, v),
+        Action::SetFollowUpBehavior(v) => set_follow_up_behavior(app, v),
         Action::SetSimpleMode(v) => set_simple_mode(app, v),
         Action::SetContextualHintUndo(v) => set_contextual_hint_undo(app, v),
         Action::SetContextualHintPlanMode(v) => set_contextual_hint_plan_mode(app, v),
@@ -1363,6 +1384,17 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![]
         }
         Action::TrustFolder => dispatch_trust_folder(app),
+        Action::AcceptConsent => dispatch_accept_consent(app),
+        Action::OpenConsentLink(index) => {
+            let url = match &app.consent_state {
+                ConsentState::Pending { notice, .. } => notice.links.get(index).cloned(),
+                ConsentState::Done => None,
+            };
+            if let Some(url) = url {
+                open_url_or_show(app, &url);
+            }
+            vec![]
+        }
         Action::TriggerDeepSearch => dispatch_trigger_deep_search(app, false),
         Action::ForceDeepSearch => dispatch_trigger_deep_search(app, true),
         Action::LoadSessionPreview {
@@ -1558,6 +1590,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::DashboardDelete => dispatch_dashboard_delete(app),
         Action::DashboardCycleMode => {
             let policy_block = app.yolo_policy_block;
+            let auto_mode_gate = app.auto_mode_gate;
             let external_agent = app.external_agent;
             if let Some(d) = app.dashboard.as_mut() {
                 d.pending_mode = if external_agent {
@@ -1568,12 +1601,12 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                         _ => crate::views::dashboard::DashboardDispatchMode::Plan,
                     }
                 } else {
-                    d.pending_mode.cycle()
+                    d.pending_mode.cycle(auto_mode_gate)
                 };
                 if d.pending_mode == crate::views::dashboard::DashboardDispatchMode::AlwaysApprove
                     && let Some(warning) = policy_block
                 {
-                    d.pending_mode = d.pending_mode.cycle();
+                    d.pending_mode = d.pending_mode.cycle(auto_mode_gate);
                     d.set_error_toast(warning);
                 }
             }
@@ -1737,9 +1770,29 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::RewindDismissError => dispatch_rewind_dismiss_error(app),
         Action::InlineEditSubmit => dispatch_inline_edit_submit(app),
     };
+    restore_stash_where_the_draft_was_consumed(app);
     app.reconcile_foreign_resume_launch();
     sync_sleep_inhibitor(app);
     effects
+}
+/// Drains the agent and its focused subagent: the paste drain reports on the parent while `with_active_agent` would pick the child,
+/// and a stranded flag restores on a later dispatch.
+fn restore_stash_where_the_draft_was_consumed(app: &mut AppView) {
+    let ActiveView::Agent(id) = app.active_view else {
+        return;
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return;
+    };
+    if let Some(child_sid) = agent.active_subagent.clone()
+        && let Some(child) = agent.subagent_views.get_mut(&child_sid)
+        && child.take_draft_consumed()
+    {
+        child.auto_restore_stash_after_send();
+    }
+    if agent.take_draft_consumed() {
+        agent.auto_restore_stash_after_send();
+    }
 }
 pub(super) fn dispatch_action_result(
     app: &mut AppView,

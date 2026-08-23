@@ -136,6 +136,9 @@ pub enum SyntheticReason {
     /// model was actively running.  Injected between tool batches so the
     /// model sees it as steering context without canceling the turn.
     Interjection,
+    /// Model-authored input sent by another agent.
+    #[serde(alias = "parent_agent_message")]
+    AgentMessage,
     /// Auto-wake synthetic prompt injected when a background bash task
     /// completed.  Wakes the agent for a new turn.
     TaskCompleted,
@@ -180,11 +183,13 @@ impl SyntheticReason {
     ///
     /// `GoalSummary` is deliberately `false`: the same reason tags both the
     /// legacy goal-continuation *turn* (index-consuming) and the in-turn goal
-    /// directive (mid-turn). Counting it would over-truncate the common
-    /// in-turn case; marker-carrying items don't rely on this predicate.
+    /// directive (mid-turn). Unknown future reasons fail safe as boundaries so
+    /// older readers cannot merge a newer conversational origin into a prior turn.
     pub fn starts_prompt_turn(&self) -> bool {
         match self {
-            Self::TaskCompleted
+            Self::AgentMessage
+            | Self::Unknown
+            | Self::TaskCompleted
             | Self::SubagentCompleted
             | Self::NotificationDrain
             | Self::GoalClassifierNudge
@@ -197,8 +202,7 @@ impl SyntheticReason {
             | Self::Interjection
             | Self::GoalSummary
             | Self::StopHookFeedback
-            | Self::WorkingDirectorySwitch
-            | Self::Unknown => false,
+            | Self::WorkingDirectorySwitch => false,
         }
     }
 }
@@ -1077,6 +1081,19 @@ impl ConversationItem {
             }],
             synthetic_reason: Some(SyntheticReason::WorkingDirectorySwitch),
             cwd_generation: Some(cwd_generation),
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
+    }
+
+    /// Create a model-authored message received from another agent.
+    pub fn agent_message(content: impl Into<String>) -> Self {
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::AgentMessage),
+            cwd_generation: None,
             prior_turn_interrupt: None,
             prompt_index: None,
         })
@@ -2509,6 +2526,7 @@ mod tests {
         };
         let w = WebSearchOptions {
             allowed_domains: Some(vec!["x.com".into()]),
+            excluded_domains: None,
         };
 
         // set: an object sets that tool's options.
@@ -5007,6 +5025,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn agent_message_reason_round_trips() {
+        let item = ConversationItem::agent_message("agent context");
+        let json = serde_json::to_value(&item).expect("serialize");
+        assert_eq!(json["synthetic_reason"], "agent_message");
+        let back: ConversationItem = serde_json::from_value(json).expect("deserialize");
+        assert!(matches!(
+            back,
+            ConversationItem::User(UserItem {
+                synthetic_reason: Some(SyntheticReason::AgentMessage),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parent_agent_message_alias_deserializes() {
+        let payload = serde_json::json!({
+            "type": "user",
+            "content": [{"type": "text", "text": "agent context"}],
+            "synthetic_reason": "parent_agent_message"
+        });
+        let item: ConversationItem =
+            serde_json::from_value(payload).expect("deserialize staged spelling");
+        assert!(matches!(
+            item,
+            ConversationItem::User(UserItem {
+                synthetic_reason: Some(SyntheticReason::AgentMessage),
+                ..
+            })
+        ));
+    }
+
     /// Forward-compat regression guard for the `#[serde(other)]` arm:
     /// payloads from newer clients with an unknown `synthetic_reason` value
     /// must deserialize as `Some(SyntheticReason::Unknown)` rather than
@@ -5021,11 +5072,8 @@ mod tests {
         let item: ConversationItem =
             serde_json::from_value(payload).expect("deserialize forward-compat payload");
         if let ConversationItem::User(u) = item {
-            assert_eq!(
-                u.synthetic_reason,
-                Some(SyntheticReason::Unknown),
-                "unknown variants must round-trip through the #[serde(other)] arm"
-            );
+            assert_eq!(u.synthetic_reason, Some(SyntheticReason::Unknown));
+            assert!(u.synthetic_reason.as_ref().unwrap().starts_prompt_turn());
         } else {
             panic!("expected User variant");
         }

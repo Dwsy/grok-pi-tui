@@ -8,7 +8,6 @@ use xai_grok_tools::implementations::grok_build::scheduler::types::{
 };
 use xai_grok_tools::types::resources::State;
 use xai_tool_protocol::turn_hook;
-/// Helper: consume the first item from a ToolStream.
 async fn next_item(
     stream: &mut ToolStream<TypedToolOutput>,
 ) -> Option<xai_tool_runtime::ToolStreamItem<TypedToolOutput>> {
@@ -110,8 +109,6 @@ async fn dispatch_unknown_method_returns_unknown_method_error() {
         other => panic!("expected UnknownMethod, got {other:?}"),
     }
 }
-/// A hub evict runs the two-phase drain then settles into terminal
-/// ShuttingDown (not a lingering Draining) for an evicted workspace.
 #[tokio::test]
 async fn handle_evict_triggers_two_phase_drain() {
     use xai_tool_protocol::ToolServerLifecycleStatus;
@@ -137,9 +134,6 @@ async fn handle_evict_triggers_two_phase_drain() {
         "evict drain must stamp drain_started_ms"
     );
 }
-/// A hub evict shuts the evicted session's terminal backend down
-/// explicitly: the actor stops even while other `Arc`s to the backend are
-/// still alive (mirrors `drop_session_shuts_down_terminal_backend_explicitly`).
 #[tokio::test]
 async fn handle_evict_shuts_down_terminal_backend_explicitly() {
     let handle = make_handle();
@@ -158,11 +152,6 @@ async fn handle_evict_shuts_down_terminal_backend_explicitly() {
     crate::handle::tests::assert_backend_stops(&retained_backend).await;
     drop(retained_toolset);
 }
-/// Isolation matrix #1/#3 at the RPC surface: `workspace.list_background_tasks`
-/// (the post-compaction reminder source of truth) stays truthful across
-/// both rebind shapes. The task stays listed through a `Reused` rebind
-/// AND a `Reresolved` toolset swap — reading it through each rebind's
-/// CURRENT toolset — and leaves the list only when explicitly killed.
 #[tokio::test]
 async fn list_background_tasks_rpc_stays_truthful_across_rebinds() {
     use crate::capability::CapabilityMode;
@@ -247,9 +236,6 @@ async fn list_background_tasks_rpc_stays_truthful_across_rebinds() {
         "a killed task must leave the outstanding list: {tasks:?}"
     );
 }
-/// `workspace.tasks_snapshot` (GC-614 part 3): returns the outstanding
-/// background task with kind/started_at, plus scheduled tasks (empty when
-/// no scheduler resource exists), and drops the task once killed.
 #[tokio::test]
 async fn tasks_snapshot_rpc_lists_outstanding_background_tasks() {
     let handle = make_handle();
@@ -349,8 +335,71 @@ async fn tasks_snapshot_rpc_lists_outstanding_background_tasks() {
         loop_task.next_fire_at
     );
 }
-/// `workspace.kill_task`: kills a running BG task and reports not_found for
-/// unknown ids; after kill the task leaves `tasks_snapshot`.
+/// Unknown ids report deleted:false. This session asks for no notifications, so nothing acknowledges a removal and a live loop still errors.
+/// `hub_session_deletes_a_live_scheduled_task` covers the session that does ask.
+#[tokio::test]
+async fn delete_scheduled_task_rpc_reports_honestly() {
+    use xai_grok_workspace_types::rpc::workspace::DeleteScheduledTaskResponse;
+    let handle = make_handle();
+    let cfg = background_capable_cfg();
+    let session = handle
+        .create_session_with_config(
+            "del-rpc",
+            None,
+            Some(cfg.clone()),
+            CapabilityMode::All,
+            None,
+            false,
+        )
+        .expect("create background-capable session");
+    session.set_bind_tool_config_fingerprint(serde_json::to_value(&cfg).ok());
+    seed_scheduled_task(session.toolset().as_ref(), "loop-del-1").await;
+    let handler = WorkspaceRpcHandler::new(handle.clone());
+    async fn delete(
+        handler: &WorkspaceRpcHandler,
+        task_id: &str,
+    ) -> Result<DeleteScheduledTaskResponse, WorkspaceError> {
+        handler
+            .dispatch(
+                "workspace.delete_scheduled_task",
+                serde_json::json!({"session_id": "del-rpc", "task_id": task_id}),
+                Some("del-rpc"),
+            )
+            .await
+            .map(|value| serde_json::from_value(value).expect("decode delete response"))
+    }
+    let missing = delete(&handler, "no-such-loop").await.expect("unknown id");
+    assert_eq!(missing.task_id, "no-such-loop");
+    assert!(!missing.deleted, "an unknown id must report false");
+    let live = delete(&handler, "loop-del-1").await;
+    let err = live.expect_err("a live loop must error until the durable gate is satisfied");
+    assert!(
+        err.to_string().contains("durab"),
+        "expected the durability refusal, got: {err}"
+    );
+    let snap_value = handler
+        .dispatch(
+            "workspace.tasks_snapshot",
+            serde_json::json!({"session_id": "del-rpc"}),
+            Some("del-rpc"),
+        )
+        .await
+        .expect("tasks_snapshot after refusal");
+    let snap: TasksSnapshotResponse = serde_json::from_value(snap_value).expect("decode snapshot");
+    assert_eq!(
+        snap.scheduled_tasks.len(),
+        1,
+        "a refused delete must leave the loop scheduled"
+    );
+}
+/// Populate the real scheduler state; the production actor serves the RPC.
+async fn seed_scheduled_task(toolset: &FinalizedToolset, id: &str) {
+    let mut resources = toolset.resources.lock().await;
+    let state = resources.get_or_default::<State<SchedulerState>>();
+    let mut task = ScheduledTask::new(300, "check CI".into(), true, false);
+    task.id = id.into();
+    state.tasks.push(task);
+}
 #[tokio::test]
 async fn kill_task_rpc_terminates_outstanding_background_task() {
     use xai_grok_workspace_types::rpc::workspace::{KillTaskOutcome, KillTaskResponse};
@@ -401,8 +450,6 @@ async fn kill_task_rpc_terminates_outstanding_background_task() {
         snap.background_tasks
     );
 }
-/// FG in-flight out of snapshot; after backgrounding in; completed BG out.
-/// Preconditions ensure a bare `!completed` filter would fail.
 #[tokio::test]
 async fn tasks_snapshot_excludes_foreground_and_completed_processes() {
     use crate::handle::tests::terminal_run_request;
@@ -544,9 +591,6 @@ async fn tasks_snapshot_excludes_foreground_and_completed_processes() {
     session.terminal_backend().kill_task("snap-fg-task").await;
     let _ = fg_join.await;
 }
-/// Evicting one session while another is live must NOT global-drain (which
-/// would close the shared queue for the survivor) — even when the evicted
-/// id is no longer in the session map.
 #[tokio::test]
 async fn handle_evict_keeps_queue_when_other_sessions_live() {
     let handle = make_handle();
@@ -567,9 +611,6 @@ async fn handle_evict_keeps_queue_when_other_sessions_live() {
         "evict of an absent id with live sessions must not global-drain"
     );
 }
-/// Evicting one of several live sessions removes *that* session (full
-/// teardown), keeps the survivors, and does not global-drain the shared
-/// queue. The drain decision is made on the post-removal map.
 #[tokio::test]
 async fn handle_evict_nonlast_removes_session_and_preserves_survivors() {
     let handle = make_handle();
@@ -598,9 +639,6 @@ async fn handle_evict_nonlast_removes_session_and_preserves_survivors() {
         "evicting a non-last session must not global-drain the shared queue"
     );
 }
-/// Once a terminal evict drain has started, a racing `bind`/create must be
-/// rejected so the shared upload queue is never torn down under a fresh
-/// session (race #3).
 #[tokio::test]
 async fn bind_rejected_after_evict_drain() {
     let handle = make_handle();
@@ -617,8 +655,6 @@ async fn bind_rejected_after_evict_drain() {
         Err(WorkspaceError::ShuttingDown)
     ));
 }
-/// A duplicate / retried evict of the last session must not re-run the
-/// drain or downgrade terminal `ShuttingDown` back to `Draining`.
 #[tokio::test]
 async fn repeat_evict_does_not_redrain() {
     use xai_tool_protocol::ToolServerLifecycleStatus;
@@ -751,9 +787,6 @@ fn baseline_config_value() -> Value {
     serde_json::to_value(crate::session::tool_config::test_support::baseline_config())
         .expect("baseline config serializes")
 }
-/// With both an envelope session and a (spoofed) param, the envelope
-/// wins: the call is authorized as the envelope session and the
-/// mismatch is counted.
 #[tokio::test]
 async fn dispatch_update_tool_config_envelope_overrides_param() {
     let mismatch_before = caller_mismatch_count("update_tool_config", "param_mismatch");
@@ -776,9 +809,6 @@ async fn dispatch_update_tool_config_envelope_overrides_param() {
         "the param/envelope disagreement must be counted"
     );
 }
-/// A forged `caller_session_id` param cannot authorize a cross-session
-/// mutation: the envelope session is the caller and differs from the
-/// target, so the target's caller-equals-target check rejects it.
 #[tokio::test]
 async fn dispatch_update_tool_config_envelope_cross_session_unauthorized() {
     let handle = make_handle();
@@ -800,9 +830,6 @@ async fn dispatch_update_tool_config_envelope_cross_session_unauthorized() {
         "the target session must be untouched"
     );
 }
-/// Compat: without an envelope session (old call paths) the param is
-/// still honored, and the fallback is counted for the deprecation
-/// monitor.
 #[tokio::test]
 async fn dispatch_update_tool_config_param_fallback_without_envelope() {
     let absent_before = caller_mismatch_count("update_tool_config", "envelope_absent");
@@ -822,12 +849,6 @@ async fn dispatch_update_tool_config_param_fallback_without_envelope() {
         "the envelope-absent fallback must be counted"
     );
 }
-/// The intended steady state once clients drop the deprecated param:
-/// envelope-only identity (no `caller_session_id` in params) authorizes.
-/// Counter non-advance is asserted by
-/// [`resolve_mutation_caller_clean_arms_count_nothing`], which uses a
-/// test-unique method label — the real label is shared with concurrently
-/// running dispatch tests, so an equality assert here would flake.
 #[tokio::test]
 async fn dispatch_update_tool_config_envelope_only_without_param() {
     let handle = make_handle();
@@ -844,9 +865,6 @@ async fn dispatch_update_tool_config_envelope_only_without_param() {
         "envelope-only identity must authorize: {result:?}"
     );
 }
-/// The two clean `resolve_mutation_caller` arms — envelope-only and
-/// envelope+matching-param — resolve to the envelope without ticking
-/// either deprecation-monitor kind.
 #[test]
 fn resolve_mutation_caller_clean_arms_count_nothing() {
     const METHOD: &str = "test_clean_arms";
@@ -869,9 +887,6 @@ fn resolve_mutation_caller_clean_arms_count_nothing() {
         "clean arms must not count an envelope-absent fallback"
     );
 }
-/// `drop_session` gets the same envelope-derived identity: a spoofed
-/// param is ignored when the envelope authorizes the drop, and the
-/// mutation audit counter advances.
 #[tokio::test]
 async fn dispatch_drop_session_envelope_overrides_param() {
     let mutation_before = WORKSPACE_RPC_MUTATION_TOTAL
@@ -893,8 +908,6 @@ async fn dispatch_drop_session_envelope_overrides_param() {
         "the mutation audit counter must advance"
     );
 }
-/// A cross-session drop forged via the param is rejected off the
-/// envelope identity and the target survives.
 #[tokio::test]
 async fn dispatch_drop_session_envelope_cross_session_unauthorized() {
     let handle = make_handle();
@@ -912,8 +925,6 @@ async fn dispatch_drop_session_envelope_cross_session_unauthorized() {
         "the target session must survive"
     );
 }
-/// `configure_mcp`'s on-demand session create opts into system
-/// notifications, like every other sandbox-path creator.
 #[tokio::test]
 async fn dispatch_configure_mcp_on_demand_create_enables_system_notifications() {
     let handle = make_handle();
@@ -1193,10 +1204,6 @@ async fn handle_call_error_envelope() {
         other => panic!("expected Terminal(Ok(envelope)), got {other:?}"),
     }
 }
-/// `handle_call` records the RPC metrics: a known method increments its
-/// per-method `ok` series, and an unrecognized method collapses to
-/// `method="unknown",result="error"` — never creating a per-bad-method
-/// series (the cardinality-bounding guarantee).
 #[tokio::test]
 async fn handle_call_records_rpc_metrics_and_collapses_unknown_method() {
     let handler = WorkspaceRpcHandler::new(make_handle());
@@ -1483,7 +1490,6 @@ async fn handle_hook_session_ended_clears_turn_active() {
     );
 }
 use crate::workspace_ops::{GetFilesRes, PutFilesRes};
-/// Helper: compute SHA-256 hex digest for test assertions.
 fn test_sha256(data: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(data))
@@ -1512,6 +1518,41 @@ async fn dispatch_put_files_writes_and_returns_hash() {
     assert!(res.results[0].error.is_none(), "no error expected");
     let on_disk = std::fs::read_to_string(root.join("test_file.txt")).unwrap();
     assert_eq!(on_disk, "hello world");
+}
+#[tokio::test]
+async fn dispatch_put_get_files_resolve_against_bound_session_cwd() {
+    let handle = make_handle();
+    let root = handle.root_cwd().unwrap();
+    std::fs::create_dir(root.join("artifacts")).unwrap();
+    handle
+        .create_session_with_cwd("cwd-session", Some(root.join("artifacts")))
+        .unwrap();
+    let handler = WorkspaceRpcHandler::new(handle);
+    let params = serde_json::json!({
+        "files": [{"path": "out.txt", "content": "rebased"}]
+    });
+    let result = handler
+        .dispatch("workspace.put_files", params, Some("cwd-session"))
+        .await
+        .expect("dispatch should succeed");
+    let res: PutFilesRes = serde_json::from_value(result).unwrap();
+    assert!(res.results[0].ok, "{:?}", res.results[0].error);
+    let on_disk = std::fs::read_to_string(root.join("artifacts").join("out.txt")).unwrap();
+    assert_eq!(on_disk, "rebased");
+    let params = serde_json::json!({ "files": [{"path": "out.txt"}] });
+    let result = handler
+        .dispatch("workspace.get_files", params.clone(), Some("cwd-session"))
+        .await
+        .expect("dispatch should succeed");
+    let res: GetFilesRes = serde_json::from_value(result).unwrap();
+    assert!(res.results[0].exists);
+    assert_eq!(res.results[0].content.as_deref(), Some("rebased"));
+    let result = handler
+        .dispatch("workspace.get_files", params, None)
+        .await
+        .expect("dispatch should succeed");
+    let res: GetFilesRes = serde_json::from_value(result).unwrap();
+    assert!(!res.results[0].exists);
 }
 #[tokio::test]
 async fn dispatch_put_files_rejects_path_traversal() {
@@ -1564,6 +1605,60 @@ async fn dispatch_resolve_file_references_rejects_outside_root_when_confined() {
         );
     }
     std::fs::remove_file(&secret).ok();
+}
+#[tokio::test]
+async fn dispatch_resolve_file_references_confines_to_session_base() {
+    let handle = make_confining_handle();
+    let root = handle.root_cwd().unwrap();
+    std::fs::create_dir(root.join("artifacts")).unwrap();
+    std::fs::write(root.join("rooted.txt"), "ROOT_ONLY").unwrap();
+    handle
+        .create_session_with_cwd("cwd-session", Some(root.join("artifacts")))
+        .unwrap();
+    let handler = WorkspaceRpcHandler::new(handle);
+    let params = serde_json::json!({ "refs": ["../rooted.txt"] });
+    let result = handler
+        .dispatch(
+            "workspace.resolve_file_references",
+            params,
+            Some("cwd-session"),
+        )
+        .await
+        .expect("dispatch itself should succeed");
+    let arr = result.as_array().expect("results array");
+    assert_eq!(arr[0]["exists"], serde_json::Value::Bool(false));
+    assert_eq!(arr[0]["content"], serde_json::Value::Null);
+    assert!(
+        arr[0]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("escapes workspace root"),
+        "escape above the base should be rejected: {:?}",
+        arr[0]
+    );
+}
+#[tokio::test]
+async fn dispatch_resolve_file_references_uses_bound_session_base() {
+    let handle = make_handle();
+    let root = handle.root_cwd().unwrap();
+    std::fs::create_dir(root.join("artifacts")).unwrap();
+    std::fs::write(root.join("artifacts").join("out.txt"), "rebased").unwrap();
+    handle
+        .create_session_with_cwd("cwd-session", Some(root.join("artifacts")))
+        .unwrap();
+    let handler = WorkspaceRpcHandler::new(handle);
+    let params = serde_json::json!({ "refs": ["out.txt"] });
+    let result = handler
+        .dispatch(
+            "workspace.resolve_file_references",
+            params,
+            Some("cwd-session"),
+        )
+        .await
+        .expect("dispatch should succeed");
+    let arr = result.as_array().expect("results array");
+    assert_eq!(arr[0]["exists"], serde_json::Value::Bool(true));
+    assert_eq!(arr[0]["content"], serde_json::json!("rebased"));
 }
 #[tokio::test]
 async fn handle_hook_pause_resume_are_noops() {
@@ -2024,12 +2119,6 @@ async fn dispatch_get_files_byte_range_cache_hit() {
     );
     assert_eq!(res.results[0].size, Some(10));
 }
-/// Every type with a `WorkspaceRpc` impl must be routed by `dispatch()`.
-///
-/// Each entry is compiler-checked via `<X as WorkspaceRpc>::METHOD`.
-/// Dispatching `{}` may fail with any per-method error (invalid params,
-/// session not found, not a git repo) — only an "unknown workspace
-/// method" error fails the test.
 #[tokio::test]
 async fn dispatch_knows_every_typed_method() {
     use crate::file_system::{
@@ -2109,6 +2198,9 @@ async fn dispatch_knows_every_typed_method() {
         <ApplyWorktreeRequest as WorkspaceRpc>::METHOD,
         <WorktreeListReq as WorkspaceRpc>::METHOD,
         <WorktreeShowReq as WorkspaceRpc>::METHOD,
+        <WorktreeDetachReq as WorkspaceRpc>::METHOD,
+        <WorktreeSalvageReq as WorkspaceRpc>::METHOD,
+        <WorktreeCleanArtifactsReq as WorkspaceRpc>::METHOD,
         <WorktreeDbPathReq as WorkspaceRpc>::METHOD,
         <WorktreeDbStatsReq as WorkspaceRpc>::METHOD,
         <PrepareWorktreeFromWorktreeReq as WorkspaceRpc>::METHOD,
@@ -2147,9 +2239,6 @@ async fn dispatch_knows_every_typed_method() {
         }
     }
 }
-/// Mutation-classed methods stamp client-RPC activity (even on invalid
-/// params — the call itself is the evidence of a live client); reads and
-/// the deliberate teardown exception never do.
 #[tokio::test]
 async fn dispatch_stamps_client_rpc_activity_for_mutations_only() {
     use crate::file_system::{FsListReq, FsWriteFileReq};

@@ -21,7 +21,7 @@ pub(crate) enum UpsertOutcome {
     Unchanged {
         bytes_read: u64,
     },
-    /// Storage backend doesn't expose an updates file path.
+    /// Nothing to write: the store exposes no updates file.
     NoContent,
 }
 

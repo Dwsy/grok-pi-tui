@@ -18,7 +18,7 @@ use super::setters::{
     set_side_by_side_edit_inner, set_simple_mode_inner, set_theme_inner,
     set_thinking_border_colors_inner, set_timeline_inner, set_timestamps, set_timestamps_inner,
     set_vim_mode_inner, set_voice_capture_mode_inner, set_voice_keybind_enabled_inner,
-    set_voice_stt_language_inner, set_write_edit_hover_popups_inner,
+    set_voice_stt_language_inner, set_write_edit_hover_popups_inner, set_follow_up_behavior_inner,
 };
 use crate::app::actions::{Action, Effect};
 use crate::app::app_view::{ActiveView, AppView};
@@ -872,15 +872,16 @@ pub(in crate::app::dispatch) fn dispatch_toggle_timestamps(app: &mut AppView) ->
 /// selection and copy/paste; re-enabling restores in-app mouse handling
 /// (click-to-focus, scrollback selection, scrollbar drag, etc.).
 ///
-/// The on-wire enable/disable sequences mirror the auth-screen toggle in
-/// [`AppView::draw`]; the process-wide [`MOUSE_CAPTURE_ENABLED`] atomic is
-/// the single source of truth that teardown / panic paths read to decide
-/// whether to emit the reset sequence.
+/// The on-wire enable/disable sequences match [`AppView`]'s native-select hold;
+/// the process-wide [`MOUSE_CAPTURE_ENABLED`] atomic is the source of truth that
+/// teardown / panic paths read to decide whether to emit the reset.
 ///
 /// [`MOUSE_CAPTURE_ENABLED`]: crate::app::MOUSE_CAPTURE_ENABLED
 pub(in crate::app::dispatch) fn dispatch_toggle_mouse_capture(app: &mut AppView) {
     use std::sync::atomic::Ordering;
 
+    // User took ownership; do not restore our previous hold when the native-select surface closes.
+    app.native_select_hold = false;
     let was_enabled = crate::app::MOUSE_CAPTURE_ENABLED.load(Ordering::Acquire);
     let enable = !was_enabled;
     crate::unified_log::info(
@@ -1150,6 +1151,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("combine_queued_prompts", SettingValue::Bool(b)) => {
             Some(Action::SetCombineQueuedPrompts(*b))
         }
+        ("follow_up_behavior", SettingValue::Enum(s)) => {
+            crate::appearance::FollowUpBehavior::from_canonical(s).map(Action::SetFollowUpBehavior)
+        }
         ("simple_mode", SettingValue::Bool(b)) => Some(Action::SetSimpleMode(*b)),
         ("contextual_hints.undo", SettingValue::Bool(b)) => Some(Action::SetContextualHintUndo(*b)),
         ("contextual_hints.plan_mode", SettingValue::Bool(b)) => {
@@ -1358,7 +1362,7 @@ pub(in crate::app::dispatch) fn action_for_reset(
 /// setting has no rollback arm. Shared with `every_persisting_setting_has_rollback_arm`
 /// so the guard can't be silently defeated by a wording edit.
 pub(crate) const ROLLBACK_NO_ARM_TOAST: &str =
-    "Settings rolled back, but local state may be out of sync — restart to reload";
+    "Settings rolled back, but local state may be out of sync: restart to reload";
 
 /// Apply a rollback `SettingValue` to the in-memory cache. Does NOT
 /// re-emit `PersistSetting` (avoids infinite loop on persistent
@@ -1432,6 +1436,11 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         }
         ("combine_queued_prompts", SettingValue::Bool(b)) => {
             set_combine_queued_prompts_inner(app, *b)
+        }
+        ("follow_up_behavior", SettingValue::Enum(s)) => {
+            if let Some(mode) = crate::appearance::FollowUpBehavior::from_canonical(s) {
+                set_follow_up_behavior_inner(app, mode);
+            }
         }
         ("simple_mode", SettingValue::Bool(b)) => set_simple_mode_inner(app, *b),
         ("contextual_hints.undo", SettingValue::Bool(b)) => {
@@ -1597,6 +1606,11 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
                 set_scroll_mode_inner(app, mode);
             }
         }
+        // No pager-side mirror to roll back; the failure toast is the whole story.
+        ("trace_upload", SettingValue::Bool(_)) => {}
+        // The in-session suppression latch deliberately stays set even when
+        // the disk write fails.
+        ("feedback_trace_card", SettingValue::Bool(_)) => {}
         // invert_scroll / scroll_lines: direct inner calls (clamp in inner).
         ("invert_scroll", SettingValue::Bool(b)) => set_invert_scroll_inner(app, *b),
         // Effective default is false → restore None (mirror stays disk-synced).
