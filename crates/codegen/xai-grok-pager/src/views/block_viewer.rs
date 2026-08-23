@@ -1431,6 +1431,67 @@ impl BlockViewerPane {
         self.list_state.scroll_lines(lines, &self.cached_unified);
     }
 
+    /// Half-page scroll for review-modal shell keys (bare `d`/`u`).
+    pub fn half_page_scroll(&mut self, down: bool) {
+        self.rebuild_unified_cache();
+        if down {
+            self.list_state.half_page_down(&self.cached_unified);
+        } else {
+            self.list_state.half_page_up(&self.cached_unified);
+        }
+    }
+
+    /// Body-item indices where each rendered diff hunk starts.
+    ///
+    /// Hunk rows carry `diff_meta: Some(_)`; separators and headers are `None`,
+    /// so a hunk start is the first `Some` row after a `None` (or at index 0).
+    fn diff_hunk_starts(&self) -> Vec<usize> {
+        if self.kind != ViewerKind::Edit {
+            return Vec::new();
+        }
+        let mut starts = Vec::new();
+        for (i, meta) in self.diff_meta.iter().enumerate() {
+            if meta.is_some() && (i == 0 || self.diff_meta[i - 1].is_none()) {
+                starts.push(i);
+            }
+        }
+        starts
+    }
+
+    /// Jump selection to the next (`dir > 0`) / previous (`dir < 0`) diff hunk.
+    ///
+    /// Stops at the ends without wrapping. Returns true when the selection moved.
+    /// The scroll follows on the next `prepare_layout` via selection anchoring.
+    pub fn jump_hunk(&mut self, dir: i32) -> bool {
+        if self.kind != ViewerKind::Edit || dir == 0 {
+            return false;
+        }
+        let starts = self.diff_hunk_starts();
+        if starts.is_empty() {
+            return false;
+        }
+        // Edit viewers index ContentLine ids by body position; offset by any
+        // preamble so ids match the unified vec ListPane selects against.
+        let prepend = self.prepend_items.len();
+        let cur = self.list_state.selected_id().map(|id| id as usize);
+        let target = if dir > 0 {
+            match cur {
+                Some(c) => starts.into_iter().find(|s| prepend + s > c),
+                None => Some(starts[0]),
+            }
+        } else {
+            match cur {
+                Some(c) => starts.into_iter().rev().find(|s| prepend + s < c),
+                None => starts.last().copied(),
+            }
+        };
+        let Some(body_idx) = target else {
+            return false;
+        };
+        self.list_state.select_by_id((prepend + body_idx) as u64);
+        true
+    }
+
     /// Handle mouse click/drag in the viewer area.
     ///
     /// Drag-to-highlight: a left-button drag inside the content area paints

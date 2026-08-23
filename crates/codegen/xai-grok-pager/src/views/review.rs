@@ -90,6 +90,9 @@ pub struct ReviewTreeRow {
     pub kind: Option<ReviewFileKind>,
     pub is_error: bool,
     pub is_dir: bool,
+    /// Stable dir identity (ancestor labels joined by `/`) for collapse state;
+    /// `None` on leaf rows. Survives rebuilds so expand/collapse persists.
+    pub dir_key: Option<String>,
 }
 
 /// QA response state inside the review modal.
@@ -258,6 +261,11 @@ pub struct ReviewState {
     pub list_filter_active: bool,
     /// Tree layout (cwd-relative + compact Java packages). Default from F2.
     pub tree_mode: bool,
+    /// Collapsed directory keys in tree mode (see `ReviewTreeRow::dir_key`).
+    /// Cleared implicitly while a list filter query is active (auto-expand).
+    pub collapsed_dirs: std::collections::BTreeSet<String>,
+    /// `?` help overlay over the review surface; any key/click dismisses.
+    pub help_visible: bool,
     /// Session cwd used to strip absolute prefixes in tree mode.
     pub cwd: String,
     /// Built when `tree_mode` (and after filter changes).
@@ -318,6 +326,8 @@ impl ReviewState {
             list_filter_active: false,
             tree_mode,
             cwd: cwd.into(),
+            collapsed_dirs: std::collections::BTreeSet::new(),
+            help_visible: false,
             tree_rows: Vec::new(),
             viewer: None,
             ask: ReviewAskState::default(),
@@ -374,9 +384,108 @@ impl ReviewState {
         self.tree_mode
     }
 
+    /// Expand the selected dir row. True when the view changed.
+    pub fn expand_selected_dir(&mut self) -> bool {
+        let Some(key) = self
+            .tree_rows
+            .get(self.selected)
+            .filter(|r| r.is_dir)
+            .and_then(|r| r.dir_key.clone())
+        else {
+            return false;
+        };
+        if !self.collapsed_dirs.remove(&key) {
+            return false;
+        }
+        self.reselect_after_tree_rebuild(&key);
+        true
+    }
+
+    /// Collapse the selected expanded dir; if on a leaf/collapsed dir, move to
+    /// the nearest visible ancestor dir (neo-tree style `h`).
+    pub fn collapse_dir_or_goto_parent(&mut self) -> bool {
+        // Collapse in place when sitting on an expanded dir row.
+        let expanded_key = match self.tree_rows.get(self.selected) {
+            Some(row) if row.is_dir => match &row.dir_key {
+                Some(k) if !self.collapsed_dirs.contains(k) => Some(k.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(key) = expanded_key {
+            self.collapsed_dirs.insert(key.clone());
+            self.reselect_after_tree_rebuild(&key);
+            return true;
+        }
+        // Otherwise jump up to the nearest ancestor header.
+        let cur_depth = self
+            .tree_rows
+            .get(self.selected)
+            .map(|r| r.depth)
+            .unwrap_or(0);
+        if cur_depth == 0 {
+            return false;
+        }
+        let parent = (0..self.selected).rev().find(|&i| {
+            self.tree_rows
+                .get(i)
+                .is_some_and(|r| r.is_dir && r.depth < cur_depth)
+        });
+        if let Some(i) = parent {
+            self.selected = i;
+            self.viewer = None;
+            return true;
+        }
+        false
+    }
+
+    /// Toggle expand/collapse of the selected dir row (Enter in tree mode).
+    pub fn toggle_selected_dir(&mut self) -> bool {
+        let expanded_now = self.expand_selected_dir();
+        if expanded_now {
+            return true;
+        }
+        let Some(row) = self.tree_rows.get(self.selected) else {
+            return false;
+        };
+        if !row.is_dir {
+            return false;
+        }
+        let Some(key) = row.dir_key.clone() else {
+            return false;
+        };
+        self.collapsed_dirs.insert(key.clone());
+        self.reselect_after_tree_rebuild(&key);
+        true
+    }
+
+    /// Rebuild rows and keep the given dir row selected (by stable key).
+    fn reselect_after_tree_rebuild(&mut self, dir_key: &str) {
+        let keep = self.current_file().map(|f| f.path.clone());
+        self.rebuild_tree();
+        if let Some(i) = self
+            .tree_rows
+            .iter()
+            .position(|r| r.dir_key.as_deref() == Some(dir_key))
+        {
+            self.selected = i;
+        } else if let Some(path) = keep {
+            self.select_path(&path);
+        }
+        self.viewer = None;
+    }
+
     fn rebuild_tree(&mut self) {
         if self.tree_mode {
-            self.tree_rows = build_tree_rows(&self.files, &self.filtered, &self.cwd);
+            // While filtering, expand everything so matches stay visible.
+            let force_expand = !self.list_query.is_empty();
+            self.tree_rows = build_tree_rows(
+                &self.files,
+                &self.filtered,
+                &self.cwd,
+                &self.collapsed_dirs,
+                force_expand,
+            );
         } else {
             self.tree_rows.clear();
         }
@@ -562,6 +671,19 @@ pub fn handle_review_list_key(state: &mut ReviewState, key: &KeyEvent) -> Review
         return ReviewInput::Dismissed;
     }
 
+    // Help overlay: any key closes it.
+    if state.help_visible {
+        state.help_visible = false;
+        return ReviewInput::Changed;
+    }
+
+    // Enter on a dir row toggles its fold instead of jumping to preview.
+    let enter_toggles_dir = state.tree_mode
+        && state
+            .tree_rows
+            .get(state.selected)
+            .is_some_and(|r| r.is_dir);
+
     // List filter bar active.
     if state.list_filter_active {
         match key.code {
@@ -591,9 +713,28 @@ pub fn handle_review_list_key(state: &mut ReviewState, key: &KeyEvent) -> Review
 
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => ReviewInput::Dismissed,
+        KeyCode::Enter if enter_toggles_dir => {
+            state.toggle_selected_dir();
+            ReviewInput::Changed
+        }
         KeyCode::Tab | KeyCode::Right | KeyCode::Enter => {
             state.focus = ReviewFocus::Preview;
             ReviewInput::Changed
+        }
+        // h/l fold dirs in tree mode (neo-tree style).
+        KeyCode::Left | KeyCode::Char('h') => {
+            if state.tree_mode && state.collapse_dir_or_goto_parent() {
+                ReviewInput::Changed
+            } else {
+                ReviewInput::Consumed
+            }
+        }
+        KeyCode::Char('l') => {
+            if state.tree_mode && state.expand_selected_dir() {
+                ReviewInput::Changed
+            } else {
+                ReviewInput::Consumed
+            }
         }
         KeyCode::Char('/') => {
             state.list_filter_active = true;
@@ -630,17 +771,23 @@ pub fn handle_review_list_key(state: &mut ReviewState, key: &KeyEvent) -> Review
             state.select_filtered(last);
             ReviewInput::Changed
         }
-        KeyCode::Char('n') => {
+        // . / , switch files without leaving the modal (hunk convention;
+        // n/N stay reserved for viewer search-next/prev).
+        KeyCode::Char('.') => {
             state.move_sel(1);
             ReviewInput::Changed
         }
-        KeyCode::Char('p') => {
+        KeyCode::Char(',') => {
             state.move_sel(-1);
             ReviewInput::Changed
         }
         // a activates the Right Ask QA input bar.
         KeyCode::Char('a') if key.modifiers == KeyModifiers::NONE => {
             state.focus = ReviewFocus::Ask;
+            ReviewInput::Changed
+        }
+        KeyCode::Char('?') => {
+            state.help_visible = true;
             ReviewInput::Changed
         }
         _ => ReviewInput::Consumed,
@@ -659,7 +806,14 @@ pub fn handle_review_preview_shell_key(
         return Some(ReviewInput::Dismissed);
     }
 
+    // Help overlay: any key closes it.
+    if state.help_visible {
+        state.help_visible = false;
+        return Some(ReviewInput::Changed);
+    }
+
     // Don't steal keys while viewer is in search/filter/visual mode.
+    // (While a search matcher is active, n/N pass through to the viewer.)
     if let Some(v) = state.viewer.as_ref() {
         if v.list_state.input_mode().is_some() || v.list_state.visual_mode {
             return None;
@@ -671,13 +825,35 @@ pub fn handle_review_preview_shell_key(
             state.focus = ReviewFocus::List;
             Some(ReviewInput::Changed)
         }
-        // n/p switch files without leaving preview focus.
-        KeyCode::Char('n') if key.modifiers == KeyModifiers::NONE => {
+        // ] / [ jump hunk-by-hunk through the diff preview.
+        KeyCode::Char(']') | KeyCode::Char('[') => {
+            let next = key.code == KeyCode::Char(']');
+            let jumped = state
+                .viewer
+                .as_mut()
+                .is_some_and(|v| v.jump_hunk(if next { 1 } else { -1 }));
+            if jumped {
+                Some(ReviewInput::Changed)
+            } else {
+                Some(ReviewInput::Consumed)
+            }
+        }
+        // . / , switch files without leaving preview focus (hunk convention;
+        // n/N stay reserved for the viewer's search-next/prev).
+        KeyCode::Char('.') => {
             state.move_sel(1);
             Some(ReviewInput::Changed)
         }
-        KeyCode::Char('p') if key.modifiers == KeyModifiers::NONE => {
+        KeyCode::Char(',') => {
             state.move_sel(-1);
+            Some(ReviewInput::Changed)
+        }
+        // d / u half-page scroll (less convention); g/G/Ctrl-d/u pass through.
+        KeyCode::Char('d') | KeyCode::Char('u') if key.modifiers == KeyModifiers::NONE => {
+            let down = key.code == KeyCode::Char('d');
+            if let Some(v) = state.viewer.as_mut() {
+                v.half_page_scroll(down);
+            }
             Some(ReviewInput::Changed)
         }
         KeyCode::Char('t') if key.modifiers == KeyModifiers::NONE => Some(ReviewInput::ToggleTree),
@@ -687,6 +863,10 @@ pub fn handle_review_preview_shell_key(
         // a activates the Right Ask QA bar.
         KeyCode::Char('a') if key.modifiers == KeyModifiers::NONE => {
             state.focus = ReviewFocus::Ask;
+            Some(ReviewInput::Changed)
+        }
+        KeyCode::Char('?') => {
+            state.help_visible = true;
             Some(ReviewInput::Changed)
         }
         KeyCode::Tab => {
@@ -996,18 +1176,16 @@ pub fn render_review_modal(
             format!(" filter: {}  Enter=done  Esc=clear ", state.list_query)
         }
         ReviewFocus::List => {
-            let layout = if state.tree_mode { "tree" } else { "flat" };
-            let reads = if state.filter.includes_reads() {
-                "reads:on"
-            } else {
-                "reads:off"
-            };
+            let fold = if state.tree_mode { "h/l fold  Enter=dir " } else { "" };
             format!(
-                " j/k  /=filter  a=ask  t={layout}  r={reads}  Enter→preview  ^click=open  Esc "
+                " j/k  /=filter  .=next ,=prev  {}t={}  r={}  Enter→preview  ?=help  Esc ",
+                fold,
+                if state.tree_mode { "flat" } else { "tree" },
+                if state.filter.includes_reads() { "on" } else { "off" }
             )
         }
         ReviewFocus::Preview => {
-            " j/k scroll  /=search  f=filter  w=wrap  y=copy  a=ask  n/p file  ← list  Esc ".into()
+            " ]/[ hunk  ./, file  /search n/N  d/u half  g/G  w=wrap  y=copy  a=ask  ?=help  ←list  Esc ".into()
         }
         ReviewFocus::Ask => " Enter=send  ↑↓ scroll answer  Tab=files  Esc=back ".into(),
     };
@@ -1061,6 +1239,67 @@ pub fn render_review_modal(
         render_file_list(buf, chunks[0], state, &theme);
         render_preview_pane(buf, chunks[1], state, scrollback, &theme);
     }
+
+    // Help overlay sits on top of the whole modal; any key/click dismisses.
+    if state.help_visible {
+        render_help_overlay(buf, area, &theme);
+    }
+}
+
+/// Full keymap overlay (`?`). Static content; dismissed by any key or click.
+fn render_help_overlay(buf: &mut Buffer, outer: Rect, theme: &Theme) {
+    let width = (outer.width.saturating_sub(4)).min(78).max(20);
+    let height = (outer.height.saturating_sub(2)).min(26).max(6);
+    let x = outer.x + (outer.width.saturating_sub(width)) / 2;
+    let y = outer.y + (outer.height.saturating_sub(height)) / 2;
+    let area = Rect::new(x, y, width, height);
+
+    Clear.render(area, buf);
+    let border = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent_tool))
+        .title(Span::styled(
+            " Review keybindings ",
+            Style::default()
+                .fg(theme.text_primary)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            " any key closes ",
+            Style::default().fg(theme.gray),
+        ));
+    let inner = border.inner(area);
+    border.render(area, buf);
+
+    let section = |s: &str| Span::styled(s.to_string(), Style::default().fg(theme.warning));
+    let key_span = |k: &str| Span::styled(k.to_string(), Style::default().fg(theme.accent_tool));
+    let desc = |d: &str| Span::styled(d.to_string(), Style::default().fg(theme.text_primary));
+    let row = |k: &str, d: &str| Line::from(vec![key_span(k), desc(d)]);
+
+    let lines = vec![
+        Line::from(section("Files list")),
+        row("  j/k g/G      ", "move / jump"),
+        row("  . ,          ", "next / previous file"),
+        row("  /            ", "filter files (auto-expands tree)"),
+        row(
+            "  h l Enter    ",
+            "collapse / expand / toggle dir (tree, or click)",
+        ),
+        row("  t r          ", "toggle tree mode / include reads"),
+        row("  a Tab        ", "ask panel / switch focus"),
+        Line::from(section("Diff preview")),
+        row("  ] [          ", "next / previous diff hunk"),
+        row("  j/k d/u g/G  ", "line / half-page / ends"),
+        row("  / then n N   ", "search, next / previous match"),
+        row("  f w y v      ", "filter / wrap / copy patch / select"),
+        row("  . , ←       ", "switch file / back to list"),
+        Line::from(section("Ask panel")),
+        row("  Enter ↑↓     ", "send question / scroll answer"),
+        Line::from(section("Global")),
+        row("  ? q Esc      ", "this help / dismiss modal"),
+        row("  Ctrl+click   ", "open file in OS default app"),
+    ];
+    Paragraph::new(lines).render(inner, buf);
 }
 
 fn render_file_list(buf: &mut Buffer, area: Rect, state: &mut ReviewState, theme: &Theme) {
@@ -1162,6 +1401,11 @@ fn render_file_list(buf: &mut Buffer, area: Rect, state: &mut ReviewState, theme
         buf.set_style(row_area, Style::default().bg(row_bg));
 
         if state.tree_mode {
+            let collapsed = state
+                .tree_rows
+                .get(nav_i)
+                .and_then(|r| r.dir_key.as_ref())
+                .is_some_and(|k| state.collapsed_dirs.contains(k));
             render_tree_row(
                 buf,
                 rows_area.x,
@@ -1171,6 +1415,7 @@ fn render_file_list(buf: &mut Buffer, area: Rect, state: &mut ReviewState, theme
                 selected,
                 row_bg,
                 theme,
+                collapsed,
             );
         } else {
             let file_i = state.filtered[nav_i];
@@ -1244,6 +1489,7 @@ fn render_tree_row(
     selected: bool,
     row_bg: ratatui::style::Color,
     theme: &Theme,
+    collapsed: bool,
 ) {
     // Tree gutters: "│ " rails + branch marker; less double-space clutter.
     let mut gutter = String::new();
@@ -1254,7 +1500,11 @@ fn render_tree_row(
             gutter.push_str("│ ");
         }
     }
-    let glyph = if row.is_dir { "▾ " } else { " " };
+    let glyph = if row.is_dir {
+        if collapsed { "▸ " } else { "▾ " }
+    } else {
+        " "
+    };
     let tag = row.kind.map(kind_tag).unwrap_or(" ");
     // Tree leaf labels are basenames; dirs use folder glyph.
     let icon = file_type_icon(&row.label, row.is_dir);
@@ -1662,6 +1912,16 @@ pub fn list_row_at(state: &ReviewState, col: u16, row: u16) -> Option<usize> {
 }
 
 pub fn handle_review_mouse(state: &mut ReviewState, mouse: &MouseEvent) -> ReviewInput {
+    // Any click over the modal dismisses the help overlay first.
+    if state.help_visible {
+        if matches!(mouse.kind, MouseEventKind::Down(_))
+            && point_in(state.popup_area, mouse.column, mouse.row)
+        {
+            state.help_visible = false;
+            return ReviewInput::Changed;
+        }
+        return ReviewInput::Consumed;
+    }
     match mouse.kind {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let delta: i32 = if matches!(mouse.kind, MouseEventKind::ScrollUp) {
@@ -1718,6 +1978,12 @@ pub fn handle_review_mouse(state: &mut ReviewState, mouse: &MouseEvent) -> Revie
                 if ctrl {
                     // Ctrl+click file/dir row → open leaf path in OS default app.
                     return ReviewInput::OpenPath;
+                }
+                // Clicking a dir header toggles its fold (tree mode);
+                // clicking a file keeps the select-and-preview behavior.
+                if state.tree_rows.get(idx).is_some_and(|r| r.is_dir) {
+                    state.toggle_selected_dir();
+                    return ReviewInput::Changed;
                 }
                 // Click selects and jumps to preview (edit-viewer TUI).
                 state.focus = ReviewFocus::Preview;
@@ -1852,10 +2118,15 @@ pub fn compact_join(parts: &[String]) -> String {
 }
 
 /// Build tree rows for the filtered file set.
+///
+/// `collapsed` hides children of dir rows whose `dir_key` is present;
+/// `force_expand` ignores it (used while a filter query is active).
 pub fn build_tree_rows(
     files: &[ReviewFileItem],
     filtered: &[usize],
     cwd: &str,
+    collapsed: &std::collections::BTreeSet<String>,
+    force_expand: bool,
 ) -> Vec<ReviewTreeRow> {
     let mut root = TrieNode::default();
     for &fi in filtered {
@@ -1885,18 +2156,40 @@ pub fn build_tree_rows(
     }
 
     let mut rows = Vec::new();
-    flatten_trie(&root, 0, &mut rows);
+    flatten_trie(&root, 0, collapsed, force_expand, &mut rows);
     rows
 }
 
-fn flatten_trie(node: &TrieNode, depth: u16, rows: &mut Vec<ReviewTreeRow>) {
+fn flatten_trie(
+    node: &TrieNode,
+    depth: u16,
+    collapsed: &std::collections::BTreeSet<String>,
+    force_expand: bool,
+    rows: &mut Vec<ReviewTreeRow>,
+) {
     // Root is virtual — only walk children.
     for (name, child) in &node.children {
-        flatten_node(name, child, depth, rows);
+        flatten_node(
+            name,
+            child,
+            depth,
+            String::new(),
+            collapsed,
+            force_expand,
+            rows,
+        );
     }
 }
 
-fn flatten_node(name: &str, node: &TrieNode, depth: u16, rows: &mut Vec<ReviewTreeRow>) {
+fn flatten_node(
+    name: &str,
+    node: &TrieNode,
+    depth: u16,
+    parent_key: String,
+    collapsed: &std::collections::BTreeSet<String>,
+    force_expand: bool,
+    rows: &mut Vec<ReviewTreeRow>,
+) {
     // Compact single-child pure-dir chains (Java packages, nested folders).
     let mut parts = vec![name.to_string()];
     let mut cur = node;
@@ -1930,12 +2223,18 @@ fn flatten_node(name: &str, node: &TrieNode, depth: u16, rows: &mut Vec<ReviewTr
             kind: cur.kind,
             is_error: cur.is_error,
             is_dir: false,
+            dir_key: None,
         });
         return;
     }
 
-    // Directory header (aggregated stats), then children.
+    // Directory header (aggregated stats), then children unless collapsed.
     let (add, del, err) = aggregate_stats(cur);
+    let dir_key = if parent_key.is_empty() {
+        label.clone()
+    } else {
+        format!("{parent_key}/{label}")
+    };
     rows.push(ReviewTreeRow {
         depth,
         label,
@@ -1945,10 +2244,22 @@ fn flatten_node(name: &str, node: &TrieNode, depth: u16, rows: &mut Vec<ReviewTr
         kind: None,
         is_error: err,
         is_dir: true,
+        dir_key: Some(dir_key.clone()),
     });
+    if !force_expand && collapsed.contains(&dir_key) {
+        return;
+    }
 
     for (child_name, child) in &cur.children {
-        flatten_node(child_name, child, depth + 1, rows);
+        flatten_node(
+            child_name,
+            child,
+            depth + 1,
+            dir_key.clone(),
+            collapsed,
+            force_expand,
+            rows,
+        );
     }
 }
 
@@ -2196,7 +2507,7 @@ mod tests {
             },
         ];
         let filtered: Vec<usize> = (0..files.len()).collect();
-        let rows = build_tree_rows(&files, &filtered, "/proj");
+        let rows = build_tree_rows(&files, &filtered, "/proj", &Default::default(), false);
         let labels: Vec<_> = rows.iter().map(|r| r.label.as_str()).collect();
         // Single-child dir chain src→main→java compacted; java packages dotted.
         assert!(
@@ -2276,6 +2587,46 @@ mod tests {
     }
 
     #[test]
+    fn click_tree_dir_row_toggles_fold() {
+        let mut state = fold_state();
+        let src_idx = state
+            .tree_rows
+            .iter()
+            .position(|r| r.is_dir && r.label == "src/main/java")
+            .unwrap();
+        state.list_body_area = Rect::new(0, 1, 20, 10);
+        state.list_view_start = 0;
+        let mouse_at = |row: u16| MouseEvent {
+            kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 2,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // Clicking a dir header folds it; selection stays, no preview jump.
+        assert!(matches!(
+            handle_review_mouse(&mut state, &mouse_at(1 + src_idx as u16)),
+            ReviewInput::Changed
+        ));
+        assert!(!state.tree_rows.iter().any(|r| r.label == "A.java"));
+        assert_eq!(state.selected, src_idx);
+        assert_eq!(state.focus, ReviewFocus::List);
+
+        // Clicking a file leaf keeps select-and-preview.
+        let helper_idx = state
+            .tree_rows
+            .iter()
+            .position(|r| r.label == "helper.rs")
+            .unwrap();
+        assert!(matches!(
+            handle_review_mouse(&mut state, &mouse_at(1 + helper_idx as u16)),
+            ReviewInput::Changed
+        ));
+        assert_eq!(state.focus, ReviewFocus::Preview);
+        assert_eq!(state.selected, helper_idx);
+    }
+
+    #[test]
     fn ctrl_click_list_row_opens_path() {
         let mut sb = ScrollbackState::new();
         sb.push(edit_entry("a.rs", false));
@@ -2336,6 +2687,7 @@ mod tests {
             kind: Some(ReviewFileKind::Edit),
             is_error: false,
             is_dir: false,
+            dir_key: None,
         };
         let mut tree = Buffer::empty(area);
         render_tree_row(
@@ -2347,10 +2699,181 @@ mod tests {
             false,
             theme.bg_base,
             &theme,
+            false,
         );
         let tree_text: String = (0..area.width).map(|x| tree[(x, 0)].symbol()).collect();
         assert!(tree_text.contains("a.rs"));
         assert!(!tree_text.contains("+12"));
         assert!(!tree_text.contains("-3"));
+    }
+
+    // ---- tree fold / search ------------------------------------------------
+
+    fn fold_state() -> ReviewState {
+        let files = vec![
+            file_item("/proj/src/main/java/A.java", 1),
+            file_item("/proj/src/main/java/B.java", 2),
+            file_item("/proj/utils/helper.rs", 3),
+        ];
+        let mut state =
+            ReviewState::with_options("t", files, ReviewKindFilter::Changes, true, "/proj");
+        state.rebuild_tree();
+        state
+    }
+
+    fn file_item(path: &str, id: u64) -> ReviewFileItem {
+        ReviewFileItem {
+            path: path.into(),
+            kind: ReviewFileKind::Edit,
+            entry_id: EntryId::new(id),
+            additions: 1,
+            deletions: 0,
+            is_error: false,
+            op_count: 1,
+            plain_fallback: String::new(),
+        }
+    }
+
+    #[test]
+    fn tree_collapse_hides_children_and_expand_restores() {
+        let mut state = fold_state();
+        let src_idx = state
+            .tree_rows
+            .iter()
+            .position(|r| r.is_dir && r.label == "src/main/java")
+            .expect("compacted dir row");
+        state.selected = src_idx;
+
+        assert!(state.toggle_selected_dir());
+        let labels: Vec<&str> = state.tree_rows.iter().map(|r| r.label.as_str()).collect();
+        assert!(!labels.contains(&"A.java"), "children hidden: {labels:?}");
+        assert!(labels.contains(&"utils"), "unrelated dirs remain");
+        // Selection stays on the collapsed dir row.
+        assert_eq!(state.selected, src_idx);
+
+        assert!(state.expand_selected_dir());
+        let labels: Vec<&str> = state.tree_rows.iter().map(|r| r.label.as_str()).collect();
+        assert!(labels.contains(&"A.java"), "children restored: {labels:?}");
+        assert_eq!(state.selected, src_idx);
+    }
+
+    #[test]
+    fn tree_filter_force_expands_collapsed_dirs() {
+        let mut state = fold_state();
+        let src_idx = state
+            .tree_rows
+            .iter()
+            .position(|r| r.is_dir && r.label == "src/main/java")
+            .unwrap();
+        state.selected = src_idx;
+        state.toggle_selected_dir();
+        assert!(state.tree_rows.iter().all(|r| r.label != "A.java"));
+
+        // Searching re-expands everything so matches stay visible.
+        state.list_query = "A.java".into();
+        state.apply_list_filter();
+        let labels: Vec<&str> = state.tree_rows.iter().map(|r| r.label.as_str()).collect();
+        assert!(
+            labels.contains(&"A.java"),
+            "match visible under fold: {labels:?}"
+        );
+        assert!(state.current_file().unwrap().path.ends_with("A.java"));
+    }
+
+    #[test]
+    fn collapse_or_goto_parent_walks_up_to_ancestor() {
+        let mut state = fold_state();
+        let leaf_idx = state
+            .tree_rows
+            .iter()
+            .position(|r| r.file_idx.is_some() && r.label == "A.java")
+            .unwrap();
+        state.selected = leaf_idx;
+        // h on a leaf jumps to its ancestor dir header.
+        assert!(state.collapse_dir_or_goto_parent());
+        assert!(state.tree_rows[state.selected].is_dir);
+        // h again collapses that dir in place.
+        assert!(state.collapse_dir_or_goto_parent());
+        assert!(!state.tree_rows.iter().any(|r| r.label == "A.java"));
+    }
+
+    // ---- help overlay ------------------------------------------------------
+
+    #[test]
+    fn help_overlay_opens_and_any_key_closes() {
+        let mut state = ReviewState::new("t", Vec::new(), ReviewKindFilter::Changes);
+        let key_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+
+        let key_help = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
+        assert!(matches!(
+            handle_review_list_key(&mut state, &key_help),
+            ReviewInput::Changed
+        ));
+        assert!(state.help_visible);
+        // Any key (even q) closes the overlay instead of dismissing the modal.
+        assert!(matches!(
+            handle_review_list_key(&mut state, &key_q),
+            ReviewInput::Changed
+        ));
+        assert!(!state.help_visible);
+    }
+
+    #[test]
+    fn help_overlay_renders_over_modal() {
+        let scrollback = ScrollbackState::new();
+        let mut state = ReviewState::new("t", Vec::new(), ReviewKindFilter::Changes);
+        state.help_visible = true;
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buffer = Buffer::empty(area);
+        render_review_modal(&mut buffer, area, &mut state, &scrollback);
+        // Border title proves the overlay is on top (scan every row).
+        let found = (0..area.height).any(|y| {
+            let text: String = (0..area.width).map(|x| buffer[(x, y)].symbol()).collect();
+            text.contains("Review keybindings")
+        });
+        assert!(found, "help overlay title not rendered");
+    }
+
+    // ---- preview hunk navigation ------------------------------------------
+
+    #[test]
+    fn jump_hunk_walks_hunks_and_stops_at_ends() {
+        let hunk = |old: &str, new: &str| {
+            vec![
+                DiffLine {
+                    text: format!("{old}\n"),
+                    lo: 1,
+                    ln: 1,
+                    tag: ChangeTag::Delete,
+                },
+                DiffLine {
+                    text: format!("{new}\n"),
+                    lo: 1,
+                    ln: 2,
+                    tag: ChangeTag::Insert,
+                },
+            ]
+        };
+        let block = EditToolCallBlock::new("a.rs", vec![hunk("o1", "n1"), hunk("o2", "n2")]);
+        let entry = ScrollbackEntry::new(RenderBlock::ToolCall(ToolCallBlock::Edit(block)));
+        let mut viewer = BlockViewerPane::for_edit_review(EntryId::new(9), &entry).unwrap();
+
+        // No cursor → ] lands on the first hunk start.
+        assert!(viewer.jump_hunk(1));
+        let first = viewer.list_state.selected_id();
+        assert!(first.is_some());
+
+        // Forward to the second hunk.
+        assert!(viewer.jump_hunk(1));
+        let second = viewer.list_state.selected_id();
+        assert_ne!(first, second);
+
+        // No hunk past the end / before the start.
+        assert!(!viewer.jump_hunk(1));
+        assert_eq!(viewer.list_state.selected_id(), second);
+        assert!(viewer.jump_hunk(-1));
+        assert_eq!(viewer.list_state.selected_id(), first);
+        assert!(!viewer.jump_hunk(-1));
+        assert_eq!(viewer.list_state.selected_id(), first);
     }
 }
