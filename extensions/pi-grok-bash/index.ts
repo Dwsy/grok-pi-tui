@@ -254,7 +254,7 @@ export default async function (pi: ExtensionAPI) {
 				minimum: 0,
 				maximum: MAX_TIMEOUT_SECONDS,
 				description:
-					"Cell timeout in seconds; defaults to 30. Set 0 to disable the timeout.",
+					"Cell timeout in seconds; defaults to 300. Set 0 to disable the timeout.",
 			}),
 		),
 		reset: Type.Optional(
@@ -298,7 +298,7 @@ export default async function (pi: ExtensionAPI) {
 					code: params.code,
 					description: params.title,
 					cwd: ctx.cwd,
-					timeout: params.timeout ?? 30,
+					timeout: params.timeout ?? 300,
 					ui: ctx.ui,
 					kernel,
 					tools: evalToolBridge?.catalog() ?? [],
@@ -331,7 +331,7 @@ export default async function (pi: ExtensionAPI) {
 					code: params.code,
 					description: params.title,
 					cwd: ctx.cwd,
-					timeout: params.timeout ?? 30,
+					timeout: params.timeout ?? 300,
 					ui: ctx.ui,
 					kernel,
 					tools: evalToolBridge?.catalog() ?? [],
@@ -380,7 +380,7 @@ export default async function (pi: ExtensionAPI) {
 				result = await kernel.execute(
 					params.code,
 					ctx.cwd,
-					params.timeout ?? 30,
+					params.timeout ?? 300,
 					signal,
 					params.reset ?? false,
 					evalToolBridge?.catalog() ?? [],
@@ -551,8 +551,10 @@ export default async function (pi: ExtensionAPI) {
 			try {
 				const result = await managedBash.execute(toolCallId, params, signal, onUpdate, ctx);
 				if (!task?.backgrounded) return result;
+				// Promotion must expose the task envelope in content (model-visible):
+				// details alone never reach the agent over RPC.
 				return {
-					...result,
+					content: jsonContent({ task_id: task.taskId, status: "running", output_file: task.outputFile }),
 					details: {
 						...result.details,
 						taskId: task.taskId,
@@ -581,6 +583,17 @@ export default async function (pi: ExtensionAPI) {
 		const evalTask = evalTasks.get(taskId);
 		return evalTask ? { kind: "eval", task: evalTask } : undefined;
 	};
+	// A stale id (previous session, typo) must not discard results for the valid ids in the same batch.
+	const selectManagedTasks = (ids: string[]) => {
+		const found: ManagedTask[] = [];
+		const missing: string[] = [];
+		for (const id of ids) {
+			const managed = findManagedTask(id);
+			if (managed) found.push(managed);
+			else missing.push(id);
+		}
+		return { found, missing };
+	};
 	const managedTaskResult = (managed: ManagedTask) =>
 		managed.kind === "bash" ? taskResult(managed.task) : evalTaskResult(managed.task);
 	const waitManagedTask = (managed: ManagedTask, timeoutMs: number | undefined, signal: AbortSignal | undefined) =>
@@ -589,7 +602,9 @@ export default async function (pi: ExtensionAPI) {
 			: waitForEvalTask(managed.task, timeoutMs, signal);
 	const capWaitMs = (timeoutMs: number | undefined) => {
 		if (maxWaitMs === undefined) return timeoutMs;
-		return timeoutMs && timeoutMs > 0 ? Math.min(timeoutMs, maxWaitMs) : maxWaitMs;
+		// An explicit 0 stays 0 (non-blocking snapshot); only an omitted value widens to the max-wait cap.
+		if (timeoutMs === undefined) return maxWaitMs;
+		return Math.min(timeoutMs, maxWaitMs);
 	};
 
 	if (bashEnabled || evalVersion === "v2") pi.registerTool({
@@ -602,13 +617,13 @@ export default async function (pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params, signal) {
 			const ids = ensureTaskIds(params.task_ids);
-			const selected = ids.map(findManagedTask);
-			if (selected.some((task) => !task)) return { content: jsonContent({ task_not_found: ids.filter((id) => !findManagedTask(id)) }) };
-			const found = selected.filter((task): task is ManagedTask => task !== undefined);
+			const { found, missing } = selectManagedTasks(ids);
+			if (found.length === 0) return { content: jsonContent({ task_not_found: missing }) };
 			if (params.timeout_ms && params.timeout_ms > 0) {
 				await Promise.all(found.map((task) => waitManagedTask(task, capWaitMs(params.timeout_ms), signal)));
 			}
 			const results = found.map(managedTaskResult);
+			if (missing.length > 0) return { content: jsonContent({ task_not_found: missing, results }) };
 			return { content: jsonContent(results.length === 1 ? results[0] : { mode: "wait_all", results }) };
 		},
 	});
@@ -624,13 +639,17 @@ export default async function (pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params, signal) {
 			const ids = ensureTaskIds(params.task_ids);
-			const selected = ids.map(findManagedTask);
-			if (selected.some((task) => !task)) return { content: jsonContent({ task_not_found: ids.filter((id) => !findManagedTask(id)) }) };
-			const found = selected.filter((task): task is ManagedTask => task !== undefined);
-			const waits = found.map((task) => waitManagedTask(task, capWaitMs(params.timeout_ms), signal));
-			if (params.mode === "wait_any") await Promise.race(waits);
-			else await Promise.all(waits);
+			const { found, missing } = selectManagedTasks(ids);
+			if (found.length === 0) return { content: jsonContent({ task_not_found: missing }) };
+			const waitMs = capWaitMs(params.timeout_ms);
+			// timeout_ms=0 is an explicit non-blocking snapshot; only wait when a real window exists.
+			if (waitMs === undefined || waitMs > 0) {
+				const waits = found.map((task) => waitManagedTask(task, waitMs, signal));
+				if (params.mode === "wait_any") await Promise.race(waits);
+				else await Promise.all(waits);
+			}
 			const results = found.map(managedTaskResult);
+			if (missing.length > 0) return { content: jsonContent({ mode: params.mode, results, task_not_found: missing }) };
 			return { content: jsonContent({ mode: params.mode, results }) };
 		},
 	});

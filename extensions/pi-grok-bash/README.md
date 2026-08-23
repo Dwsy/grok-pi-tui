@@ -455,7 +455,7 @@ Used by `EvalSessionToolBridge` as an optional host-package discovery root when 
 
 ## Limits and lifecycle
 
-- Eval default timeout: 30 seconds.
+- Eval default timeout: 300 seconds.
 - Eval timeout `0`: disabled.
 - Maximum accepted timeout: `2_147_483.647` seconds.
 - In-memory captured output limit: 50 KiB; older bytes are discarded and the result is marked truncated.
