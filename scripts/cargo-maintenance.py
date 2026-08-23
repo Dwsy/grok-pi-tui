@@ -184,13 +184,16 @@ def run(args: argparse.Namespace) -> int:
             except BlockingIOError:
                 return 0
 
+        now = time.time()
+        # Walking a large Cargo target can take several seconds. Respect the
+        # maintenance cadence before doing either the cap scan or stale-cache
+        # scan so normal Cargo invocations stay cheap.
+        if not args.force and not should_run(marker, now, args.interval_hours * 3600):
+            return 0
+
         cap_result = enforce_target_cap(args, target)
         if cap_result != 0:
             return cap_result
-
-        now = time.time()
-        if not args.force and not should_run(marker, now, args.interval_hours * 3600):
-            return 0
 
         available = disk_free_bytes(target)
         age_days = args.stale_days

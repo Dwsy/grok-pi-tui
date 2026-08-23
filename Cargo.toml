@@ -405,7 +405,7 @@ inherits = "release-dist"
 
 [profile.dev]
 panic = "abort"
-incremental = false
+incremental = true
 split-debuginfo = "unpacked"
 codegen-units = 128
 debug = "line-tables-only"

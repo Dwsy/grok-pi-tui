@@ -14,7 +14,6 @@ if ! [[ "$MAX_TARGET_GIB" =~ ^[1-9][0-9]*$ ]]; then
   echo "error: CARGO_TARGET_MAX_GIB must be a positive integer" >&2
   exit 1
 fi
-export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
 "$SCRIPT_DIR/setup-shared-cargo-target.sh" >&2
 if [[ "${CARGO_MAINTENANCE:-1}" != "0" ]]; then
   python3 "$SCRIPT_DIR/cargo-maintenance.py" \
@@ -26,10 +25,10 @@ if [[ "${CARGO_MAINTENANCE:-1}" != "0" ]]; then
     --soft-free-gib "${CARGO_MAINTENANCE_SOFT_FREE_GIB:-40}" \
     --max-dirs "${CARGO_MAINTENANCE_MAX_DIRS:-8}"
 fi
+# Free-space is cheap to sample continuously. The more expensive recursive
+# target-size cap is enforced by cargo-maintenance.py on its periodic cadence.
 exec python3 "$SCRIPT_DIR/cargo-disk-guard.py" \
   --path "$GUARD_PATH" \
   --path "$CARGO_HOME_PATH" \
-  --target-path "$GUARD_PATH" \
-  --max-target-gib "$MAX_TARGET_GIB" \
   --min-free-gib "$MIN_FREE_GIB" \
   -- cargo "$@"
