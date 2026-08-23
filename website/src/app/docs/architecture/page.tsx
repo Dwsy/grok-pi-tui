@@ -75,7 +75,7 @@ export default function ArchitecturePage() {
         </Link>
         {" · "}
         <a
-          href="https://github.com/Dwsy/grok-pi/blob/main/NATIVE_GROK_TUI_ALIGNMENT.md"
+          href="https://github.com/Dwsy/grok-pi/blob/main/docs/NATIVE_GROK_TUI_ALIGNMENT.md"
           className="text-accent hover:underline"
           target="_blank"
           rel="noopener noreferrer"

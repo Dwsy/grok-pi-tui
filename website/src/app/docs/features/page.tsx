@@ -30,7 +30,7 @@ export default function FeaturesPage() {
         {d.introLead}{" "}
         <strong className="text-text-primary">v0.0.8</strong>. {d.introSSot}{" "}
         <a
-          href="https://github.com/Dwsy/grok-pi/blob/main/FEATURE_MATRIX.md"
+          href="https://github.com/Dwsy/grok-pi/blob/main/docs/FEATURE_MATRIX.md"
           className="text-accent hover:underline"
           target="_blank"
           rel="noopener noreferrer"

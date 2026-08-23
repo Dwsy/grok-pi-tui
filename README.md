@@ -5,7 +5,7 @@
 
 > Pi agent core in Grok Build's native terminal UI.
 
-[Download latest release](https://github.com/Dwsy/grok-pi/releases/latest) · [ZH](README.zh-CN.md) · [Feature matrix](FEATURE_MATRIX.md) · [Architecture](NATIVE_GROK_TUI_ALIGNMENT.md) · [Verification](VERIFICATION.md) · [Changelog](CHANGELOG.MD) · [更新日志](CHANGELOG.zh-CN.md)
+[Download latest release](https://github.com/Dwsy/grok-pi/releases/latest) · [ZH](docs/README.zh-CN.md) · [Feature matrix](docs/FEATURE_MATRIX.md) · [Architecture](docs/NATIVE_GROK_TUI_ALIGNMENT.md) · [Verification](docs/VERIFICATION.md) · [Changelog](CHANGELOG.MD) · [更新日志](docs/CHANGELOG.zh-CN.md)
 
 > **Remote TUI bridge.** Pi's interactive components render through Grok Build's native Pager, preserving the Grok terminal experience while exposing Pi's extension ecosystem. Pi users get Grok Build's native UI; Grok Build users get Pi's models, tools, sessions, and extensions.
 
@@ -99,7 +99,7 @@ grok-pi update
 | Resource management | Native manager for Pi extensions, skills, prompts, and themes |
 | Updates | GitHub Releases-based update check and installation |
 
-For field-level behavior and intentional omissions, see the [feature matrix](FEATURE_MATRIX.md).
+For field-level behavior and intentional omissions, see the [feature matrix](docs/FEATURE_MATRIX.md).
 
 ## Architecture
 
@@ -148,7 +148,7 @@ Subagents V2 team presets are JSON files under `<repo>/.grok-pi/teams` or `~/.gr
 
 Enable V2 before starting grok-pi with the F2 "Pi subagents V2" toggle or `PI_GROK_SUBAGENTS_V2=1`; use `/subagent-teams` to inspect presets. `spawn_team` starts a preset, while `spawn_team_agent`, `team_send_message`, `team_followup_task`, `team_wait`, `team_list`, and `team_interrupt` provide the lower-level collaboration surface. Rhai Workflow remains the deterministic orchestration engine; Team V2 is the session-scoped, run-reusable agent identity/messaging layer.
 
-Rhai workflows are **off by default** (F2 → Agent → **Pi workflows**, then full restart). Details: [FEATURE_MATRIX.md](FEATURE_MATRIX.md), [AGENTS.md](AGENTS.md#product-state-isolation).
+Rhai workflows are **off by default** (F2 → Agent → **Pi workflows**, then full restart). Details: [FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md), [AGENTS.md](AGENTS.md#product-state-isolation).
 
 Herdr lifecycle reporting is **off by default**. Enable it with F2 → Agent → **Pi Herdr integration**, then restart. See the [Herdr setup guide](docs/usage/grok-pi-herdr.md).
 
@@ -182,15 +182,15 @@ Run verification with:
 ./verify.sh
 ```
 
-See [VERIFICATION.md](VERIFICATION.md) for the distinction between static checks and runtime acceptance.
+See [VERIFICATION.md](docs/VERIFICATION.md) for the distinction between static checks and runtime acceptance.
 
 ## Documentation
 
-- [Feature matrix](FEATURE_MATRIX.md) — supported behavior and intentional boundaries
+- [Feature matrix](docs/FEATURE_MATRIX.md) — supported behavior and intentional boundaries
 - [Subagents V2 guide](docs/usage/subagents-v2.md) — opt-in team collaboration, stable paths, presets, queue semantics, rollback, and troubleshooting
-- [Architecture alignment](NATIVE_GROK_TUI_ALIGNMENT.md) — component ownership, protocol mapping, and migration guidance
-- [Verification record](VERIFICATION.md) — completed checks and known environment blockers
-- [Changelog](CHANGELOG.MD) / [更新日志](CHANGELOG.zh-CN.md) — release history (EN / ZH)
+- [Architecture alignment](docs/NATIVE_GROK_TUI_ALIGNMENT.md) — component ownership, protocol mapping, and migration guidance
+- [Verification record](docs/VERIFICATION.md) — completed checks and known environment blockers
+- [Changelog](CHANGELOG.MD) / [更新日志](docs/CHANGELOG.zh-CN.md) — release history (EN / ZH)
 - [Contributing](CONTRIBUTING.md) — contribution guidelines
 
 ## License

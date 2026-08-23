@@ -9,7 +9,7 @@ export function Footer() {
   const links = [
     { label: footer.links.github, href: "https://github.com/Dwsy/grok-pi" },
     { label: footer.links.changelog, href: "https://github.com/Dwsy/grok-pi/blob/main/CHANGELOG.MD" },
-    { label: footer.links.featureMatrix, href: "https://github.com/Dwsy/grok-pi/blob/main/FEATURE_MATRIX.md" },
+    { label: footer.links.featureMatrix, href: "https://github.com/Dwsy/grok-pi/blob/main/docs/FEATURE_MATRIX.md" },
     { label: footer.links.license, href: "https://github.com/Dwsy/grok-pi/blob/main/LICENSE" },
   ];
 

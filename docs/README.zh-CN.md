@@ -2,7 +2,7 @@
 
 > 在 Grok Build 原生终端 UI 中运行 Pi Agent Core。
 
-[下载最新版本](https://github.com/Dwsy/grok-pi/releases/latest) · [English](README.md) · [功能矩阵](FEATURE_MATRIX.md) · [架构说明](NATIVE_GROK_TUI_ALIGNMENT.md) · [验证记录](VERIFICATION.md) · [更新日志](CHANGELOG.zh-CN.md) · [Changelog (EN)](CHANGELOG.MD)
+[下载最新版本](https://github.com/Dwsy/grok-pi/releases/latest) · [English](../README.md) · [功能矩阵](FEATURE_MATRIX.md) · [架构说明](NATIVE_GROK_TUI_ALIGNMENT.md) · [验证记录](VERIFICATION.md) · [更新日志](CHANGELOG.zh-CN.md) · [Changelog (EN)](../CHANGELOG.MD)
 
 > **Remote TUI 桥接。** Pi 的交互式组件通过 Grok Build 原生 Pager 渲染，在保留 Grok 终端体验的同时接入 Pi 的扩展生态。Pi 用户获得 Grok Build 的原生 UI；Grok Build 用户获得 Pi 的模型、工具、会话和扩展能力。
 
@@ -145,9 +145,9 @@ Subagents V2 的 team preset 使用 JSON，放在 `<repo>/.grok-pi/teams` 或 `~
 
 启动 grok-pi 前用 F2「Pi subagents V2」开关或设置 `PI_GROK_SUBAGENTS_V2=1`；用 `/subagent-teams` 查看 preset。`spawn_team` 启动整组 preset，`spawn_team_agent`、`team_send_message`、`team_followup_task`、`team_wait`、`team_list`、`team_interrupt` 提供底层协作面。Rhai Workflow 仍负责确定性编排；Team V2 负责 session-scoped、可跨单次 run 复用的 agent identity 和 peer messaging。
 
-Rhai Workflow **默认关闭**（F2 → Agent → **Pi workflows**，改完后需**整进程重启**）。细节见 [功能矩阵](FEATURE_MATRIX.zh-CN.md)、[AGENTS.md 产品态隔离](AGENTS.md#product-state-isolation)。
+Rhai Workflow **默认关闭**（F2 → Agent → **Pi workflows**，改完后需**整进程重启**）。细节见 [功能矩阵](FEATURE_MATRIX.zh-CN.md)、[AGENTS.md 产品态隔离](../AGENTS.md#product-state-isolation)。
 
-Herdr 生命周期上报**默认关闭**。可在 F2 → Agent → **Pi Herdr integration** 中开启，然后重启。详见 [Herdr 设置指南](docs/usage/grok-pi-herdr.zh-CN.md)。
+Herdr 生命周期上报**默认关闭**。可在 F2 → Agent → **Pi Herdr integration** 中开启，然后重启。详见 [Herdr 设置指南](usage/grok-pi-herdr.zh-CN.md)。
 
 使用 `--no-extensions`（`-ne`）可关闭 Pi 扩展自动发现；显式 `-e` 路径与 grok-pi 宿主桥接仍会加载。使用 `--no-bridge-extensions` 可关闭内置宿主桥接；组合两个开关可实现完全无扩展启动。Pi 启动参数可放在 `--` 之后直接传递：
 
@@ -183,19 +183,19 @@ incremental 缓存，若已超限的 target 仍过大则执行 `cargo clean`。�
 ## 文档
 
 - [功能矩阵](FEATURE_MATRIX.zh-CN.md) —— 支持的行为与有意边界（[English](FEATURE_MATRIX.md)）
-- [Subagents V2 使用指南](docs/usage/subagents-v2.zh-CN.md) —— 可选 team 协作、稳定 path、preset、队列语义、回滚与排障（[English](docs/usage/subagents-v2.md)）
+- [Subagents V2 使用指南](usage/subagents-v2.zh-CN.md) —— 可选 team 协作、稳定 path、preset、队列语义、回滚与排障（[English](usage/subagents-v2.md)）
 - [架构对齐](NATIVE_GROK_TUI_ALIGNMENT.md) —— 组件所有权、协议映射和迁移说明
 - [验证记录](VERIFICATION.md) —— 已完成检查与环境阻塞项
-- [更新日志](CHANGELOG.zh-CN.md) / [Changelog (EN)](CHANGELOG.MD) —— 版本历史（中英）
-- [贡献指南](CONTRIBUTING.md) —— 贡献流程
+- [更新日志](CHANGELOG.zh-CN.md) / [Changelog (EN)](../CHANGELOG.MD) —— 版本历史（中英）
+- [贡献指南](../CONTRIBUTING.md) —— 贡献流程
 
 ## 许可证
 
-项目及上游声明见 [LICENSE](LICENSE) 和 [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES)。
+项目及上游声明见 [LICENSE](../LICENSE) 和 [THIRD-PARTY-NOTICES](../THIRD-PARTY-NOTICES)。
 
 ## 功能开关 → 会禁用的 Pi 扩展
 
-当 grok-pi **原生能力开启**时，宿主资源准入可能 block 已知冲突的 Pi 包，避免工具名/职责撞车。内置默认表：[`crates/codegen/xai-grok-pager/assets/native_feature_conflicts.toml`](crates/codegen/xai-grok-pager/assets/native_feature_conflicts.toml)。运行时外挂（免 rebuild）：`$GROK_HOME/native-feature-conflicts.toml`，再 `$GROK_PROJECT_DIR/native-feature-conflicts.toml`（packages **并集**；非空 `reason` 覆盖）。用户资源策略的 `allow` 仍可豁免。
+当 grok-pi **原生能力开启**时，宿主资源准入可能 block 已知冲突的 Pi 包，避免工具名/职责撞车。内置默认表：[`crates/codegen/xai-grok-pager/assets/native_feature_conflicts.toml`](../crates/codegen/xai-grok-pager/assets/native_feature_conflicts.toml)。运行时外挂（免 rebuild）：`$GROK_HOME/native-feature-conflicts.toml`，再 `$GROK_PROJECT_DIR/native-feature-conflicts.toml`（packages **并集**；非空 `reason` 覆盖）。用户资源策略的 `allow` 仍可豁免。
 
 ```mermaid
 flowchart LR

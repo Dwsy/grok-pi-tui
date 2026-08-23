@@ -27,7 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Range: `v0.0.18` → `v0.1.0` (2026-08-18 → 2026-08-21). Tag `v0.1` points to the same release commit.
 
-> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+> **中文版本：** [CHANGELOG.zh-CN.md](docs/CHANGELOG.zh-CN.md)
 
 ### Highlights
 
@@ -60,7 +60,7 @@ Range: `v0.0.18` → `v0.1.0` (2026-08-18 → 2026-08-21). Tag `v0.1` points to 
 
 Range: `v0.0.17` → `v0.0.18` (2026-08-16 → 2026-08-18).
 
-> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+> **中文版本：** [CHANGELOG.zh-CN.md](docs/CHANGELOG.zh-CN.md)
 
 ### Added
 
@@ -81,7 +81,7 @@ Range: `v0.0.17` → `v0.0.18` (2026-08-16 → 2026-08-18).
 
 Range: `v0.0.16` → `v0.0.17` (2026-08-15 → 2026-08-16).
 
-> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+> **中文版本：** [CHANGELOG.zh-CN.md](docs/CHANGELOG.zh-CN.md)
 
 ### Fixed
 
@@ -95,7 +95,7 @@ Range: `v0.0.16` → `v0.0.17` (2026-08-15 → 2026-08-16).
 
 Range: `v0.0.15` → `v0.0.16` (2026-08-09 → 2026-08-15).
 
-> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+> **中文版本：** [CHANGELOG.zh-CN.md](docs/CHANGELOG.zh-CN.md)
 
 ### Highlights
 
@@ -125,7 +125,7 @@ Range: `v0.0.15` → `v0.0.16` (2026-08-09 → 2026-08-15).
 
 Range: `v0.0.14` → `v0.0.15` (2026-07-31 → 2026-08-09).
 
-> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+> **中文版本：** [CHANGELOG.zh-CN.md](docs/CHANGELOG.zh-CN.md)
 
 ### Highlights
 
@@ -167,7 +167,7 @@ Range: `v0.0.14` → `v0.0.15` (2026-07-31 → 2026-08-09).
 
 Range: `v0.0.13` → `v0.0.14` (2026-07-30 → 2026-07-31).
 
-> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+> **中文版本：** [CHANGELOG.zh-CN.md](docs/CHANGELOG.zh-CN.md)
 
 ### Highlights
 
@@ -200,7 +200,7 @@ Range: `v0.0.13` → `v0.0.14` (2026-07-30 → 2026-07-31).
 
 Range: `v0.0.12` → `v0.0.13` (2026-07-28 → 2026-07-30).
 
-> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+> **中文版本：** [CHANGELOG.zh-CN.md](docs/CHANGELOG.zh-CN.md)
 
 ### Added
 
@@ -216,7 +216,7 @@ Range: `v0.0.12` → `v0.0.13` (2026-07-28 → 2026-07-30).
 
 Range: `v0.0.11` → `v0.0.12` (2026-07-25 → 2026-07-28).
 
-> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+> **中文版本：** [CHANGELOG.zh-CN.md](docs/CHANGELOG.zh-CN.md)
 
 ### Highlights
 
@@ -253,7 +253,7 @@ Range: `v0.0.11` → `v0.0.12` (2026-07-25 → 2026-07-28).
 
 Range: `v0.0.10` → `v0.0.11` (2026-07-25).
 
-> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+> **中文版本：** [CHANGELOG.zh-CN.md](docs/CHANGELOG.zh-CN.md)
 
 ### Fixed
 
@@ -263,7 +263,7 @@ Range: `v0.0.10` → `v0.0.11` (2026-07-25).
 
 Range: `v0.0.9` → `v0.0.10` (2026-07-24 → 2026-07-25).
 
-> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+> **中文版本：** [CHANGELOG.zh-CN.md](docs/CHANGELOG.zh-CN.md)
 
 ### Fixed
 
@@ -274,7 +274,7 @@ Range: `v0.0.9` → `v0.0.10` (2026-07-24 → 2026-07-25).
 
 Range: `v0.0.8` → `v0.0.9` (2026-07-22 → 2026-07-24).
 
-> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+> **中文版本：** [CHANGELOG.zh-CN.md](docs/CHANGELOG.zh-CN.md)
 
 ### Highlights
 

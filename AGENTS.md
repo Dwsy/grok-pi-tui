@@ -51,7 +51,7 @@ merge — never by the changelog skill.
 5. **Do not modify Pi source to extend RPC.** When a Pi core capability is not exposed over RPC, prefer the official extension API. Preserve Pi semantics rather than emulating them with JSONL edits or unrelated RPCs.
 6. **Product-isolated state trees.** grok-pi must not share stock Grok’s user or project config roots (see [Product state isolation](#product-state-isolation)).
 
-Read [`NATIVE_GROK_TUI_ALIGNMENT.md`](NATIVE_GROK_TUI_ALIGNMENT.md) and [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md) before changing protocol or UI behavior.
+Read [`NATIVE_GROK_TUI_ALIGNMENT.md`](docs/NATIVE_GROK_TUI_ALIGNMENT.md) and [`FEATURE_MATRIX.md`](docs/FEATURE_MATRIX.md) before changing protocol or UI behavior.
 
 ## Product state isolation
 
@@ -122,7 +122,7 @@ Run from the project root:
 
 All linked worktrees share one Cargo output tree at `<git-common-dir>/pi-grok-cargo-target`. `./build.sh` and `./verify.sh` initialize the root `target` symlink automatically. Use `./scripts/cargo-shared.sh <cargo-args>` for project Cargo commands: it sets up the shared target, disables incremental compilation by default, caps generated target output at 64 GiB, and stops Cargo at the default 20 GiB free-space floor. Override the target cap with `CARGO_TARGET_MAX_GIB`; when a target is already over the cap, maintenance clears legacy incremental roots first and falls back to `cargo clean` if needed. Raise the free-space floor with `CARGO_MIN_FREE_GIB`; use `CARGO_DISK_GUARD_PATH` when output is on a custom filesystem; set `CARGO_MAINTENANCE=0` to skip one pre-command maintenance pass. The running disk guard still enforces both the free-space floor and target cap. An explicit `CARGO_TARGET_DIR` remains authoritative for CI or one-off isolation. Never copy `target/` between worktrees. Direct raw `cargo` remains available for deliberate recovery/maintenance, but is not protected by the project guard.
 
-`./verify.sh` additionally runs architecture, mock, syntax, and Pager checks. Current known blockers are documented in [`VERIFICATION.md`](VERIFICATION.md): Python tree-sitter dependencies are not provisioned, and several source-identity/mock expectations require deliberate baseline maintenance. Focused Pager lib tests compile and pass after the `47348d1` integration. Do not claim full verification is green unless the remaining blockers are resolved.
+`./verify.sh` additionally runs architecture, mock, syntax, and Pager checks. Current known blockers are documented in [`VERIFICATION.md`](docs/VERIFICATION.md): Python tree-sitter dependencies are not provisioned, and several source-identity/mock expectations require deliberate baseline maintenance. Focused Pager lib tests compile and pass after the `47348d1` integration. Do not claim full verification is green unless the remaining blockers are resolved.
 
 For a standalone change under `extensions/`, validate the extension source and diff only; do **not** run Cargo unless Rust code, the embedded-extension loader, or its Rust contract changed, or the user asks.
 
@@ -168,7 +168,7 @@ only names a file (e.g. `index.ts`), never the real error. Follow this order:
 
 - Complex work must have a record in `docs/issues/` before implementation.
 - Update the relevant Issue after each completed phase.
-- Keep `README.md`, `README.zh-CN.md`, `FEATURE_MATRIX.md`, and `VERIFICATION.md` aligned with actual behavior.
+- Keep `README.md`, `docs/README.zh-CN.md`, `docs/FEATURE_MATRIX.md`, and `docs/VERIFICATION.md` aligned with actual behavior.
 - The source-identity verifier allows only declared Pager seams. If a required native seam changes, update its baseline/allowed-seam metadata deliberately; never weaken the verifier broadly.
 
 ## Safety
