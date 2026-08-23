@@ -8,20 +8,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Opt-in **Subagents V2 team collaboration** with configurable agent definitions, built-in implementation/research/review teams, team-aware runtime and transport, configuration UI, compatibility tests, and bilingual usage/architecture documentation.
 - Eval Bridge v2 language selector: `[ui].pi_eval_v2_language = "js" | "py" | "all"` (default `js`, restart required), with Python and JavaScript sharing the same host-RPC, skills, completion, store/load, and task contracts.
 - Eval v2 background-task parity with Bash: explicit background mode, automatic foreground-to-background promotion at the shared max-wait cap, `get_task_output` / `wait_tasks` / `kill_task`, bounded model output, and full-output spill files.
+- Live Eval v2 display-mode controls, wired through settings and a native slash-command path so presentation changes can take effect without rebuilding the extension runtime.
+- Stable message timestamps in the timeline, with full dates exposed on hover while preserving consistent timestamps as rows are re-rendered.
+- Configurable Todo V1/V2 runtimes with cross-version migration and compatibility coverage, allowing the host to evolve Todo behavior without discarding existing task state.
+- Manifest-backed extension UI registration: bundled Pi extensions can declare their F2 category/section/order metadata in `grok-pi.json`, and the host imports those registrations into the native settings surface.
+- CLI leader-management commands for controlling the grok-pi leader lifecycle from the command line.
 
 ### Fixed
 
 - Recap and `/btw` bridge traffic no longer leaks into the agent loop context: both extensions deliver summaries, deltas, and answers as `appendEntry` custom entries (never custom messages), the adapter parses the resulting `entry_appended` events, and a `context` hook strips legacy sendMessage-era entries from LLM context in old sessions.
 - `tools.describe(name)` now renders nested tool schemas deeply instead of collapsing `properties` to `[Object]` in the JavaScript REPL.
 - Bash `timeout: 0` now consistently means “no timeout”, matching the Eval v2 escape-hatch semantics and avoiding task validation failures from nested `tool.bash(...)` calls.
-- Eval v2 background promotion immediately replaces the foreground kernel so subsequent cells are not blocked by the promoted task.
+- Eval v2 background promotion immediately replaces the foreground kernel so subsequent cells are not blocked by the promoted task; task waits and timeout defaults are also hardened against foreground/background races.
+- Eval v2 host-tool projection and palette startup now preserve the injected tool catalog correctly, including input-only tool arguments needed by native Pager rendering.
+- The Pi Bash extension no longer registers `F2` for the Eval v2 injected-tool editor, so the extension cannot steal the host-reserved native Settings shortcut.
+- PSM session database discovery, resume, and search paths now resolve correctly across supported platforms instead of assuming one platform-specific layout.
+- Steering rows are held until a safe-point dispatch, preventing queued steering input from crossing adapter turn boundaries at an unsafe time.
+- Model provider IDs containing `/` are resolved correctly rather than being misparsed as provider/model separators.
+- Large-paste confirmation is rendered as the native prompt dropdown, and blocking question cards are cancelled with their owning turns instead of surviving teardown.
+- Write/Edit hover popups remain open while the pointer is inside them and support scrolling, avoiding accidental dismissal while inspecting long tool details.
+- Response streams are closed before turn teardown, preventing late stream state from racing completion; session review navigation was expanded around the same Pager lifecycle work.
+- Local builds no longer require an already installed Pi runtime, removing an unnecessary bootstrap dependency from clean development environments.
 
 ### Changed
 
 - Eval v2 `agent()` is explicitly a blocking leaf; `background=true` fails fast and concurrent leaf agents use `parallel([...])`.
 - Eval v2 task status uses the same Pager-native task channel and shared wait/output limits as enhanced Bash.
+- Bundled high-value Pi bridges (auth, BTW, loop, recap, Remote TUI, rollback, shortcuts, subagents, and related runtime code) were split into focused TypeScript modules with dedicated host wrappers, reducing monolithic extension entrypoints while preserving behavior.
+- grok-pi startup and native settings are now driven by host/extension manifests, with runtime configuration, extension self-healing, host-feature registration, and Pi subagent transport separated from the main binary wiring.
+- Session review navigation, block viewing, timeline interaction, and tool-detail inspection were refined for longer interactive sessions.
+- Local Cargo development builds use faster incremental settings and shared-target maintenance, while repository reference material is consolidated under `docs/` with links updated to the new layout.
 
 ## [0.1.0] - 2026-08-21
 
