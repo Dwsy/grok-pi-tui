@@ -378,11 +378,12 @@ impl BlockContent for OtherToolCallBlock {
     }
 
     fn is_foldable(&self) -> bool {
-        // Not foldable if failed
+        // Not foldable if failed. Input-only generic tools still need an
+        // expansion target so F2 `Other tool args` can expose raw_input.
         if self.error.is_some() {
             return false;
         }
-        self.output.is_some()
+        self.output.is_some() || self.input_json.is_some()
     }
 
     fn default_display_mode(&self) -> DisplayMode {
@@ -572,4 +573,20 @@ fn parse_ask_user_qa_pairs(output: &str) -> Vec<(String, String)> {
     }
 
     vec![]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_only_tool_is_foldable_for_other_tool_args() {
+        let block = OtherToolCallBlock::new("gapp_list", "").with_input_json(
+            r#"{
+  "id": "1"
+}"#,
+        );
+
+        assert!(block.is_foldable());
+    }
 }
