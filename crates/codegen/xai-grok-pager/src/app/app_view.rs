@@ -134,6 +134,8 @@ pub struct ExternalUiState {
     pub remote_tui_overlays: Vec<RemoteTuiOverlay>,
     /// Extension shortcut registry (populated from pi/ui/shortcuts RPC).
     pub extension_shortcuts: crate::app::extension_shortcuts::ExtensionShortcutRegistry,
+    /// Extension-owned Cmd+P placement metadata imported by grok-pi.
+    pub host_palette: Vec<xai_grok_shell::host_features::HostPaletteSpec>,
 }
 
 /// A single overlay entry in the Remote TUI overlay stack.

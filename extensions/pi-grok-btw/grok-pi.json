@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "settings": [
+    {
+      "key": "pi_btw",
+      "label": "Pi /btw side questions",
+      "description": "Enable native /btw side questions in grok-pi (overlay + Pi complete()). Takes effect for new grok-pi sessions.",
+      "keywords": ["pi", "btw", "side", "question", "side-question", "overlay"],
+      "f2": { "category": "agent", "section": "Pi features", "order": 80 },
+      "kind": "bool",
+      "default": false,
+      "restartRequired": true,
+      "configPath": ["ui", "pi_btw"],
+      "nativeFeatureKey": "pi_btw"
+    }
+  ],
+  "palette": [
+    { "command": "btw", "section": "Pi / Extensions", "sectionOrder": 900, "order": 80 }
+  ]
+}

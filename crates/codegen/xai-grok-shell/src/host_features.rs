@@ -6,6 +6,8 @@
 //! [`HostFeatureManifest`] explicitly.
 
 use crate::agent::config::UiConfig;
+use serde::Deserialize;
+use std::sync::{OnceLock, RwLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HostFeatureKey(&'static str);
@@ -20,9 +22,27 @@ impl HostFeatureKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
+pub struct HostFeatureEnv {
+    pub key: &'static str,
+    /// Value pushed when the feature is enabled.
+    pub on: &'static str,
+    /// Override pushed when disabled so inherited shell values cannot leak
+    /// into the Pi child; None leaves the variable untouched.
+    pub off: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HostFeatureCategory {
+    Appearance,
+    Popups,
+    Mouse,
+    Editor,
     Agent,
+    Privacy,
+    Models,
+    Session,
+    Advanced,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -33,29 +53,55 @@ pub struct HostFeatureSpec {
     pub keywords: &'static [&'static str],
     pub category: HostFeatureCategory,
     pub section: &'static str,
+    /// Stable order inside the declared F2 section.
+    pub order: i32,
     pub default_enabled: bool,
     pub restart_required: bool,
-    /// TOML path used for layered startup resolution. The persisted writer is
-    /// the typed UiConfig setter below, so this path is never used to mutate a
-    /// raw TOML tree.
+    /// TOML path used for layered startup resolution.
     pub config_path: &'static [&'static str],
     /// Key used by `native_feature_conflicts.toml` resource admission.
     pub native_feature_key: Option<&'static str>,
-    /// Child-process environment marker set when this feature is enabled.
-    pub startup_env: Option<&'static str>,
-    /// Optional single-file Pi extension source materialized by the host.
-    pub extension_source: Option<&'static str>,
-    get_bool: fn(&UiConfig) -> bool,
-    set_bool: fn(&mut UiConfig, bool),
+    /// Child-process environment variable driven by this toggle.
+    pub startup_env: Option<HostFeatureEnv>,
+}
+
+/// Cmd+P placement for one real ACP slash command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostPaletteSpec {
+    pub command: &'static str,
+    pub section: &'static str,
+    pub section_order: i32,
+    pub order: i32,
+    pub label: Option<&'static str>,
+    pub shortcut: Option<&'static str>,
+    pub source: &'static str,
 }
 
 impl HostFeatureSpec {
     pub fn current_bool(self, ui: &UiConfig) -> bool {
-        (self.get_bool)(ui)
+        serde_json::to_value(ui)
+            .ok()
+            .and_then(|value| value.get(self.key.as_str()).cloned())
+            .and_then(|value| value.as_bool())
+            .unwrap_or(self.default_enabled)
     }
 
-    pub fn set_bool(self, ui: &mut UiConfig, value: bool) {
-        (self.set_bool)(ui, value);
+    pub fn set_bool(self, ui: &mut UiConfig, enabled: bool) {
+        let mut value = serde_json::to_value(&*ui).expect("UiConfig must serialize");
+        let object = value
+            .as_object_mut()
+            .expect("UiConfig must serialize as an object");
+        let previous = object.insert(
+            self.key.as_str().to_string(),
+            serde_json::Value::Bool(enabled),
+        );
+        assert!(
+            previous.is_some(),
+            "unknown UiConfig host-feature key: {}",
+            self.key.as_str()
+        );
+        *ui =
+            serde_json::from_value(value).expect("validated host-feature update must deserialize");
     }
 
     pub fn resolve_enabled(self, root: Option<&toml::Value>) -> bool {
@@ -70,16 +116,35 @@ impl HostFeatureSpec {
         }
         value.as_bool().unwrap_or(self.default_enabled)
     }
+
+    /// `(key, value)` child-env override for the given state. Returns None
+    /// when the feature binds no env or the disabled state carries no override.
+    pub fn startup_env_override(self, enabled: bool) -> Option<(&'static str, &'static str)> {
+        let env = self.startup_env?;
+        if enabled {
+            Some((env.key, env.on))
+        } else {
+            Some((env.key, env.off?))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct HostFeatureManifest {
     specs: Vec<&'static HostFeatureSpec>,
+    palette: Vec<HostPaletteSpec>,
 }
 
 impl HostFeatureManifest {
     pub fn new(specs: impl IntoIterator<Item = &'static HostFeatureSpec>) -> Self {
-        let specs: Vec<_> = specs.into_iter().collect();
+        Self::with_palette(specs.into_iter().collect(), Vec::new())
+    }
+
+    fn with_palette(
+        mut specs: Vec<&'static HostFeatureSpec>,
+        mut palette: Vec<HostPaletteSpec>,
+    ) -> Self {
+        specs.sort_by_key(|spec| (spec.category, spec.section, spec.order, spec.key.as_str()));
         let mut seen = std::collections::HashSet::with_capacity(specs.len());
         for spec in &specs {
             assert!(
@@ -88,7 +153,61 @@ impl HostFeatureManifest {
                 spec.key.as_str()
             );
         }
-        Self { specs }
+        let mut registered = specs_registry()
+            .write()
+            .expect("host feature registry poisoned");
+        for spec in &specs {
+            if !registered.iter().any(|existing| existing.key == spec.key) {
+                registered.push(*spec);
+            }
+        }
+        drop(registered);
+        palette.sort_by_key(|entry| {
+            (
+                entry.section_order,
+                entry.section,
+                entry.order,
+                entry.command,
+            )
+        });
+        Self { specs, palette }
+    }
+
+    /// Parse extension-owned grok-pi JSON descriptors. All UI registration
+    /// metadata is process-lifetime data because the Pager registry stores
+    /// `&'static str` for its immutable metadata catalog.
+    pub fn from_json_sources(sources: &[(&str, &str)]) -> Result<Self, String> {
+        let mut specs = Vec::new();
+        let mut palette = Vec::new();
+        for (source, json) in sources {
+            let document: RawHostUiDocument = serde_json::from_str(json)
+                .map_err(|err| format!("{source}: invalid grok-pi.json: {err}"))?;
+            if document.schema_version != 1 {
+                return Err(format!(
+                    "{source}: unsupported schemaVersion {}",
+                    document.schema_version
+                ));
+            }
+            for raw in document.settings {
+                specs.push(raw.into_spec(source)?);
+            }
+            for raw in document.palette {
+                palette.push(raw.into_spec(source)?);
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for spec in &specs {
+            if !seen.insert(spec.key) {
+                return Err(format!("duplicate host feature key: {}", spec.key.as_str()));
+            }
+        }
+        let mut seen_palette = std::collections::HashSet::new();
+        for entry in &palette {
+            if !seen_palette.insert(entry.command) {
+                return Err(format!("duplicate palette command: {}", entry.command));
+            }
+        }
+        Ok(Self::with_palette(specs, palette))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &'static HostFeatureSpec> + '_ {
@@ -102,282 +221,223 @@ impl HostFeatureManifest {
     pub fn contains(&self, key: HostFeatureKey) -> bool {
         self.find(key).is_some()
     }
+
+    pub fn palette(&self) -> &[HostPaletteSpec] {
+        &self.palette
+    }
+
+    pub fn validate_palette_targets<'a>(
+        &self,
+        commands: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), String> {
+        let commands = commands.into_iter().collect::<std::collections::HashSet<_>>();
+        for entry in &self.palette {
+            if !commands.contains(entry.command) {
+                return Err(format!(
+                    "{}: palette target /{} is not available from ACP",
+                    entry.source, entry.command
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 pub const PI_WORKFLOWS: HostFeatureKey = HostFeatureKey::new("pi_workflows");
 pub const PI_HERDR: HostFeatureKey = HostFeatureKey::new("pi_herdr");
 pub const PI_SUBAGENTS: HostFeatureKey = HostFeatureKey::new("pi_subagents");
+pub const PI_SUBAGENTS_V2: HostFeatureKey = HostFeatureKey::new("pi_subagents_v2");
 pub const PI_TODO: HostFeatureKey = HostFeatureKey::new("pi_todo");
+pub const PI_TODO_V2: HostFeatureKey = HostFeatureKey::new("pi_todo_v2");
 pub const PI_GOAL: HostFeatureKey = HostFeatureKey::new("pi_goal");
 pub const PI_LOOP: HostFeatureKey = HostFeatureKey::new("pi_loop");
 pub const PI_ASK_USER_QUESTION: HostFeatureKey = HostFeatureKey::new("pi_ask_user_question");
 pub const PI_BTW: HostFeatureKey = HostFeatureKey::new("pi_btw");
 
-fn pi_workflows_get(ui: &UiConfig) -> bool {
-    ui.pi_workflows
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawHostUiDocument {
+    schema_version: u32,
+    #[serde(default)]
+    settings: Vec<RawHostFeature>,
+    #[serde(default)]
+    palette: Vec<RawPaletteEntry>,
 }
 
-fn pi_workflows_set(ui: &mut UiConfig, value: bool) {
-    ui.pi_workflows = value;
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawHostFeature {
+    key: String,
+    label: String,
+    description: String,
+    #[serde(default)]
+    keywords: Vec<String>,
+    f2: RawF2Placement,
+    kind: String,
+    default: bool,
+    restart_required: bool,
+    config_path: Vec<String>,
+    native_feature_key: Option<String>,
+    startup_env: Option<RawHostFeatureEnv>,
 }
 
-pub static PI_WORKFLOWS_SPEC: HostFeatureSpec = HostFeatureSpec {
-    key: PI_WORKFLOWS,
-    label: "Pi workflows",
-    description: "Enable upstream Rhai workflows in grok-pi (tool `workflow`, deep-research, .grok/workflows). Takes effect for new grok-pi sessions.",
-    keywords: &[
-        "pi",
-        "workflow",
-        "workflows",
-        "rhai",
-        "deep-research",
-        "agent",
-        "orchestration",
-    ],
-    category: HostFeatureCategory::Agent,
-    section: "Pi features",
-    default_enabled: false,
-    restart_required: true,
-    config_path: &["ui", "pi_workflows"],
-    native_feature_key: Some("pi_workflows"),
-    startup_env: Some("PI_GROK_WORKFLOWS"),
-    extension_source: Some(include_str!(
-        "../../../../extensions/pi-grok-workflows/index.ts"
-    )),
-    get_bool: pi_workflows_get,
-    set_bool: pi_workflows_set,
-};
-
-fn pi_herdr_get(ui: &UiConfig) -> bool {
-    ui.pi_herdr
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawF2Placement {
+    category: String,
+    section: String,
+    order: i32,
 }
 
-fn pi_herdr_set(ui: &mut UiConfig, value: bool) {
-    ui.pi_herdr = value;
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawHostFeatureEnv {
+    key: String,
+    on: String,
+    off: Option<String>,
 }
 
-pub static PI_HERDR_SPEC: HostFeatureSpec = HostFeatureSpec {
-    key: PI_HERDR,
-    label: "Pi Herdr integration",
-    description: "Report grok-pi lifecycle and native Pi session state to Herdr. Disabled by default; enable only when Herdr is in use. Takes effect for new grok-pi sessions.",
-    keywords: &[
-        "pi",
-        "herdr",
-        "agent",
-        "lifecycle",
-        "workspace",
-        "pane",
-        "status",
-        "integration",
-    ],
-    category: HostFeatureCategory::Agent,
-    section: "Pi features",
-    default_enabled: false,
-    restart_required: true,
-    config_path: &["ui", "pi_herdr"],
-    native_feature_key: None,
-    startup_env: None,
-    extension_source: None,
-    get_bool: pi_herdr_get,
-    set_bool: pi_herdr_set,
-};
-
-fn pi_subagents_get(ui: &UiConfig) -> bool {
-    ui.pi_subagents
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawPaletteEntry {
+    command: String,
+    section: String,
+    section_order: i32,
+    order: i32,
+    label: Option<String>,
+    shortcut: Option<String>,
 }
 
-fn pi_subagents_set(ui: &mut UiConfig, value: bool) {
-    ui.pi_subagents = value;
+fn leak_string(value: String) -> &'static str {
+    Box::leak(value.into_boxed_str())
 }
 
-pub static PI_SUBAGENTS_SPEC: HostFeatureSpec = HostFeatureSpec {
-    key: PI_SUBAGENTS,
-    label: "Pi subagents",
-    description: "Enable the built-in Pi child-session subagents (`spawn_subagent`, native Tasks/child views). Default on; takes effect for new grok-pi sessions.",
-    keywords: &[
-        "pi",
-        "subagent",
-        "subagents",
-        "child",
-        "agent",
-        "spawn_subagent",
-        "tasks",
-        "delegate",
-    ],
-    category: HostFeatureCategory::Agent,
-    section: "Pi features",
-    default_enabled: true,
-    restart_required: true,
-    config_path: &["ui", "pi_subagents"],
-    native_feature_key: Some("pi_subagents"),
-    startup_env: None,
-    extension_source: None,
-    get_bool: pi_subagents_get,
-    set_bool: pi_subagents_set,
-};
-
-fn pi_todo_get(ui: &UiConfig) -> bool {
-    ui.pi_todo
+fn leak_strings(values: Vec<String>) -> &'static [&'static str] {
+    Box::leak(
+        values
+            .into_iter()
+            .map(leak_string)
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    )
 }
 
-fn pi_todo_set(ui: &mut UiConfig, value: bool) {
-    ui.pi_todo = value;
+impl RawHostFeature {
+    fn into_spec(self, source: &str) -> Result<&'static HostFeatureSpec, String> {
+        let key = self.key.trim();
+        if key.is_empty() {
+            return Err(format!("{source}: setting key must not be empty"));
+        }
+        let category = match self.f2.category.as_str() {
+            "appearance" => HostFeatureCategory::Appearance,
+            "popups" => HostFeatureCategory::Popups,
+            "mouse" => HostFeatureCategory::Mouse,
+            "editor" => HostFeatureCategory::Editor,
+            "agent" => HostFeatureCategory::Agent,
+            "privacy" => HostFeatureCategory::Privacy,
+            "models" => HostFeatureCategory::Models,
+            "session" => HostFeatureCategory::Session,
+            "advanced" => HostFeatureCategory::Advanced,
+            other => {
+                return Err(format!(
+                    "{source}: {key}: unsupported F2 category `{other}`"
+                ));
+            }
+        };
+        if self.f2.section.trim().is_empty() || self.f2.order < 0 {
+            return Err(format!("{source}: {key}: invalid F2 section/order"));
+        }
+        if self.kind != "bool" {
+            return Err(format!(
+                "{source}: {key}: unsupported setting kind `{}` (expected `bool`)",
+                self.kind
+            ));
+        }
+        if self.config_path.as_slice() != ["ui", key] {
+            return Err(format!(
+                "{source}: {key}: configPath must be [\"ui\", \"{key}\"]"
+            ));
+        }
+        let default_ui = serde_json::to_value(UiConfig::default())
+            .map_err(|err| format!("serialize UiConfig defaults: {err}"))?;
+        let Some(ui_default) = default_ui.get(key).and_then(serde_json::Value::as_bool) else {
+            return Err(format!("{source}: {key}: not a boolean UiConfig field"));
+        };
+        if ui_default != self.default {
+            return Err(format!(
+                "{source}: {key}: JSON default {} != UiConfig default {ui_default}",
+                self.default
+            ));
+        }
+
+        let key = leak_string(key.to_string());
+        let startup_env = self.startup_env.map(|env| HostFeatureEnv {
+            key: leak_string(env.key),
+            on: leak_string(env.on),
+            off: env.off.map(leak_string),
+        });
+        let spec = HostFeatureSpec {
+            key: HostFeatureKey::new(key),
+            label: leak_string(self.label),
+            description: leak_string(self.description),
+            keywords: leak_strings(self.keywords),
+            category,
+            section: leak_string(self.f2.section),
+            order: self.f2.order,
+            default_enabled: self.default,
+            restart_required: self.restart_required,
+            config_path: leak_strings(self.config_path),
+            native_feature_key: self.native_feature_key.map(leak_string),
+            startup_env,
+        };
+        Ok(Box::leak(Box::new(spec)))
+    }
 }
 
-pub static PI_TODO_SPEC: HostFeatureSpec = HostFeatureSpec {
-    key: PI_TODO,
-    label: "Pi todo",
-    description: "Enable grok-pi's built-in structured `todo` tool and native TodoPane projection. Default on; takes effect for new grok-pi sessions.",
-    keywords: &["pi", "todo", "todos", "task", "tasks", "plan", "progress"],
-    category: HostFeatureCategory::Agent,
-    section: "Pi features",
-    default_enabled: true,
-    restart_required: true,
-    config_path: &["ui", "pi_todo"],
-    native_feature_key: Some("pi_todo"),
-    startup_env: None,
-    extension_source: None,
-    get_bool: pi_todo_get,
-    set_bool: pi_todo_set,
-};
-
-fn pi_goal_get(ui: &UiConfig) -> bool {
-    ui.pi_goal
+impl RawPaletteEntry {
+    fn into_spec(self, source: &str) -> Result<HostPaletteSpec, String> {
+        let command = self.command.trim().trim_start_matches('/');
+        if command.is_empty() || command.chars().any(char::is_whitespace) {
+            return Err(format!(
+                "{source}: invalid palette command `{}`",
+                self.command
+            ));
+        }
+        if self.section.trim().is_empty() || self.section_order < 0 || self.order < 0 {
+            return Err(format!(
+                "{source}: /{command}: invalid palette section/order"
+            ));
+        }
+        Ok(HostPaletteSpec {
+            command: leak_string(command.to_string()),
+            section: leak_string(self.section),
+            section_order: self.section_order,
+            order: self.order,
+            label: self.label.map(leak_string),
+            shortcut: self.shortcut.map(leak_string),
+            source: leak_string(source.to_string()),
+        })
+    }
 }
 
-fn pi_goal_set(ui: &mut UiConfig, value: bool) {
-    ui.pi_goal = value;
+fn specs_registry() -> &'static RwLock<Vec<&'static HostFeatureSpec>> {
+    static SPECS: OnceLock<RwLock<Vec<&'static HostFeatureSpec>>> = OnceLock::new();
+    SPECS.get_or_init(|| RwLock::new(Vec::new()))
 }
-
-pub static PI_GOAL_SPEC: HostFeatureSpec = HostFeatureSpec {
-    key: PI_GOAL,
-    label: "Pi goal mode",
-    description: "Enable Grok-style /goal autonomous loop in grok-pi (status bar + update_goal). Takes effect for new grok-pi sessions.",
-    keywords: &["pi", "goal", "/goal", "autonomous", "update_goal", "agent"],
-    category: HostFeatureCategory::Agent,
-    section: "Pi features",
-    default_enabled: false,
-    restart_required: true,
-    config_path: &["ui", "pi_goal"],
-    native_feature_key: Some("pi_goal"),
-    startup_env: None,
-    extension_source: None,
-    get_bool: pi_goal_get,
-    set_bool: pi_goal_set,
-};
-
-fn pi_loop_get(ui: &UiConfig) -> bool {
-    ui.pi_loop
-}
-
-fn pi_loop_set(ui: &mut UiConfig, value: bool) {
-    ui.pi_loop = value;
-}
-
-pub static PI_LOOP_SPEC: HostFeatureSpec = HostFeatureSpec {
-    key: PI_LOOP,
-    label: "Pi /loop scheduler",
-    description: "Enable Grok-style /loop recurring prompts in grok-pi (tasks pane + scheduler_create). Takes effect for new grok-pi sessions.",
-    keywords: &[
-        "pi",
-        "loop",
-        "/loop",
-        "scheduler",
-        "cron",
-        "recurring",
-        "agent",
-    ],
-    category: HostFeatureCategory::Agent,
-    section: "Pi features",
-    default_enabled: false,
-    restart_required: true,
-    config_path: &["ui", "pi_loop"],
-    native_feature_key: None,
-    startup_env: None,
-    extension_source: None,
-    get_bool: pi_loop_get,
-    set_bool: pi_loop_set,
-};
-
-fn pi_ask_user_question_get(ui: &UiConfig) -> bool {
-    ui.pi_ask_user_question
-}
-
-fn pi_ask_user_question_set(ui: &mut UiConfig, value: bool) {
-    ui.pi_ask_user_question = value;
-}
-
-pub static PI_ASK_USER_QUESTION_SPEC: HostFeatureSpec = HostFeatureSpec {
-    key: PI_ASK_USER_QUESTION,
-    label: "Q&A",
-    description: "Grok Build asks the right questions to nail the details. Enable native ask_user_question → QuestionView. Takes effect for new grok-pi sessions.",
-    keywords: &[
-        "pi",
-        "qa",
-        "q&a",
-        "ask",
-        "question",
-        "ask_user_question",
-        "questionnaire",
-        "interview",
-    ],
-    category: HostFeatureCategory::Agent,
-    section: "Pi features",
-    default_enabled: false,
-    restart_required: true,
-    config_path: &["ui", "pi_ask_user_question"],
-    native_feature_key: Some("pi_ask_user_question"),
-    startup_env: None,
-    extension_source: None,
-    get_bool: pi_ask_user_question_get,
-    set_bool: pi_ask_user_question_set,
-};
-
-fn pi_btw_get(ui: &UiConfig) -> bool {
-    ui.pi_btw
-}
-
-fn pi_btw_set(ui: &mut UiConfig, value: bool) {
-    ui.pi_btw = value;
-}
-
-pub static PI_BTW_SPEC: HostFeatureSpec = HostFeatureSpec {
-    key: PI_BTW,
-    label: "Pi /btw side questions",
-    description: "Enable native /btw side questions in grok-pi (overlay + Pi complete()). Takes effect for new grok-pi sessions.",
-    keywords: &["pi", "btw", "side", "question", "side-question", "overlay"],
-    category: HostFeatureCategory::Agent,
-    section: "Pi features",
-    default_enabled: false,
-    restart_required: true,
-    config_path: &["ui", "pi_btw"],
-    native_feature_key: Some("pi_btw"),
-    startup_env: None,
-    extension_source: None,
-    get_bool: pi_btw_get,
-    set_bool: pi_btw_set,
-};
-
-pub static ALL_HOST_FEATURE_SPECS: &[&HostFeatureSpec] = &[
-    &PI_WORKFLOWS_SPEC,
-    &PI_HERDR_SPEC,
-    &PI_SUBAGENTS_SPEC,
-    &PI_TODO_SPEC,
-    &PI_GOAL_SPEC,
-    &PI_LOOP_SPEC,
-    &PI_ASK_USER_QUESTION_SPEC,
-    &PI_BTW_SPEC,
-];
 
 pub fn feature_spec(key: HostFeatureKey) -> Option<&'static HostFeatureSpec> {
-    ALL_HOST_FEATURE_SPECS
+    specs_registry()
+        .read()
+        .expect("host feature registry poisoned")
         .iter()
         .copied()
         .find(|spec| spec.key == key)
 }
 
 pub fn feature_spec_by_setting_key(key: &str) -> Option<&'static HostFeatureSpec> {
-    ALL_HOST_FEATURE_SPECS
+    specs_registry()
+        .read()
+        .expect("host feature registry poisoned")
         .iter()
         .copied()
         .find(|spec| spec.key.as_str() == key)
@@ -387,53 +447,76 @@ pub fn feature_spec_by_setting_key(key: &str) -> Option<&'static HostFeatureSpec
 mod tests {
     use super::*;
 
-    #[test]
-    fn pi_workflows_spec_matches_ui_default_and_path() {
-        let ui = UiConfig::default();
-        assert!(!PI_WORKFLOWS_SPEC.current_bool(&ui));
-        assert!(!PI_WORKFLOWS_SPEC.default_enabled);
-        assert_eq!(PI_WORKFLOWS_SPEC.config_path, &["ui", "pi_workflows"]);
-        assert_eq!(PI_WORKFLOWS_SPEC.native_feature_key, Some("pi_workflows"));
-        assert!(PI_WORKFLOWS_SPEC.extension_source.is_some());
-    }
+    const VALID: &str = r#"{
+      "schemaVersion": 1,
+      "settings": [{
+        "key": "pi_workflows",
+        "label": "Pi workflows",
+        "description": "Workflows",
+        "keywords": ["pi", "workflow"],
+        "f2": {"category": "agent", "section": "Pi features", "order": 10},
+        "kind": "bool",
+        "default": false,
+        "restartRequired": true,
+        "configPath": ["ui", "pi_workflows"],
+        "nativeFeatureKey": "pi_workflows",
+        "startupEnv": {"key": "PI_GROK_WORKFLOWS", "on": "1"}
+      }],
+      "palette": [{"command": "workflow", "section": "Pi / Extensions", "sectionOrder": 900, "order": 10}]
+    }"#;
 
     #[test]
-    fn pi_workflows_resolves_layered_toml_with_default_off() {
-        let missing = toml::Value::Table(Default::default());
-        assert!(!PI_WORKFLOWS_SPEC.resolve_enabled(Some(&missing)));
-        let enabled = toml::Value::Table("[ui]\npi_workflows = true\n".parse().unwrap());
-        assert!(PI_WORKFLOWS_SPEC.resolve_enabled(Some(&enabled)));
-        let disabled = toml::Value::Table("[ui]\npi_workflows = false\n".parse().unwrap());
-        assert!(!PI_WORKFLOWS_SPEC.resolve_enabled(Some(&disabled)));
-    }
-
-    /// Every declared spec must agree with `UiConfig::default()` and carry a
-    /// config path whose leaf equals the feature key — the manifest is the
-    /// single source of truth, so silent drift here would desync F2 defaults
-    /// from persisted state.
-    #[test]
-    fn all_specs_match_ui_config_defaults_and_paths() {
-        let ui = UiConfig::default();
-        for spec in ALL_HOST_FEATURE_SPECS {
-            assert_eq!(
-                spec.current_bool(&ui),
-                spec.default_enabled,
-                "host feature `{}` default drifts from UiConfig::default()",
-                spec.key.as_str(),
-            );
-            let last_segment = spec.config_path.last().unwrap_or_else(|| {
-                panic!("host feature `{}` has empty config_path", spec.key.as_str())
-            });
-            assert_eq!(
-                *last_segment,
-                spec.key.as_str(),
-                "host feature `{}` config_path leaf must equal the key",
-                spec.key.as_str(),
-            );
-        }
-        assert!(
-            ALL_HOST_FEATURE_SPECS.len() >= 8,
-            "Pi feature specs went missing from the manifest table"
+    fn parses_extension_owned_ui_registration() {
+        let manifest = HostFeatureManifest::from_json_sources(&[("test/grok-pi.json", VALID)])
+            .expect("manifest");
+        let spec = manifest.find(PI_WORKFLOWS).expect("workflow setting");
+        assert_eq!(spec.section, "Pi features");
+        assert_eq!(spec.order, 10);
+        assert_eq!(
+            spec.current_bool(&UiConfig::default()),
+            spec.default_enabled
         );
+        assert_eq!(spec.config_path, &["ui", "pi_workflows"]);
+        assert_eq!(spec.native_feature_key, Some("pi_workflows"));
+        assert_eq!(
+            spec.startup_env_override(true),
+            Some(("PI_GROK_WORKFLOWS", "1"))
+        );
+        assert_eq!(manifest.palette()[0].command, "workflow");
+        manifest
+            .validate_palette_targets(["workflow"])
+            .expect("declared palette target exists");
+        let err = manifest
+            .validate_palette_targets(["other"])
+            .expect_err("missing target must fail fast");
+        assert!(err.contains("test/grok-pi.json"));
+        assert!(err.contains("/workflow"));
+    }
+
+    #[test]
+    fn generic_bool_binding_updates_ui_config() {
+        let manifest = HostFeatureManifest::from_json_sources(&[("test/grok-pi.json", VALID)])
+            .expect("manifest");
+        let spec = manifest.find(PI_WORKFLOWS).expect("workflow setting");
+        let mut ui = UiConfig::default();
+        spec.set_bool(&mut ui, true);
+        assert!(ui.pi_workflows);
+        assert!(spec.current_bool(&ui));
+    }
+
+    #[test]
+    fn rejects_bad_coordinate_and_default_drift() {
+        let bad_coordinate = VALID.replace("\"order\": 10", "\"order\": -1");
+        assert!(HostFeatureManifest::from_json_sources(&[("bad.json", &bad_coordinate)]).is_err());
+
+        let bad_default = VALID.replace("\"default\": false", "\"default\": true");
+        let err = HostFeatureManifest::from_json_sources(&[("bad.json", &bad_default)])
+            .expect_err("default drift must fail");
+        assert!(err.contains("UiConfig default"));
+
+        let bad_kind = VALID.replace("\"kind\": \"bool\"", "\"kind\": \"string\"");
+        let err = HostFeatureManifest::from_json_sources(&[("bad.json", &bad_kind)])
+            .expect_err("unsupported kind must fail");
+        assert!(err.contains("unsupported setting kind"));
     }
 }

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "settings": [
+    {
+      "key": "pi_workflows",
+      "label": "Pi workflows",
+      "description": "Enable upstream Rhai workflows in grok-pi (tool `workflow`, deep-research, .grok/workflows). Takes effect for new grok-pi sessions.",
+      "keywords": ["pi", "workflow", "workflows", "rhai", "deep-research", "agent", "orchestration"],
+      "f2": { "category": "agent", "section": "Pi features", "order": 10 },
+      "kind": "bool",
+      "default": false,
+      "restartRequired": true,
+      "configPath": ["ui", "pi_workflows"],
+      "nativeFeatureKey": "pi_workflows",
+      "startupEnv": { "key": "PI_GROK_WORKFLOWS", "on": "1" }
+    }
+  ],
+  "palette": [
+    { "command": "workflow", "section": "Pi / Extensions", "sectionOrder": 900, "order": 10 },
+    { "command": "create-workflow", "section": "Pi / Extensions", "sectionOrder": 900, "order": 11 }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "settings": [
+    {
+      "key": "pi_goal",
+      "label": "Pi goal mode",
+      "description": "Enable Grok-style /goal autonomous loop in grok-pi (status bar + update_goal). Takes effect for new grok-pi sessions.",
+      "keywords": ["pi", "goal", "/goal", "autonomous", "update_goal", "agent"],
+      "f2": { "category": "agent", "section": "Pi features", "order": 50 },
+      "kind": "bool",
+      "default": false,
+      "restartRequired": true,
+      "configPath": ["ui", "pi_goal"],
+      "nativeFeatureKey": "pi_goal"
+    }
+  ],
+  "palette": [
+    { "command": "goal", "section": "Pi / Extensions", "sectionOrder": 900, "order": 50 }
+  ]
+}

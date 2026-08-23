@@ -224,6 +224,7 @@ pub(in crate::app::dispatch) fn dispatch_open_command_palette(app: &mut AppView)
             agent.sharing_enabled,
             &agent.prompt.slash_controller,
             &agent.session.available_commands,
+            &app.external_ui.host_palette,
         ),
         // Type-to-find: open in input mode (matches Ctrl+P).
         state: crate::views::picker::PickerState::input_active(),

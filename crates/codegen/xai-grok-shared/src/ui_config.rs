@@ -79,6 +79,11 @@ pub struct UiConfig {
     /// Default on; takes effect for new grok-pi sessions only.
     #[serde(default = "default_true")]
     pub pi_subagents: bool,
+    /// Enable optional Subagents V2 team tools (`spawn_team`, stable agent
+    /// paths, peer messaging) on top of Pi subagents.
+    /// Default off; takes effect for new grok-pi sessions only.
+    #[serde(default)]
+    pub pi_subagents_v2: bool,
     /// Enable upstream-compatible Rhai workflows in grok-pi (xai-workflow + Pi spawn).
     /// Default off; takes effect for new grok-pi sessions only.
     #[serde(default)]
@@ -87,6 +92,10 @@ pub struct UiConfig {
     /// Default on; takes effect for new grok-pi sessions only.
     #[serde(default = "default_true")]
     pub pi_todo: bool,
+    /// Select the todo extension V2 runtime (cross-version migration from V1).
+    /// Default off = V1; takes effect for new grok-pi sessions only.
+    #[serde(default)]
+    pub pi_todo_v2: bool,
     /// Enable Grok-style `/goal` loop for grok-pi (GoalHost + update_goal).
     /// Default off; takes effect for new grok-pi sessions only.
     #[serde(default)]
@@ -500,8 +509,10 @@ impl Default for UiConfig {
             pi_tree_skip_summary_prompt: false,
             pi_herdr: false,
             pi_subagents: true,
+            pi_subagents_v2: false,
             pi_workflows: false,
             pi_todo: true,
+            pi_todo_v2: false,
             pi_goal: false,
             pi_loop: false,
             pi_ask_user_question: false,

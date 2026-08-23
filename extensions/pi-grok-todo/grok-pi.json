@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "settings": [
+    {
+      "key": "pi_todo",
+      "label": "Pi todo",
+      "description": "Enable grok-pi's built-in structured `todo` tool and native TodoPane projection. Default on; takes effect for new grok-pi sessions.",
+      "keywords": ["pi", "todo", "todos", "task", "tasks", "plan", "progress"],
+      "f2": { "category": "agent", "section": "Pi features", "order": 40 },
+      "kind": "bool",
+      "default": true,
+      "restartRequired": true,
+      "configPath": ["ui", "pi_todo"],
+      "nativeFeatureKey": "pi_todo"
+    },
+    {
+      "key": "pi_todo_v2",
+      "label": "Pi todo V2",
+      "description": "Select the todo extension V2 runtime (cross-version migration from V1). Default off = V1; takes effect for new grok-pi sessions.",
+      "keywords": ["pi", "todo", "todos", "v2", "task", "tasks", "plan", "migration"],
+      "f2": { "category": "agent", "section": "Pi features", "order": 41 },
+      "kind": "bool",
+      "default": false,
+      "restartRequired": true,
+      "configPath": ["ui", "pi_todo_v2"],
+      "startupEnv": { "key": "PI_GROK_TODO_VERSION", "on": "v2", "off": "v1" }
+    }
+  ]
+}

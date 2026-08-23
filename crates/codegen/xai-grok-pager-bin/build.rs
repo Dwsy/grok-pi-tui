@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::{fs, path::PathBuf, process::Command};
 
 fn main() {
     for path in ["HEAD", "refs/tags"] {
@@ -7,6 +7,7 @@ fn main() {
         }
     }
     println!("cargo:rerun-if-env-changed=GROK_PI_VERSION");
+    generate_host_ui_catalog();
 
     let commit = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -24,6 +25,36 @@ fn main() {
 
     println!("cargo:rustc-env=GROK_PI_VERSION={version}");
     println!("cargo:rustc-env=VERSION_WITH_COMMIT={version} ({commit})");
+}
+
+fn generate_host_ui_catalog() {
+    let extensions = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir"))
+        .join("../../../extensions");
+    let mut sources = Vec::new();
+    for entry in fs::read_dir(&extensions).expect("read extensions directory") {
+        let entry = entry.expect("read extension entry");
+        if !entry.file_type().expect("extension file type").is_dir() {
+            continue;
+        }
+        let manifest = entry.path().join("grok-pi.json");
+        if !manifest.is_file() {
+            continue;
+        }
+        println!("cargo:rerun-if-changed={}", manifest.display());
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let source = format!("extensions/{name}/grok-pi.json");
+        let json = fs::read_to_string(&manifest).expect("read extension grok-pi.json");
+        sources.push((source, json));
+    }
+    sources.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut generated = String::from("pub const BUNDLED_HOST_UI_SOURCES: &[(&str, &str)] = &[\n");
+    for (source, json) in sources {
+        generated.push_str(&format!("    ({source:?}, {json:?}),\n"));
+    }
+    generated.push_str("];\n");
+    let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR")).join("host_ui_catalog.rs");
+    fs::write(out, generated).expect("write host UI catalog");
 }
 
 fn git_path(path: &str) -> Option<String> {

@@ -519,8 +519,25 @@ fn host_feature_setting_meta(
     spec: &'static xai_grok_shell::host_features::HostFeatureSpec,
 ) -> SettingMeta {
     let category = match spec.category {
+        xai_grok_shell::host_features::HostFeatureCategory::Appearance => {
+            SettingCategory::Appearance
+        }
+        xai_grok_shell::host_features::HostFeatureCategory::Popups => SettingCategory::Popups,
+        xai_grok_shell::host_features::HostFeatureCategory::Mouse => SettingCategory::Mouse,
+        xai_grok_shell::host_features::HostFeatureCategory::Editor => SettingCategory::Editor,
         xai_grok_shell::host_features::HostFeatureCategory::Agent => SettingCategory::Agent,
+        xai_grok_shell::host_features::HostFeatureCategory::Privacy => SettingCategory::Privacy,
+        xai_grok_shell::host_features::HostFeatureCategory::Models => SettingCategory::Models,
+        xai_grok_shell::host_features::HostFeatureCategory::Session => SettingCategory::Session,
+        xai_grok_shell::host_features::HostFeatureCategory::Advanced => SettingCategory::Advanced,
     };
+    assert!(
+        crate::settings::layout::sections_for(category).contains(&spec.section),
+        "host feature `{}` declares unknown F2 section `{}` for {:?}",
+        spec.key.as_str(),
+        spec.section,
+        category,
+    );
     let description = match spec.native_feature_key {
         Some(conflict_key) => crate::native_feature_conflicts::f2_description_with_conflicts(
             spec.description,
@@ -1613,15 +1630,54 @@ mod tests {
     }
 
     /// Host-feature rows must never leak into stock Grok's registry, and the
-    /// composed registry must project them through the declarative spec.
+    /// composed registry must project extension-owned JSON in F2 coordinate order.
     #[test]
     fn host_feature_rows_are_manifest_scoped() {
-        let manifest = xai_grok_shell::host_features::HostFeatureManifest::new(
-            xai_grok_shell::host_features::ALL_HOST_FEATURE_SPECS.to_vec(),
+        const HOST_UI: &str = r#"{
+          "schemaVersion": 1,
+          "settings": [
+            {
+              "key": "pi_goal",
+              "label": "Pi goal",
+              "description": "Goal mode",
+              "f2": {"category": "agent", "section": "Pi features", "order": 20},
+              "kind": "bool",
+              "default": false,
+              "restartRequired": true,
+              "configPath": ["ui", "pi_goal"],
+              "nativeFeatureKey": "pi_goal"
+            },
+            {
+              "key": "pi_workflows",
+              "label": "Pi workflows",
+              "description": "Workflow mode",
+              "f2": {"category": "agent", "section": "Pi features", "order": 10},
+              "kind": "bool",
+              "default": false,
+              "restartRequired": true,
+              "configPath": ["ui", "pi_workflows"],
+              "nativeFeatureKey": "pi_workflows"
+            }
+          ]
+        }"#;
+        let manifest = xai_grok_shell::host_features::HostFeatureManifest::from_json_sources(&[(
+            "test/grok-pi.json",
+            HOST_UI,
+        )])
+        .expect("valid host UI descriptor");
+
+        let specs = manifest.iter().collect::<Vec<_>>();
+        assert_eq!(
+            specs
+                .iter()
+                .map(|spec| spec.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pi_workflows", "pi_goal"],
+            "F2 order must come from extension JSON, not source declaration order",
         );
 
         let stock = SettingsRegistry::defaults();
-        for spec in xai_grok_shell::host_features::ALL_HOST_FEATURE_SPECS {
+        for spec in &specs {
             assert!(
                 stock.find(spec.key.as_str()).is_none(),
                 "stock defaults() must not contain host-only feature row `{}`",
@@ -1630,7 +1686,15 @@ mod tests {
         }
 
         let reg = SettingsRegistry::defaults_with_host_features(&manifest);
-        for spec in xai_grok_shell::host_features::ALL_HOST_FEATURE_SPECS {
+        let host_rows = reg
+            .all()
+            .iter()
+            .filter(|meta| specs.iter().any(|spec| spec.key.as_str() == meta.key))
+            .map(|meta| meta.key)
+            .collect::<Vec<_>>();
+        assert_eq!(host_rows, vec!["pi_workflows", "pi_goal"]);
+
+        for spec in specs {
             let meta = reg
                 .find(spec.key.as_str())
                 .unwrap_or_else(|| panic!("host feature `{}` registered", spec.key.as_str()));

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "settings": [
+    {
+      "key": "pi_subagents",
+      "label": "Pi subagents",
+      "description": "Enable the built-in Pi child-session subagents (`spawn_subagent`, native Tasks/child views). Default on; takes effect for new grok-pi sessions.",
+      "keywords": ["pi", "subagent", "subagents", "child", "agent", "spawn_subagent", "tasks", "delegate"],
+      "f2": { "category": "agent", "section": "Pi features", "order": 30 },
+      "kind": "bool",
+      "default": true,
+      "restartRequired": true,
+      "configPath": ["ui", "pi_subagents"],
+      "nativeFeatureKey": "pi_subagents"
+    },
+    {
+      "key": "pi_subagents_v2",
+      "label": "Pi subagents V2",
+      "description": "Enable optional Subagents V2 team tools (spawn_team, stable /root/... agent paths, peer messaging, nested spawn) on top of Pi subagents. Requires Pi subagents; takes effect for new grok-pi sessions.",
+      "keywords": ["pi", "subagent", "subagents", "v2", "team", "spawn_team", "peer messaging", "agent"],
+      "f2": { "category": "agent", "section": "Pi features", "order": 31 },
+      "kind": "bool",
+      "default": false,
+      "restartRequired": true,
+      "configPath": ["ui", "pi_subagents_v2"],
+      "startupEnv": { "key": "PI_GROK_SUBAGENTS_V2", "on": "1", "off": "0" }
+    }
+  ]
+}

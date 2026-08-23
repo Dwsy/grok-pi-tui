@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "settings": [
+    {
+      "key": "pi_herdr",
+      "label": "Pi Herdr integration",
+      "description": "Report grok-pi lifecycle and native Pi session state to Herdr. Disabled by default; enable only when Herdr is in use. Takes effect for new grok-pi sessions.",
+      "keywords": ["pi", "herdr", "agent", "lifecycle", "workspace", "pane", "status", "integration"],
+      "f2": { "category": "agent", "section": "Pi features", "order": 20 },
+      "kind": "bool",
+      "default": false,
+      "restartRequired": true,
+      "configPath": ["ui", "pi_herdr"]
+    }
+  ]
+}

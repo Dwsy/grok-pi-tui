@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "settings": [
+    {
+      "key": "pi_ask_user_question",
+      "label": "Q&A",
+      "description": "Grok Build asks the right questions to nail the details. Enable native ask_user_question → QuestionView. Takes effect for new grok-pi sessions.",
+      "keywords": ["pi", "qa", "q&a", "ask", "question", "ask_user_question", "questionnaire", "interview"],
+      "f2": { "category": "agent", "section": "Pi features", "order": 70 },
+      "kind": "bool",
+      "default": false,
+      "restartRequired": true,
+      "configPath": ["ui", "pi_ask_user_question"],
+      "nativeFeatureKey": "pi_ask_user_question"
+    }
+  ]
+}
