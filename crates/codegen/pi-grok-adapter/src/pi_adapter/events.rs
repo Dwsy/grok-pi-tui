@@ -164,7 +164,9 @@ impl PiAgent {
             // cannot enter Pi's steering/follow-up queues while the parent is
             // streaming. RPC exposes that append as entry_appended.
             "entry_appended" => {
-                if self.handle_btw_bridge_message(&event).await {
+                if self.handle_eval_tool_bridge_entry(&event).await {
+                    // Eval-v2-only nested tools are display-only native ACP rows.
+                } else if self.handle_btw_bridge_message(&event).await {
                     // /btw deltas and answers are appended custom entries.
                 } else if self.handle_recap_bridge_message(&event).await? {
                     // Recap summaries are appended custom entries.

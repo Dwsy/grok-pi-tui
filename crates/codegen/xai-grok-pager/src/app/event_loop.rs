@@ -933,6 +933,10 @@ pub(crate) async fn run(
     }
 
     xai_grok_telemetry::startup::enter(xai_grok_telemetry::startup::StartupPhase::AppInit);
+    // Host palette entries are placement metadata for commands that may be
+    // feature-gated or registered later. The live ACP command catalog is the
+    // source of truth: palette construction joins against available commands
+    // and naturally ignores placements whose command is currently absent.
     let mut app = AppView::new(
         connection.tx,
         connection.models,
@@ -943,6 +947,7 @@ pub(crate) async fn run(
         app.settings_registry = std::sync::Arc::new(
             crate::settings::SettingsRegistry::defaults_with_host_features(&profile.host_features),
         );
+        app.external_ui.host_palette = profile.host_features.palette().to_vec();
     }
     crate::app::set_external_agent_active(external_agent);
     app.pending_startup = Some(pending_startup);

@@ -85,8 +85,12 @@ use xai_grok_pager::{
 };
 use xai_grok_shell::host_features::{
     HostFeatureKey, HostFeatureManifest, PI_ASK_USER_QUESTION, PI_BTW, PI_GOAL, PI_HERDR, PI_LOOP,
-    PI_SUBAGENTS, PI_TODO, PI_WORKFLOWS, PI_WORKFLOWS_SPEC,
+    PI_SUBAGENTS, PI_TODO, PI_WORKFLOWS,
 };
+
+mod bundled_host_ui {
+    include!(concat!(env!("OUT_DIR"), "/host_ui_catalog.rs"));
+}
 
 use ask_user_extension::write_ask_user_extension;
 use auth_extension::write_auth_extension;
@@ -336,16 +340,10 @@ async fn run(mut args: Args) -> Result<()> {
     // External host features are declarative: support metadata remains visible
     // in F2 even when disabled, while enabled state is resolved once at startup
     // from the same manifest that drives the composed settings registry.
-    let host_feature_manifest = HostFeatureManifest::new([
-        &PI_WORKFLOWS_SPEC,
-        &xai_grok_shell::host_features::PI_HERDR_SPEC,
-        &xai_grok_shell::host_features::PI_SUBAGENTS_SPEC,
-        &xai_grok_shell::host_features::PI_TODO_SPEC,
-        &xai_grok_shell::host_features::PI_GOAL_SPEC,
-        &xai_grok_shell::host_features::PI_LOOP_SPEC,
-        &xai_grok_shell::host_features::PI_ASK_USER_QUESTION_SPEC,
-        &xai_grok_shell::host_features::PI_BTW_SPEC,
-    ]);
+    let host_feature_manifest =
+        HostFeatureManifest::from_json_sources(bundled_host_ui::BUNDLED_HOST_UI_SOURCES)
+            .map_err(anyhow::Error::msg)
+            .context("invalid bundled extension grok-pi UI manifest")?;
     let host_feature_config = xai_grok_shell::config::load_effective_config().ok();
     let enabled_host_features = host_feature_manifest
         .iter()
@@ -396,7 +394,7 @@ async fn run(mut args: Args) -> Result<()> {
         .iter()
         .copied()
         .find(|spec| spec.key == PI_WORKFLOWS)
-        .map(write_host_feature_extension)
+        .map(|_| write_host_feature_extension())
         .transpose()
         .context("failed to materialize registered Pi host feature")?;
     // F2 `[ui].pi_goal` (default off). Restart required — inject at startup only.
@@ -952,9 +950,14 @@ async fn run(mut args: Args) -> Result<()> {
             "[]".to_string(),
         ));
     }
-    for spec in &enabled_host_features {
-        if let Some(env_key) = spec.startup_env {
-            env.push((env_key.to_string(), "1".to_string()));
+    // Push every spec's startup env in both states so inherited shell values
+    // cannot leak into the Pi child (e.g. a stale PI_GROK_TODO_VERSION=v2
+    // surviving an F2 rollback to V1).
+    for spec in host_feature_manifest.iter() {
+        let enabled =
+            bridge_extensions_enabled && enabled_host_features.iter().any(|e| e.key == spec.key);
+        if let Some((key, value)) = spec.startup_env_override(enabled) {
+            env.push((key.to_string(), value.to_string()));
         }
     }
     if let Some(extension) = goal_extension.as_ref() {
@@ -1160,6 +1163,7 @@ async fn run(mut args: Args) -> Result<()> {
             goal_control,
             subagent_transport,
             workflows_enabled,
+            eval_v2_only_tool_policy_applied,
         )
         .context("failed to restore Pi plan-mode state")?,
     );

@@ -618,6 +618,28 @@ console.log(JSON.stringify({
     );
     assert.equal(promoted.details.background, true);
     assert.match(promoted.details.taskId, /^bash-/);
+    const promotedEnvelope = JSON.parse(promoted.content[0].text);
+    assert.equal(promotedEnvelope.task_id, promoted.details.taskId);
+    assert.equal(promotedEnvelope.status, "running");
+
+    const zeroWaitStart = Date.now();
+    const zeroWait = await waitTool.execute(
+      "auto-background-wait-zero-snapshot",
+      { task_ids: [promoted.details.taskId], mode: "wait_all", timeout_ms: 0 },
+      new AbortController().signal,
+    );
+    assert.equal(JSON.parse(zeroWait.content[0].text).results[0].status, "running");
+    assert.ok(Date.now() - zeroWaitStart < 1000, "timeout_ms=0 must return a non-blocking snapshot");
+
+    const mixedBatch = await outputTool.execute(
+      "auto-background-output-mixed-batch",
+      { task_ids: [promoted.details.taskId, "bash-does-not-exist"] },
+      new AbortController().signal,
+    );
+    const mixedBody = JSON.parse(mixedBatch.content[0].text);
+    assert.equal(mixedBody.results.length, 1);
+    assert.equal(mixedBody.results[0].task_id, promoted.details.taskId);
+    assert.deepEqual(mixedBody.task_not_found, ["bash-does-not-exist"]);
 
     const outputCapped = await outputTool.execute(
       "auto-background-output-cap",
@@ -848,8 +870,12 @@ console.log(JSON.stringify({
     );
 
     process.env.PI_GROK_EVAL_V2_ONLY = "1";
+    const evalUiEntries = [];
     const evalOnlyPi = {
       ...fallbackPi,
+      appendEntry(customType, data) {
+        evalUiEntries.push({ customType, data });
+      },
       async invokeTool() {
         throw new Error("eval-v2-only nested calls must bypass the native active-tool gate");
       },
@@ -863,6 +889,16 @@ console.log(JSON.stringify({
       new AbortController().signal,
     );
     assert.match(evalOnlyResult.content[0].text, /\"probe\"/);
+    assert.deepEqual(
+      evalUiEntries.map((entry) => [entry.customType, entry.data.phase, entry.data.toolName]),
+      [
+        ["pi-grok-eval-tool/v1", "start", "notes_list"],
+        ["pi-grok-eval-tool/v1", "end", "notes_list"],
+      ],
+    );
+    assert.equal(evalUiEntries[0].data.version, 1);
+    assert.match(evalUiEntries[0].data.toolCallId, /^eval-host-/);
+    assert.equal(evalUiEntries[1].data.toolCallId, evalUiEntries[0].data.toolCallId);
     evalOnlyBridge.setAllowedTools(["other_tool"]);
     assert.deepEqual(evalOnlyBridge.catalog(), []);
     await assert.rejects(

@@ -766,6 +766,7 @@ pub(crate) fn palette_entries_with_acp_commands(
     sharing_enabled: bool,
     slash: &crate::slash::SlashController,
     available_commands: &[agent_client_protocol::AvailableCommand],
+    placements: &[xai_grok_shell::host_features::HostPaletteSpec],
 ) -> Vec<PaletteEntry> {
     let mut entries = default_palette_entries(sharing_enabled, slash);
     let mut seen = std::collections::HashSet::new();
@@ -798,25 +799,54 @@ pub(crate) fn palette_entries_with_acp_commands(
             continue;
         }
         let slash_text = format!("/{name}");
-        let label = if command.description.trim().is_empty() {
-            slash_text.clone()
-        } else {
-            command.description.trim().to_string()
-        };
-        dynamic.push(PaletteEntry {
-            label,
-            shortcut: slash_text.clone(),
-            command: PaletteCommand::SlashCommand(slash_text),
-        });
+        let placement = placements
+            .iter()
+            .find(|entry| entry.command.eq_ignore_ascii_case(name));
+        let label = placement
+            .and_then(|entry| entry.label)
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                if command.description.trim().is_empty() {
+                    slash_text.clone()
+                } else {
+                    command.description.trim().to_string()
+                }
+            });
+        let shortcut = placement
+            .and_then(|entry| entry.shortcut)
+            .map(str::to_string)
+            .unwrap_or_else(|| slash_text.clone());
+        dynamic.push((
+            placement.map_or(1000, |entry| entry.section_order),
+            placement.map_or("Pi / Extensions", |entry| entry.section),
+            placement.map_or(i32::MAX, |entry| entry.order),
+            PaletteEntry {
+                label,
+                shortcut,
+                command: PaletteCommand::SlashCommand(slash_text),
+            },
+        ));
     }
 
-    if !dynamic.is_empty() {
-        entries.push(PaletteEntry {
-            label: "Pi / Extensions".into(),
-            shortcut: String::new(),
-            command: PaletteCommand::SectionHeader("Pi / Extensions".into()),
-        });
-        entries.extend(dynamic);
+    dynamic.sort_by(|left, right| {
+        (left.0, left.1, left.2, left.3.label.as_str()).cmp(&(
+            right.0,
+            right.1,
+            right.2,
+            right.3.label.as_str(),
+        ))
+    });
+    let mut current_section = None;
+    for (_, section, _, entry) in dynamic {
+        if current_section != Some(section) {
+            entries.push(PaletteEntry {
+                label: section.to_string(),
+                shortcut: String::new(),
+                command: PaletteCommand::SectionHeader(section.to_string()),
+            });
+            current_section = Some(section);
+        }
+        entries.push(entry);
     }
     entries
 }
@@ -1891,7 +1921,7 @@ mod palette_sharing_tests {
                 "Foreign ACP command".to_string(),
             ),
         ];
-        let entries = palette_entries_with_acp_commands(true, &controller, &commands);
+        let entries = palette_entries_with_acp_commands(true, &controller, &commands, &[]);
 
         assert_eq!(
             entries
@@ -1927,6 +1957,97 @@ mod palette_sharing_tests {
             &entry.command,
             PaletteCommand::SectionHeader(section) if section == "Pi / Extensions"
         )));
+    }
+
+    #[test]
+    fn pi_acp_commands_honor_extension_palette_coordinates() {
+        let controller = slash(crate::app::ScreenMode::Fullscreen);
+        let pi_meta = || {
+            serde_json::json!({ "piCommandSource": "extension" })
+                .as_object()
+                .cloned()
+        };
+        let commands = vec![
+            agent_client_protocol::AvailableCommand::new(
+                "later".to_string(),
+                "Later command".to_string(),
+            )
+            .meta(pi_meta()),
+            agent_client_protocol::AvailableCommand::new(
+                "first".to_string(),
+                "First command".to_string(),
+            )
+            .meta(pi_meta()),
+            agent_client_protocol::AvailableCommand::new(
+                "fallback".to_string(),
+                "Fallback command".to_string(),
+            )
+            .meta(pi_meta()),
+        ];
+        let placements = [
+            xai_grok_shell::host_features::HostPaletteSpec {
+                command: "later",
+                section: "Extension actions",
+                section_order: 50,
+                order: 20,
+                label: None,
+                shortcut: None,
+                source: "test/grok-pi.json",
+            },
+            xai_grok_shell::host_features::HostPaletteSpec {
+                command: "first",
+                section: "Extension actions",
+                section_order: 50,
+                order: 10,
+                label: Some("Run first"),
+                shortcut: Some("⌘1"),
+                source: "test/grok-pi.json",
+            },
+            xai_grok_shell::host_features::HostPaletteSpec {
+                command: "disabled-feature-command",
+                section: "Extension actions",
+                section_order: 50,
+                order: 5,
+                label: Some("Must stay hidden"),
+                shortcut: None,
+                source: "test/grok-pi.json",
+            },
+        ];
+
+        let entries = palette_entries_with_acp_commands(true, &controller, &commands, &placements);
+        let extension_header = entries
+            .iter()
+            .position(|entry| {
+                matches!(
+                    &entry.command,
+                    PaletteCommand::SectionHeader(section) if section == "Extension actions"
+                )
+            })
+            .expect("extension-owned section header");
+        assert_eq!(entries[extension_header + 1].label, "Run first");
+        assert_eq!(entries[extension_header + 1].shortcut, "⌘1");
+        assert_eq!(entries[extension_header + 2].label, "Later command");
+
+        let fallback_header = entries
+            .iter()
+            .position(|entry| {
+                matches!(
+                    &entry.command,
+                    PaletteCommand::SectionHeader(section) if section == "Pi / Extensions"
+                )
+            })
+            .expect("fallback section header");
+        assert!(
+            fallback_header > extension_header,
+            "unconfigured commands should sort after explicitly placed extension commands",
+        );
+        assert_eq!(entries[fallback_header + 1].shortcut, "/fallback");
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.label != "Must stay hidden"),
+            "placement metadata for an unavailable feature command must not create a ghost palette entry",
+        );
     }
 
     #[test]

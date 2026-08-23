@@ -1,5 +1,7 @@
 use super::*;
 
+const EVAL_TOOL_UI_BRIDGE_TYPE: &str = "pi-grok-eval-tool/v1";
+
 impl PiAgent {
     pub(super) async fn execute_bash(
         &self,
@@ -94,6 +96,9 @@ impl PiAgent {
     pub(super) async fn handle_tool_start(&self, event: &Value) {
         let id = string(event, &["toolCallId", "id"]).unwrap_or("pi-tool");
         let name = string(event, &["toolName", "name"]).unwrap_or("Tool");
+        if self.eval_v2_only && name.eq_ignore_ascii_case("eval") {
+            return;
+        }
         let args = normalize_tool_raw_input(
             name,
             event.get("args").or_else(|| event.get("input")).cloned(),
@@ -334,6 +339,9 @@ impl PiAgent {
             .cloned()
             .unwrap_or(Value::Null);
         let name = string(event, &["toolName", "name"]).unwrap_or_default();
+        if self.eval_v2_only && name.eq_ignore_ascii_case("eval") {
+            return;
+        }
         let args = normalize_tool_raw_input(
             name,
             event
@@ -420,6 +428,9 @@ impl PiAgent {
             acp::ToolCallStatus::Completed
         };
         let name = string(event, &["toolName", "name"]).unwrap_or_default();
+        if self.eval_v2_only && name.eq_ignore_ascii_case("eval") {
+            return;
+        }
         let args = normalize_tool_raw_input(
             name,
             event
@@ -455,6 +466,39 @@ impl PiAgent {
             acp::ToolCallUpdate::new(acp::ToolCallId::new(id.to_string()), fields),
         ))
         .await;
+    }
+
+    /// Project Eval-v2-only nested host calls onto native ACP tool rows without
+    /// adding those calls to Pi's model transcript. The extension sends these
+    /// through appendEntry, so this path is display-only by construction.
+    pub(super) async fn handle_eval_tool_bridge_entry(&self, event: &Value) -> bool {
+        let entry = event.get("entry").unwrap_or(event);
+        if entry.get("type").and_then(Value::as_str) != Some("custom")
+            || entry.get("customType").and_then(Value::as_str) != Some(EVAL_TOOL_UI_BRIDGE_TYPE)
+        {
+            return false;
+        }
+        if !self.eval_v2_only {
+            return true;
+        }
+        let Some(data) = entry.get("data").and_then(Value::as_object) else {
+            return true;
+        };
+        if data.get("version").and_then(Value::as_u64) != Some(1) {
+            return true;
+        }
+        let phase = data
+            .get("phase")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let projected = Value::Object(data.clone());
+        match phase {
+            "start" => self.handle_tool_start(&projected).await,
+            "update" => self.handle_tool_update(&projected).await,
+            "end" => self.handle_tool_end(&projected).await,
+            _ => {}
+        }
+        true
     }
 
     pub(super) async fn handle_background_bash_bridge_message(

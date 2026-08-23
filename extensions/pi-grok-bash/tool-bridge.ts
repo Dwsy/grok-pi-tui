@@ -78,6 +78,7 @@ type CaptureHub = { listeners: Set<CaptureListener> };
 
 const HUB_SYMBOL = Symbol.for("pi-grok.eval-tool-capture.v1");
 const ANCHOR_SYMBOL = Symbol.for("pi-grok.eval-tool-anchor.v1");
+const EVAL_TOOL_UI_BRIDGE_TYPE = "pi-grok-eval-tool/v1";
 const CORE_TOOL_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
 
 function captureHub(Runner: RunnerConstructor): CaptureHub {
@@ -347,6 +348,15 @@ export class EvalSessionToolBridge {
 		return wrap({ definition }, runner);
 	}
 
+	private projectUiEvent(phase: "start" | "update" | "end", event: Record<string, unknown>) {
+		if (!evalV2OnlyHostToolsEnabled()) return;
+		// appendEntry is durable display/control traffic: Pi does not add it to
+		// the model message list. The adapter turns this projection back into
+		// native ACP ToolCall/ToolCallUpdate rows while Eval remains the only
+		// model-visible top-level tool.
+		this.pi.appendEntry(EVAL_TOOL_UI_BRIDGE_TYPE, { version: 1, phase, ...event });
+	}
+
 	private async invokeWrapped(
 		toolName: string,
 		wrappedTool: WrappedToolLike,
@@ -358,6 +368,7 @@ export class EvalSessionToolBridge {
 		const prepared = wrappedTool.prepareArguments ? wrappedTool.prepareArguments(inputArgs) : inputArgs;
 		const args = { ...prepared };
 		const toolCallId = `eval-host-${randomUUID()}`;
+		this.projectUiEvent("start", { toolCallId, toolName, args });
 		await runner.emit({ type: "tool_execution_start", toolCallId, toolName, args });
 		let result: ToolResult;
 		let isError = false;
@@ -372,6 +383,7 @@ export class EvalSessionToolBridge {
 			});
 			if (preflight?.block) throw new Error(preflight.reason || `Pi tool ${toolName} was blocked`);
 			result = await wrappedTool.execute(toolCallId, args, signal, (partialResult) => {
+				this.projectUiEvent("update", { toolCallId, toolName, args, partialResult });
 				updateTail = updateTail
 					.then(() =>
 						runner.emit({
@@ -410,6 +422,7 @@ export class EvalSessionToolBridge {
 			};
 			isError = patch.isError ?? isError;
 		}
+		this.projectUiEvent("end", { toolCallId, toolName, args, result, isError });
 		await runner.emit({ type: "tool_execution_end", toolCallId, toolName, result, isError });
 		if (isError) {
 			throw new Error(textFromContent(result.content).trim() || (thrown instanceof Error ? thrown.message : `Pi tool ${toolName} failed`));

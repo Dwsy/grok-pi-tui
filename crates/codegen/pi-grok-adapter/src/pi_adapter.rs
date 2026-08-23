@@ -302,6 +302,9 @@ pub struct PiAgent {
     subagent_transport: Option<Rc<SubagentEventTransport>>,
     /// Startup-resolved host capability; never re-reads disk or parent env.
     workflows_enabled: bool,
+    /// Eval-v2-only isolates the model to the outer Eval tool while nested
+    /// host tools are projected separately for native ACP rendering.
+    eval_v2_only: bool,
 }
 
 impl PiAgent {
@@ -316,6 +319,7 @@ impl PiAgent {
         goal_control: Option<PathBuf>,
         subagent_transport: Option<SubagentEventTransport>,
         workflows_enabled: bool,
+        eval_v2_only: bool,
     ) -> Result<Self> {
         let acp_session_id = bootstrap.state.session_id.clone();
         let plan_file = plan_file_path(&bootstrap.state, &session_dir);
@@ -338,6 +342,7 @@ impl PiAgent {
             goal_host: Rc::new(RefCell::new(goal_control.map(GoalHost::new))),
             subagent_transport: subagent_transport.map(Rc::new),
             workflows_enabled,
+            eval_v2_only,
             state: Rc::new(RefCell::new(AdapterState {
                 bootstrap,
                 acp_session_id,

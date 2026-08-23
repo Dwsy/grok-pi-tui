@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "settings": [
+    {
+      "key": "pi_loop",
+      "label": "Pi /loop scheduler",
+      "description": "Enable Grok-style /loop recurring prompts in grok-pi (tasks pane + scheduler_create). Takes effect for new grok-pi sessions.",
+      "keywords": ["pi", "loop", "/loop", "scheduler", "cron", "recurring", "agent"],
+      "f2": { "category": "agent", "section": "Pi features", "order": 60 },
+      "kind": "bool",
+      "default": false,
+      "restartRequired": true,
+      "configPath": ["ui", "pi_loop"]
+    }
+  ],
+  "palette": [
+    { "command": "loop", "section": "Pi / Extensions", "sectionOrder": 900, "order": 60 }
+  ]
+}
