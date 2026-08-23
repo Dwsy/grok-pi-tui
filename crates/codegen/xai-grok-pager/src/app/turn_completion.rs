@@ -171,6 +171,10 @@ fn arm_driver_turn_end_reconcile(
         cancel_trigger: cancel_trigger.map(str::to_string),
         received_at: std::time::Instant::now(),
     });
+    agent
+        .session
+        .tracker
+        .finish_response_stream(&mut agent.scrollback);
     true
 }
 

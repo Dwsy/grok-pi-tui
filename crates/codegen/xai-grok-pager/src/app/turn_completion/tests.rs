@@ -383,7 +383,8 @@ fn repro_terminal_without_prompt_id_arms_reconcile_for_lost_pr() {
     );
     assert_eq!(
         agent.session.tracker.activity(),
-        Some(crate::acp::tracker::TurnActivity::Responding)
+        None,
+        "terminal broadcast closes the response stream while PromptResponse still owns turn teardown"
     );
 }
 

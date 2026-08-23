@@ -487,6 +487,17 @@ impl AcpUpdateTracker {
     pub(crate) fn snapshot_output_epoch(&mut self) {
         self.epoch_at_last_finish = self.agent_output_epoch;
     }
+    /// Close only the visible response stream without finishing the turn.
+    ///
+    /// A terminal broadcast can arrive just before the driver's PromptResponse.
+    /// During that reconcile grace window the RPC still owns turn teardown, but
+    /// the response text is already complete and must not keep reporting
+    /// `Responding`.
+    pub(crate) fn finish_response_stream(&mut self, scrollback: &mut ScrollbackState) {
+        if let Some(agent_id) = self.current_agent_msg.take() {
+            scrollback.finish_running(agent_id);
+        }
+    }
     fn bump_agent_output_epoch(&mut self) {
         self.agent_output_epoch = self.agent_output_epoch.wrapping_add(1);
     }
