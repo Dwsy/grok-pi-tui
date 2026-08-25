@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Highlights
+
+- **Pi 0.84.3 compatibility** — grok-pi now supports a system `pi` reporting `pi --version` as `0.84.3`, including bundled CLI host-module resolution for built-in and third-party extensions.
+
 ### Added
 
 - Opt-in **Subagents V2 team collaboration** with configurable agent definitions, built-in implementation/research/review teams, team-aware runtime and transport, configuration UI, compatibility tests, and bilingual usage/architecture documentation.
