@@ -20,6 +20,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Pi 0.84.3 bundled CLI startup now resolves grok-pi's private host modules from the package `dist/` root, while native and third-party selector extensions use the bundled runtime exports instead of `dist/bundle/<module>` paths.
+- Subagent UI lifecycle and child-update traffic now use one ordered process-private socket; recovery snapshots use a separate parent-session sidecar, replay waits for the session/load barrier, and UI-only bridge data no longer pollutes the parent Pi JSONL.
+- Subagent fullscreen `Esc`/`q` now closes the parent takeover without cancelling or editing the child; `Ctrl+C`/Stop remain explicit cancellation actions.
+- Markdown code blocks now receive a wrapped one-column visual inset without adding synthetic padding to copied text.
+- Eval v2 host-tool projection now discovers managed tools registered after the initial catalog observation instead of falling back to a native core implementation.
+- Update discovery now tries the official GitHub API and scoped npm metadata before the JSP proxy; interactive extension self-healing offers a grok-pi upgrade before disabling extensions.
 - Recap and `/btw` bridge traffic no longer leaks into the agent loop context: both extensions deliver summaries, deltas, and answers as `appendEntry` custom entries (never custom messages), the adapter parses the resulting `entry_appended` events, and a `context` hook strips legacy sendMessage-era entries from LLM context in old sessions.
 - `tools.describe(name)` now renders nested tool schemas deeply instead of collapsing `properties` to `[Object]` in the JavaScript REPL.
 - Bash `timeout: 0` now consistently means “no timeout”, matching the Eval v2 escape-hatch semantics and avoiding task validation failures from nested `tool.bash(...)` calls.
@@ -40,6 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Eval v2 task status uses the same Pager-native task channel and shared wait/output limits as enhanced Bash.
 - Bundled high-value Pi bridges (auth, BTW, loop, recap, Remote TUI, rollback, shortcuts, subagents, and related runtime code) were split into focused TypeScript modules with dedicated host wrappers, reducing monolithic extension entrypoints while preserving behavior.
 - grok-pi startup and native settings are now driven by host/extension manifests, with runtime configuration, extension self-healing, host-feature registration, and Pi subagent transport separated from the main binary wiring.
+- Subagent reactivation preserves the underlying Pi child session while rotating the Pager run identity and bounding replay by start/end leaf markers; Bash and Eval background task IDs are now compact session-scoped ordinals.
 - Session review navigation, block viewing, timeline interaction, and tool-detail inspection were refined for longer interactive sessions.
 - Local Cargo development builds use faster incremental settings and shared-target maintenance; the default shared target cap is 128 GiB so the real incremental working set is not repeatedly evicted, while repository reference material is consolidated under `docs/` with links updated to the new layout.
 
