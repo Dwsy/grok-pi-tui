@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -291,6 +291,18 @@ pub fn line_plain_text_into(line: &Line, out: &mut String) {
     }
 }
 
+/// Whether `span` is the synthetic one-column code-block inset pad painted with
+/// the code background `bg`.
+///
+/// The pad is inserted at wrap time by `MarkdownContent::apply_code_block_inset`
+/// as `Style::default().bg(bg)` and survives wrapping un-merged (the wrapper
+/// slices spans without merging), so this exact match is reliable — even when
+/// the original code line starts with its own spaces, which live in later
+/// spans.
+fn is_code_inset_pad(span: &Span, bg: Color) -> bool {
+    span.content.as_ref() == " " && span.style == Style::default().bg(bg)
+}
+
 pub fn derive_selection_text(line: &BlockLine) -> String {
     if let Some(text) = &line.selection_text {
         return text.clone();
@@ -304,7 +316,19 @@ pub fn derive_selection_text(line: &BlockLine) -> String {
             // clipboard. Deliberately broadened to every `Selectable::All` line,
             // matching conventional terminal/tmux copy behavior. The canonical
             // single-block `y` copy is unaffected (it uses the pre-wrap path).
-            let text = line_plain_text(&line.content);
+            //
+            // Likewise skip a leading code-block inset pad (single space painted
+            // with the row's code background): it exists only to keep code text
+            // off the block edge and must not reach the clipboard.
+            let mut spans = line.content.spans.as_slice();
+            if let Some(bg) = line.content.style.bg
+                && spans
+                    .first()
+                    .is_some_and(|s| is_code_inset_pad(s, bg))
+            {
+                spans = &spans[1..];
+            }
+            let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
             let trimmed = text.trim_end();
             if trimmed.len() == text.len() {
                 text

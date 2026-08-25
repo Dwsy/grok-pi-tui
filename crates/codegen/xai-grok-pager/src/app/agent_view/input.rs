@@ -465,6 +465,16 @@ impl AgentView {
             {
                 return InputOutcome::Unchanged;
             }
+            // The parent takeover owns close keys. Cancellation remains an
+            // explicit child action (Ctrl+C / Stop), never a side effect of exit.
+            if let Event::Key(key) = ev
+                && key.kind != KeyEventKind::Release
+                && key.modifiers.is_empty()
+                && (key.code == KeyCode::Esc || key.code == KeyCode::Char('q'))
+            {
+                self.close_subagent_fullscreen();
+                return InputOutcome::Changed;
+            }
             if let Event::Mouse(mouse) = ev
                 && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
                 && self
@@ -480,18 +490,6 @@ impl AgentView {
                     .hit_subagent_frame_close
                     .update_hover(mouse.column, mouse.row)
             {
-                return InputOutcome::Changed;
-            }
-            let child_in_scrollback = self
-                .subagent_views
-                .get(child_sid)
-                .is_some_and(|c| c.is_bare_scrollback());
-            if child_in_scrollback
-                && let Event::Key(key) = ev
-                && key.kind != KeyEventKind::Release
-                && key!('q').matches(key)
-            {
-                self.close_subagent_fullscreen();
                 return InputOutcome::Changed;
             }
             if let Some(child_view) = self.subagent_views.get_mut(child_sid) {
@@ -1790,6 +1788,72 @@ mod background_and_tasks_shortcut_tests {
     }
 
     #[test]
+    fn fullscreen_child_close_keys_never_cancel_or_edit_child() {
+        use crate::app::agent::AgentState;
+
+        let registry = ActionRegistry::defaults();
+        for code in [KeyCode::Esc, KeyCode::Char('q')] {
+            let child_sid = "child-sid".to_string();
+            let mut parent = make_agent();
+            let mut child = make_agent();
+            child.session.state = AgentState::TurnRunning;
+            child.prompt.set_text("draft");
+            child.set_active_pane(AgentPane::Prompt, true);
+            parent
+                .subagent_views
+                .insert(child_sid.clone(), Box::new(child));
+            parent.open_subagent_fullscreen(child_sid.clone());
+
+            let outcome = parent.handle_input(
+                &Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                &registry,
+            );
+
+            assert!(matches!(outcome, InputOutcome::Changed));
+            assert!(parent.active_subagent.is_none());
+            let child = &parent.subagent_views[&child_sid];
+            assert!(matches!(child.session.state, AgentState::TurnRunning));
+            assert_eq!(child.prompt.text(), "draft");
+        }
+    }
+
+    #[test]
+    fn fullscreen_child_ctrl_c_cancels_without_closing() {
+        use crate::app::agent::AgentState;
+
+        let registry = ActionRegistry::defaults();
+        let child_sid = "child-sid".to_string();
+        let mut parent = make_agent();
+        let mut child = make_agent();
+        child.session.state = AgentState::TurnRunning;
+        child.set_active_pane(AgentPane::Scrollback, true);
+        parent
+            .subagent_views
+            .insert(child_sid.clone(), Box::new(child));
+        parent.open_subagent_fullscreen(child_sid.clone());
+
+        let outcome = parent.handle_input(&ctrl('c'), &registry);
+
+        assert!(matches!(outcome, InputOutcome::Action(Action::CancelTurn)));
+        assert_eq!(parent.active_subagent.as_deref(), Some(child_sid.as_str()));
+    }
+
+    #[test]
+    fn fullscreen_child_hints_never_advertise_esc_cancel() {
+        use crate::app::agent::AgentState;
+
+        let registry = ActionRegistry::defaults();
+        let mut child = make_agent();
+        child.session.state = AgentState::TurnRunning;
+        child.mark_as_subagent_view();
+        child.set_active_pane(AgentPane::Scrollback, true);
+
+        let hints = child.current_shortcut_hints(&registry, true);
+        assert!(!hints.iter().any(|hint| hint.label == "cancel"));
+        assert!(hints.iter().any(|hint| hint.label == "back"));
+    }
+
+    #[test]
     fn fullscreen_child_ctrl_b_never_demotes_child_or_parent() {
         let registry = ActionRegistry::defaults();
         let child_sid = "child-sid".to_string();
@@ -2403,7 +2467,7 @@ mod esc_would_cancel_turn_tests {
         );
     }
     #[test]
-    fn subagent_fullscreen_view_can_cancel_its_turn() {
+    fn standalone_subagent_view_uses_normal_turn_cancel_policy() {
         let mut agent = running_agent(false);
         agent.is_subagent_view = true;
         agent.active_pane = AgentPane::Scrollback;

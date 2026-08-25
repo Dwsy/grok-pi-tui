@@ -8,10 +8,11 @@
 
 use std::cell::RefCell;
 
-use ratatui::text::Line;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 
 use crate::render::wrapping::word_wrap_lines_with_joiners;
-use crate::scrollback::types::{BlockLine, BlockOutput};
+use crate::scrollback::types::{BlockLine, BlockOutput, Selectable};
 
 use super::quote_bar::QuoteBarStrip;
 
@@ -19,6 +20,31 @@ pub(crate) const MARKDOWN_BODY_RANGE: u16 = 0;
 use crate::syntax::get_syntect;
 use crate::theme::{ThemeKind, cache as theme_cache, md_style};
 use xai_grok_markdown::StreamingMarkdownRenderer;
+
+/// Prepend the one-column code-block inset to every bg-carrying line.
+///
+/// Runs at wrap time (inside [`MarkdownContent::ensure_wrapped`]) so the inset
+/// participates in the word-wrap budget: no rendered code row can ever exceed
+/// the wrap width, which would get its last cell clipped by the buffer writer.
+/// The pad carries exactly `Style::default().bg(code_bg)` and the wrapper
+/// never merges adjacent spans, so the pad stays identifiable as span 0 of the
+/// first wrapped row — `derive_selection_text` uses that to keep it out of
+/// copied text.
+fn apply_code_block_inset(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .map(|mut line| {
+            if let Some(bg) = line.style.bg {
+                let pad = Span::styled(" ", Style::default().bg(bg));
+                let mut spans = Vec::with_capacity(line.spans.len() + 1);
+                spans.push(pad);
+                spans.extend(line.spans.drain(..));
+                line.spans = spans;
+            }
+            line
+        })
+        .collect()
+}
 
 /// Mutable rendering state behind a single `RefCell`.
 ///
@@ -349,7 +375,9 @@ impl MarkdownContent {
         // Step 1: Wrap any newly frozen lines
         let new_frozen_wrapped = if frozen_count > state.frozen_pre_wrap_count {
             let new_frozen: Vec<Line<'static>> =
-                state.renderer.view().lines[state.frozen_pre_wrap_count..frozen_count].to_vec();
+                apply_code_block_inset(
+                    state.renderer.view().lines[state.frozen_pre_wrap_count..frozen_count].to_vec(),
+                );
             Some(word_wrap_lines_with_joiners(new_frozen, width))
         } else {
             None
@@ -358,7 +386,8 @@ impl MarkdownContent {
         // Step 2: Wrap the tail (unfrozen) lines
         let total_lines = state.renderer.view().lines.len();
         let tail_wrapped = if frozen_count < total_lines {
-            let tail: Vec<Line<'static>> = state.renderer.view().lines[frozen_count..].to_vec();
+            let tail: Vec<Line<'static>> =
+                apply_code_block_inset(state.renderer.view().lines[frozen_count..].to_vec());
             Some(word_wrap_lines_with_joiners(tail, width))
         } else {
             None
@@ -407,6 +436,11 @@ impl MarkdownContent {
     /// Each line is converted to a [`BlockLine`] with joiner and optional
     /// background color (from the line's style, e.g., for code blocks).
     /// This is the common path used by [`AgentMessageBlock`](super::AgentMessageBlock).
+    ///
+    /// Code-block rows (rows carrying a background color) get a one-column
+    /// left inset so the code text doesn't sit flush against the block's
+    /// background edge. The inset is inserted at wrap time (budgeted by the
+    /// wrapper) and stays out of copied text via `derive_selection_text`.
     pub fn output(&self, width: usize) -> BlockOutput {
         // Raw mode shows the source `>` markers verbatim — nothing to exclude.
         let strip = QuoteBarStrip::new(!self.current_raw);
@@ -428,10 +462,13 @@ impl MarkdownContent {
                                 .with_selection_range(Some(MARKDOWN_BODY_RANGE))
                                 .with_joiner(joiner.clone());
                             block_line.selectable = selectable;
-                            if let Some(bg) = line.style.bg {
-                                block_line.with_background(bg)
-                            } else {
-                                block_line
+                            match line.style.bg {
+                                // Code-block row: the one-column inset was
+                                // already inserted at wrap time (see
+                                // `apply_code_block_inset`); copy purity is
+                                // handled by `derive_selection_text`.
+                                Some(bg) => block_line.with_background(bg),
+                                None => block_line,
                             }
                         })
                         .collect(),
@@ -667,6 +704,7 @@ mod tests {
     #[test]
     fn frozen_cache_is_reused() {
         let width = 40;
+
         let mut md = MarkdownContent::streaming();
 
         // Push enough content to establish frozen lines
@@ -688,6 +726,137 @@ mod tests {
             "Frozen count should grow monotonically: before={}, after={}",
             frozen_count_after_first,
             state.frozen_wrapped_count,
+        );
+    }
+
+    /// Code-block rows get a one-column left inset (non-selectable padding
+    /// span painted with the block background) so code text doesn't sit flush
+    /// against the block edge. The inset must not leak into drag-copy text.
+    #[test]
+    fn code_block_rows_have_left_inset_and_excluded_from_copy() {
+        // Set a visible code_background so code-block rows carry a bg color.
+        let md = MarkdownContent::new("```rust\nfn main() {}\n```\n");
+        let out = md.output(80);
+
+        // Find the code body row ("fn main() {}").
+        let code_row = out
+            .lines
+            .iter()
+            .find(|l| {
+                let text: String = l.content.spans.iter().map(|s| s.content.as_ref()).collect();
+                text.contains("fn main()")
+            })
+            .expect("code body row should render");
+
+        // Must have a background (that's what triggers the inset path).
+        assert!(code_row.background.is_some(), "code row must have bg");
+
+        // First span is the inset: a single space.
+        assert_eq!(
+            code_row.content.spans[0].content.as_ref(),
+            " ",
+            "first span must be the one-column inset space"
+        );
+
+        // The row stays fully selectable (the pad is only a render inset);
+        // copy purity is handled by derive_selection_text below.
+        assert!(
+            matches!(code_row.selectable, Selectable::All),
+            "code row keeps Selectable::All"
+        );
+
+        // derive_selection_text must NOT include the leading inset space.
+        let copy_text =
+            crate::scrollback::types::derive_selection_text(code_row);
+        assert!(
+            !copy_text.starts_with(' '),
+            "copy text must not start with the inset space: {copy_text:?}"
+        );
+        assert!(
+            copy_text.contains("fn main()"),
+            "copy text must contain the code: {copy_text:?}"
+        );
+    }
+
+    /// A plain (non-code) markdown row must NOT get an inset — the change only
+    /// affects rows carrying a background color.
+    #[test]
+    fn plain_markdown_rows_have_no_inset() {
+        let md = MarkdownContent::new("Hello world");
+        let out = md.output(80);
+        let row = &out.lines[0];
+        assert!(row.background.is_none(), "plain row has no bg");
+        assert!(
+            matches!(row.selectable, Selectable::All),
+            "plain row stays fully selectable"
+        );
+        // No leading space span.
+        let first: &str = row.content.spans[0].content.as_ref();
+        assert!(!first.is_empty(), "plain row first span should have content");
+    }
+
+    /// Regression: the code-block inset is inserted BEFORE word wrapping, so
+    /// it participates in the wrap budget. A code line long enough to soft-wrap
+    /// must keep every rendered row within the wrap width (the buffer writer
+    /// clips at exactly that width) while preserving every character.
+    #[test]
+    fn wrapped_code_rows_stay_within_width_and_preserve_text() {
+        use unicode_width::UnicodeWidthStr;
+
+        // Spaceless so soft-wrap boundary-space trimming can't mask a lost char.
+        let code_line = "some_function_with_a_very_long_identifier_name_that_forces_wrapping";
+        let md = MarkdownContent::new(format!("```text\n{code_line}\n```"));
+        let width = 24usize;
+        let out = md.output(width);
+
+        let bg_rows: Vec<String> = out
+            .lines
+            .iter()
+            .filter(|l| l.background.is_some())
+            .map(|l| l.content.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(!bg_rows.is_empty(), "code body rows must carry bg");
+
+        for text in &bg_rows {
+            let cols = UnicodeWidthStr::width(text.as_str());
+            assert!(
+                cols <= width,
+                "code row is {cols} cols wide (> {width}) — its last cell would clip: {text:?}"
+            );
+        }
+
+        // Every character survives: rows start with the inset space (excluded),
+        // and concatenating the rest reproduces the original line.
+        let rejoined: String = bg_rows
+            .iter()
+            .map(|text| text.strip_prefix(' ').unwrap_or(text))
+            .collect();
+        assert_eq!(
+            rejoined, code_line,
+            "wrapped code rows must preserve the full line"
+        );
+    }
+
+    /// An indented code line keeps its own leading spaces in the copy text:
+    /// only the synthetic inset span is excluded, not the first real content.
+    #[test]
+    fn indented_code_row_copy_preserves_own_indentation() {
+        let md = MarkdownContent::new("```text\n    indented_body();\n```\n");
+        let out = md.output(80);
+
+        let row = out
+            .lines
+            .iter()
+            .find(|l| {
+                let text: String = l.content.spans.iter().map(|s| s.content.as_ref()).collect();
+                text.contains("indented_body")
+            })
+            .expect("indented code row should render");
+
+        let copy_text = crate::scrollback::types::derive_selection_text(row);
+        assert!(
+            copy_text.starts_with("    indented_body"),
+            "copy must keep the code's own indentation: {copy_text:?}"
         );
     }
 }

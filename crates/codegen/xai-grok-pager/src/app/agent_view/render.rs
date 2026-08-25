@@ -1132,7 +1132,10 @@ impl AgentView {
                 false,
                 false,
                 &mut Vec::new(),
-                AppRenderParams::default(),
+                AppRenderParams {
+                    esc_owned_before_agent: true,
+                    ..AppRenderParams::default()
+                },
             );
             child_post_flush = post_flush;
         }
