@@ -212,21 +212,21 @@ jobs:
           # notes only for the legacy 0.0.x line; newer releases must not emit
           # the entire historical changelog by default. Override explicitly
           # with RELEASE_NOTES_SINCE when a cumulative release is intentional.
-          since_arg=()
+          extract_args=(
+            "${ver}"
+            CHANGELOG.MD
+            -o dist/release-notes.md
+            --repo "${GITHUB_REPOSITORY}"
+            --strict
+            --with-install
+          )
           if [[ -z "${RELEASE_NOTES_SINCE+x}" && "$ver" == 0.0.* ]]; then
-            since_arg=(--since 0.0.6)
-          elif [[ -n "${RELEASE_NOTES_SINCE}" ]]; then
-            since_arg=(--since "${RELEASE_NOTES_SINCE}")
+            extract_args+=(--since 0.0.6)
+          elif [[ -n "${RELEASE_NOTES_SINCE:-}" ]]; then
+            extract_args+=(--since "${RELEASE_NOTES_SINCE}")
           fi
 
-          python3 scripts/extract-changelog-section.py \
-            "${ver}" \
-            CHANGELOG.MD \
-            -o dist/release-notes.md \
-            --repo "${GITHUB_REPOSITORY}" \
-            --strict \
-            --with-install \
-            "${since_arg[@]}"
+          python3 scripts/extract-changelog-section.py "${extract_args[@]}"
 
           echo "version=${ver}" >> "$GITHUB_OUTPUT"
           echo "notes_path=dist/release-notes.md" >> "$GITHUB_OUTPUT"
