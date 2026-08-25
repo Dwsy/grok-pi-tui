@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,6 +10,12 @@ import type { EvalDisplayImage, EvalExecution, EvalSkillMetadata, PersistentEval
 import { formatTaskOutput, truncateTaskOutput } from "./shared.ts";
 
 const TASK_STATUS_KEY = "__pi_grok_bash_task__";
+/**
+ * Sequential session-scoped task IDs (`eval-1`, `eval-2`, …) keep model-visible
+ * results short. The tmp directory nests under the pid because the ordinal is
+ * only unique per process, while `/tmp/pi-grok-eval-tasks` is shared.
+ */
+let nextEvalTaskOrdinal = 1;
 
 type TaskStatusChannel = Pick<ExtensionUIContext, "setStatus">;
 
@@ -135,8 +140,8 @@ export async function startEvalBackgroundTask(params: {
 	ownsKernel?: boolean;
 	onSettled?: () => void;
 }): Promise<EvalBackgroundTask> {
-	const taskId = `eval-${randomUUID()}`;
-	const directory = join(tmpdir(), "pi-grok-eval-tasks", taskId);
+	const taskId = `eval-${nextEvalTaskOrdinal++}`;
+	const directory = join(tmpdir(), "pi-grok-eval-tasks", String(process.pid), taskId);
 	await mkdir(directory, { recursive: true });
 	const task: EvalBackgroundTask = {
 		taskId,

@@ -817,9 +817,13 @@ console.log(JSON.stringify({
   };
   assert.equal(Object.hasOwn(fallbackPi, "invokeTool"), false);
   const bridge = new EvalSessionToolBridge(fallbackPi);
+  let observedTools = [];
   const runner = {
     getActiveTools() {
       return ["notes_list", "eval"];
+    },
+    getAllRegisteredTools() {
+      return observedTools;
     },
     createContext() {
       return { cwd: repoRoot };
@@ -849,7 +853,8 @@ console.log(JSON.stringify({
     },
     sourceInfo: { path: "/test/pi-notes/index.ts" },
   };
-  bridge.observeRegisteredTools([notesTool], runner);
+  observedTools = [notesTool];
+  bridge.observeRegisteredTools(observedTools, runner);
   const fallbackResult = await bridge.invoke("notes_list", { limit: 1 }, new AbortController().signal);
   assert.match(fallbackResult.content[0].text, /\"probe\"/);
   assert.deepEqual(lifecycle, [
@@ -899,6 +904,32 @@ console.log(JSON.stringify({
     assert.equal(evalUiEntries[0].data.version, 1);
     assert.match(evalUiEntries[0].data.toolCallId, /^eval-host-/);
     assert.equal(evalUiEntries[1].data.toolCallId, evalUiEntries[0].data.toolCallId);
+
+    const lateBash = {
+      definition: {
+        name: "bash",
+        async execute(toolCallId) {
+          assert.match(toolCallId, /^eval-host-/);
+          return success("managed-bash");
+        },
+      },
+    };
+    observedTools = [notesTool, lateBash];
+    const lateBashPi = {
+      ...evalOnlyPi,
+      getAllTools() {
+        return [{ name: "bash" }];
+      },
+    };
+    const lateBashBridge = new EvalSessionToolBridge(lateBashPi);
+    lateBashBridge.observeRegisteredTools([notesTool], runner);
+    const lateBashResult = await lateBashBridge.invoke(
+      "bash",
+      { command: "printf native-fallback-must-not-run" },
+      new AbortController().signal,
+    );
+    assert.equal(lateBashResult.content[0].text, "managed-bash");
+
     evalOnlyBridge.setAllowedTools(["other_tool"]);
     assert.deepEqual(evalOnlyBridge.catalog(), []);
     await assert.rejects(

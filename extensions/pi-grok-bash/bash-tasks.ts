@@ -41,6 +41,12 @@ const TASK_STATUS_KEY = "__pi_grok_bash_task__";
  */
 export const ORPHANED_SIGNAL = "session_restart";
 const MAX_TASK_IDS = 20;
+/**
+ * Sequential session-scoped task IDs (`bash-1`, `bash-2`, …). Background tasks
+ * live only in this process's task Map, so an ordinal is unique without the
+ * token cost of a 36-char UUID in every model-visible result.
+ */
+let nextTaskOrdinal = 1;
 
 export type BashParams = {
 	command: string;
@@ -306,7 +312,7 @@ export async function startTask(
 	validateTimeout(params.timeout);
 	const directory = await mkdtemp(join(tmpdir(), "pi-grok-bash-"));
 	const task: BackgroundTask = {
-		taskId: `bash-${randomUUID()}`,
+		taskId: `bash-${nextTaskOrdinal++}`,
 		toolCallId: params.toolCallId,
 		command: params.command,
 		description: params.description?.trim() || undefined,

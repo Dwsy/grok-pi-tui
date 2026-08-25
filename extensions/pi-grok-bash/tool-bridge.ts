@@ -313,7 +313,16 @@ export class EvalSessionToolBridge {
 		}).invokeTool;
 		if (active && typeof nativeInvoke === "function") return nativeInvoke.call(this.pi, toolName, args, signal);
 
-		const captured = this.registered.get(toolName);
+		let captured = this.registered.get(toolName);
+		if (!captured) {
+			const runner = this.runner as (RunnerLike & {
+				getAllRegisteredTools?: () => RegisteredToolLike[];
+			}) | undefined;
+			if (typeof runner?.getAllRegisteredTools === "function") {
+				this.observeRegisteredTools(runner.getAllRegisteredTools(), runner);
+				captured = this.registered.get(toolName);
+			}
+		}
 		if (captured) return this.invokeWrapped(toolName, captured.wrappedTool, args, signal);
 
 		if (CORE_TOOL_NAMES.has(toolName)) {
