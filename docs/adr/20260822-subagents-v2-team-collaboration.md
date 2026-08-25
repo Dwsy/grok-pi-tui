@@ -3,6 +3,7 @@
 - Date: 2026-08-22
 - Status: Accepted
 - Scope: `extensions/pi-grok-subagents`, grok-pi embedded extension bundle
+- Transport/persistence update: superseded by [`20260823-subagent-clean-transport.md`](20260823-subagent-clean-transport.md); V2 team semantics remain accepted.
 
 ## Context
 
@@ -95,9 +96,9 @@ Runtime metrics/maxTurns 订阅必须绑定最终 canonical `SubagentRecord`，�
 - grok-pi Rust injector 需要把新增 TS 和 bundled JSON 一起物化到临时 extension bundle。
 - V2 message 会进入对应 recipient session JSONL，因为它是模型可见的语义上下文；但数量由显式协作动作决定，不再按 token/progress 高频增长。
 - 一个稳定 agent path 可能对应多个历史 V1 run UUID，但这些 run 共享同一个 Pi child session；Pager lifecycle 与 V2 addressing 不再混用同一 identity。
-- 旧 grok-pi 读取含 V2 custom message 的 session 时应保持容错；V1 state schema 不变。
+- 旧 grok-pi 读取含 V2 custom message 的 session 时应保持容错；V1 recovery state now lives in the separate parent-session sidecar.
 - 产品级使用说明与排障契约见 `docs/usage/subagents-v2.md` / `docs/usage/subagents-v2.zh-CN.md`。
 
 ## Rollback
 
-首选运行时 rollback：关闭 `PI_GROK_SUBAGENTS_V2`。若需要代码 rollback，只移除 V2 registration/coordinator/team loader/bundled presets；V1 runtime 与 `pi-grok-subagent-state/v1` 无需迁移。
+首选运行时 rollback：关闭 `PI_GROK_SUBAGENTS_V2`。若需要代码 rollback，只移除 V2 registration/coordinator/team loader/bundled presets；V1 transport/state rollback 由 2026-08-23 ADR 单独定义。

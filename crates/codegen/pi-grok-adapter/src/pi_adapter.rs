@@ -30,7 +30,7 @@ use crate::{
         QueueEntry, QueueLane, QueueMirror, QueueOrigin, queue_changed_params, string_list,
     },
     recap_bridge::{parse_recap_message, session_recap_notification},
-    subagent_projection::{BridgeOperation, bridge_parent_session_id, parse_bridge_message},
+    subagent_projection::{BridgeOperation, parse_bridge_message},
     subagent_transport::SubagentEventTransport,
     todo_bridge::plan_update_for_tool,
     tool_projection::{
@@ -143,6 +143,32 @@ const EXTENSION_QUEUE_STATUS_KEY: &str = "__pi_grok_queue_enqueue__";
 /// Bash extension publishes here because `setStatus` is fire-and-forget in Pi's
 /// RPC mode, while its bridge message shares the agent's queue lifetime.
 const EXTENSION_BASH_TASK_STATUS_KEY: &str = "__pi_grok_bash_task__";
+const SUBAGENT_REPLAY_COMMAND: &str = "__pi_grok_subagent_replay";
+const SUBAGENT_REPLAY_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn accept_subagent_sequence(
+    sequences: &mut HashMap<String, u64>,
+    subagent_id: &str,
+    sequence: u64,
+    replay: bool,
+) -> bool {
+    let previous = sequences.get(subagent_id).copied();
+    if !replay && previous.is_some_and(|last| sequence <= last) {
+        return false;
+    }
+    sequences
+        .entry(subagent_id.to_string())
+        .and_modify(|last| *last = (*last).max(sequence))
+        .or_insert(sequence);
+    true
+}
+
+fn subagent_cancel_target(
+    routes: &HashMap<String, String>,
+    child_session_id: &str,
+) -> Option<String> {
+    routes.get(child_session_id).cloned()
+}
 
 fn stop_reason_wire(reason: &acp::StopReason) -> &'static str {
     match reason {
@@ -155,57 +181,6 @@ fn stop_reason_wire(reason: &acp::StopReason) -> &'static str {
 struct StreamSeen {
     text: bool,
     thought: bool,
-}
-
-#[derive(Default)]
-struct PendingSubagentBridge {
-    target_session_id: Option<String>,
-    events: Vec<Value>,
-}
-
-impl PendingSubagentBridge {
-    fn begin(&mut self, target_session_id: &str) -> Result<()> {
-        if let Some(existing) = &self.target_session_id {
-            bail!("Pi session transition to {existing} is already in progress");
-        }
-        self.target_session_id = Some(target_session_id.to_string());
-        self.events.clear();
-        Ok(())
-    }
-
-    fn defer_if_targeted(&mut self, event: &Value) -> Result<bool> {
-        let Some(parent_session_id) = bridge_parent_session_id(event)? else {
-            return Ok(false);
-        };
-        let Some(target_session_id) = &self.target_session_id else {
-            return Ok(false);
-        };
-        if parent_session_id != target_session_id {
-            return Ok(false);
-        }
-        self.events.push(event.clone());
-        Ok(true)
-    }
-
-    fn commit_if_target(&mut self, target_session_id: &str) -> Result<Vec<Value>> {
-        match self.target_session_id.as_deref() {
-            None => Ok(Vec::new()),
-            Some(current) if current == target_session_id => {
-                self.target_session_id = None;
-                Ok(std::mem::take(&mut self.events))
-            }
-            Some(current) => bail!(
-                "Pi session transition to {current} is still pending while {target_session_id} loads"
-            ),
-        }
-    }
-
-    fn abandon(&mut self, target_session_id: &str) {
-        if self.target_session_id.as_deref() == Some(target_session_id) {
-            self.target_session_id = None;
-            self.events.clear();
-        }
-    }
 }
 
 struct AdapterState {
@@ -258,11 +233,12 @@ struct AdapterState {
     /// to reject duplicate/out-of-order transport events; child lifecycle stays
     /// owned by the Pi extension.
     subagent_bridge_sequences: HashMap<String, u64>,
-    /// Pi emits extension `session_start` events before its `switch_session`
-    /// response reaches ACP. Buffer target-session subagent replay until ACP
-    /// commits the matching session load, rather than validating it against the
-    /// still-active Pager session.
-    pending_subagent_bridge: PendingSubagentBridge,
+    /// Pager child session id → Pi extension run id. ACP cancel targets the
+    /// child session, while the extension cancel command targets the run id.
+    subagent_session_to_id: HashMap<String, String>,
+    /// session/load/recovery waits until the ordered socket stream reaches its
+    /// replay-complete marker, so replay events cannot escape the load barrier.
+    pending_subagent_replays: HashMap<String, oneshot::Sender<()>>,
     /// In-flight `/btw` side questions keyed by requestId (extension custom message).
     pending_btw: HashMap<String, oneshot::Sender<Result<String, String>>>,
     /// A recap command must finish before another recap can be requested.
@@ -367,7 +343,8 @@ impl PiAgent {
                 compaction_started_at: None,
                 queue_mirror: QueueMirror::default(),
                 subagent_bridge_sequences: HashMap::new(),
-                pending_subagent_bridge: PendingSubagentBridge::default(),
+                subagent_session_to_id: HashMap::new(),
+                pending_subagent_replays: HashMap::new(),
                 pending_btw: HashMap::new(),
                 recap_in_flight: false,
                 reload_in_flight: false,

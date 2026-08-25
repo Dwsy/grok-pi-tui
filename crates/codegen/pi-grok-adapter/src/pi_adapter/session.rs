@@ -62,50 +62,19 @@ impl PiAgent {
         session_path: &Path,
         expected_session_id: &str,
     ) -> Result<PiSessionSwitch> {
-        self.state
-            .borrow_mut()
-            .pending_subagent_bridge
-            .begin(expected_session_id)?;
-        let response = match self
+        let response = self
             .rpc
             .request(json!({
                 "type": "switch_session",
                 "sessionPath": session_path,
             }))
-            .await
-        {
-            Ok(response) => response,
-            Err(error) => {
-                self.state
-                    .borrow_mut()
-                    .pending_subagent_bridge
-                    .abandon(expected_session_id);
-                return Err(error);
-            }
-        };
+            .await?;
         let result = parse_session_switch(&response);
         if result.cancelled {
-            self.state
-                .borrow_mut()
-                .pending_subagent_bridge
-                .abandon(expected_session_id);
             return Ok(result);
         }
-        let bootstrap = match PiBootstrap::load(&self.rpc).await {
-            Ok(bootstrap) => bootstrap,
-            Err(error) => {
-                self.state
-                    .borrow_mut()
-                    .pending_subagent_bridge
-                    .abandon(expected_session_id);
-                return Err(error);
-            }
-        };
+        let bootstrap = PiBootstrap::load(&self.rpc).await?;
         if bootstrap.state.session_id != expected_session_id {
-            self.state
-                .borrow_mut()
-                .pending_subagent_bridge
-                .abandon(expected_session_id);
             bail!(
                 "Pi switched to {}, not requested session {expected_session_id}",
                 bootstrap.state.session_id
@@ -246,6 +215,40 @@ impl PiAgent {
         });
         let _ = completion_rx.await;
         Ok(())
+    }
+
+    pub(super) async fn replay_subagents(&self, mode: &str) -> Result<(), acp::Error> {
+        self.require_bridge_command(SUBAGENT_REPLAY_COMMAND)?;
+        let request_id = uuid::Uuid::now_v7().to_string();
+        let (tx, rx) = oneshot::channel();
+        self.state
+            .borrow_mut()
+            .pending_subagent_replays
+            .insert(request_id.clone(), tx);
+        let args = json!({ "mode": mode, "requestId": request_id.clone() }).to_string();
+        if let Err(error) = self
+            .run_bridge_command(SUBAGENT_REPLAY_COMMAND, &args)
+            .await
+        {
+            self.state
+                .borrow_mut()
+                .pending_subagent_replays
+                .remove(&request_id);
+            return Err(error);
+        }
+        match tokio::time::timeout(SUBAGENT_REPLAY_TIMEOUT, rx).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(acp_internal(anyhow!(
+                "subagent replay marker channel closed"
+            ))),
+            Err(_) => {
+                self.state
+                    .borrow_mut()
+                    .pending_subagent_replays
+                    .remove(&request_id);
+                Err(acp_internal(anyhow!("subagent replay timed out")))
+            }
+        }
     }
 
     pub(super) fn require_bridge_command(&self, command: &str) -> Result<(), acp::Error> {
@@ -916,6 +919,9 @@ impl PiAgent {
             state.stream_start_ms = None;
             state.live_prompt_id = None;
             state.bash_stream_output.clear();
+            state.subagent_bridge_sequences.clear();
+            state.subagent_session_to_id.clear();
+            state.pending_subagent_replays.clear();
         }
         state.bootstrap = bootstrap;
     }

@@ -36,7 +36,7 @@ tags: ["subagents", "team", "multi-agent", "pi-grok", "codex-v2"]
 | Child session | 通过 Pi SDK `customTools` 获得同一套 team control-plane tools；业务工具仍受 agent definition 限制 |
 | Agent config | 继续使用 `.grok-pi/agents/*.md` 与 `~/.grok-pi/agents/*.md` |
 | Team config | `.grok-pi/teams/*.json` > `~/.grok-pi/teams/*.json` > bundled presets |
-| Parent JSONL | 只写有语义的 inter-agent message / bounded lifecycle；禁止恢复 progress/child delta 高频 bridge |
+| Parent JSONL | 只写模型可见的真实语义；V1 UI lifecycle/state 全部迁出到 socket + sidecar |
 
 ## V2 protocol
 
@@ -81,7 +81,7 @@ Bundled presets 至少提供：
 - [x] A9 project/global/bundled team preset 按优先级发现；malformed preset 被隔离而不阻断其它 preset。
 - [x] A10 bundled `research` / `implementation` / `review` 可由 `spawn_team` 启动。
 - [x] A11 agent 业务 tools/models/extensions/skills/maxTurns 继续由外置 Markdown definition 控制；V2 control tools 作为独立 control plane 注入。
-- [x] A12 父 session 不新增 `progress` / `child_update` 高频 bridge；V2 只写语义消息和 bounded lifecycle/state。
+- [x] A12 父 session 只写模型可见语义；V1 lifecycle/state/child update 均不写 parent JSONL。
 - [x] A13 Pi 能直接加载 extension；Rust injector tests、`git diff --check`、grok-pi build 通过（若全仓 build 被无关 pi-main 错误阻塞，需单独记录）。
 - [x] A14 runtime turn/tool/token/maxTurns 统计更新 canonical `SubagentRecord`，不因 refactor spread copy 失真。
 - [x] A15 completed V2 agent 进入 `IDLE`；follow-up 复用同一 child session/history，但生成新的 V1 run UUID，兼容 Pager terminal tombstone。

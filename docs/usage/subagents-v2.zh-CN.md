@@ -188,7 +188,7 @@ Markdown definition 控制 system prompt、业务 tools、最多 3 个 models、
 
 V2 语义消息使用 `pi-grok-team-message/v2` custom message，并且有意进入 recipient 的模型上下文。
 
-现有 `pi-grok-subagent/v1` bridge 继续只负责 UI/lifecycle。每个 run 只产生有界的 `spawned` / `finished` lifecycle；V2 不恢复 `progress` / `child_update` 高频写 parent JSONL 的旧路径。
+现有 `pi-grok-subagent/v1` bridge 继续只负责 UI/lifecycle，但全部 lifecycle 与 child update 统一走进程私有有序 socket。恢复快照写入独立 `<parent-session>.subagents.jsonl` sidecar；V1 bridge/state 不再追加到 parent Pi JSONL。
 
 Pi child-session JSONL 仍是持久化对话/history 存储，但**不是**实时 team message bus。实时投递由进程内 coordinator + Pi 官方 session API 完成。
 
@@ -272,4 +272,4 @@ V2 从 opt-in 提升发布等级前，至少确认：
 - V2=off 时不暴露 `/subagent-teams` 和 V2 tools。
 - V2=on 时能发现 bundled presets。
 - 真实模型 handtest 覆盖 root→child、child→root、sibling message、nested spawn、idle follow-up、nested FINAL_ANSWER 唤醒、interrupt、queueing。
-- Parent session 增长仍只来自语义消息和有界 lifecycle，没有恢复 progress/child-delta bridge。
+- Parent session 增长只来自真实对话语义；V1 UI lifecycle/state 位于 socket + sidecar，不进入 parent Pi JSONL。

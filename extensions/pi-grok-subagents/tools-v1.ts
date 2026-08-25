@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { configureSubagents } from "./config-ui.ts";
 import { showSubagentHistory, type SubagentRecord } from "./bridge.ts";
-import { MAX_WAIT_MS, requireText } from "./shared.ts";
+import { MAX_WAIT_MS, SUBAGENT_REPLAY_COMMAND, requireText } from "./shared.ts";
 import { SubagentRuntime, type MessageDelivery } from "./runtime.ts";
 
 async function sendMessageFromCommand(
@@ -114,13 +114,13 @@ export function registerV1Tools(pi: ExtensionAPI, runtime: SubagentRuntime): voi
         const shortId = runtime.shortSubagentId(record.id);
         return {
           content: [{ type: "text", text: `Started background subagent ${shortId}.\nUse get_command_or_subagent_output with task_ids=["${shortId}"] and timeout_ms to wait for its result.\nHistory: /subagent-history ${shortId}` }],
-          details: { subagentId: record.id, childSessionId: record.childSessionId, background: true },
+          details: { subagentId: record.id, childSessionId: record.childSessionId, agentSessionId: record.agentSessionId, background: true },
         };
       }
       const output = await runtime.run(record, params.prompt);
       return {
         content: [{ type: "text", text: `${output || "Subagent completed without text output."}\n\nHistory: /subagent-history ${runtime.shortSubagentId(record.id)}` }],
-        details: { subagentId: record.id, childSessionId: record.childSessionId, background: false },
+        details: { subagentId: record.id, childSessionId: record.childSessionId, agentSessionId: record.agentSessionId, background: false },
       };
     },
   });
@@ -253,6 +253,16 @@ export function registerV1Tools(pi: ExtensionAPI, runtime: SubagentRuntime): voi
           })),
         },
       };
+    },
+  });
+
+  pi.registerCommand(SUBAGENT_REPLAY_COMMAND, {
+    description: "Internal Pi-Grok bridge command: replay persisted subagents after session/load",
+    handler: async (args, ctx) => {
+      const request = JSON.parse(args || "{}") as { mode?: unknown; requestId?: unknown };
+      const mode = request.mode === "recovery" ? "recovery" : "load";
+      const requestId = requireText(request.requestId, "replay request id");
+      await runtime.replayPersisted(ctx, mode, requestId);
     },
   });
 

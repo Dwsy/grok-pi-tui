@@ -115,26 +115,12 @@ impl acp::Agent for PiAgent {
             let plan_path = plan_file_path(&bootstrap.state, &state.session_dir);
             state.plan_mode = load_plan_tracker(&plan_path).map_err(acp_internal)?;
         }
-        if let Err(error) = self.replay_history().await {
-            self.state
-                .borrow_mut()
-                .pending_subagent_bridge
-                .abandon(&requested);
-            return Err(acp_internal(error));
+        self.replay_history().await.map_err(acp_internal)?;
+        if bridge_command_is_registered(&bootstrap.commands, SUBAGENT_REPLAY_COMMAND) {
+            self.replay_subagents("load").await?;
         }
         self.publish_bootstrap(&bootstrap).await;
         self.refresh_context_usage().await;
-        let replay_events = self
-            .state
-            .borrow_mut()
-            .pending_subagent_bridge
-            .commit_if_target(&requested)
-            .map_err(acp_internal)?;
-        for event in replay_events {
-            self.handle_subagent_bridge_message(&event)
-                .await
-                .map_err(acp_internal)?;
-        }
         let mut response = acp::LoadSessionResponse::new();
         if let Some(models) = bootstrap.acp_models() {
             response = response.models(Some(models));
@@ -365,7 +351,18 @@ impl acp::Agent for PiAgent {
         }
     }
 
-    async fn cancel(&self, _arguments: acp::CancelNotification) -> Result<(), acp::Error> {
+    async fn cancel(&self, arguments: acp::CancelNotification) -> Result<(), acp::Error> {
+        let child_session_id = arguments.session_id.0.as_ref();
+        let subagent_id = subagent_cancel_target(
+            &self.state.borrow().subagent_session_to_id,
+            child_session_id,
+        );
+        if let Some(subagent_id) = subagent_id {
+            self.run_bridge_command(SUBAGENT_CANCEL_COMMAND, &subagent_id)
+                .await?;
+            return Ok(());
+        }
+
         let (command, queued, running) = {
             let mut state = self.state.borrow_mut();
             for active in &mut state.active_prompts {

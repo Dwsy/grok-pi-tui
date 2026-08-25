@@ -184,7 +184,7 @@ Use `/subagents` for the native agent-definition management surface.
 
 V2 semantic messages use the custom message type `pi-grok-team-message/v2` and are intentionally model-visible in the recipient session.
 
-The existing `pi-grok-subagent/v1` bridge remains UI/lifecycle-only. It emits bounded `spawned` and `finished` lifecycle entries per run; V2 does not restore high-frequency `progress` or `child_update` writes into the parent JSONL.
+The existing `pi-grok-subagent/v1` bridge remains UI/lifecycle-only, but all lifecycle and child updates now use one process-private ordered socket. Recovery snapshots live in a separate `<parent-session>.subagents.jsonl` sidecar; no V1 bridge/state entry is appended to the parent Pi JSONL.
 
 Pi child-session JSONL remains the durable conversation/history store. It is not polled as a realtime team message bus; live routing and `/root/...` team topology are in-process through the coordinator and Pi's official session APIs. Resuming the parent session in a new process preserves child history but does not reconstruct the previous V2 team tree or path-addressable pending work.
 
@@ -270,4 +270,4 @@ Before promoting V2 from opt-in in a release, verify:
 - V2-off does not expose `/subagent-teams` or V2 tools.
 - V2-on discovers bundled presets.
 - A real-model handtest covers root → child, child → root, sibling messaging, nested spawn, idle follow-up, nested final-answer wakeup, interrupt and queueing.
-- Parent session growth remains bounded to semantic messages and lifecycle entries, with no progress/child-delta bridge restored.
+- Parent session growth comes only from real conversation semantics; V1 UI lifecycle/state lives in the socket + sidecar and does not enter the parent Pi JSONL.

@@ -1135,12 +1135,18 @@
         );
     }
 
-    /// Regression: replayed SubagentSpawned (resumed_from unset) must load child
-    /// updates.jsonl so fullscreen scrollback is not prompt-only.
     #[test]
-    fn subagent_spawned_replays_child_updates_without_resumed_from() {
-        with_replay_disk_home(|_| {
-            let child_sid = "child-with-updates";
+    fn a_write_tool_call_labels_a_live_child_only() {
+        enum Case {
+            Live,
+            ReloadingTranscript,
+            Unregistered,
+        }
+        for (case, child_sid) in [
+            (Case::Live, "child-writing-live"),
+            (Case::ReloadingTranscript, "child-writing-reloading"),
+            (Case::Unregistered, "child-writing-unregistered"),
+        ] {
             let mut app = make_app_with_agent("sess-parent");
             let _ = handle(
                 make_ext_session_notification(

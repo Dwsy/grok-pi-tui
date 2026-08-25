@@ -1,3 +1,6 @@
+use crate::tool_projection::{
+    edit_diff_content, normalize_tool_raw_input, normalize_tool_raw_output, tool_content, tool_kind,
+};
 use agent_client_protocol as acp;
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
@@ -14,12 +17,17 @@ pub(crate) enum BridgeOperation {
         child_session_id: String,
         update: acp::SessionUpdate,
     },
+    ReplayComplete {
+        request_id: String,
+    },
 }
 
 pub(crate) struct BridgeProjection {
     pub sequence: u64,
     pub replay: bool,
+    pub kind: String,
     pub subagent_id: String,
+    pub child_session_id: String,
     pub operations: Vec<BridgeOperation>,
 }
 
@@ -119,6 +127,7 @@ pub(crate) fn parse_bridge_message(
                         "variant": "Task",
                         "task_id": subagent_id,
                         "run_in_background": background,
+                        "reconcile": payload.get("reconcile").and_then(Value::as_bool).unwrap_or(false),
                     }),
                 },
                 BridgeOperation::ParentLifecycle(lifecycle),
@@ -180,34 +189,24 @@ pub(crate) fn parse_bridge_message(
         "child_update" => {
             let update = parse_child_update(payload.get("update"))?;
             vec![BridgeOperation::ChildUpdate {
-                child_session_id,
+                child_session_id: child_session_id.clone(),
                 update,
             }]
         }
+        "replay_complete" => vec![BridgeOperation::ReplayComplete {
+            request_id: required_str_value(payload, "requestId")?.to_string(),
+        }],
         other => bail!("unknown subagent bridge event: {other}"),
     };
 
     Ok(Some(BridgeProjection {
         sequence,
         replay,
+        kind: kind.to_string(),
         subagent_id,
+        child_session_id,
         operations,
     }))
-}
-
-/// Map a Pi tool name to the appropriate ACP ToolKind so the pager renders
-/// proper block types (execute, read, edit) instead of generic "Other" blocks.
-fn tool_kind_for_name(name: &str) -> acp::ToolKind {
-    match name {
-        "bash" | "run_terminal_command" | "execute" => acp::ToolKind::Execute,
-        "read" | "read_file" | "view" => acp::ToolKind::Read,
-        "edit" | "write" | "create_file" | "apply_diff" | "str_replace_editor" => {
-            acp::ToolKind::Edit
-        }
-        "grep" | "find" | "glob" | "search" | "list_dir" | "ls" => acp::ToolKind::Search,
-        "web_fetch" | "fetch" => acp::ToolKind::Fetch,
-        _ => acp::ToolKind::Other,
-    }
 }
 
 fn parse_child_update(value: Option<&Value>) -> Result<acp::SessionUpdate> {
@@ -227,35 +226,66 @@ fn parse_child_update(value: Option<&Value>) -> Result<acp::SessionUpdate> {
         "tool_call" => {
             let id = required_str_value(update, "toolCallId")?;
             let name = required_str_value(update, "toolName")?;
+            let args = normalize_tool_raw_input(name, update.get("args").cloned());
+            let content = edit_diff_content(name, args.as_ref(), None).unwrap_or_default();
             Ok(acp::SessionUpdate::ToolCall(
                 acp::ToolCall::new(acp::ToolCallId::new(id.to_string()), name.to_string())
-                    .kind(tool_kind_for_name(name))
+                    .kind(tool_kind(name))
                     .status(acp::ToolCallStatus::InProgress)
-                    .content(Vec::new())
+                    .content(content)
                     .locations(Vec::new())
-                    .raw_input(update.get("args").cloned()),
+                    .raw_input(args),
             ))
         }
-        "tool_update" => Ok(acp::SessionUpdate::ToolCallUpdate(
-            acp::ToolCallUpdate::new(
-                acp::ToolCallId::new(required_str_value(update, "toolCallId")?.to_string()),
-                acp::ToolCallUpdateFields::new()
-                    .status(Some(acp::ToolCallStatus::InProgress))
-                    .raw_output(update.get("partialResult").cloned()),
-            ),
-        )),
+        "tool_update" => {
+            let name = required_str_value(update, "toolName")?;
+            let args = normalize_tool_raw_input(name, update.get("args").cloned());
+            let result = update.get("partialResult").cloned().unwrap_or(Value::Null);
+            let mut fields = acp::ToolCallUpdateFields::new()
+                .status(Some(acp::ToolCallStatus::InProgress))
+                .raw_output(Some(normalize_tool_raw_output(
+                    name,
+                    args.as_ref(),
+                    &result,
+                    false,
+                )));
+            if tool_kind(name) != acp::ToolKind::Edit {
+                fields = fields.content(Some(tool_content(&result)));
+            }
+            Ok(acp::SessionUpdate::ToolCallUpdate(
+                acp::ToolCallUpdate::new(
+                    acp::ToolCallId::new(required_str_value(update, "toolCallId")?.to_string()),
+                    fields,
+                ),
+            ))
+        }
         "tool_result" => {
-            let status = if update.get("isError").and_then(Value::as_bool) == Some(true) {
+            let name = required_str_value(update, "toolName")?;
+            let args = normalize_tool_raw_input(name, update.get("args").cloned());
+            let result = update.get("result").cloned().unwrap_or(Value::Null);
+            let is_error = update.get("isError").and_then(Value::as_bool) == Some(true);
+            let status = if is_error {
                 acp::ToolCallStatus::Failed
             } else {
                 acp::ToolCallStatus::Completed
             };
+            let mut fields = acp::ToolCallUpdateFields::new()
+                .status(Some(status))
+                .raw_output(Some(normalize_tool_raw_output(
+                    name,
+                    args.as_ref(),
+                    &result,
+                    is_error,
+                )));
+            if tool_kind(name) == acp::ToolKind::Edit {
+                fields = fields.content(edit_diff_content(name, args.as_ref(), Some(&result)));
+            } else {
+                fields = fields.content(Some(tool_content(&result)));
+            }
             Ok(acp::SessionUpdate::ToolCallUpdate(
                 acp::ToolCallUpdate::new(
                     acp::ToolCallId::new(required_str_value(update, "toolCallId")?.to_string()),
-                    acp::ToolCallUpdateFields::new()
-                        .status(Some(status))
-                        .raw_output(update.get("result").cloned()),
+                    fields,
                 ),
             ))
         }
@@ -429,6 +459,73 @@ mod tests {
             panic!("expected text content");
         };
         assert_eq!(text.text, "hello");
+    }
+
+    #[test]
+    fn child_find_tool_projects_native_search_input_and_output() {
+        let start = bridge_message(
+            "child_update",
+            json!({
+                "update": {
+                    "type": "tool_call",
+                    "toolCallId": "tool-1",
+                    "toolName": "find",
+                    "args": { "pattern": "README.md", "path": ".", "limit": 20 },
+                },
+            }),
+        );
+        let projection = parse_bridge_message(&start, "parent-1")
+            .unwrap()
+            .expect("bridge event");
+        let [BridgeOperation::ChildUpdate { update, .. }] = projection.operations.as_slice() else {
+            panic!("expected one child update");
+        };
+        let acp::SessionUpdate::ToolCall(call) = update else {
+            panic!("expected a tool call");
+        };
+        assert!(matches!(&call.kind, acp::ToolKind::Search));
+        assert_eq!(
+            call.raw_input.as_ref().unwrap()["output_mode"],
+            "files_with_matches"
+        );
+
+        let end = bridge_message(
+            "child_update",
+            json!({
+                "update": {
+                    "type": "tool_result",
+                    "toolCallId": "tool-1",
+                    "toolName": "find",
+                    "args": { "pattern": "README.md", "path": ".", "limit": 20 },
+                    "result": { "content": [{ "type": "text", "text": "README.md\n" }] },
+                    "isError": false,
+                },
+            }),
+        );
+        let projection = parse_bridge_message(&end, "parent-1")
+            .unwrap()
+            .expect("bridge event");
+        let [BridgeOperation::ChildUpdate { update, .. }] = projection.operations.as_slice() else {
+            panic!("expected one child update");
+        };
+        let acp::SessionUpdate::ToolCallUpdate(update) = update else {
+            panic!("expected a tool update");
+        };
+        let output = update.fields.raw_output.as_ref().expect("native output");
+        assert_eq!(output["type"], "GrepSearch");
+        assert_eq!(output["match_count"], 1);
+    }
+
+    #[test]
+    fn replay_complete_projects_an_adapter_barrier_marker() {
+        let event = bridge_message("replay_complete", json!({ "requestId": "replay-1" }));
+        let projection = parse_bridge_message(&event, "parent-1")
+            .unwrap()
+            .expect("bridge event");
+        assert!(matches!(
+            projection.operations.as_slice(),
+            [BridgeOperation::ReplayComplete { request_id }] if request_id == "replay-1"
+        ));
     }
 
     #[test]

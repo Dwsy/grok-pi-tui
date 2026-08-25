@@ -128,6 +128,11 @@ impl PiAgent {
             }
         }
         let bootstrap = self.state.borrow().bootstrap.clone();
+        if restored && bridge_command_is_registered(&bootstrap.commands, SUBAGENT_REPLAY_COMMAND) {
+            self.replay_subagents("recovery")
+                .await
+                .map_err(|error| anyhow!("subagent recovery replay failed: {error}"))?;
+        }
         self.publish_bootstrap(&bootstrap).await;
         self.refresh_context_usage().await;
         Ok(restored)

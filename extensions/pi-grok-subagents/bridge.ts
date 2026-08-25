@@ -1,10 +1,14 @@
 /** Bridge envelopes and persistence records for pi-grok-subagents. */
 
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
-import { SessionManager, type AgentSession, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { BRIDGE_TYPE, SHORT_SUBAGENT_ID_LENGTH, STATE_ENTRY_TYPE, textFromContent, type CapabilityMode } from "./shared.ts";
+import { SessionManager, type AgentSession, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { BRIDGE_TYPE, SHORT_SUBAGENT_ID_LENGTH, textFromContent, type CapabilityMode } from "./shared.ts";
 
-export type BridgeKind = "spawned" | "finished" | "child_update";
+export const SUBAGENT_STATE_SUFFIX = ".subagents.jsonl";
+const BRIDGE_CONNECT_TIMEOUT_MS = 5_000;
+
+export type BridgeKind = "spawned" | "finished" | "child_update" | "replay_complete";
 
 export type BridgeEnvelope = {
   version: 1;
@@ -21,7 +25,10 @@ export type PersistedRecord = {
   version: 1;
   id: string;
   childSessionId: string;
+  agentSessionId: string;
   childSessionFile: string;
+  startLeafId: string | null;
+  endLeafId: string | null;
   parentSessionId: string;
   parentToolCallId: string;
   prompt: string;
@@ -41,7 +48,11 @@ export type PersistedRecord = {
 export type SubagentRecord = {
   id: string;
   childSessionId: string;
+  agentSessionId: string;
   childSessionFile: string;
+  startLeafId: string | null;
+  endLeafId: string | null;
+  stateFile: string;
   parentSessionId: string;
   parentToolCallId: string;
   prompt: string;
@@ -82,26 +93,44 @@ export interface RecordLookup {
 
 export type BridgeRef = Pick<SubagentRecord, "id" | "childSessionId" | "parentSessionId">;
 
-export type BridgeEmitter = (
+export type BridgeEmitter = ((
   record: BridgeRef,
   kind: BridgeKind,
   payload: Record<string, unknown>,
   replay?: boolean,
-) => void;
+) => void) & { ready: Promise<void> };
 
-function createTransientTransport(): Socket | undefined {
+function createTransientTransport(): Socket {
   const endpoint = process.env.PI_GROK_SUBAGENT_SOCKET?.trim();
-  if (!endpoint) return undefined;
+  if (!endpoint) throw new Error("PI_GROK_SUBAGENT_SOCKET is required when Pi-Grok subagents are enabled");
   const socket = connect({ path: endpoint });
   socket.unref();
-  socket.on("error", () => {});
   return socket;
 }
 
-export function createBridgeEmitter(pi: ExtensionAPI): BridgeEmitter {
+export function createBridgeEmitter(): BridgeEmitter {
   let nextSequence = 1;
+  let transportError: Error | undefined;
   const transport = createTransientTransport();
-  return (record, kind, payload, replay = false) => {
+  const ready = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      transport.destroy();
+      reject(new Error(`Pi-Grok subagent transport connection timed out after ${BRIDGE_CONNECT_TIMEOUT_MS}ms`));
+    }, BRIDGE_CONNECT_TIMEOUT_MS);
+    timer.unref();
+    transport.once("connect", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    transport.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+  void ready.catch(() => undefined);
+  transport.on("connect", () => { transportError = undefined; });
+  transport.on("error", (error) => { transportError = error; });
+  const emit = (record: BridgeRef, kind: BridgeKind, payload: Record<string, unknown>, replay = false) => {
     const envelope: BridgeEnvelope = {
       version: 1,
       sequence: nextSequence,
@@ -114,59 +143,72 @@ export function createBridgeEmitter(pi: ExtensionAPI): BridgeEmitter {
     };
     nextSequence += 1;
 
-    // Child traffic is transport state, not parent conversation state. The
-    // process-private loopback stream keeps it off disk and out of the parent
-    // SessionManager tree while preserving event order and low latency.
-    transport?.write(`${JSON.stringify({ type: "custom", customType: BRIDGE_TYPE, data: envelope })}\n`);
-
-    // Parent persistence needs only durable lifecycle anchors. Replay and
-    // child_update events must never mutate the parent session JSONL.
-    if (!replay && (kind === "spawned" || kind === "finished")) {
-      pi.appendEntry(BRIDGE_TYPE, envelope);
-    }
+    if (transportError) throw new Error(`Pi-Grok subagent transport failed: ${transportError.message}`);
+    if (transport.destroyed) throw new Error("Pi-Grok subagent transport is closed");
+    transport.write(`${JSON.stringify({ type: "custom", customType: BRIDGE_TYPE, data: envelope })}\n`);
   };
+  return Object.assign(emit, { ready });
 }
 
-export function persistedRecord(entry: unknown): PersistedRecord | undefined {
-  if (typeof entry !== "object" || entry === null) return undefined;
-  const candidate = entry as { type?: unknown; customType?: unknown; data?: unknown };
-  if (candidate.type !== "custom" || candidate.customType !== STATE_ENTRY_TYPE) return undefined;
-  if (typeof candidate.data !== "object" || candidate.data === null) return undefined;
-  const value = candidate.data as Partial<PersistedRecord>;
+export function subagentStateFile(parentSessionFile: string): string {
+  return `${parentSessionFile}${SUBAGENT_STATE_SUFFIX}`;
+}
+
+export function persistedRecord(value: unknown): PersistedRecord | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const candidate = value as Partial<PersistedRecord>;
   if (
-    value.version !== 1 ||
-    typeof value.id !== "string" ||
-    typeof value.childSessionId !== "string" ||
-    typeof value.childSessionFile !== "string" ||
-    typeof value.parentSessionId !== "string" ||
-    typeof value.parentToolCallId !== "string" ||
-    typeof value.prompt !== "string" ||
-    typeof value.description !== "string" ||
-    typeof value.type !== "string" ||
-    typeof value.capabilityMode !== "string" ||
-    typeof value.modelId !== "string" ||
-    typeof value.background !== "boolean" ||
-    typeof value.startedAt !== "number" ||
-    typeof value.status !== "string" ||
-    typeof value.turnCount !== "number" ||
-    typeof value.toolCallCount !== "number" ||
-    typeof value.tokensUsed !== "number" ||
-    (value.lastError !== undefined && typeof value.lastError !== "string")
+    candidate.version !== 1 ||
+    typeof candidate.id !== "string" ||
+    typeof candidate.childSessionId !== "string" ||
+    typeof candidate.agentSessionId !== "string" ||
+    typeof candidate.childSessionFile !== "string" ||
+    (candidate.startLeafId !== null && typeof candidate.startLeafId !== "string") ||
+    (candidate.endLeafId !== null && typeof candidate.endLeafId !== "string") ||
+    typeof candidate.parentSessionId !== "string" ||
+    typeof candidate.parentToolCallId !== "string" ||
+    typeof candidate.prompt !== "string" ||
+    typeof candidate.description !== "string" ||
+    typeof candidate.type !== "string" ||
+    !["read-only", "read-write", "execute", "all"].includes(candidate.capabilityMode ?? "") ||
+    typeof candidate.modelId !== "string" ||
+    typeof candidate.background !== "boolean" ||
+    typeof candidate.startedAt !== "number" ||
+    !["running", "completed", "failed", "cancelled"].includes(candidate.status ?? "") ||
+    typeof candidate.turnCount !== "number" ||
+    typeof candidate.toolCallCount !== "number" ||
+    typeof candidate.tokensUsed !== "number" ||
+    (candidate.lastError !== undefined && typeof candidate.lastError !== "string")
   ) {
     return undefined;
   }
-  return value as PersistedRecord;
+  return candidate as PersistedRecord;
 }
 
-export function latestPersistedRecords(ctx: ExtensionContext, allBranches = false): PersistedRecord[] {
+export function latestPersistedRecordsFromFile(stateFile: string, parentSessionId: string): PersistedRecord[] {
+  if (!existsSync(stateFile)) return [];
   const latest = new Map<string, PersistedRecord>();
-  const parentSessionId = ctx.sessionManager.getSessionId();
-  const entries = allBranches ? ctx.sessionManager.getEntries() : ctx.sessionManager.getBranch();
-  for (const entry of entries) {
-    const snapshot = persistedRecord(entry);
+  for (const line of readFileSync(stateFile, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const snapshot = persistedRecord(value);
     if (snapshot?.parentSessionId === parentSessionId) latest.set(snapshot.id, snapshot);
   }
   return [...latest.values()].sort((left, right) => left.startedAt - right.startedAt);
+}
+
+export function latestPersistedRecords(ctx: ExtensionContext): PersistedRecord[] {
+  const parentSessionFile = ctx.sessionManager.getSessionFile();
+  if (!parentSessionFile) return [];
+  return latestPersistedRecordsFromFile(
+    subagentStateFile(parentSessionFile),
+    ctx.sessionManager.getSessionId(),
+  );
 }
 
 export function persistedStatusLabel(
@@ -187,6 +229,21 @@ export function resolvePersistedSubagent(snapshots: PersistedRecord[], id: strin
   if (matches.length === 1) return matches[0];
   if (matches.length > 1) throw new Error(`ambiguous subagent ID prefix: ${id}; use more characters`);
   throw new Error(`unknown subagent history: ${id}`);
+}
+
+export function persistedRunBranch(snapshot: PersistedRecord): readonly unknown[] {
+  if (!existsSync(snapshot.childSessionFile)) {
+    throw new Error(`child session file does not exist: ${snapshot.childSessionFile}`);
+  }
+  const branch = SessionManager.open(snapshot.childSessionFile).getBranch(snapshot.endLeafId ?? undefined);
+  if (snapshot.startLeafId === null) return branch;
+  const boundary = branch.findIndex((entry) =>
+    typeof entry === "object" && entry !== null && (entry as { id?: unknown }).id === snapshot.startLeafId
+  );
+  if (boundary < 0) {
+    throw new Error(`child transcript start boundary is unavailable: ${snapshot.startLeafId}`);
+  }
+  return branch.slice(boundary + 1);
 }
 
 /** Shortest unique prefix of `id` among `candidateIds` (at least SHORT_SUBAGENT_ID_LENGTH). */
@@ -216,12 +273,13 @@ function formatPersistedSubagentHistory(
   snapshot: PersistedRecord,
   snapshots: PersistedRecord[],
 ): string {
-  const branch = SessionManager.open(snapshot.childSessionFile).getBranch();
+  const branch = persistedRunBranch(snapshot);
   const shortId = shortSubagentIdFor(snapshot.id, snapshots.map((candidate) => candidate.id));
   const lines = [
     `# Subagent ${shortId}: ${snapshot.description}`,
     `Status: ${persistedStatusLabel(records, snapshot)} · ${snapshot.type} · ${snapshot.turnCount} turns · ${snapshot.toolCallCount} tools`,
-    `Child session: ${snapshot.childSessionId}`,
+    `UI run: ${snapshot.childSessionId}`,
+    `Pi child session: ${snapshot.agentSessionId}`,
     ...(snapshot.lastError ? [`Error: ${snapshot.lastError}`] : []),
   ];
 
@@ -309,12 +367,19 @@ export async function showSubagentHistory(
   }
 }
 
-export function persist(pi: ExtensionAPI, record: SubagentRecord, status: PersistedRecord["status"]): void {
+export function appendPersistedRecord(stateFile: string, snapshot: PersistedRecord): void {
+  appendFileSync(stateFile, `${JSON.stringify(snapshot)}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
+export function persist(record: SubagentRecord, status: PersistedRecord["status"]): void {
   const snapshot: PersistedRecord = {
     version: 1,
     id: record.id,
     childSessionId: record.childSessionId,
+    agentSessionId: record.agentSessionId,
     childSessionFile: record.childSessionFile,
+    startLeafId: record.startLeafId,
+    endLeafId: record.endLeafId,
     parentSessionId: record.parentSessionId,
     parentToolCallId: record.parentToolCallId,
     prompt: record.prompt,
@@ -330,5 +395,5 @@ export function persist(pi: ExtensionAPI, record: SubagentRecord, status: Persis
     tokensUsed: record.tokensUsed,
     lastError: record.lastError,
   };
-  pi.appendEntry(STATE_ENTRY_TYPE, snapshot);
+  appendPersistedRecord(record.stateFile, snapshot);
 }

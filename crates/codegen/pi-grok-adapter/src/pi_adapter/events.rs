@@ -256,7 +256,9 @@ impl PiAgent {
                     // An interrupted session transition cannot complete against
                     // a dead child; clear it so post-recovery reattach can
                     // begin a fresh one.
-                    state.pending_subagent_bridge = PendingSubagentBridge::default();
+                    state.subagent_bridge_sequences.clear();
+                    state.subagent_session_to_id.clear();
+                    state.pending_subagent_replays.clear();
                     let queued = state.queue_mirror.clear_local();
                     let running = state.queue_mirror.clear_running();
                     state.queue_mirror.clear();
@@ -279,7 +281,13 @@ impl PiAgent {
                 // toast, no recovery round.
                 if !intentional {
                     self.send_ui_notification(message, Some("error")).await;
-                    self.recover_rpc_connection().await;
+                    // Recovery waits for a request-scoped subagent socket
+                    // marker. Running it inline would deadlock this sole event
+                    // consumer, which must stay free to receive that marker.
+                    let recovery = self.clone();
+                    tokio::task::spawn_local(async move {
+                        recovery.recover_rpc_connection().await;
+                    });
                 }
             }
             _ => {}

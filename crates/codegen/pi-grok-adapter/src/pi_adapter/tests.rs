@@ -36,67 +36,22 @@ fn bridge_commands_require_registration_and_recap_is_not_reentrant() {
 }
 
 #[test]
-fn pending_subagent_bridge_defers_only_the_target_session_replay() {
-    let replay = json!({
-        "message": {
-            "role": "custom",
-            "customType": "pi-grok-subagent/v1",
-            "details": { "parentSessionId": "session-next" },
-        },
-    });
-    let other_session = json!({
-        "message": {
-            "role": "custom",
-            "customType": "pi-grok-subagent/v1",
-            "details": { "parentSessionId": "session-other" },
-        },
-    });
-    let mut pending = PendingSubagentBridge::default();
-    pending.begin("session-next").expect("begin transition");
-    assert!(
-        pending
-            .defer_if_targeted(&replay)
-            .expect("defer target replay")
-    );
-    assert!(
-        !pending
-            .defer_if_targeted(&other_session)
-            .expect("leave unrelated event live")
-    );
-    assert_eq!(
-        pending
-            .commit_if_target("session-next")
-            .expect("commit")
-            .len(),
-        1
-    );
-    assert!(
-        pending
-            .commit_if_target("session-next")
-            .expect("no transition")
-            .is_empty()
-    );
+fn subagent_sequence_restarts_after_transport_state_reset() {
+    let mut sequences = HashMap::new();
+    assert!(accept_subagent_sequence(&mut sequences, "run-1", 5, false));
+    assert!(!accept_subagent_sequence(&mut sequences, "run-1", 1, false));
+    sequences.clear();
+    assert!(accept_subagent_sequence(&mut sequences, "run-1", 1, false));
 }
 
 #[test]
-fn pending_subagent_bridge_discards_replay_when_transition_is_cancelled() {
-    let replay = json!({
-        "message": {
-            "role": "custom",
-            "customType": "pi-grok-subagent/v1",
-            "details": { "parentSessionId": "session-next" },
-        },
-    });
-    let mut pending = PendingSubagentBridge::default();
-    pending.begin("session-next").expect("begin transition");
-    assert!(
-        pending
-            .defer_if_targeted(&replay)
-            .expect("defer target replay")
+fn subagent_child_cancel_routes_to_the_extension_run_id() {
+    let routes = HashMap::from([("child-run".to_string(), "subagent-run".to_string())]);
+    assert_eq!(
+        subagent_cancel_target(&routes, "child-run").as_deref(),
+        Some("subagent-run")
     );
-    pending.abandon("session-next");
-    assert!(pending.events.is_empty());
-    assert!(pending.target_session_id.is_none());
+    assert_eq!(subagent_cancel_target(&routes, "root-session"), None);
 }
 
 #[test]

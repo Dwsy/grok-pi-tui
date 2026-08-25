@@ -94,6 +94,9 @@ impl SubagentEventTransport {
 
     pub async fn forward(&self, tx: mpsc::UnboundedSender<Value>) {
         loop {
+            if tx.is_closed() {
+                return;
+            }
             let stream = match self.accept_stream().await {
                 Ok(stream) => stream,
                 Err(error) => {
@@ -102,27 +105,33 @@ impl SubagentEventTransport {
                     continue;
                 }
             };
-            let mut lines = BufReader::new(stream).lines();
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) if line.trim().is_empty() => continue,
-                    Ok(Some(line)) => match serde_json::from_str::<Value>(&line) {
-                        Ok(event) => {
-                            if tx.send(event).is_err() {
-                                return;
+            let stream_tx = tx.clone();
+            // Reload/recovery can overlap old and new extension runtimes. Both
+            // may still emit a final lifecycle event, so drain every accepted
+            // connection instead of serialising or choosing a winner.
+            tokio::task::spawn_local(async move {
+                let mut lines = BufReader::new(stream).lines();
+                loop {
+                    match lines.next_line().await {
+                        Ok(Some(line)) if line.trim().is_empty() => continue,
+                        Ok(Some(line)) => match serde_json::from_str::<Value>(&line) {
+                            Ok(event) => {
+                                if stream_tx.send(event).is_err() {
+                                    return;
+                                }
                             }
-                        }
+                            Err(error) => {
+                                tracing::warn!(%error, "invalid Pi subagent transient event")
+                            }
+                        },
+                        Ok(None) => return,
                         Err(error) => {
-                            tracing::warn!(%error, "invalid Pi subagent transient event")
+                            tracing::warn!(%error, "failed to read Pi subagent local stream");
+                            return;
                         }
-                    },
-                    Ok(None) => break,
-                    Err(error) => {
-                        tracing::warn!(%error, "failed to read Pi subagent local stream");
-                        break;
                     }
                 }
-            }
+            });
         }
     }
 }
@@ -134,25 +143,108 @@ mod tests {
     use tokio::io::AsyncWriteExt;
 
     #[tokio::test(flavor = "current_thread")]
+    async fn second_connection_is_not_blocked_by_an_idle_first_connection() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let transport = Arc::new(SubagentEventTransport::bind().expect("bind transport"));
+                let endpoint = transport.endpoint().to_owned();
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                let task = {
+                    let transport = transport.clone();
+                    tokio::task::spawn_local(async move { transport.forward(tx).await })
+                };
+
+                let _idle = tokio::net::UnixStream::connect(&endpoint)
+                    .await
+                    .expect("connect idle stream");
+                tokio::task::yield_now().await;
+                let mut live = tokio::net::UnixStream::connect(endpoint)
+                    .await
+                    .expect("connect live stream");
+                live.write_all(b"{\"type\":\"custom\",\"data\":{\"sequence\":9}}\n")
+                    .await
+                    .expect("write live event");
+
+                let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                    .await
+                    .expect("live stream must not wait for idle EOF")
+                    .expect("receive event");
+                assert_eq!(event["data"]["sequence"], 9);
+                task.abort();
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn both_connections_keep_forwarding_after_the_second_connects() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let transport = Arc::new(SubagentEventTransport::bind().expect("bind transport"));
+                let endpoint = transport.endpoint().to_owned();
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                let task = {
+                    let transport = transport.clone();
+                    tokio::task::spawn_local(async move { transport.forward(tx).await })
+                };
+
+                let mut first = tokio::net::UnixStream::connect(&endpoint)
+                    .await
+                    .expect("connect first stream");
+                first
+                    .write_all(b"{\"type\":\"custom\",\"data\":{\"sequence\":1}}\n")
+                    .await
+                    .expect("write first event");
+                assert_eq!(rx.recv().await.unwrap()["data"]["sequence"], 1);
+
+                let mut second = tokio::net::UnixStream::connect(endpoint)
+                    .await
+                    .expect("connect second stream");
+                second
+                    .write_all(b"{\"type\":\"custom\",\"data\":{\"sequence\":2}}\n")
+                    .await
+                    .expect("write second event");
+                assert_eq!(rx.recv().await.unwrap()["data"]["sequence"], 2);
+
+                first
+                    .write_all(b"{\"type\":\"custom\",\"data\":{\"sequence\":3}}\n")
+                    .await
+                    .expect("write late first event");
+                assert_eq!(rx.recv().await.unwrap()["data"]["sequence"], 3);
+                task.abort();
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn forwards_ndjson_over_unix_socket() {
-        let transport = Arc::new(SubagentEventTransport::bind().expect("bind transport"));
-        let endpoint = transport.endpoint().to_owned();
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let task = {
-            let transport = transport.clone();
-            tokio::spawn(async move { transport.forward(tx).await })
-        };
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let transport = Arc::new(SubagentEventTransport::bind().expect("bind transport"));
+                let endpoint = transport.endpoint().to_owned();
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                let task = {
+                    let transport = transport.clone();
+                    tokio::task::spawn_local(async move { transport.forward(tx).await })
+                };
 
-        let mut stream = tokio::net::UnixStream::connect(endpoint)
-            .await
-            .expect("connect transport");
-        stream
-            .write_all(b"{\"type\":\"custom\",\"data\":{\"sequence\":1}}\n")
-            .await
-            .expect("write event");
+                let mut stream = tokio::net::UnixStream::connect(endpoint)
+                    .await
+                    .expect("connect transport");
+                stream
+                    .write_all(
+                        b"{\"type\":\"custom\",\"data\":{\"sequence\":1}}\n\
+                  {\"type\":\"custom\",\"data\":{\"sequence\":2}}\n\
+                  {\"type\":\"custom\",\"data\":{\"sequence\":3}}\n",
+                    )
+                    .await
+                    .expect("write events");
 
-        let event = rx.recv().await.expect("receive event");
-        assert_eq!(event["data"]["sequence"], 1);
-        task.abort();
+                for expected in 1..=3 {
+                    let event = rx.recv().await.expect("receive event");
+                    assert_eq!(event["data"]["sequence"], expected);
+                }
+                task.abort();
+            })
+            .await;
     }
 }

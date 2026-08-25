@@ -198,10 +198,16 @@ mod tests {
         let v2 = read("v2.ts");
         assert!(
             bridge.contains(
-                "export type BridgeKind = \"spawned\" | \"finished\" | \"child_update\";"
+                "export type BridgeKind = \"spawned\" | \"finished\" | \"child_update\" | \"replay_complete\";"
             )
         );
-        assert!(bridge.contains("pi.appendEntry(BRIDGE_TYPE, envelope);"));
+        assert!(!bridge.contains("pi.appendEntry("));
+        assert!(bridge.contains("ready: Promise<void>"));
+        assert!(runtime.contains("await this.emit.ready"));
+        assert!(bridge.contains("SUBAGENT_STATE_SUFFIX = \".subagents.jsonl\""));
+        assert!(bridge.contains("appendFileSync(stateFile"));
+        assert!(bridge.contains("appendPersistedRecord(record.stateFile, snapshot)"));
+        assert!(!shared.contains("pi-grok-subagent-state/v1"));
         assert!(!index.contains("PROGRESS_INTERVAL_MS"));
         assert!(!index.contains("emitProgress("));
         assert!(runtime.contains("this.emit(record, \"child_update\""));
@@ -209,6 +215,7 @@ mod tests {
         assert!(index.contains("process.env.PI_GROK_SUBAGENTS_V2 === \"1\""));
         assert!(tools_v1.contains("name: \"spawn_subagent\""));
         assert!(tools_v1.contains("__pi_grok_subagent_cancel"));
+        assert!(shared.contains("__pi_grok_subagent_replay"));
         assert!(tools_v1.contains("pi.registerCommand(\"subagents\""));
         assert!(config_ui.contains("PI_GROK_SUBAGENT_EXTENSION_CATALOG"));
         assert!(runtime.contains("additionalExtensionPaths"));

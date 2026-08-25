@@ -1,7 +1,9 @@
 /** Shared constants, capability tables, and scalar helpers for pi-grok-subagents. */
 
+import { randomBytes } from "node:crypto";
+
 export const BRIDGE_TYPE = "pi-grok-subagent/v1";
-export const STATE_ENTRY_TYPE = "pi-grok-subagent-state/v1";
+export const SUBAGENT_REPLAY_COMMAND = "__pi_grok_subagent_replay";
 export const MAX_BACKGROUND_CONCURRENCY = 4;
 export const MAX_WAIT_MS = 600_000; // 10 minutes cap for blocking waits
 export const MAX_AGENT_MODELS = 3;
@@ -38,6 +40,15 @@ export type ResourcePickerExtra = {
   label: string;
   type: "extensions" | "skills";
 };
+
+/**
+ * Session-scoped subagent ID: exactly SHORT_SUBAGENT_ID_LENGTH hex chars, so
+ * existing "8+ character prefix" resolution keeps working unchanged while full
+ * IDs stay short in persisted records and UI surfaces (36-char UUID → 8 chars).
+ */
+export function newSubagentId(): string {
+  return randomBytes(SHORT_SUBAGENT_ID_LENGTH / 2).toString("hex");
+}
 
 export function requireText(value: unknown, name: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {

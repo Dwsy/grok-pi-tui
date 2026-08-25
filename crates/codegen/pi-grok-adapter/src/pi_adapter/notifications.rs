@@ -58,17 +58,12 @@ impl PiAgent {
         sequence: u64,
         replay: bool,
     ) -> bool {
-        let mut state = self.state.borrow_mut();
-        let previous = state.subagent_bridge_sequences.get(subagent_id).copied();
-        if !replay && previous.is_some_and(|last| sequence <= last) {
-            return false;
-        }
-        state
-            .subagent_bridge_sequences
-            .entry(subagent_id.to_string())
-            .and_modify(|last| *last = (*last).max(sequence))
-            .or_insert(sequence);
-        true
+        accept_subagent_sequence(
+            &mut self.state.borrow_mut().subagent_bridge_sequences,
+            subagent_id,
+            sequence,
+            replay,
+        )
     }
 
     pub(super) async fn handle_recap_bridge_message(&self, event: &Value) -> Result<bool> {
@@ -112,14 +107,6 @@ impl PiAgent {
     }
 
     pub(super) async fn handle_subagent_bridge_message(&self, event: &Value) -> Result<bool> {
-        if self
-            .state
-            .borrow_mut()
-            .pending_subagent_bridge
-            .defer_if_targeted(event)?
-        {
-            return Ok(true);
-        }
         let root_session_id = self.session_id().0.to_string();
         let Some(projection) = parse_bridge_message(event, &root_session_id)? else {
             return Ok(false);
@@ -131,6 +118,13 @@ impl PiAgent {
         ) {
             return Ok(true);
         }
+        if projection.kind == "spawned" {
+            self.state.borrow_mut().subagent_session_to_id.insert(
+                projection.child_session_id.clone(),
+                projection.subagent_id.clone(),
+            );
+        }
+        let replay = projection.replay;
         let event_id = format!(
             "pi-grok-subagent:{}:{}",
             projection.subagent_id, projection.sequence
@@ -141,31 +135,43 @@ impl PiAgent {
                     tool_call_id,
                     raw_input,
                 } => {
+                    let reconcile = raw_input
+                        .get("reconcile")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let mut fields = acp::ToolCallUpdateFields::new().raw_input(Some(raw_input));
+                    if !replay && !reconcile {
+                        fields = fields.status(Some(acp::ToolCallStatus::InProgress));
+                    }
                     self.send_update(acp::SessionUpdate::ToolCallUpdate(
-                        acp::ToolCallUpdate::new(
-                            acp::ToolCallId::new(tool_call_id),
-                            acp::ToolCallUpdateFields::new()
-                                .status(Some(acp::ToolCallStatus::InProgress))
-                                .raw_input(Some(raw_input)),
-                        ),
+                        acp::ToolCallUpdate::new(acp::ToolCallId::new(tool_call_id), fields),
                     ))
                     .await;
                 }
                 BridgeOperation::ParentLifecycle(notification) => {
-                    self.send_ext_notification("x.ai/session/update", notification)
-                        .await;
+                    let method = if replay {
+                        "x.ai/session/update"
+                    } else {
+                        "x.ai/session_notification"
+                    };
+                    self.send_ext_notification(method, notification).await;
                 }
                 BridgeOperation::ChildUpdate {
                     child_session_id,
                     update,
                 } => {
-                    self.send_update_for_session(
-                        &child_session_id,
-                        update,
-                        projection.replay,
-                        &event_id,
-                    )
-                    .await;
+                    self.send_update_for_session(&child_session_id, update, replay, &event_id)
+                        .await;
+                }
+                BridgeOperation::ReplayComplete { request_id } => {
+                    if let Some(tx) = self
+                        .state
+                        .borrow_mut()
+                        .pending_subagent_replays
+                        .remove(&request_id)
+                    {
+                        let _ = tx.send(());
+                    }
                 }
             }
         }
