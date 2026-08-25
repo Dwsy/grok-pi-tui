@@ -16,11 +16,13 @@ use crate::auto_update::UpdateAvailable;
 
 /// GitHub Releases "latest" API for this project's published binaries.
 pub const PI_GH_RELEASES_LATEST_URL: &str =
-    "https://api.github.com/repos/Dwsy/grok-pi/releases/latest";
+    "https://api.github.com/repos/Dwsy/grok-pi-tui/releases/latest";
+/// Official GitHub Releases page. Unlike the API, this is not subject to the
+/// unauthenticated API rate limit and redirects to the canonical latest tag.
+const PI_GH_RELEASES_PAGE_LATEST_URL: &str = "https://github.com/Dwsy/grok-pi/releases/latest";
 /// Official npm package metadata. Do not use the unscoped `grok-pi` package:
 /// it belongs to another project.
-const PI_NPM_PACKAGE_METADATA_URL: &str =
-    "https://registry.npmjs.org/@dwsy%2Fgrok-pi";
+const PI_NPM_PACKAGE_METADATA_URL: &str = "https://registry.npmjs.org/@dwsy%2Fgrok-pi";
 /// JSP proxy route for the GitHub API. Only the proxy prefix is encoded so
 /// the upstream host and repository remain visible in the source.
 const JSP_PROXY_PREFIX_B64: &str =
@@ -44,6 +46,11 @@ async fn fetch_release_latest() -> Result<(String, &'static str)> {
         Err(error) => errors.push(format!("github-api: {error}")),
     }
 
+    match fetch_github_release_page_latest(&client).await {
+        Ok(version) => return Ok((version, "github-releases-page")),
+        Err(error) => errors.push(format!("github-releases-page: {error}")),
+    }
+
     match fetch_npm_release_latest(&client).await {
         Ok(version) => return Ok((version, "npm")),
         Err(error) => errors.push(format!("npm: {error}")),
@@ -64,6 +71,35 @@ async fn fetch_release_latest() -> Result<(String, &'static str)> {
     )
 }
 
+async fn fetch_github_release_page_latest(client: &reqwest::Client) -> Result<String> {
+    let resp = client
+        .get(PI_GH_RELEASES_PAGE_LATEST_URL)
+        .header("Accept", "text/html")
+        .header("User-Agent", "grok-pi-update")
+        .send()
+        .await
+        .context("GET GitHub Releases page")?;
+    if !resp.status().is_success() {
+        anyhow::bail!("GitHub Releases page HTTP {}", resp.status());
+    }
+
+    normalize_github_release_page_url(resp.url())
+}
+
+fn normalize_github_release_page_url(url: &url::Url) -> Result<String> {
+    let tag = url
+        .path_segments()
+        .and_then(|segments| {
+            let segments: Vec<_> = segments.collect();
+            segments
+                .iter()
+                .position(|segment| *segment == "tag")
+                .and_then(|index| segments.get(index + 1).copied())
+        })
+        .ok_or_else(|| anyhow!("GitHub Releases page did not redirect to a tag"))?;
+    normalize_version(tag)
+}
+
 async fn fetch_npm_release_latest(client: &reqwest::Client) -> Result<String> {
     let resp = client
         .get(PI_NPM_PACKAGE_METADATA_URL)
@@ -81,10 +117,7 @@ async fn fetch_npm_release_latest(client: &reqwest::Client) -> Result<String> {
         );
     }
 
-    let value: Value = resp
-        .json()
-        .await
-        .context("decode npm package metadata")?;
+    let value: Value = resp.json().await.context("decode npm package metadata")?;
     parse_npm_release_metadata(&value)
 }
 
@@ -257,7 +290,7 @@ fn print_pi_update_status(current: &str, latest: &str, json: bool) -> Result<()>
             "current": current,
             "latest": latest,
             "updateAvailable": update_available,
-            "sources": ["github-api", "npm", "jsp-proxy"],
+            "sources": ["github-api", "github-releases-page", "npm", "jsp-proxy"],
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
@@ -368,11 +401,21 @@ mod tests {
     }
 
     #[test]
+    fn official_release_page_extracts_redirected_tag() {
+        let url =
+            url::Url::parse("https://github.com/Dwsy/grok-pi-tui/releases/tag/v0.1.0").unwrap();
+        assert_eq!(normalize_github_release_page_url(&url).unwrap(), "0.1.0");
+    }
+
+    #[test]
     fn update_source_order_keeps_proxy_last() {
         // Keep this contract next to the source implementation: the official
         // GitHub API and scoped npm package must get a chance before JSP.
-        let source_order = ["github-api", "npm", "jsp-proxy"];
-        assert_eq!(source_order, ["github-api", "npm", "jsp-proxy"]);
+        let source_order = ["github-api", "github-releases-page", "npm", "jsp-proxy"];
+        assert_eq!(
+            source_order,
+            ["github-api", "github-releases-page", "npm", "jsp-proxy"]
+        );
     }
 
     #[test]

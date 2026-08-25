@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-25
+
 ### Highlights
 
 - **Pi 0.84.3 compatibility** — grok-pi now supports a system `pi` reporting `pi --version` as `0.84.3`, including bundled CLI host-module resolution for built-in and third-party extensions.

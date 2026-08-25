@@ -208,12 +208,12 @@ jobs:
           # Sanity-check the extractor before cutting notes.
           python3 scripts/extract-changelog-section.py --self-test
 
-          # Prefer a single matching section; for early 0.0.x tags also fold in
-          # every section after 0.0.6 so users upgrading from 0.0.6 see the full
-          # story (0.0.7 + 0.0.8 …). Toggle off with RELEASE_NOTES_SINCE=.
+          # Use one matching section for normal releases. Preserve cumulative
+          # notes only for the legacy 0.0.x line; newer releases must not emit
+          # the entire historical changelog by default. Override explicitly
+          # with RELEASE_NOTES_SINCE when a cumulative release is intentional.
           since_arg=()
-          if [[ -z "${RELEASE_NOTES_SINCE+x}" ]]; then
-            # default: cumulative notes since 0.0.6 for 0.0.x line
+          if [[ -z "${RELEASE_NOTES_SINCE+x}" && "$ver" == 0.0.* ]]; then
             since_arg=(--since 0.0.6)
           elif [[ -n "${RELEASE_NOTES_SINCE}" ]]; then
             since_arg=(--since "${RELEASE_NOTES_SINCE}")
@@ -227,9 +227,6 @@ jobs:
             --strict \
             --with-install \
             "${since_arg[@]}"
-
-          # softprops prepends body_path when generate_release_notes is true.
-          printf '\n---\n\n### Commits\n\n' >> dist/release-notes.md
 
           echo "version=${ver}" >> "$GITHUB_OUTPUT"
           echo "notes_path=dist/release-notes.md" >> "$GITHUB_OUTPUT"
@@ -247,8 +244,8 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          # CHANGELOG.MD (tag section, optionally cumulative since 0.0.6)
-          # then GitHub auto-generated commit list under ### Commits.
+          # CHANGELOG.MD tag section only; do not append GitHub's full commit
+          # history to every release body.
           body_path: dist/release-notes.md
-          generate_release_notes: true
+          generate_release_notes: false
           files: release-assets/*

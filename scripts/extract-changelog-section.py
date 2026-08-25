@@ -113,18 +113,22 @@ def self_test(changelog: Path) -> int:
         return 2
     text = changelog.read_text(encoding="utf-8")
     sections = iter_sections(text)
-    if len(sections) < 2:
-        print("self-test: expected >=2 sections", file=sys.stderr)
+    release_sections = [
+        (version, body)
+        for version, body in sections
+        if version.casefold() != "unreleased"
+    ]
+    if len(release_sections) < 2:
+        print("self-test: expected >=2 versioned sections", file=sys.stderr)
         return 1
-    ver0 = sections[0][0]
+    ver0 = release_sections[0][0]
     one = extract_section(text, ver0)
     assert one is not None and one.startswith(f"## [{ver0}]")
-    # Range: from second-newest exclusive lower bound if possible
-    if len(sections) >= 2:
-        older = sections[1][0]
-        ranged = extract_range(text, ver0, older)
-        # since older exclusive → only ver0 when they are adjacent
-        assert ranged is not None and f"## [{ver0}]" in ranged
+    # Range: from second-newest exclusive lower bound if possible.
+    older = release_sections[1][0]
+    ranged = extract_range(text, ver0, older)
+    # since older exclusive → only ver0 when they are adjacent
+    assert ranged is not None and f"## [{ver0}]" in ranged
     miss = extract_section(text, "9.9.9.9")
     assert miss is None
     print(f"self-test ok: {len(sections)} sections, head={ver0}", file=sys.stderr)
