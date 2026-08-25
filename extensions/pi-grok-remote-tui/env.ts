@@ -4,7 +4,7 @@
  * grok-pi RPC needs a custom() host; native Pi TUI already has a real one.
  */
 
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 
@@ -18,7 +18,8 @@ export function shouldInstallRemoteHost(): boolean {
 }
 
 export function hostUrl(relativePath: string): string {
-  const hostDistDir = dirname(realpathSync(process.argv[1]!));
+  const entryDir = dirname(realpathSync(process.argv[1]!));
+  const hostDistDir = basename(entryDir) === "bundle" ? dirname(entryDir) : entryDir;
   return new URL(relativePath, pathToFileURL(hostDistDir).href + "/").href;
 }
 

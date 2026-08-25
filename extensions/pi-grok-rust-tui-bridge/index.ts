@@ -19,7 +19,7 @@
 
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -63,7 +63,8 @@ let active: ActiveSession | null = null;
 const patchedUIs = new WeakSet<object>();
 
 function hostUrl(relativePath: string): string {
-  const hostDistDir = dirname(realpathSync(process.argv[1]!));
+  const entryDir = dirname(realpathSync(process.argv[1]!));
+  const hostDistDir = basename(entryDir) === "bundle" ? dirname(entryDir) : entryDir;
   return new URL(relativePath, pathToFileURL(hostDistDir).href + "/").href;
 }
 

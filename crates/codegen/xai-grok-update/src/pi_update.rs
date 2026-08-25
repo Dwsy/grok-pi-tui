@@ -1,10 +1,10 @@
 //! `grok-pi` update discovery and install.
 //!
-//! Read `Dwsy/grok-pi` Releases JSON and install via the published
-//! `install.sh` / `install.ps1`. Release discovery prefers the configured JSP
-//! proxy to avoid unauthenticated GitHub API rate limits, then falls back to
-//! GitHub directly. npm is intentionally not used (unscoped `grok-pi` is a
-//! foreign package; scoped `@dwsy/grok-pi` is not published yet).
+//! Read `Dwsy/grok-pi` release metadata and install via the published
+//! `install.sh` / `install.ps1`. Release discovery prefers the official
+//! GitHub API, then the official scoped npm package, and only then uses the
+//! JSP proxy. The unscoped `grok-pi` npm package is a foreign package and is
+//! intentionally never used.
 
 use std::time::Duration;
 
@@ -17,6 +17,10 @@ use crate::auto_update::UpdateAvailable;
 /// GitHub Releases "latest" API for this project's published binaries.
 pub const PI_GH_RELEASES_LATEST_URL: &str =
     "https://api.github.com/repos/Dwsy/grok-pi/releases/latest";
+/// Official npm package metadata. Do not use the unscoped `grok-pi` package:
+/// it belongs to another project.
+const PI_NPM_PACKAGE_METADATA_URL: &str =
+    "https://registry.npmjs.org/@dwsy%2Fgrok-pi";
 /// JSP proxy route for the GitHub API. Only the proxy prefix is encoded so
 /// the upstream host and repository remain visible in the source.
 const JSP_PROXY_PREFIX_B64: &str =
@@ -26,33 +30,72 @@ const JSP_PROXY_REFERER_SUFFIX: &str = "--ver=110&--mode=cors&--type=&--aceh=1&-
 
 /// Fetch the latest `grok-pi` version string (no leading `v`) from GitHub.
 pub async fn fetch_pi_latest_version() -> Result<String> {
-    let v = fetch_github_release_latest().await?;
-    tracing::info!(%v, source = "github-releases", "pi update: latest version");
-    Ok(v)
+    let (version, source) = fetch_release_latest().await?;
+    tracing::info!(%version, source, "pi update: latest version");
+    Ok(version)
 }
 
-async fn fetch_github_release_latest() -> Result<String> {
+async fn fetch_release_latest() -> Result<(String, &'static str)> {
     let client = http_client()?;
     let mut errors = Vec::new();
+
+    match fetch_release_from_url(&client, PI_GH_RELEASES_LATEST_URL, "github-api").await {
+        Ok(version) => return Ok((version, "github-api")),
+        Err(error) => errors.push(format!("github-api: {error}")),
+    }
+
+    match fetch_npm_release_latest(&client).await {
+        Ok(version) => return Ok((version, "npm")),
+        Err(error) => errors.push(format!("npm: {error}")),
+    }
+
     let proxy_url = format!(
         "{}Dwsy/grok-pi/releases/latest",
         decode_proxy_part(JSP_PROXY_PREFIX_B64)
     );
-
-    for (url, source) in [
-        (proxy_url.as_str(), "jsp-proxy"),
-        (PI_GH_RELEASES_LATEST_URL, "github-api"),
-    ] {
-        match fetch_release_from_url(&client, url, source).await {
-            Ok(version) => return Ok(version),
-            Err(error) => errors.push(format!("{source}: {error}")),
-        }
+    match fetch_release_from_url(&client, &proxy_url, "jsp-proxy").await {
+        Ok(version) => return Ok((version, "jsp-proxy")),
+        Err(error) => errors.push(format!("jsp-proxy: {error}")),
     }
 
     anyhow::bail!(
         "failed to fetch latest grok-pi release ({})",
         errors.join("; ")
     )
+}
+
+async fn fetch_npm_release_latest(client: &reqwest::Client) -> Result<String> {
+    let resp = client
+        .get(PI_NPM_PACKAGE_METADATA_URL)
+        .header("Accept", "application/json")
+        .header("User-Agent", "grok-pi-update")
+        .send()
+        .await
+        .context("GET npm package metadata")?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "npm package metadata HTTP {status}: {}",
+            body.chars().take(200).collect::<String>().trim()
+        );
+    }
+
+    let value: Value = resp
+        .json()
+        .await
+        .context("decode npm package metadata")?;
+    parse_npm_release_metadata(&value)
+}
+
+fn parse_npm_release_metadata(value: &Value) -> Result<String> {
+    let version = value
+        .get("dist-tags")
+        .and_then(|tags| tags.get("latest"))
+        .and_then(Value::as_str)
+        .or_else(|| value.get("version").and_then(Value::as_str))
+        .ok_or_else(|| anyhow!("npm package metadata missing dist-tags.latest"))?;
+    normalize_version(version)
 }
 
 async fn fetch_release_from_url(
@@ -214,7 +257,7 @@ fn print_pi_update_status(current: &str, latest: &str, json: bool) -> Result<()>
             "current": current,
             "latest": latest,
             "updateAvailable": update_available,
-            "sources": ["github-releases"],
+            "sources": ["github-api", "npm", "jsp-proxy"],
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
@@ -313,6 +356,23 @@ mod tests {
     fn normalize_rejects_garbage() {
         assert!(normalize_version("").is_err());
         assert!(normalize_version("latest").is_err());
+    }
+
+    #[test]
+    fn official_npm_metadata_uses_latest_dist_tag() {
+        let value = serde_json::json!({
+            "dist-tags": { "latest": "v0.2.3" },
+            "version": "0.2.2"
+        });
+        assert_eq!(parse_npm_release_metadata(&value).unwrap(), "0.2.3");
+    }
+
+    #[test]
+    fn update_source_order_keeps_proxy_last() {
+        // Keep this contract next to the source implementation: the official
+        // GitHub API and scoped npm package must get a chance before JSP.
+        let source_order = ["github-api", "npm", "jsp-proxy"];
+        assert_eq!(source_order, ["github-api", "npm", "jsp-proxy"]);
     }
 
     #[test]

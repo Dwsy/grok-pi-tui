@@ -15,7 +15,11 @@ import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 function hostUrl(relativePath: string): string {
-	const hostDistDir = path.dirname(realpathSync(process.argv[1]!));
+	const entryDir = path.dirname(realpathSync(process.argv[1]!));
+	if (path.basename(entryDir) === "bundle" && relativePath === "core/session-manager.js") {
+		return new URL("index.js", pathToFileURL(entryDir).href + "/").href;
+	}
+	const hostDistDir = path.basename(entryDir) === "bundle" ? path.dirname(entryDir) : entryDir;
 	return new URL(relativePath, pathToFileURL(hostDistDir).href + "/").href;
 }
 

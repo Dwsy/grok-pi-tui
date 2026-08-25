@@ -15,7 +15,7 @@
  * private raw writer points at our wrap.
  */
 
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -57,7 +57,14 @@ const QUEUE_STATUS_KEY = "__pi_grok_queue_enqueue__" as const;
 const completionCache = new Map<string, ArgCompletion[]>();
 
 function hostUrl(relativePath: string): string {
-  const hostDistDir = dirname(realpathSync(process.argv[1]!));
+  const entryDir = dirname(realpathSync(process.argv[1]!));
+  if (
+    basename(entryDir) === "bundle" &&
+    (relativePath === "core/extensions/runner.js" || relativePath.startsWith("modes/interactive/components/"))
+  ) {
+    return new URL("index.js", pathToFileURL(`${entryDir}/`)).href;
+  }
+  const hostDistDir = basename(entryDir) === "bundle" ? dirname(entryDir) : entryDir;
   return new URL(relativePath, pathToFileURL(`${hostDistDir}/`)).href;
 }
 
@@ -231,7 +238,12 @@ async function installGetCommandsStdoutIntercept(): Promise<void> {
   const proc = process as NodeJS.Process & { [PROCESS_MARK]?: boolean };
   if (proc[PROCESS_MARK]) return;
 
-  const mod = (await import(hostUrl("core/output-guard.js"))) as OutputGuardModule;
+  let mod: OutputGuardModule;
+  try {
+    mod = (await import(hostUrl("core/output-guard.js"))) as OutputGuardModule;
+  } catch {
+    return;
+  }
   if (typeof mod.takeOverStdout !== "function" || typeof mod.restoreStdout !== "function") {
     return;
   }

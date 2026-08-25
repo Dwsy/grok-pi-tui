@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 GUARD_PATH="${CARGO_DISK_GUARD_PATH:-${CARGO_TARGET_DIR:-$REPO_ROOT/target}}"
 CARGO_HOME_PATH="${CARGO_HOME:-$HOME/.cargo}"
 MIN_FREE_GIB="${CARGO_MIN_FREE_GIB:-20}"
-MAX_TARGET_GIB="${CARGO_TARGET_MAX_GIB:-64}"
+MAX_TARGET_GIB="${CARGO_TARGET_MAX_GIB:-128}"
 if ! [[ "$MAX_TARGET_GIB" =~ ^[1-9][0-9]*$ ]]; then
   echo "error: CARGO_TARGET_MAX_GIB must be a positive integer" >&2
   exit 1

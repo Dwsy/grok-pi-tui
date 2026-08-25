@@ -1,5 +1,5 @@
 /**
- * Default-on Pi auth for grok-pi (min Pi 0.80.10).
+ * Default-on Pi auth for grok-pi (min Pi 0.84.3).
  *
  * Registers Remote TUI-backed `/login` and `/logout`. The Rust injector
  * materializes this entry point with all relative imports as one bundle.

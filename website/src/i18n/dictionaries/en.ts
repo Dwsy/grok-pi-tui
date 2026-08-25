@@ -87,7 +87,7 @@ const en = {
     subtitle: "From stock Grok: keep Pager muscle memory. From interactive Pi: keep sessions and extensions. Full guide under Docs → Migration.",
     steps: [
       { step: "1", title: "Install", desc: "One command. Platform binary to ~/.local/bin.", code: "curl -fsSL https://github.com/Dwsy/grok-pi/releases/latest/download/install.sh | sh" },
-      { step: "2", title: "Ensure Pi ≥ 0.80.10", desc: "Required agent core (skip if you already run interactive pi).", code: "npm install --global @earendil-works/pi-coding-agent" },
+      { step: "2", title: "Ensure Pi ≥ 0.84.3", desc: "Required agent core (skip if you already run interactive pi).", code: "npm install --global @earendil-works/pi-coding-agent" },
       { step: "3", title: "Run", desc: "Same project cwd. From Pi: resume with --session or /resume.", code: "cd your-project && grok-pi" },
     ],
     advantages: [
@@ -126,7 +126,7 @@ const en = {
       { os: "macOS / Linux", cmd: "curl -fsSL https://github.com/Dwsy/grok-pi/releases/latest/download/install.sh | sh" },
       { os: "Windows", cmd: "irm https://github.com/Dwsy/grok-pi/releases/latest/download/install.ps1 | iex" },
     ],
-    note: "Requires Pi ≥ 0.80.10 · Rust 1.92 for source builds · GitHub Releases for updates",
+    note: "Requires Pi ≥ 0.84.3 · Rust 1.92 for source builds · GitHub Releases for updates",
     cta: "View on GitHub",
   },
   footer: {

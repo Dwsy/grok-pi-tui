@@ -48,7 +48,16 @@ interface SettingsManagerStatic {
 }
 
 function hostUrl(relativePath: string): string {
-	const hostDistDir = path.dirname(realpathSync(process.argv[1]!));
+	const entryDir = path.dirname(realpathSync(process.argv[1]!));
+	if (
+		path.basename(entryDir) === "bundle" &&
+		(relativePath.startsWith("modes/interactive/components/") ||
+			relativePath === "core/session-manager.js" ||
+			relativePath === "core/settings-manager.js")
+	) {
+		return new URL("index.js", pathToFileURL(entryDir).href + "/").href;
+	}
+	const hostDistDir = path.basename(entryDir) === "bundle" ? path.dirname(entryDir) : entryDir;
 	return new URL(relativePath, pathToFileURL(hostDistDir).href + "/").href;
 }
 

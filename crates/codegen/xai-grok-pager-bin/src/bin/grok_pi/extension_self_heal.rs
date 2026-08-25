@@ -103,6 +103,9 @@ pub(super) async fn spawn_with_extension_self_heal(
             eprintln!("  Culprit: \x1b[1m{display}\x1b[0m");
             eprintln!("  Path:    {bad_path}");
             eprintln!();
+            if offer_grok_pi_upgrade().await? {
+                anyhow::bail!("grok-pi was upgraded; restart grok-pi to retry extensions");
+            }
             eprintln!("  \x1b[1mSelf-healing:\x1b[0m relaunching without this extension.");
             eprintln!();
             eprintln!(
@@ -143,6 +146,9 @@ pub(super) async fn spawn_with_extension_self_heal(
             eprintln!("\x1b[1;31m✗ Extension conflict detected\x1b[0m");
             eprintln!("  Could not isolate a single culprit (possible combination conflict).");
             eprintln!();
+            if offer_grok_pi_upgrade().await? {
+                anyhow::bail!("grok-pi was upgraded; restart grok-pi to retry extensions");
+            }
             eprintln!("  \x1b[1mSelf-healing:\x1b[0m relaunching with all extensions disabled.");
             eprintln!("  To do this manually:  \x1b[1mgrok-pi -ne --no-bridge-extensions\x1b[0m");
             eprintln!();
@@ -162,6 +168,39 @@ pub(super) async fn spawn_with_extension_self_heal(
                     .await
                     .context("fallback no-extension launch failed")?;
             Ok((process, bootstrap, no_ext_args))
+        }
+    }
+}
+
+async fn offer_grok_pi_upgrade() -> Result<bool> {
+    use std::io::{IsTerminal, Write};
+
+    if !std::io::stdin().is_terminal() {
+        return Ok(false);
+    }
+
+    eprintln!("  This may be caused by an outdated grok-pi host.");
+    eprint!("  Upgrade grok-pi before self-healing? [Y/n] ");
+    let _ = std::io::stderr().flush();
+    let key = read_one_key_char();
+    if matches!(key, Some('n') | Some('N')) {
+        eprintln!("n — continuing with extension self-healing.");
+        return Ok(false);
+    }
+
+    match key {
+        Some(c) => eprintln!("{c} — upgrading grok-pi…"),
+        None => eprintln!("Enter — upgrading grok-pi…"),
+    }
+    match xai_grok_update::install_pi_update(env!("GROK_PI_VERSION"), None).await {
+        Ok(version) => {
+            eprintln!("grok-pi v{version} installed. Restart grok-pi to load extensions.");
+            Ok(true)
+        }
+        Err(error) => {
+            eprintln!("grok-pi upgrade failed: {error}");
+            eprintln!("Continuing with extension self-healing.");
+            Ok(false)
         }
     }
 }

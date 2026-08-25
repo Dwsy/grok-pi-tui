@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GROK_ROOT="$ROOT"
-# Default host: system `pi` (min 0.80.10). Optional: PI_BIN=/path/to/cli.js
+# Default host: system `pi` (min 0.84.3). Optional: PI_BIN=/path/to/cli.js
 PI_BIN="${PI_BIN:-pi}"
 
 if ! command -v cargo >/dev/null 2>&1; then
@@ -28,4 +28,4 @@ fi
 (cd "$GROK_ROOT" && "$ROOT/scripts/cargo-shared.sh" build -p xai-grok-pager-bin --bin grok-pi)
 
 echo "Built: $GROK_ROOT/target/debug/grok-pi"
-echo "Pi:    $PI_BIN (min compatible 0.80.10)"
+echo "Pi:    $PI_BIN (min compatible 0.84.3)"

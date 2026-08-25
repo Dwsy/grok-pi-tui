@@ -1,7 +1,7 @@
 # Grok Native TUI × Pi 功能矩阵
 
 
-**最小 Pi 版本：0.80.10**（系统 `pi` / `@earendil-works/pi-coding-agent`）。`pi-main` 为可选 git 子模块，非运行时必需。
+**最小 Pi 版本：0.84.3**（系统 `pi` / `@earendil-works/pi-coding-agent`）。`pi-main` 为可选 git 子模块，非运行时必需。
 
 状态定义：**原生**＝由 Grok Pager 组件实现；**适配**＝Pi 语义转换后进入 Grok 原生组件；**边界**＝Pi RPC 未暴露或与 Grok 产品后端绑定，刻意不实现。
 
@@ -16,7 +16,7 @@
 | Welcome 菜单（Pi） | 原生+适配 | Resume/Ctrl+S ≡ `/resume`（Pi catalog）；隐藏 New worktree；Changelog 打开 `https://github.com/Dwsy/grok-pi/blob/main/CHANGELOG.MD` |
 | Welcome session 预热（Pi） | 适配 | 进入 Welcome 即后台 `new_session`；首字输入 attach 预热 agent，避免冷启动 “Starting session…” |
 | grok-pi 产品教程（`/tutorial`） | 原生+适配 | 复用上游 `TutorialState`、`ModalWindow`、picker、Markdown/doc viewer、命令别名（`/tour`、`/onboarding`）与键鼠路由；grok-pi composition 注入 18 主题 `TutorialProfile`，覆盖原生终端/输入；Pi 多 Provider 模型、thinking、工具、context、session/tree；review/rollback/Plan；extensions、Remote TUI、Skills、Prompt Templates、Packages、theme 与资源 Trust；后台任务、subagent/dashboard、可选自动化、export/update、状态隔离与 diagnostics。正文明确标注默认开启、F2 可选、重启、实验性和边界。stock Grok 保持默认正文；minimal 模式仍保持门控。 |
-| 更新检查/安装 | 适配 | **仅 GitHub** `Dwsy/grok-pi` releases JSON + install.sh/ps1；`grok-pi update` / `--check` / Welcome **Ctrl+U**；`GROK_PI_NO_AUTO_UPDATE=1` 关后台检查 |
+| 更新检查/安装 | 适配 | 官方源顺序为 GitHub Releases → 官方 scope npm 元数据（`@dwsy/grok-pi`）→ JSP 代理；安装仍使用官方 install.sh/ps1。`grok-pi update` / `--check` / Welcome **Ctrl+U**；`GROK_PI_NO_AUTO_UPDATE=1` 关闭后台检查 |
 | Agent Dashboard | 原生+适配 | 原生 `/dashboard` · Ctrl+\\ · 列表/peek/dispatch；Pi 的单 session RPC host 同时仅保留一个 live AgentView，turn 忙时阻止二次 dispatch，已完成 session 经 `pi/session/list` → `pi/ui/session_catalog` 回到 dormant roster；不接 Grok leader FleetView |
 | Prompt editing | 原生 | PromptWidget |
 | 设置面板（F2） | 原生（grok-pi 自有surface） | grok-pi 自带分页设置面板（`views/pi_settings`），入口为 **F2**、`/settings` 与命令面板：每个设置分类一个原生 `ModalWindow` Tab，Tab 内左侧 section 侧边栏（非活动 section 整行变暗），焦点行说明固定在底部 3 行区块，`/` 跨 Tab 搜索。键位：`↑/↓/j/k` 移动行、`←/→/h/l` 切 Tab、`Tab` 进入 section 焦点、`Space`/`Enter` 修改、`g/G` 首尾、`d` 重置为默认（y/n 确认）。与上游共用 `crate::settings` 注册表，设置项、默认值与 `Action::Set*` 完全一致。上游 `views/settings_modal` 一行未改，仍可通过 `Action::OpenSettings` 打开。 |

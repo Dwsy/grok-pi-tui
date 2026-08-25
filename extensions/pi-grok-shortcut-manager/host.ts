@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "./config.ts";
@@ -13,7 +13,11 @@ import type {
 } from "./shared.ts";
 
 function hostUrl(relativePath: string): string {
-  const hostDistDir = dirname(realpathSync(process.argv[1]!));
+  const entryDir = dirname(realpathSync(process.argv[1]!));
+  if (basename(entryDir) === "bundle" && relativePath === "core/extensions/runner.js") {
+    return new URL("index.js", pathToFileURL(`${entryDir}/`)).href;
+  }
+  const hostDistDir = basename(entryDir) === "bundle" ? dirname(entryDir) : entryDir;
   return new URL(relativePath, pathToFileURL(`${hostDistDir}/`)).href;
 }
 

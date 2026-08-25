@@ -135,7 +135,7 @@ check_pi_host() {
     fi
     return 0
   fi
-  info "Pi host not found on PATH (required: Pi >= 0.80.10)."
+  info "Pi host not found on PATH (required: Pi >= 0.84.3)."
   info "Install Pi (recommended):"
   info "  curl -fsSL https://pi.dev/install.sh | sh"
   info "Or:"

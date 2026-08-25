@@ -33,7 +33,7 @@ fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
 
 /// Materialize default-on Pi auth commands (`/login` / `/logout`).
 ///
-/// Requires system Pi >= 0.80.10 (`modelRuntime.login` + Remote TUI). Every
+/// Requires system Pi >= 0.84.3 (`modelRuntime.login` + Remote TUI). Every
 /// authored module must be materialized here because this injector owns the
 /// transitive closure of `index.ts`'s relative imports.
 pub(super) fn write_auth_extension() -> Result<AuthExtension> {

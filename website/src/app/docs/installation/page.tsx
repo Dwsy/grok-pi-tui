@@ -14,7 +14,7 @@ export default function InstallationPage() {
       </h1>
       <p className="mt-4 text-lg leading-relaxed text-text-secondary">
         {d.introLead}{" "}
-        <strong className="text-text-primary">0.80.10</strong>
+        <strong className="text-text-primary">0.84.3</strong>
         {d.introMid}{" "}
         <strong className="text-text-primary">0.0.8</strong>
         {d.introEnd}

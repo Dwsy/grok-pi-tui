@@ -88,7 +88,7 @@ const zh: Dictionary = {
     subtitle: "从 stock Grok：保留 Pager 肌肉记忆。从 interactive Pi：保留会话与扩展。完整说明见文档 → 迁移。",
     steps: [
       { step: "1", title: "安装", desc: "一行命令。平台二进制到 ~/.local/bin。", code: "curl -fsSL https://github.com/Dwsy/grok-pi/releases/latest/download/install.sh | sh" },
-      { step: "2", title: "确保 Pi ≥ 0.80.10", desc: "必需的 Agent 核心（已用 interactive pi 可跳过）。", code: "npm install --global @earendil-works/pi-coding-agent" },
+      { step: "2", title: "确保 Pi ≥ 0.84.3", desc: "必需的 Agent 核心（已用 interactive pi 可跳过）。", code: "npm install --global @earendil-works/pi-coding-agent" },
       { step: "3", title: "运行", desc: "同一项目 cwd。从 Pi 来：--session 或 /resume 续聊。", code: "cd your-project && grok-pi" },
     ],
     advantages: [
@@ -127,7 +127,7 @@ const zh: Dictionary = {
       { os: "macOS / Linux", cmd: "curl -fsSL https://github.com/Dwsy/grok-pi/releases/latest/download/install.sh | sh" },
       { os: "Windows", cmd: "irm https://github.com/Dwsy/grok-pi/releases/latest/download/install.ps1 | iex" },
     ],
-    note: "需要 Pi ≥ 0.80.10 · 源码构建需 Rust 1.92 · 通过 GitHub Releases 更新",
+    note: "需要 Pi ≥ 0.84.3 · 源码构建需 Rust 1.92 · 通过 GitHub Releases 更新",
     cta: "在 GitHub 上查看",
   },
   footer: {

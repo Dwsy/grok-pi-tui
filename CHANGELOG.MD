@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Pi 0.84.3 bundled CLI startup now resolves grok-pi's private host modules from the package `dist/` root, while native and third-party selector extensions use the bundled runtime exports instead of `dist/bundle/<module>` paths.
 - Recap and `/btw` bridge traffic no longer leaks into the agent loop context: both extensions deliver summaries, deltas, and answers as `appendEntry` custom entries (never custom messages), the adapter parses the resulting `entry_appended` events, and a `context` hook strips legacy sendMessage-era entries from LLM context in old sessions.
 - `tools.describe(name)` now renders nested tool schemas deeply instead of collapsing `properties` to `[Object]` in the JavaScript REPL.
 - Bash `timeout: 0` now consistently means “no timeout”, matching the Eval v2 escape-hatch semantics and avoiding task validation failures from nested `tool.bash(...)` calls.
@@ -40,7 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Bundled high-value Pi bridges (auth, BTW, loop, recap, Remote TUI, rollback, shortcuts, subagents, and related runtime code) were split into focused TypeScript modules with dedicated host wrappers, reducing monolithic extension entrypoints while preserving behavior.
 - grok-pi startup and native settings are now driven by host/extension manifests, with runtime configuration, extension self-healing, host-feature registration, and Pi subagent transport separated from the main binary wiring.
 - Session review navigation, block viewing, timeline interaction, and tool-detail inspection were refined for longer interactive sessions.
-- Local Cargo development builds use faster incremental settings and shared-target maintenance, while repository reference material is consolidated under `docs/` with links updated to the new layout.
+- Local Cargo development builds use faster incremental settings and shared-target maintenance; the default shared target cap is 128 GiB so the real incremental working set is not repeatedly evicted, while repository reference material is consolidated under `docs/` with links updated to the new layout.
 
 ## [0.1.0] - 2026-08-21
 

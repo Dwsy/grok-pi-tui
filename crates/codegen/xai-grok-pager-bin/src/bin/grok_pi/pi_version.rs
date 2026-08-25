@@ -20,7 +20,7 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 
 /// Minimum supported Pi CLI version (system package / pi.dev installer).
-pub(super) const MIN_PI_VERSION: &str = "0.80.10";
+pub(super) const MIN_PI_VERSION: &str = "0.84.3";
 
 const INSTALL_UNIX: &str = "curl -fsSL https://pi.dev/install.sh | sh";
 const INSTALL_WINDOWS: &str = r#"powershell -c "irm https://pi.dev/install.ps1 | iex""#;
@@ -313,19 +313,19 @@ fn path_to_string(path: &Path) -> String {
 /// Extract the first semver-looking token from version output.
 pub(super) fn parse_pi_version(raw: &str) -> Option<Version> {
     // Common shapes:
-    // - "0.80.10"
-    // - "pi 0.80.10"
-    // - "@earendil-works/pi-coding-agent/0.80.10"
+    // - "0.84.3"
+    // - "pi 0.84.3"
+    // - "@earendil-works/pi-coding-agent/0.84.3"
     for token in raw.split(|c: char| c.is_whitespace() || c == '/' || c == 'v' || c == 'V') {
         let candidate = token.trim().trim_matches(|c: char| c == ',' || c == ';');
         if candidate.is_empty() {
             continue;
         }
-        // Allow "0.80.10-beta.1" etc.
+        // Allow "0.84.3-beta.1" etc.
         if let Ok(v) = Version::parse(candidate) {
             return Some(v);
         }
-        // Strip trailing junk like "0.80.10," already handled; try prefix digits.digits.digits
+        // Strip trailing junk like "0.84.3," already handled; try prefix digits.digits.digits
         let mut end = 0;
         let bytes = candidate.as_bytes();
         while end < bytes.len() {
@@ -396,20 +396,20 @@ mod tests {
 
     #[test]
     fn parses_plain_semver() {
-        assert_eq!(parse_pi_version("0.80.10").unwrap().to_string(), "0.80.10");
+        assert_eq!(parse_pi_version("0.84.3").unwrap().to_string(), "0.84.3");
     }
 
     #[test]
     fn parses_prefixed_output() {
         assert_eq!(
-            parse_pi_version("pi 0.80.10\n").unwrap().to_string(),
-            "0.80.10"
+            parse_pi_version("pi 0.84.3\n").unwrap().to_string(),
+            "0.84.3"
         );
         assert_eq!(
-            parse_pi_version("@earendil-works/pi-coding-agent/0.80.10")
+            parse_pi_version("@earendil-works/pi-coding-agent/0.84.3")
                 .unwrap()
                 .to_string(),
-            "0.80.10"
+            "0.84.3"
         );
     }
 

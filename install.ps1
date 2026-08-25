@@ -110,7 +110,7 @@ function Write-PiHostHint {
         Write-Info "  # or: grok-pi --pi-bin `"$pi`""
         return
     }
-    Write-Info 'Pi host not found (required: Pi >= 0.80.10).'
+    Write-Info 'Pi host not found (required: Pi >= 0.84.3).'
     Write-Info 'Install Pi (recommended):'
     Write-Info '  powershell -c "irm https://pi.dev/install.ps1 | iex"'
     Write-Info 'Or:'

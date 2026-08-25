@@ -237,7 +237,7 @@ fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let mut args = Args::parse_from(normalize_compound_short_flags(std::env::args_os()));
-    // Default host is system `pi` (min 0.80.10). Override with --pi-bin or PI_BIN.
+    // Default host is system `pi` (min 0.84.3). Override with --pi-bin or PI_BIN.
     if args.pi_bin == "pi" {
         if let Ok(pi_bin) = std::env::var("PI_BIN") {
             if !pi_bin.trim().is_empty() {

@@ -45,7 +45,7 @@ export const docsEn = {
     ],
     labels: {
       install: "Install grok-pi",
-      ensurePi: "Ensure Pi ≥ 0.80.10",
+      ensurePi: "Ensure Pi ≥ 0.84.3",
       run: "Run",
     },
   },
@@ -82,7 +82,7 @@ export const docsEn = {
     updateCheck: "Check",
     updateInstall: "Install latest",
     updateNote:
-      "Background checks use GitHub Releases (JSP proxy fallback for rate limits). Disable with GROK_PI_NO_AUTO_UPDATE=1.",
+      "Background checks try GitHub Releases, then the official scoped npm metadata, then the JSP proxy. Disable with GROK_PI_NO_AUTO_UPDATE=1.",
     crashBody:
       "grok-pi self-heals: binary-search the extension list, print the culprit, relaunch without it. Manual escape:",
     noExtLabel: "No extensions",
@@ -289,7 +289,7 @@ export const docsEn = {
         name: "Pi Agent Core",
         role: "Agent loop, models, providers, tools, extensions, sessions",
         details: [
-          "Always started in --mode rpc (system pi ≥ 0.80.10)",
+          "Always started in --mode rpc (system pi ≥ 0.84.3)",
           "Local JSONL sessions; trust, settings, package lifecycle",
           "Extension ecosystem + skills + prompts",
           "Sub-agent child AgentSession; compaction; model providers",
@@ -542,7 +542,7 @@ export const docsEn = {
           {
             feature: "Update check/install",
             status: "Adapted",
-            notes: "GitHub Releases + JSP proxy fallback; grok-pi update",
+            notes: "GitHub Releases + official npm metadata + JSP proxy fallback; grok-pi update",
           },
           {
             feature: "Theme / timestamps / mouse",
@@ -935,7 +935,7 @@ export const docsEn = {
       },
       {
         step: "2",
-        title: "Ensure Pi ≥ 0.80.10",
+        title: "Ensure Pi ≥ 0.84.3",
         desc: "grok-pi drives Pi as its agent core. Install or update Pi via npm.",
         code: "npm install --global @earendil-works/pi-coding-agent",
       },

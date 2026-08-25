@@ -45,7 +45,7 @@ const docsZh: DocsDictionary = {
     ],
     labels: {
       install: "安装 grok-pi",
-      ensurePi: "确保 Pi ≥ 0.80.10",
+      ensurePi: "确保 Pi ≥ 0.84.3",
       run: "运行",
     },
   },
@@ -82,7 +82,7 @@ const docsZh: DocsDictionary = {
     updateCheck: "检查更新",
     updateInstall: "安装最新版",
     updateNote:
-      "后台检查使用 GitHub Releases（速率限制时 JSP 代理回退）。用 GROK_PI_NO_AUTO_UPDATE=1 关闭。",
+      "后台检查依次尝试 GitHub Releases、官方 scope npm 元数据和 JSP 代理。用 GROK_PI_NO_AUTO_UPDATE=1 关闭。",
     crashBody:
       "grok-pi 会自愈：对扩展列表二分搜索、打印罪魁、剔除后重启。手动逃生：",
     noExtLabel: "禁用扩展",
@@ -287,7 +287,7 @@ const docsZh: DocsDictionary = {
         name: "Pi Agent Core",
         role: "Agent 循环、模型、Provider、工具、扩展、会话",
         details: [
-          "始终以 --mode rpc 启动（系统 pi ≥ 0.80.10）",
+          "始终以 --mode rpc 启动（系统 pi ≥ 0.84.3）",
           "本地 JSONL 会话；信任、设置、包生命周期",
           "扩展生态 + skills + prompts",
           "子代理子 AgentSession；压缩；模型 Provider",
@@ -540,7 +540,7 @@ const docsZh: DocsDictionary = {
           {
             feature: "更新检查/安装",
             status: "Adapted",
-            notes: "GitHub Releases + JSP 代理回退；grok-pi update",
+            notes: "GitHub Releases + 官方 npm 元数据 + JSP 代理回退；grok-pi update",
           },
           {
             feature: "主题 / 时间戳 / 鼠标",
@@ -931,7 +931,7 @@ const docsZh: DocsDictionary = {
       },
       {
         step: "2",
-        title: "确保 Pi ≥ 0.80.10",
+        title: "确保 Pi ≥ 0.84.3",
         desc: "grok-pi 以 Pi 为 agent 核心。用 npm 安装或更新 Pi。",
         code: "npm install --global @earendil-works/pi-coding-agent",
       },

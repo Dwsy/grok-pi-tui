@@ -15,7 +15,11 @@ import type {
 } from "./shared.ts";
 
 function hostUrl(relativePath: string): string {
-	const hostDistDir = path.dirname(realpathSync(process.argv[1]!));
+	const entryDir = path.dirname(realpathSync(process.argv[1]!));
+	if (path.basename(entryDir) === "bundle" && relativePath.startsWith("modes/interactive/components/")) {
+		return new URL("index.js", pathToFileURL(entryDir).href + "/").href;
+	}
+	const hostDistDir = path.basename(entryDir) === "bundle" ? path.dirname(entryDir) : entryDir;
 	return new URL(relativePath, pathToFileURL(hostDistDir).href + "/").href;
 }
 
@@ -47,7 +51,7 @@ export function resolveRuntime(ctx: ExtensionCommandContext): ModelRuntimeLike {
 	if (!runtime || typeof runtime.login !== "function" || typeof runtime.getProviders !== "function") {
 		throw new Error(
 			"Pi ModelRuntime unavailable on ctx.modelRegistry.runtime. " +
-				"grok-pi requires Pi >= 0.80.10 (system `pi`).",
+				"grok-pi requires Pi >= 0.84.3 (system `pi`).",
 		);
 	}
 	return runtime;

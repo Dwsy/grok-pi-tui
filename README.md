@@ -45,7 +45,7 @@ grok-pi --help   # original name
 pi-grok --help   # alias
 ```
 
-`grok-pi` requires [Pi](https://pi.dev) **0.80.10 or newer** (system `pi` / pi.dev installer):
+`grok-pi` requires [Pi](https://pi.dev) **0.84.3 or newer** (system `pi` / pi.dev installer):
 
 ```bash
 # recommended
@@ -169,12 +169,13 @@ Requirements: Rust **1.92.0**, Node.js **22.19.0 or newer**, npm, and a system P
 ```
 
 Project Cargo commands should go through `./scripts/cargo-shared.sh`: incremental
-compilation is disabled by default, the generated target is capped at 64 GiB, and
+compilation is enabled by default, the generated target is capped at 128 GiB, and
 Cargo stops before free space falls below 20 GiB. Override the target cap with
-`CARGO_TARGET_MAX_GIB`; maintenance clears legacy incremental caches first and runs
+`CARGO_TARGET_MAX_GIB`; periodic maintenance clears incremental caches first and runs
 `cargo clean` if an already-over-cap target remains too large. Override
 `CARGO_MIN_FREE_GIB` only deliberately; set `CARGO_MAINTENANCE=0` to skip one
-pre-command maintenance pass (the running disk guard still enforces both limits).
+pre-command maintenance pass. The running disk guard continuously enforces the
+free-space floor; target-size maintenance runs on its configured cadence.
 
 Run verification with:
 
