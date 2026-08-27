@@ -110,6 +110,7 @@ pub enum SwitchModelError {
 pub enum PiBuiltinTool {
     Read,
     Bash,
+    PowerShell,
     Edit,
     Write,
     Grep,

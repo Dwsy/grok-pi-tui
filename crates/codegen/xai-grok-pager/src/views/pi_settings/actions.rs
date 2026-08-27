@@ -29,6 +29,10 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
             tool: PiBuiltinTool::Bash,
             enabled: new,
         },
+        "pi_builtin_tools.powershell" => Action::SetPiBuiltinTool {
+            tool: PiBuiltinTool::PowerShell,
+            enabled: new,
+        },
         "pi_builtin_tools.edit" => Action::SetPiBuiltinTool {
             tool: PiBuiltinTool::Edit,
             enabled: new,

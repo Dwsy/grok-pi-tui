@@ -89,6 +89,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
         "pi_builtin_tools"
         | "pi_builtin_tools.read"
         | "pi_builtin_tools.bash"
+        | "pi_builtin_tools.powershell"
         | "pi_builtin_tools.edit"
         | "pi_builtin_tools.write"
         | "pi_builtin_tools.grep"

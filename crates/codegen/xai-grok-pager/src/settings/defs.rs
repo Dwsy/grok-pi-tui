@@ -638,6 +638,8 @@ const BTW_MODELS_CHILDREN: &[&str] = &["btw_model", "btw_model_2", "btw_model_3"
 const PI_BUILTIN_TOOLS_CHILDREN: &[&str] = &[
     "pi_builtin_tools.read",
     "pi_builtin_tools.bash",
+    #[cfg(windows)]
+    "pi_builtin_tools.powershell",
     "pi_builtin_tools.edit",
     "pi_builtin_tools.write",
     "pi_builtin_tools.grep",
@@ -2082,6 +2084,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "tools",
                 "read",
                 "bash",
+                "powershell",
+                "pwsh",
                 "edit",
                 "write",
                 "grep",
@@ -2122,6 +2126,21 @@ pub fn default_settings() -> Vec<SettingMeta> {
             keywords: &["pi", "tool", "bash", "shell"],
             kind: SettingKind::Bool {
                 default: ui_default.pi_builtin_tools.bash,
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
+        #[cfg(windows)]
+        SettingMeta {
+            key: "pi_builtin_tools.powershell",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "PowerShell",
+            description: "Allow Pi to run PowerShell commands. PowerShell 7 (pwsh) is preferred, with Windows PowerShell as fallback.",
+            keywords: &["pi", "tool", "powershell", "pwsh", "windows", "shell"],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_builtin_tools.powershell,
             },
             restart_required: true,
             hidden_in_minimal: false,

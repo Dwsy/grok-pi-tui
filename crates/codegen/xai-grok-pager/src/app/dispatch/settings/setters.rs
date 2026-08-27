@@ -2330,6 +2330,7 @@ pub(in crate::app::dispatch) fn set_pi_builtin_tool(
     let current = match tool {
         PiBuiltinTool::Read => &mut app.current_ui.pi_builtin_tools.read,
         PiBuiltinTool::Bash => &mut app.current_ui.pi_builtin_tools.bash,
+        PiBuiltinTool::PowerShell => &mut app.current_ui.pi_builtin_tools.powershell,
         PiBuiltinTool::Edit => &mut app.current_ui.pi_builtin_tools.edit,
         PiBuiltinTool::Write => &mut app.current_ui.pi_builtin_tools.write,
         PiBuiltinTool::Grep => &mut app.current_ui.pi_builtin_tools.grep,
@@ -2348,6 +2349,7 @@ pub(in crate::app::dispatch) fn set_pi_builtin_tool(
         match tool {
             PiBuiltinTool::Read => "read",
             PiBuiltinTool::Bash => "bash",
+            PiBuiltinTool::PowerShell => "powershell",
             PiBuiltinTool::Edit => "edit",
             PiBuiltinTool::Write => "write",
             PiBuiltinTool::Grep => "grep",

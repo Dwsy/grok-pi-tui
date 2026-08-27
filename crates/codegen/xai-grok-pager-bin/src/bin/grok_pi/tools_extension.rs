@@ -21,9 +21,17 @@ pub(super) fn write_tools_extension() -> Result<NamedTempFile> {
     Ok(file)
 }
 
+#[cfg(windows)]
+const BUILTIN_TOOL_NAMES: [&str; 9] = [
+    "read", "bash", "powershell", "edit", "write", "grep", "find", "ls", "eval",
+];
+#[cfg(not(windows))]
 const BUILTIN_TOOL_NAMES: [&str; 8] = [
     "read", "bash", "edit", "write", "grep", "find", "ls", "eval",
 ];
+#[cfg(windows)]
+const DEFAULT_BUILTIN_TOOLS: [&str; 5] = ["read", "bash", "powershell", "edit", "write"];
+#[cfg(not(windows))]
 const DEFAULT_BUILTIN_TOOLS: [&str; 4] = ["read", "bash", "edit", "write"];
 
 pub(super) fn configured_builtin_tools() -> String {
@@ -274,10 +282,22 @@ mod tests {
 
     #[test]
     fn disabled_builtin_tools_become_registry_denylist() {
+        #[cfg(windows)]
+        assert_eq!(
+            disabled_builtin_tools_from_selected("read,edit,write,grep,eval"),
+            "bash,powershell,find,ls"
+        );
+        #[cfg(not(windows))]
         assert_eq!(
             disabled_builtin_tools_from_selected("read,edit,write,grep,eval"),
             "bash,find,ls"
         );
+        #[cfg(windows)]
+        assert_eq!(
+            disabled_builtin_tools_from_selected("read,bash,powershell,edit,write"),
+            "grep,find,ls,eval"
+        );
+        #[cfg(not(windows))]
         assert_eq!(
             disabled_builtin_tools_from_selected("read,bash,edit,write"),
             "grep,find,ls,eval"

@@ -1152,6 +1152,10 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
             tool: crate::app::actions::PiBuiltinTool::Bash,
             enabled: new,
         }),
+        "pi_builtin_tools.powershell" => Some(Action::SetPiBuiltinTool {
+            tool: crate::app::actions::PiBuiltinTool::PowerShell,
+            enabled: new,
+        }),
         "pi_builtin_tools.edit" => Some(Action::SetPiBuiltinTool {
             tool: crate::app::actions::PiBuiltinTool::Edit,
             enabled: new,

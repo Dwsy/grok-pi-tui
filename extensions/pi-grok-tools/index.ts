@@ -1,6 +1,7 @@
 const BUILTIN_TOOLS = [
 	"read",
 	"bash",
+	"powershell",
 	"edit",
 	"write",
 	"grep",

@@ -448,6 +448,7 @@ const DEFAULT_MAX_THOUGHTS_WIDTH: u16 = 120;
 pub struct PiBuiltinTools {
     pub read: bool,
     pub bash: bool,
+    pub powershell: bool,
     pub edit: bool,
     pub write: bool,
     pub grep: bool,
@@ -460,6 +461,7 @@ impl PiBuiltinTools {
     pub fn is_default(&self) -> bool {
         self.read
             && self.bash
+            && self.powershell == cfg!(windows)
             && self.edit
             && self.write
             && !self.grep
@@ -474,6 +476,7 @@ impl Default for PiBuiltinTools {
         Self {
             read: true,
             bash: true,
+            powershell: cfg!(windows),
             edit: true,
             write: true,
             grep: false,

@@ -1095,6 +1095,10 @@ pub(in crate::app::dispatch) fn action_for_reset(
             tool: crate::app::actions::PiBuiltinTool::Bash,
             enabled: *b,
         }),
+        ("pi_builtin_tools.powershell", SettingValue::Bool(b)) => Some(Action::SetPiBuiltinTool {
+            tool: crate::app::actions::PiBuiltinTool::PowerShell,
+            enabled: *b,
+        }),
         ("pi_builtin_tools.edit", SettingValue::Bool(b)) => Some(Action::SetPiBuiltinTool {
             tool: crate::app::actions::PiBuiltinTool::Edit,
             enabled: *b,

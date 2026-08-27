@@ -598,6 +598,7 @@ pub fn current_value_for(
         "show_timeline" => Some(SettingValue::Bool(ui.show_timeline_enabled())),
         "pi_builtin_tools.read" => Some(SettingValue::Bool(ui.pi_builtin_tools.read)),
         "pi_builtin_tools.bash" => Some(SettingValue::Bool(ui.pi_builtin_tools.bash)),
+        "pi_builtin_tools.powershell" => Some(SettingValue::Bool(ui.pi_builtin_tools.powershell)),
         "pi_builtin_tools.edit" => Some(SettingValue::Bool(ui.pi_builtin_tools.edit)),
         "pi_builtin_tools.write" => Some(SettingValue::Bool(ui.pi_builtin_tools.write)),
         "pi_builtin_tools.grep" => Some(SettingValue::Bool(ui.pi_builtin_tools.grep)),
@@ -1008,6 +1009,9 @@ mod tests {
                 }
                 ("pi_builtin_tools.bash", SettingKind::Bool { default }) => {
                     assert_eq!(*default, ui.pi_builtin_tools.bash);
+                }
+                ("pi_builtin_tools.powershell", SettingKind::Bool { default }) => {
+                    assert_eq!(*default, ui.pi_builtin_tools.powershell);
                 }
                 ("pi_builtin_tools.edit", SettingKind::Bool { default }) => {
                     assert_eq!(*default, ui.pi_builtin_tools.edit);
