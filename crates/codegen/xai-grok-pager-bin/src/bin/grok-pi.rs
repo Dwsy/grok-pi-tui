@@ -180,6 +180,12 @@ const PI_GROK_NATIVE_COMMANDS: &[&str] = &[
     "export",
     "expand",
     "queue",
+    // Plan-mode controls. `/plan-mode` is the keyboard-independent toggle,
+    // especially important on Windows where terminal shortcuts can consume
+    // Ctrl+Shift+T before the pager receives it.
+    "plan",
+    "plan-mode",
+    "view-plan",
     // Native Grok terminal/composer appearance controls.
     "multiline",
     "compact-mode",
@@ -1397,6 +1403,9 @@ mod env_flag_tests {
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"fork"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"clone"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"reload"));
+        assert!(PI_GROK_NATIVE_COMMANDS.contains(&"plan"));
+        assert!(PI_GROK_NATIVE_COMMANDS.contains(&"plan-mode"));
+        assert!(PI_GROK_NATIVE_COMMANDS.contains(&"view-plan"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"pi-shortcut-manager"));
     }
 

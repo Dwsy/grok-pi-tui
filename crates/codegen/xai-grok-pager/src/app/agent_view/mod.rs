@@ -1445,7 +1445,7 @@ pub struct AgentView {
     /// Optimistic plan-mode state set immediately by the mode shortcut.
     /// Cleared to `None` when `detect_plan_mode_change()` confirms real state.
     /// The cycle logic uses `plan_mode_pending.unwrap_or(plan_mode_active)`
-    /// so rapid Ctrl+Shift+T presses advance correctly without waiting for ACP.
+    /// so rapid Plan-shortcut presses advance correctly without waiting for ACP.
     pub(crate) plan_mode_pending: Option<bool>,
     /// Session mode to apply once this agent's ACP session exists. Set when
     /// the agent is spawned from the dashboard with `/plan` active (the

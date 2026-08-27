@@ -664,8 +664,8 @@ pub struct DashboardState {
     /// model. Sticky across dispatches; reset to `None` on every
     /// dashboard-open (alongside `pending_mode`).
     pub pending_model: Option<PendingDispatchModel>,
-    /// Mode the next spawned agent starts in. Cycled with Ctrl+Shift+T and set
-    /// by `/plan`. Sticky across dispatches; re-seeded from
+    /// Mode the next spawned agent starts in. Cycled with the platform Plan
+    /// shortcut and set by `/plan`. Sticky across dispatches; re-seeded from
     /// `app.default_yolo` on every dashboard-open (alongside `pending_model`).
     pub pending_mode: DashboardDispatchMode,
     /// Snapshot of the app-wide model catalog, seeded at dashboard-open so
@@ -2642,7 +2642,7 @@ impl DashboardState {
     ///
     /// `dashboard_owned` is whether the key resolved to a
     /// `When::DashboardFocused` registry binding (`Ctrl+X` stop,
-    /// `Shift+↑/↓` reorder, `Ctrl+Shift+T` mode, …) — those return `None`
+    /// `Shift+↑/↓` reorder, platform Plan shortcut, …) — those return `None`
     /// so the dashboard handler (and the remaining app-global
     /// shortcuts) still fire with the panel open.
     ///
@@ -2699,7 +2699,7 @@ impl DashboardState {
         }
 
         // Dashboard-owned chords fall through so the registry actions
-        // (Ctrl+X stop, Ctrl+T pin, Shift+↑/↓ reorder, Ctrl+Shift+T mode,
+        // (Ctrl+X stop, Ctrl+T pin, Shift+↑/↓ reorder, platform Plan shortcut,
         // …) and the hardcoded Ctrl+/ search toggle keep working with
         // the panel open. Keys the peek itself owns are exempt:
         //   - bare / Shift printable chars TYPE into the reply (vim's
@@ -3171,8 +3171,8 @@ impl DashboardState {
             ));
         }
 
-        // Ctrl+Shift+T while the peek is open cycles the PEEKED agent's live
-        // mode, not the new-session staged mode. The registry resolves the
+        // The platform Plan shortcut while the peek is open cycles the PEEKED
+        // agent's live mode, not the new-session staged mode. The registry resolves the
         // mode shortcut to `DashboardCycleMode`; re-route that to the
         // peek-scoped action here so the cycle acts on the agent under the
         // cursor (and the bottom-border badge updates to match). Outside the
@@ -3589,8 +3589,8 @@ impl DashboardState {
             }
         }
 
-        // Ctrl+Shift+T (`DashboardCycleMode`) is resolved through the registry
-        // `from_registry` path above, so no hardcoded intercept is needed here.
+        // The platform Plan shortcut (`DashboardCycleMode`) is resolved through
+        // the registry `from_registry` path above, so no hardcoded intercept is needed here.
 
         // Tab toggles focus between the dispatch input and the overview
         // list (the vim-style way to reach j/k navigation). When the

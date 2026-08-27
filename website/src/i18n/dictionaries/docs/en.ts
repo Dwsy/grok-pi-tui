@@ -456,8 +456,8 @@ export const docsEn = {
       "Goal and workflows are F2 opt-in (default off) and require a full quit + restart so the host can inject extensions at process start.",
     modeCommands: [
       {
-        cmd: "Ctrl+Shift+T",
-        desc: "Toggle plan mode (write gate + exit_plan_mode approval)",
+        cmd: "/plan-mode",
+        desc: "Toggle plan mode; shortcut: Ctrl+Shift+T (Windows: Ctrl+Alt+T)",
       },
       {
         cmd: "/view-plan",
@@ -567,7 +567,7 @@ export const docsEn = {
           {
             feature: "Plan mode",
             status: "Native+Adapted",
-            notes: "Ctrl+Shift+T · tool gate · exit_plan_mode",
+            notes: "/plan-mode · Ctrl+Shift+T (Windows: Ctrl+Alt+T) · tool gate · exit_plan_mode",
           },
           {
             feature: "Goal mode",

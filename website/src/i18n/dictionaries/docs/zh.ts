@@ -454,8 +454,8 @@ const docsZh: DocsDictionary = {
       "目标与工作流为 F2 可选（默认关），需完全退出并重启，以便宿主在进程启动时注入扩展。",
     modeCommands: [
       {
-        cmd: "Ctrl+Shift+T",
-        desc: "切换计划模式（写门控 + exit_plan_mode 审批）",
+        cmd: "/plan-mode",
+        desc: "切换计划模式；快捷键：Ctrl+Shift+T（Windows：Ctrl+Alt+T）",
       },
       {
         cmd: "/view-plan",
@@ -565,7 +565,7 @@ const docsZh: DocsDictionary = {
           {
             feature: "计划模式",
             status: "Native+Adapted",
-            notes: "Ctrl+Shift+T · 工具门控 · exit_plan_mode",
+            notes: "/plan-mode · Ctrl+Shift+T（Windows：Ctrl+Alt+T）· 工具门控 · exit_plan_mode",
           },
           {
             feature: "目标模式",

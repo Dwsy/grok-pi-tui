@@ -2773,38 +2773,52 @@ fn tab_toggles_input_and_list_focus() {
     assert!(!state.list_focused, "Tab again returns focus to the input");
 }
 
-/// Ctrl+Shift+T emits `DashboardCycleMode`; Shift+Tab stays reserved for
-/// thinking-level cycling on the agent surface.
+/// The platform Plan shortcut emits `DashboardCycleMode`; Shift+Tab stays
+/// reserved for thinking-level cycling on the agent surface.
 #[test]
-fn ctrl_shift_t_emits_cycle_mode() {
+fn plan_shortcut_emits_cycle_mode() {
     let reg = crate::actions::ActionRegistry::defaults();
-    let key = KeyEvent::new(
-        KeyCode::Char('T'),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-    );
+    let key = if cfg!(windows) {
+        KeyEvent::new(
+            KeyCode::Char('t'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        )
+    } else {
+        KeyEvent::new(
+            KeyCode::Char('t'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        )
+    };
     let mut state = DashboardState::new();
     let outcome = state.handle_key(&key, &reg);
     assert!(
         matches!(outcome, InputOutcome::Action(Action::DashboardCycleMode)),
-        "Ctrl+Shift+T must emit DashboardCycleMode, got {outcome:?}",
+        "Plan shortcut must emit DashboardCycleMode, got {outcome:?}",
     );
 }
 
 /// Multiline drafts are preserved when the mode shortcut fires.
 #[test]
-fn multiline_ctrl_shift_t_cycles_mode_with_non_empty_draft() {
+fn multiline_plan_shortcut_cycles_mode_with_non_empty_draft() {
     let reg = crate::actions::ActionRegistry::defaults();
-    let key = KeyEvent::new(
-        KeyCode::Char('T'),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-    );
+    let key = if cfg!(windows) {
+        KeyEvent::new(
+            KeyCode::Char('t'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        )
+    } else {
+        KeyEvent::new(
+            KeyCode::Char('t'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        )
+    };
     let mut state = DashboardState::new();
     state.multiline_mode = true;
     state.dispatch.set_text("draft text");
     let outcome = state.handle_key(&key, &reg);
     assert!(
         matches!(outcome, InputOutcome::Action(Action::DashboardCycleMode)),
-        "multiline + Ctrl+Shift+T must cycle mode, not send, got {outcome:?}",
+        "multiline + Plan shortcut must cycle mode, not send, got {outcome:?}",
     );
     assert_eq!(
         state.dispatch.text(),
@@ -2837,16 +2851,23 @@ fn shift_arrows_emit_reorder_with_peek_open() {
     }
 }
 
-/// Ctrl+Shift+T cycles the PEEKED agent's live mode while the peek is
-/// open (emitting `DashboardPeekCycleMode`), but the new-session staged
-/// mode (`DashboardCycleMode`) when no peek is shown.
+/// The platform Plan shortcut cycles the PEEKED agent's live mode while the
+/// peek is open (emitting `DashboardPeekCycleMode`), but the new-session
+/// staged mode (`DashboardCycleMode`) when no peek is shown.
 #[test]
-fn ctrl_shift_t_cycles_peeked_agent_mode_when_peek_open() {
+fn plan_shortcut_cycles_peeked_agent_mode_when_peek_open() {
     let reg = crate::actions::ActionRegistry::defaults();
-    let key = KeyEvent::new(
-        KeyCode::Char('T'),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-    );
+    let key = if cfg!(windows) {
+        KeyEvent::new(
+            KeyCode::Char('t'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        )
+    } else {
+        KeyEvent::new(
+            KeyCode::Char('t'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        )
+    };
     let mut state = make_state_with_selection();
     state.peek = Some(super::super::peek::PeekPanelState::new(
         DashboardRowId::TopLevel(AgentId(0)),
@@ -2858,7 +2879,7 @@ fn ctrl_shift_t_cycles_peeked_agent_mode_when_peek_open() {
             outcome,
             InputOutcome::Action(Action::DashboardPeekCycleMode)
         ),
-        "Ctrl+Shift+T with peek open must emit DashboardPeekCycleMode, got {outcome:?}",
+        "Plan shortcut with peek open must emit DashboardPeekCycleMode, got {outcome:?}",
     );
 
     // No peek → the new-session staged-mode cycle.
@@ -2866,7 +2887,7 @@ fn ctrl_shift_t_cycles_peeked_agent_mode_when_peek_open() {
     let outcome = state.handle_key(&key, &reg);
     assert!(
         matches!(outcome, InputOutcome::Action(Action::DashboardCycleMode)),
-        "Ctrl+Shift+T without peek must emit DashboardCycleMode, got {outcome:?}",
+        "Plan shortcut without peek must emit DashboardCycleMode, got {outcome:?}",
     );
 }
 

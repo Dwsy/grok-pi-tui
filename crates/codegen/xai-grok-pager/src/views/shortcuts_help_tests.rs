@@ -125,8 +125,8 @@ fn extension_shortcuts_are_prepended_and_use_effective_keys() {
     )));
 }
 
-/// Dashboard mode switching must advertise Ctrl+Shift+T; Shift+Tab is the
-/// thinking-level shortcut on the agent surface.
+/// Dashboard mode switching must advertise the platform Plan shortcut;
+/// Shift+Tab is the thinking-level shortcut on the agent surface.
 #[test]
 fn build_entries_shows_dashboard_mode_shortcut() {
     let registry = crate::actions::ActionRegistry::defaults();
@@ -142,7 +142,12 @@ fn build_entries_shows_dashboard_mode_shortcut() {
             _ => None,
         })
         .expect("DashboardCycleMode must be listed");
-    assert_eq!(hint_key_pretty(item), "Ctrl+Shift+T");
+    let expected = if cfg!(windows) {
+        "Ctrl+Alt+t"
+    } else {
+        "Ctrl+Shift+t"
+    };
+    assert_eq!(hint_key_pretty(item), expected);
 }
 
 #[test]

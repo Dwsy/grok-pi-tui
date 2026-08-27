@@ -1,6 +1,6 @@
 # Plan Mode & Todo
 
-Press `Ctrl+Shift+T` to toggle grok-pi Plan mode for the current Pi session.
+Use `/plan-mode` to toggle grok-pi Plan mode for the current Pi session. The keyboard shortcut is `Ctrl+Shift+T` on macOS/Linux and `Ctrl+Alt+T` on Windows.
 
 - Pi can read and search the real repository before proposing an approach.
 - The built-in grok-pi plan extension blocks normal `edit`, `write` and `bash`

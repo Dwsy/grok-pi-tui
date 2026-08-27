@@ -1,5 +1,5 @@
 //! Plan-nudge trigger: detects planning keywords typed into the prompt so the
-//! pager can hint that Ctrl+Shift+T toggles plan mode first.
+//! pager can hint the platform Plan shortcut before implementation starts.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -32,11 +32,15 @@ const PLANNING_KEYWORDS: &[&str] = &[
     "strategy",
 ];
 
-/// Plan-mode chord for the tip copy: `ctrl+shift+t`. The CycleMode binding
-/// was moved from Shift+Tab (now used for thinking level cycling) to
-/// Ctrl+Shift+T in the external/grok-pi profile.
+/// Plan-mode chord for the tip copy. Windows terminals commonly consume
+/// Ctrl+Shift+T, so Windows uses Ctrl+Alt+T; other platforms keep Ctrl+Shift+T.
 fn plan_chord_label() -> String {
-    "ctrl+shift+t".to_string()
+    if cfg!(windows) {
+        "ctrl+alt+t"
+    } else {
+        "ctrl+shift+t"
+    }
+    .to_string()
 }
 
 /// Build the "Planning? Check out plan mode via {chord}" tip, seen-gated to
@@ -141,8 +145,10 @@ mod tests {
     }
 
     #[test]
-    fn plan_nudge_chord_is_ctrl_shift_t() {
-        // Ctrl+Shift+T — the CycleMode binding for external/grok-pi profile.
+    fn plan_nudge_chord_matches_platform_binding() {
+        #[cfg(windows)]
+        assert_eq!(plan_chord_label(), "ctrl+alt+t");
+        #[cfg(not(windows))]
         assert_eq!(plan_chord_label(), "ctrl+shift+t");
     }
 }

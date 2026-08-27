@@ -537,16 +537,26 @@ pub(super) fn default_actions(
             id: ActionId::CycleMode,
             label: "plan",
             description: "Toggle plan mode",
-            default_key: key!('T', CONTROL | SHIFT),
+            default_key: if cfg!(windows) {
+                key!('t', CONTROL | ALT)
+            } else {
+                key!('t', CONTROL | SHIFT)
+            },
             alt_keys: vec![],
             category: Category::GettingStarted,
             context: When::AgentScreen,
             hint_priority: None,
-            hint_key_display: Some("Ctrl+Shift+T"),
+            hint_key_display: Some(if cfg!(windows) {
+                "Ctrl+Alt+T"
+            } else {
+                "Ctrl+Shift+T"
+            }),
             requires_confirmation: false,
-            long_help: Some(
-                "Toggles plan mode on/off. In plan mode the agent plans before implementing: write tools are gated to the plan file only. Ctrl+Shift+T because Shift+Tab is used for thinking level cycling.",
-            ),
+            long_help: Some(if cfg!(windows) {
+                "Toggles plan mode on/off. In plan mode the agent plans before implementing: write tools are gated to the plan file only. Ctrl+Alt+T avoids the Ctrl+Shift+T chord commonly consumed by Windows terminals; /plan-mode is always available."
+            } else {
+                "Toggles plan mode on/off. In plan mode the agent plans before implementing: write tools are gated to the plan file only. Ctrl+Shift+T because Shift+Tab is used for thinking level cycling."
+            }),
         },
         ActionDef {
             id: ActionId::ReviewSession,
@@ -1029,16 +1039,26 @@ pub(super) fn default_actions(
             id: ActionId::DashboardCycleMode,
             label: "mode",
             description: "Cycle dispatch mode",
-            default_key: key!('T', CONTROL | SHIFT),
+            default_key: if cfg!(windows) {
+                key!('t', CONTROL | ALT)
+            } else {
+                key!('t', CONTROL | SHIFT)
+            },
             alt_keys: vec![],
             category: Category::Dashboard,
             context: When::DashboardFocused,
             hint_priority: None,
-            hint_key_display: Some("Ctrl+Shift+T"),
+            hint_key_display: Some(if cfg!(windows) {
+                "Ctrl+Alt+T"
+            } else {
+                "Ctrl+Shift+T"
+            }),
             requires_confirmation: false,
-            long_help: Some(
-                "Cycles the dispatch mode for agents you launch from the dashboard.\nPi uses Normal and Plan; stock Grok may also expose permission modes.\nShift+Tab is reserved for thinking-level cycling.",
-            ),
+            long_help: Some(if cfg!(windows) {
+                "Cycles the dispatch mode for agents you launch from the dashboard.\nPi uses Normal and Plan; stock Grok may also expose permission modes.\nCtrl+Alt+T avoids the Ctrl+Shift+T chord commonly consumed by Windows terminals."
+            } else {
+                "Cycles the dispatch mode for agents you launch from the dashboard.\nPi uses Normal and Plan; stock Grok may also expose permission modes.\nShift+Tab is reserved for thinking-level cycling."
+            }),
         },
         ActionDef {
             id: ActionId::DashboardToggleGrouping,

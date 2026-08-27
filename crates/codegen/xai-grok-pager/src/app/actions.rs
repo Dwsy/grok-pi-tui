@@ -1109,12 +1109,13 @@ pub enum Action {
     DashboardDelete,
     /// Cycle the dispatch input's mode for the next spawned agent.
     /// Pi uses Normal ↔ Plan; stock Grok retains its wider mode ring.
-    /// Bound to Ctrl+Shift+T so Shift+Tab remains the thinking shortcut.
+    /// Uses Ctrl+Alt+T on Windows and Ctrl+Shift+T elsewhere so Shift+Tab
+    /// remains the thinking shortcut.
     DashboardCycleMode,
     /// Cycle the PEEKED agent's live mode — the peek-panel counterpart to
     /// [`Self::DashboardCycleMode`]. Unlike the staged dispatch mode, this
-    /// changes the existing agent directly. Emitted by Ctrl+Shift+T while the
-    /// peek panel is open.
+    /// changes the existing agent directly. Emitted by the platform Plan
+    /// shortcut while the peek panel is open.
     DashboardPeekCycleMode,
     /// Toggle grouping (State ↔ Directory).
     DashboardToggleGrouping,

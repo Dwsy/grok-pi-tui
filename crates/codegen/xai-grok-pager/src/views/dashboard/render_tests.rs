@@ -4372,9 +4372,14 @@ fn render_footer_section_selected_with_prompt_shows_dispatch_chips() {
         content.contains(":send") && content.contains(":send+open"),
         "section + typed prompt footer must hint send / send+open, got: {content:?}",
     );
+    let mode_hint = if cfg!(windows) {
+        "Ctrl+Alt+t:mode"
+    } else {
+        "Ctrl+Shift+t:mode"
+    };
     assert!(
-        content.contains("Ctrl+Shift+T:mode"),
-        "section + typed prompt footer must hint Ctrl+Shift+T:mode, got: {content:?}",
+        content.contains(mode_hint),
+        "section + typed prompt footer must hint {mode_hint}, got: {content:?}",
     );
     assert!(
         !content.contains(":collapse") && !content.contains(":expand"),

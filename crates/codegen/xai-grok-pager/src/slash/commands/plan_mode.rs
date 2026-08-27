@@ -1,8 +1,8 @@
 //! `/plan-mode` -- toggle plan mode on/off.
 //!
 //! Unlike `/plan` (which only enters), `/plan-mode` toggles: if plan mode is
-//! active it turns it off, otherwise it turns it on. This mirrors the
-//! Ctrl+Shift+T keybinding behavior.
+//! active it turns it off, otherwise it turns it on. This mirrors the platform
+//! Plan shortcut (Ctrl+Alt+T on Windows, Ctrl+Shift+T elsewhere).
 
 use crate::app::actions::{Action, PlanModeKind};
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
