@@ -28,6 +28,9 @@ pub(crate) fn reseed_screen_mode(app: &mut AppView, mode: ScreenMode) {
     if !mode.is_minimal() && !THEME_RESOLVED_FOR_FULL_TUI.swap(true, Ordering::AcqRel) {
         let late_theme = crate::theme::cache::resolve_initial_theme_no_osc11();
         crate::theme::cache::set(late_theme);
+        // The native cursor color must follow the now-active theme; minimal
+        // mode never emitted OSC 12 (terminal-native lock), so emit here.
+        crate::theme::apply_cursor_color();
         tracing::info!(?late_theme, "mode switch: resolved regular theme");
     }
 

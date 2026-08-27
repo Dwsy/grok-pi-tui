@@ -5,7 +5,7 @@
 //! palette. Themes are addressed as `pi:<name>` to avoid clashing with
 //! Grok built-in aliases (`dark` / `light`).
 
-mod color;
+pub(crate) mod color;
 mod load;
 mod map;
 mod registry;

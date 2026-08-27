@@ -711,21 +711,65 @@ impl Theme {
     }
 }
 
-/// Set the terminal cursor color to the current theme's `accent_user` via OSC 12.
+/// Minimum luminance separation between the cursor color and the theme
+/// canvas for the accent to be emitted as the native cursor color.
+const CURSOR_MIN_LUMINANCE_DELTA: f32 = 0.25;
+
+/// Cursor color with a readability floor against the theme canvas.
+///
+/// `accent_user` is a *styling* accent; themes (especially Pi/custom
+/// palettes) do not guarantee it contrasts with the canvas — a pale accent
+/// on a near-white background leaves the native cursor nearly invisible
+/// after a dark→light switch. When the accent sits within
+/// [`CURSOR_MIN_LUMINANCE_DELTA`] luminance of `bg_base`, fall back to
+/// `text_primary`, and when even that blends, to polarity max-contrast fg.
+/// Transparent canvases (`Color::Reset`) keep the raw accent — the host
+/// background is unknown, so no contrast claim can be made.
+fn cursor_color_for(theme: &Theme) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    let lum = |(r, g, b): (u8, u8, u8)| crate::theme::pi::color::relative_luminance(r, g, b);
+    let Some(accent) = crate::render::color::resolve_to_rgb(theme.accent_user) else {
+        return theme.accent_user;
+    };
+    let Some(bg) = crate::render::color::resolve_to_rgb(theme.bg_base) else {
+        return theme.accent_user;
+    };
+    let bg_lum = lum(bg);
+    if (lum(accent) - bg_lum).abs() >= CURSOR_MIN_LUMINANCE_DELTA {
+        return theme.accent_user;
+    }
+    if let Some(text) = crate::render::color::resolve_to_rgb(theme.text_primary)
+        && (lum(text) - bg_lum).abs() >= CURSOR_MIN_LUMINANCE_DELTA
+    {
+        return theme.text_primary;
+    }
+    // Max-contrast fg for the canvas polarity.
+    if bg_lum >= 0.5 {
+        Color::Black
+    } else {
+        Color::White
+    }
+}
+
+/// Set the terminal cursor color via OSC 12, honoring the current theme.
+///
+/// The emitted color is the theme's `accent_user` passed through
+/// [`cursor_color_for`], which swaps in a readable fallback when the accent
+/// would blend into the canvas.
 ///
 /// `Theme::current()` quantizes to the terminal's color level, so on
 /// non-truecolor terminals `accent_user` may be `Color::Indexed` or a
 /// named ANSI variant. OSC 12 accepts an RGB triple regardless of the
 /// terminal's normal SGR color depth, so we resolve every variant back
 /// to RGB via [`crate::render::color::resolve_to_rgb`]. Reset (when
-/// `NO_COLOR` is set) yields `None` — we skip emission entirely so the
-/// terminal keeps its profile-defined cursor color.
+/// `NO_COLOR` is set or the canvas is transparent) yields `None` — we skip
+/// emission entirely so the terminal keeps its profile-defined cursor color.
 ///
 /// Escape sequence: `\x1b]12;rgb:RR/GG/BB\x07`.
 pub fn apply_cursor_color() {
     use std::io::Write;
     let theme = Theme::current();
-    let Some((r, g, b)) = crate::render::color::resolve_to_rgb(theme.accent_user) else {
+    let Some((r, g, b)) = crate::render::color::resolve_to_rgb(cursor_color_for(&theme)) else {
         return;
     };
     xai_grok_shared::stderr::with_locked_stderr(|stderr| {
@@ -803,6 +847,58 @@ mod tests {
         assert!(Theme::rosepine_moon().is_dark());
         assert!(Theme::oscura_midnight().is_dark());
         assert!(!Theme::grokday().is_dark());
+    }
+
+    #[test]
+    fn cursor_color_keeps_readable_accent() {
+        use ratatui::style::Color;
+        // Light accent on dark canvas (groknight) — unchanged.
+        let t = Theme::groknight();
+        assert_eq!(cursor_color_for(&t), t.accent_user);
+        // Dark accent on light canvas (grokday) — unchanged.
+        let t = Theme::grokday();
+        assert_eq!(cursor_color_for(&t), t.accent_user);
+        // Saturated accent on either polarity stays.
+        let mut t = Theme::grokday();
+        t.accent_user = Color::Rgb(47, 100, 210);
+        assert_eq!(cursor_color_for(&t), Color::Rgb(47, 100, 210));
+    }
+
+    #[test]
+    fn cursor_color_falls_back_when_accent_blends_into_canvas() {
+        use ratatui::style::Color;
+        // The reported bug shape: near-white accent on a light canvas.
+        let mut t = Theme::grokday();
+        t.accent_user = Color::Rgb(240, 240, 240);
+        assert_eq!(cursor_color_for(&t), t.text_primary);
+        // Mirror case: near-black accent on a dark canvas.
+        let mut t = Theme::groknight();
+        t.accent_user = Color::Rgb(20, 20, 20);
+        assert_eq!(cursor_color_for(&t), t.text_primary);
+    }
+
+    #[test]
+    fn cursor_color_polarity_fallback_when_text_also_blends() {
+        use ratatui::style::Color;
+        let mut t = Theme::grokday();
+        t.accent_user = Color::Rgb(240, 240, 240);
+        t.text_primary = Color::Rgb(230, 230, 230);
+        assert_eq!(cursor_color_for(&t), Color::Black);
+
+        let mut t = Theme::groknight();
+        t.accent_user = Color::Rgb(30, 30, 30);
+        t.text_primary = Color::Rgb(25, 25, 25);
+        assert_eq!(cursor_color_for(&t), Color::White);
+    }
+
+    #[test]
+    fn cursor_color_transparent_canvas_keeps_accent() {
+        use ratatui::style::Color;
+        // Transparent canvas: no contrast claim possible — emit as-is.
+        let mut t = Theme::grokday();
+        t.bg_base = Color::Reset;
+        t.accent_user = Color::Rgb(240, 240, 240);
+        assert_eq!(cursor_color_for(&t), t.accent_user);
     }
 
     #[test]
