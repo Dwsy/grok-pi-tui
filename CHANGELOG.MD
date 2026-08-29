@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `pig` is now installed as a short alias for `grok-pi` on Unix and Windows, alongside the existing `pi-grok` alias.
+- F2 settings can choose whether `Esc` or `Ctrl+C` is required to cancel a running turn, with the setting applied live and persisted as `[ui].cancel_turn_key`.
+- `Opt+Shift+V` on macOS forces clipboard text into a temporary-file attachment, and image files opened from Read tool calls render directly in the block viewer on supported Kitty/iTerm2 terminals.
+
+### Fixed
+
+- Light themes now use the theme text color for both native and software prompt cursors, avoiding stale high-contrast accent colors after a dark-to-light theme switch.
+- Timeline rail navigation now treats persisted compaction summaries as first-class markers, including previews and direct jumps to the compaction boundary.
+- Model usage associated with tool-emitting assistant segments is preserved on live and replayed ACP tool calls instead of being dropped before tool execution.
+
+### Changed
+
+- grok-pi enters the native Pager surface before Pi RPC and extension bootstrap finishes, keeping compatibility checks and extension self-heal semantics behind the first paint rather than blocking terminal entry.
+- Completed Plan-mode documents now live under the session `plans/` directory and are normalized before approval with deterministic YAML metadata for session, model, cwd, and overview.
+- Large-paste confirmation now defaults to saving the paste as a temporary attachment while retaining an explicit “Paste normally” choice.
+- Collapsed grouped tool rows can expose member details in the existing hover popup without expanding the transcript group.
+
 ## [0.1.2] - 2026-08-25
 
 ### Highlights
