@@ -147,7 +147,8 @@ def main() -> int:
     required_native_calls = [
         "xai_grok_pager_minimal::install()",
         "AcpConnection::external(",
-        "run_external(ExternalRunConfig",
+        "run_external_deferred(start, ready)",
+        "ExternalRunStartConfig {",
         "PagerArgs::parse_from",
     ]
     missing_calls = [token for token in required_native_calls if token not in bin_source]

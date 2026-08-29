@@ -705,6 +705,9 @@ pub enum Action {
     /// Mid-turn follow-up routing (`queue` | `steer`).
     /// SHARED-owned: `[ui].follow_up_behavior`.
     SetFollowUpBehavior(crate::appearance::FollowUpBehavior),
+    /// Running-turn cancellation gesture (`esc` | `ctrl_c`). SHARED-owned,
+    /// live-applied and persisted to `[ui].cancel_turn_key`.
+    SetCancelTurnKey(String),
     /// Set simple mode (ASCII / minimal glyphs). Persists via `Effect::PersistSetting`.
     SetSimpleMode(bool),
     /// Set the per-tip contextual-hint user config (`[ui.contextual_hints]`).
@@ -1475,8 +1478,8 @@ impl PlanModeKind {
 /// as a stop, so new variants need no shell change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelTrigger {
-    /// Wire value `"esc"` (bare Esc mid-turn cancel in minimal / non-vim
-    /// mode, plus the Esc cancel-retry while TurnCancelling).
+    /// Wire value `"esc"` (bare Esc mid-turn cancel when enabled by the F2
+    /// cancellation policy, plus the Esc cancel-retry while TurnCancelling).
     Esc,
     /// `Ctrl+C` pressed (the default cancel keybinding).
     CtrlC,

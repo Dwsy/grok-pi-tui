@@ -359,6 +359,10 @@ impl AgentView {
                     self.last_prompt_click_ms = None;
                     return InputOutcome::Changed;
                 }
+                if qv.is_feedback_report() && crate::input::key::is_force_attachment_paste_key(key)
+                {
+                    return self.handle_force_attachment_paste_key();
+                }
                 if qv.is_feedback_report() && crate::input::key::is_paste_key(key) {
                     let clipboard_text = crate::app::actions::ClipboardTextRead::from_result(
                         crate::clipboard::system_clipboard_read_text(),

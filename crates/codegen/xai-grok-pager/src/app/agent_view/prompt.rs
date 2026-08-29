@@ -703,7 +703,13 @@ impl AgentView {
             }
         }
 
-        // 2c. Ctrl+V / Cmd+V: read the pbpaste text once and route through the
+        // 2c. Opt+Shift+V forces clipboard text into a temporary attachment,
+        //     bypassing the large-paste size threshold and selector.
+        if crate::input::key::is_force_attachment_paste_key(key) {
+            return self.handle_force_attachment_paste_key();
+        }
+
+        // 2d. Ctrl+V / Cmd+V: read the pbpaste text once and route through the
         //     deferred paste pipeline. A file path wins synchronously; the
         //     clipboard image/file-url probe defers off the event loop. Reading
         //     once (vs the widget re-reading for text insertion) avoids the old
@@ -715,7 +721,7 @@ impl AgentView {
             return self.handle_paste_key_deferred(clipboard_text);
         }
 
-        // 2d. Promote agent-screen actions past the textarea.
+        // 2e. Promote agent-screen actions past the textarea.
         //
         // Without this, keys like Ctrl+\ / Ctrl+/ (or, historically,
         // Alt-Left / Alt-Right as word-jump cursor moves) would be
@@ -876,20 +882,18 @@ impl AgentView {
             return Some(InputOutcome::Changed);
         }
 
-        // Mid-turn running, fullscreen vim mode: swallow Esc (do not cancel or
-        // arm clear/rewind — Ctrl+C stays the cancel gesture there).
-        // `is_minimal_mode` is the per-agent injected screen mode, not the
-        // process global, so tests stay race-free. A streaming wake turn
-        // follows the same policy as a running turn (the pane state is Idle
-        // only because wake turns are not adopted); once its cancel was sent
-        // it follows the cancelling retry below instead, in every mode.
+        // Mid-turn running with the F2 cancellation policy set to Ctrl+C:
+        // swallow Esc (do not cancel or arm clear/rewind). A streaming wake
+        // turn follows the same policy as a running turn (the pane state is
+        // Idle only because wake turns are not adopted); once its cancel was
+        // sent it follows the cancelling retry below.
         if (self.session.state.is_turn_running()
             || (self.wake_turn_active() && !self.wake_turn_cancelling()))
-            && !crate::app::esc_cancels_turn(self.is_minimal_mode(), self.vim_mode)
+            && !crate::app::esc_cancels_turn()
         {
             return Some(InputOutcome::Changed);
         }
-        // Mid-turn (minimal / non-vim): cancel immediately from prompt or
+        // Mid-turn with Esc cancellation enabled: cancel immediately from prompt or
         // scrollback, even with a draft. Also — in every mode — while already
         // cancelling, so a lost cancel notification is re-sent (Ctrl+C
         // escalates to Quit instead). Push the grace deadline out so an Esc

@@ -182,18 +182,13 @@ pub(crate) fn set_external_agent_active(on: bool) {
 pub(crate) fn set_minimal_mode_active_for_test(on: bool) {
     MINIMAL_MODE_ACTIVE.store(on, Ordering::Release);
 }
-/// Whether a bare Esc cancels a running turn: minimal mode and non-vim
-/// fullscreen get the single-Esc cancel; fullscreen vim mode keeps the
-/// mid-turn swallow (Ctrl+C stays the cancel gesture there).
-///
-/// Pure over its inputs — production callers pass the agent's injected
-/// effective screen mode (`AgentView::is_minimal_mode`, seeded by
-/// `apply_app_scoped_gates`; never the [`minimal_mode_active`] process
-/// global) and tests pass explicit booleans. `vim_mode` is the
-/// scrollback-nav setting (`[ui].vim_mode` / `/vim-mode`), not the prompt
-/// `simple_mode`.
-pub(crate) fn esc_cancels_turn(is_minimal: bool, vim_mode: bool) -> bool {
-    is_minimal || !vim_mode
+/// Live mirror for `[ui].cancel_turn_key`.
+/// `true` = bare Esc may cancel a running turn; `false` = Ctrl+C is required.
+/// Default is Esc. F2 updates this atomically so input routing and shortcut
+/// hints change on the next keypress/frame without rebuilding agents.
+pub(crate) static ESC_CANCELS_TURN: AtomicBool = AtomicBool::new(true);
+pub(crate) fn esc_cancels_turn() -> bool {
+    ESC_CANCELS_TURN.load(Ordering::Acquire)
 }
 /// Whether the opt-in mouse-reporting toggle feature is enabled
 /// (`[ui] mouse_reporting_toggle` / `GROK_MOUSE_REPORTING_TOGGLE`). Seeded once
@@ -615,6 +610,25 @@ pub struct ExternalRunConfig {
     pub product_version: String,
 }
 
+/// Pager-owned startup fields that are available before an external backend
+/// finishes connecting. Keeping these separate lets external products enter
+/// the native terminal surface while their agent runtime is still booting.
+pub struct ExternalRunStartConfig {
+    pub args: PagerArgs,
+    pub session_cwd: Option<std::path::PathBuf>,
+    pub product_version: String,
+}
+
+/// External backend state that must be real before the Pager event loop starts.
+pub struct ExternalRunReady {
+    pub connection: crate::acp::AcpConnection,
+    pub session_id: String,
+    pub session_title: Option<String>,
+    pub resume_existing_session: bool,
+    pub emit_resume_hint: bool,
+    pub resume_session_dir: Option<String>,
+}
+
 /// Run the native Grok pager against an external ACP backend.
 ///
 /// The terminal lifecycle, prompt editor, slash dropdown, markdown renderer,
@@ -633,6 +647,39 @@ pub async fn run_external(config: ExternalRunConfig) -> anyhow::Result<()> {
         resume_session_dir,
         product_version,
     } = config;
+
+    run_external_deferred(
+        ExternalRunStartConfig {
+            args,
+            session_cwd,
+            product_version,
+        },
+        async move {
+            Ok(ExternalRunReady {
+                connection,
+                session_id,
+                session_title,
+                resume_existing_session,
+                emit_resume_hint,
+                resume_session_dir,
+            })
+        },
+    )
+    .await
+}
+
+/// Enter the native Pager terminal before an external backend is ready, then
+/// start the normal event loop once `ready` resolves. The backend future owns
+/// no terminal state; failures restore the terminal before propagating.
+pub async fn run_external_deferred(
+    start: ExternalRunStartConfig,
+    ready: impl Future<Output = anyhow::Result<ExternalRunReady>>,
+) -> anyhow::Result<()> {
+    let ExternalRunStartConfig {
+        args,
+        session_cwd,
+        product_version,
+    } = start;
 
     xai_tty_utils::redirect_native_stderr();
     let screen_mode_override = screen_mode_relaunch::take_screen_mode_env_override();
@@ -697,6 +744,25 @@ pub async fn run_external(config: ExternalRunConfig) -> anyhow::Result<()> {
     )?;
     apply_screen_mode_globals(screen_mode);
     finish_theme_after_probe(minimal, screen_mode);
+    set_terminal_title("grok-pi — starting Pi");
+
+    let ExternalRunReady {
+        connection,
+        session_id,
+        session_title,
+        resume_existing_session,
+        emit_resume_hint,
+        resume_session_dir,
+    } = match ready.await {
+        Ok(ready) => ready,
+        Err(error) => {
+            crate::unified_log::flush_blocking().await;
+            let _ = restore_terminal(terminal, writer_thread, screen_mode);
+            xai_tty_utils::global_process_scope().kill_all();
+            return Err(error);
+        }
+    };
+
     if let Some(ref title) = session_title {
         set_terminal_title(title);
     }

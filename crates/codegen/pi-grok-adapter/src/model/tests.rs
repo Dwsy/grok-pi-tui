@@ -130,6 +130,7 @@ fn history_preserves_reasoning_tools_and_results() {
             { "role": "user", "content": "hello" },
             {
                 "role": "assistant",
+                "usage": { "input": 101, "output": 23, "cacheRead": 17, "cost": 0.01 },
                 "content": [
                     { "type": "thinking", "thinking": "plan" },
                     { "type": "toolCall", "id": "tool-1", "name": "read", "arguments": { "path": "README.md" } },
@@ -147,7 +148,13 @@ fn history_preserves_reasoning_tools_and_results() {
     }));
     assert!(matches!(items[0].item, PiHistoryItem::UserText(ref text) if text == "hello"));
     assert!(matches!(items[1].item, PiHistoryItem::AgentThought(ref text) if text == "plan"));
-    assert!(matches!(items[2].item, PiHistoryItem::ToolStart { ref id, .. } if id == "tool-1"));
+    assert!(matches!(
+        items[2].item,
+        PiHistoryItem::ToolStart { ref id, ref usage, .. }
+            if id == "tool-1"
+                && usage.as_ref().and_then(|u| u.get("input")).and_then(Value::as_u64)
+                    == Some(101)
+    ));
     assert!(matches!(items[3].item, PiHistoryItem::AgentText(ref text) if text == "done"));
     assert!(matches!(items[4].item, PiHistoryItem::ToolEnd { ref id, .. } if id == "tool-1"));
 }

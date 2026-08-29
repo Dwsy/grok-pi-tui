@@ -197,16 +197,16 @@ impl AgentView {
         };
         let items = vec![
             crate::slash::command::ArgItem {
-                display: "Paste normally".to_string(),
-                match_text: "paste normally current behavior inline".to_string(),
-                insert_text: "inline".to_string(),
-                description: "Current paste behavior".to_string(),
-            },
-            crate::slash::command::ArgItem {
                 display: "Save as temporary file".to_string(),
                 match_text: "save temporary file path external".to_string(),
                 insert_text: "file".to_string(),
                 description: file_description,
+            },
+            crate::slash::command::ArgItem {
+                display: "Paste normally".to_string(),
+                match_text: "paste normally current behavior inline".to_string(),
+                insert_text: "inline".to_string(),
+                description: "Current paste behavior".to_string(),
             },
         ];
         self.pending_large_paste = Some(pending);
@@ -231,6 +231,45 @@ impl AgentView {
         }
     }
 
+    fn insert_paste_as_attachment(&mut self, pending: PendingLargePaste) -> InputOutcome {
+        match persist_large_paste_in(&self.large_paste_temp_dir(), &pending.text) {
+            Ok(path) => {
+                let reference = format_large_paste_reference(&path, &pending);
+                let outcome = self.insert_prompt_plain_text(Some(&reference)).0;
+                self.show_toast("Paste saved as temporary attachment");
+                outcome
+            }
+            Err(error) => {
+                tracing::warn!(%error, "failed to save large paste to temporary file");
+                self.show_toast("Couldn't save paste attachment; pasted normally");
+                self.insert_pending_large_paste_default(pending)
+            }
+        }
+    }
+
+    /// Opt+Shift+V forces clipboard text into the same temporary-file
+    /// attachment representation used by the large-paste selector.
+    pub(super) fn handle_force_attachment_paste_key(&mut self) -> InputOutcome {
+        let clipboard_text = crate::app::actions::ClipboardTextRead::from_result(
+            crate::clipboard::system_clipboard_read_text(),
+        );
+        let Some(text) = clipboard_text
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+        else {
+            crate::clipboard::log_paste_key_empty_host_clipboard("prompt_widget_attachment");
+            return InputOutcome::Changed;
+        };
+        let pending = PendingLargePaste {
+            text: text.to_owned(),
+            source: LargePasteSource::ClipboardKey,
+            size_bytes: text.len(),
+            line_count: large_paste_line_count(text),
+            is_json: serde_json::from_str::<serde_json::Value>(text).is_ok(),
+        };
+        self.insert_paste_as_attachment(pending)
+    }
+
     pub(in crate::app) fn resolve_large_paste_choice(
         &mut self,
         save_as_file: bool,
@@ -242,20 +281,7 @@ impl AgentView {
         if !save_as_file {
             return self.insert_pending_large_paste_default(pending);
         }
-
-        match persist_large_paste_in(&self.large_paste_temp_dir(), &pending.text) {
-            Ok(path) => {
-                let reference = format_large_paste_reference(&path, &pending);
-                let outcome = self.insert_prompt_plain_text(Some(&reference)).0;
-                self.show_toast("Large paste saved to temporary file");
-                outcome
-            }
-            Err(error) => {
-                tracing::warn!(%error, "failed to save large paste to temporary file");
-                self.show_toast("Couldn't save large paste; pasted normally");
-                self.insert_pending_large_paste_default(pending)
-            }
-        }
+        self.insert_paste_as_attachment(pending)
     }
 
     fn reject_shared_queue_image_edit(
@@ -821,6 +847,28 @@ pub(super) mod paste_key_tests {
         assert!(matches!(outcome, InputOutcome::Changed));
         assert_eq!(agent.prompt.text(), "hello world");
     }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn opt_shift_v_forces_short_text_into_attachment_file() {
+        let mut agent = make_agent();
+        agent.set_active_pane(ActivePane::Prompt, true);
+        crate::clipboard::set_clipboard_probe_hook(crate::clipboard::ClipboardProbeHook {
+            text: Some("short text".to_string()),
+            ..Default::default()
+        });
+
+        let outcome = agent.handle_prompt_key_for_test(&key!('v', ALT | SHIFT).to_key_event());
+        crate::clipboard::clear_clipboard_probe_hook();
+
+        assert!(matches!(outcome, InputOutcome::Changed));
+        let reference = agent.prompt.text();
+        let path = reference
+            .split_once(" [paste:")
+            .map(|(path, _)| std::path::Path::new(path))
+            .expect("forced paste must insert an attachment reference");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "short text");
+        std::fs::remove_file(path).unwrap();
+    }
     #[test]
     fn paste_key_multiline_text_creates_element() {
         let mut agent = make_agent();
@@ -840,7 +888,7 @@ pub(super) mod paste_key_tests {
         assert!(!large_paste_needs_selector(&"x".repeat(100_001)));
     }
     #[test]
-    fn event_paste_large_text_opens_two_choice_selector_and_default_pastes_normally() {
+    fn event_paste_large_text_defaults_to_file_and_can_paste_normally() {
         let mut agent = make_agent();
         agent.set_active_pane(ActivePane::Prompt, true);
         let text = large_paste_text(100, "\n");
@@ -861,12 +909,9 @@ pub(super) mod paste_key_tests {
             panic!("large paste must open the selector");
         };
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].display, "Paste normally");
-        assert_eq!(items[1].display, "Save as temporary file");
-        assert_eq!(
-            state.selected, 0,
-            "current paste behavior must be the default"
-        );
+        assert_eq!(items[0].display, "Save as temporary file");
+        assert_eq!(items[1].display, "Paste normally");
+        assert_eq!(state.selected, 0, "temporary file must be the default");
         assert_eq!(
             *selection,
             crate::views::modal::ArgPickerSelection::LargePaste
@@ -2591,6 +2636,9 @@ pub(super) mod paste_key_tests {
     fn ctrl_v_key() -> KeyEvent {
         key!('v', CONTROL).to_key_event()
     }
+    fn cmd_v_key() -> KeyEvent {
+        key!('v', SUPER).to_key_event()
+    }
     /// Target of the enqueued deferred-probe effect, if any.
     fn deferred_probe_target(
         agent: &AgentView,
@@ -2614,7 +2662,7 @@ pub(super) mod paste_key_tests {
             snapshot: Some((Some(1), false)),
             ..Default::default()
         });
-        let outcome = agent.handle_prompt_key_for_test(&ctrl_v_key());
+        let outcome = agent.handle_prompt_key_for_test(&cmd_v_key());
         crate::clipboard::clear_clipboard_probe_hook();
         outcome
     }
@@ -2683,7 +2731,7 @@ pub(super) mod paste_key_tests {
             text: clipboard_text.map(str::to_owned),
             ..crate::clipboard::ClipboardProbeHook::with_raster(None)
         });
-        let _ = agent.handle_prompt_key_for_test(&ctrl_v_key());
+        let _ = agent.handle_prompt_key_for_test(&cmd_v_key());
         let ctx = deferred_probe_ctx(agent).expect("an image paste must defer a probe");
         crate::clipboard::clear_clipboard_probe_hook();
         let pasted = crate::prompt_images::from_clipboard_data(&test_image_data());

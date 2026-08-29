@@ -122,10 +122,7 @@ Colors generated at runtime (syntax highlighting, background blending) are also 
 
 ## Cursor Color
 
-Grok sets your terminal cursor to the current theme's `accent_user` color using the OSC 12 escape sequence, to indicate an active Grok session. The cursor color is:
-
-- Applied on startup and on theme switch.
-- Reset to the terminal's default on exit via OSC 112.
+Grok uses one theme-aware cursor color for both the terminal-native cursor and software prompt cursors (`block`, `underline`, `bar`, and custom glyphs). Dark themes use a readable `accent_user`; light themes use `text_primary` so a chromatic prompt accent cannot leave the cursor looking stale after a dark→light switch. For the native cursor, Grok applies that color with OSC 12 on startup and theme switches, then resets the terminal default with OSC 112 on exit.
 
 This works in terminals that support OSC 12 (most modern terminals).
 

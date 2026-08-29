@@ -204,7 +204,8 @@ const PASTE_LONG_HELP: &str = "\
 Pastes clipboard images into the prompt as chips, and plain text as typed.\n\
 Use Ctrl+V for screenshots, browser \"Copy Image\", and file-manager image \
 copies (many terminals swallow Cmd+V and never deliver it to the TUI).\n\
-You can also drag an image file into the prompt.";
+Use Opt+Shift+V to always save clipboard text as a temporary attachment, \
+even when it is short. You can also drag an image file into the prompt.";
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 const PASTE_LONG_HELP: &str = "\
 Pastes clipboard images into the prompt as chips, and plain text as typed.\n\

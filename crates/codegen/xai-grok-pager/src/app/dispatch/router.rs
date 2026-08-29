@@ -81,27 +81,28 @@ use super::session::tree::{
 use super::settings::setters::{
     clear_default_model, clear_fork_secondary_model, clear_recap_model, preview_auto_dark_theme,
     preview_auto_light_theme, preview_theme, set_ask_user_question_timeout_enabled,
-    set_auto_dark_theme, set_auto_light_theme, set_auto_update, set_collapsed_edit_blocks,
-    set_combine_queued_prompts, set_compact_mode, set_confirm_before_rewind,
-    set_contextual_hint_image_input, set_contextual_hint_plan_mode, set_contextual_hint_send_now,
-    set_contextual_hint_small_screen, set_contextual_hint_ssh_wrap, set_contextual_hint_undo,
-    set_contextual_hint_word_select, set_ctrl_o_tool_expansion, set_default_model,
-    set_default_selected_permission, set_display_refresh_auto_cadence, set_fork_secondary_model,
-    set_group_tool_verbs, set_host_feature_bool, set_hunk_tracker_mode, set_invert_scroll,
-    set_keep_text_selection, set_max_thoughts_width, set_model_slot, set_multiline_mode,
-    set_page_flip_on_send, set_pi_ask_user_question_notifications, set_pi_at_search_hidden,
-    set_pi_bash, set_pi_bash_command_format, set_pi_bash_run_display, set_pi_builtin_tool,
-    set_pi_cache_graph, set_pi_config_skill, set_pi_eval, set_pi_eval_v2_display_mode,
-    set_pi_eval_v2_language, set_pi_eval_v2_only, set_pi_keep_multi_agent,
-    set_pi_tree_file_rollback, set_pi_tree_skip_summary_prompt, set_pi_user_markdown,
-    set_progress_bar, set_prompt_cursor, set_prompt_suggestions, set_psm_resume_index,
-    set_recap_mermaid, set_recap_model, set_remember_tool_approvals, set_remote_tui_footer,
-    set_render_mermaid, set_respect_manual_folds, set_review_file_tree, set_review_include_reads,
-    set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed, set_session_recap,
+    set_auto_dark_theme, set_auto_light_theme, set_auto_update, set_cancel_turn_key,
+    set_collapsed_edit_blocks, set_combine_queued_prompts, set_compact_mode,
+    set_confirm_before_rewind, set_contextual_hint_image_input, set_contextual_hint_plan_mode,
+    set_contextual_hint_send_now, set_contextual_hint_small_screen, set_contextual_hint_ssh_wrap,
+    set_contextual_hint_undo, set_contextual_hint_word_select, set_ctrl_o_tool_expansion,
+    set_default_model, set_default_selected_permission, set_display_refresh_auto_cadence,
+    set_follow_up_behavior, set_fork_secondary_model, set_group_tool_verbs, set_host_feature_bool,
+    set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection, set_max_thoughts_width,
+    set_model_slot, set_multiline_mode, set_page_flip_on_send,
+    set_pi_ask_user_question_notifications, set_pi_at_search_hidden, set_pi_bash,
+    set_pi_bash_command_format, set_pi_bash_run_display, set_pi_builtin_tool, set_pi_cache_graph,
+    set_pi_config_skill, set_pi_eval, set_pi_eval_v2_display_mode, set_pi_eval_v2_language,
+    set_pi_eval_v2_only, set_pi_keep_multi_agent, set_pi_tree_file_rollback,
+    set_pi_tree_skip_summary_prompt, set_pi_user_markdown, set_progress_bar, set_prompt_cursor,
+    set_prompt_suggestions, set_psm_resume_index, set_recap_mermaid, set_recap_model,
+    set_remember_tool_approvals, set_remote_tui_footer, set_render_mermaid,
+    set_respect_manual_folds, set_review_file_tree, set_review_include_reads, set_screen_mode,
+    set_scroll_lines, set_scroll_mode, set_scroll_speed, set_session_recap,
     set_show_other_tool_args, set_show_thinking_blocks, set_show_tips, set_side_by_side_edit,
     set_simple_mode, set_theme, set_thinking_border_colors, set_timeline, set_timestamps,
     set_vim_mode, set_voice_capture_mode, set_voice_keybind_enabled, set_voice_stt_language,
-    set_write_edit_hover_popups, set_follow_up_behavior,
+    set_write_edit_hover_popups,
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
@@ -574,6 +575,38 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![]
         }
         Action::Collapse => {
+            if let Some(agent) = get_active_agent_mut(app) {
+                let trace_modal = agent
+                    .scrollback
+                    .selected()
+                    .and_then(|index| agent.scrollback.entry(index))
+                    .filter(|entry| {
+                        entry.display_mode == DisplayMode::Collapsed && !entry.tool_traces.is_empty()
+                    })
+                    .map(|entry| {
+                        let title = if entry.tool_traces.len() == 1 {
+                            format!("Tool trace · {}", entry.tool_traces[0].title)
+                        } else {
+                            format!("Tool trace · {} calls", entry.tool_traces.len())
+                        };
+                        let content = crate::scrollback::entry::format_tool_traces_markdown(
+                            &entry.tool_traces,
+                        );
+                        (title, content)
+                    });
+                if let Some((title, content)) = trace_modal {
+                    agent.active_modal = Some(crate::views::modal::ActiveModal::DocViewer {
+                        title,
+                        content,
+                        scroll: 0,
+                        window: crate::views::modal_window::ModalWindowState::new(),
+                        cached_lines: None,
+                        previous_palette: None,
+                        standalone: true,
+                    });
+                    return vec![];
+                }
+            }
             with_scrollback(app, |s| {
                 let at_minimum = s
                     .selected()
@@ -1233,6 +1266,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetConfirmBeforeRewind(v) => set_confirm_before_rewind(app, v),
         Action::SetCombineQueuedPrompts(v) => set_combine_queued_prompts(app, v),
         Action::SetFollowUpBehavior(v) => set_follow_up_behavior(app, v),
+        Action::SetCancelTurnKey(v) => set_cancel_turn_key(app, v),
         Action::SetSimpleMode(v) => set_simple_mode(app, v),
         Action::SetContextualHintUndo(v) => set_contextual_hint_undo(app, v),
         Action::SetContextualHintPlanMode(v) => set_contextual_hint_plan_mode(app, v),

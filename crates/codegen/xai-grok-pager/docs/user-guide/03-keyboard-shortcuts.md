@@ -424,6 +424,7 @@ Send:             Enter
 Newline:          Shift+Enter or Alt+Enter
 Multiline:        Ctrl+M (toggle)
 Paste:            Ctrl+V (text, files, screenshots on macOS/Linux)
+Paste as attachment: Opt+Shift+V (macOS; always saves clipboard text as a temporary file)
 Selected text:    Middle click or Shift+Insert (Linux X11/XWayland PRIMARY)
 Paste image:      Alt+V (Windows only — for screenshots / "Copy Image")
 Select all:       Cmd+A (macOS, Ghostty only — see note below)

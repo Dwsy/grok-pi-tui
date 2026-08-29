@@ -299,6 +299,10 @@ pub struct UiConfig {
     /// `Ctrl+R` for history search — focus scrollback (Esc/Tab) first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mouse_reporting_toggle: Option<bool>,
+    /// Key required to cancel a running turn: `esc` (default) or `ctrl_c`.
+    /// Written by the F2 settings modal and applied live by the pager.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_turn_key: Option<String>,
     /// When cancelling a parent turn with running subagents: `always_stop` stops
     /// them without prompting, `always_continue` leaves them running without
     /// prompting. Unset/`ask` shows the cancel-turn picker. Written by the pager
@@ -578,6 +582,7 @@ impl Default for UiConfig {
             voice_keybind_enabled: None,
             mouse_reporting_toggle: None,
             remember_tool_approvals: None,
+            cancel_turn_key: None,
             cancel_subagents_on_turn_cancel: None,
             keep_text_selection: None,
             selection_highlight_duration_ms: None,
@@ -650,6 +655,16 @@ impl UiConfig {
     /// True when mid-turn follow-ups should promote as interjections (Steer).
     pub fn follow_up_steer_enabled(&self) -> bool {
         self.follow_up_behavior() == "steer"
+    }
+
+    pub const CANCEL_TURN_KEY_DEFAULT: &'static str = "esc";
+
+    /// Resolved running-turn cancellation key. Unknown values fall back to Esc.
+    pub fn cancel_turn_key(&self) -> &'static str {
+        match self.cancel_turn_key.as_deref() {
+            Some("ctrl_c") => "ctrl_c",
+            _ => Self::CANCEL_TURN_KEY_DEFAULT,
+        }
     }
 
     /// True when the highlight should not timer-dismiss (`hold` / `word_select`,
@@ -737,6 +752,24 @@ mod tests {
             ..Default::default()
         };
         assert!(!off.confirm_before_rewind_enabled());
+    }
+
+    #[test]
+    fn cancel_turn_key_defaults_to_esc_and_accepts_ctrl_c() {
+        let default = UiConfig::default();
+        assert_eq!(default.cancel_turn_key(), "esc");
+
+        let ctrl_c = UiConfig {
+            cancel_turn_key: Some("ctrl_c".into()),
+            ..Default::default()
+        };
+        assert_eq!(ctrl_c.cancel_turn_key(), "ctrl_c");
+
+        let unknown = UiConfig {
+            cancel_turn_key: Some("other".into()),
+            ..Default::default()
+        };
+        assert_eq!(unknown.cancel_turn_key(), "esc");
     }
 
     #[test]

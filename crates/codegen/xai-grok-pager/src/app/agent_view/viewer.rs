@@ -1003,7 +1003,7 @@ impl AgentView {
         if let Some((current, forward)) = tool_navigation {
             if let Some(target) = self.adjacent_tool_viewer_index(current, forward) {
                 self.scrollback.set_selected(Some(target));
-                self.block_viewer = None;
+                self.close_block_viewer();
                 return InputOutcome::Action(Action::OpenBlockViewer);
             }
             return InputOutcome::Changed;
@@ -1015,7 +1015,7 @@ impl AgentView {
 
         // Check for close signals first (Esc/q/Ctrl-F)
         if viewer.is_close_key(key) {
-            self.block_viewer = None;
+            self.close_block_viewer();
             return InputOutcome::Changed;
         }
 
@@ -1081,7 +1081,7 @@ impl AgentView {
             handle_modal_mouse(&mut viewer.modal, mouse.kind, mouse.column, mouse.row);
         match modal_outcome {
             ModalWindowOutcome::CloseRequested => {
-                self.block_viewer = None;
+                self.close_block_viewer();
                 return InputOutcome::Changed;
             }
             ModalWindowOutcome::Handled => return InputOutcome::Changed,

@@ -308,6 +308,7 @@ impl AgentView {
             session_banner_active: false,
             pinned_upgrade_cta_live: false,
             block_viewer: None,
+            block_viewer_image_active: false,
             scrollback_search: None,
             hit_sb_copy: Default::default(),
             hit_sb_view: Default::default(),

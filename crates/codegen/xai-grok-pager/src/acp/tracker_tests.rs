@@ -77,6 +77,97 @@ fn user_message(text: &str) -> acp::SessionUpdate {
         acp::TextContent::new(text.to_string()),
     )))
 }
+
+#[test]
+fn tool_trace_preserves_acp_input_output_usage_and_timing() {
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    let mut tool_meta = acp::Meta::new();
+    tool_meta.insert(
+        "piToolUsage".into(),
+        serde_json::json!({
+            "input": 101,
+            "output": 23,
+            "cacheRead": 17,
+            "cost": 0.01
+        }),
+    );
+    let start = acp::SessionUpdate::ToolCall(
+        acp::ToolCall::new(acp::ToolCallId::new(Arc::from("trace-1")), "read")
+            .kind(acp::ToolKind::Read)
+            .status(acp::ToolCallStatus::InProgress)
+            .raw_input(Some(serde_json::json!({ "path": "README.md" })))
+            .meta(Some(tool_meta)),
+    );
+    let start_meta = NotificationMeta {
+        total_tokens: Some(900),
+        agent_timestamp_ms: Some(1_200),
+        stream_start_ms: Some(1_000),
+        ..Default::default()
+    };
+    assert!(tracker.handle_update(start, &start_meta, &mut sb));
+    let trace = &sb.get(0).expect("tool entry").tool_traces[0];
+    assert_eq!(trace.tool_call_id, "trace-1");
+    assert_eq!(
+        trace
+            .raw_input
+            .as_ref()
+            .and_then(|v| v.get("path"))
+            .and_then(|v| v.as_str()),
+        Some("README.md")
+    );
+    assert_eq!(
+        trace
+            .usage
+            .as_ref()
+            .and_then(|v| v.get("input"))
+            .and_then(|v| v.as_u64()),
+        Some(101)
+    );
+    assert_eq!(trace.context_tokens, Some(900));
+    assert_eq!(trace.started_at_ms, Some(1_200));
+
+    let completed = acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+        acp::ToolCallId::new(Arc::from("trace-1")),
+        acp::ToolCallUpdateFields::new()
+            .status(Some(acp::ToolCallStatus::Completed))
+            .raw_output(Some(serde_json::json!({ "content": "hello" }))),
+    ));
+    let end_meta = NotificationMeta {
+        total_tokens: Some(925),
+        agent_timestamp_ms: Some(1_350),
+        stream_start_ms: Some(1_000),
+        ..Default::default()
+    };
+    assert!(tracker.handle_update(completed, &end_meta, &mut sb));
+    let trace = &sb.get(0).expect("completed tool entry").tool_traces[0];
+    assert_eq!(trace.status, "Completed");
+    assert_eq!(
+        trace
+            .raw_output
+            .as_ref()
+            .and_then(|v| v.get("content"))
+            .and_then(|v| v.as_str()),
+        Some("hello")
+    );
+    assert_eq!(
+        trace
+            .usage
+            .as_ref()
+            .and_then(|v| v.get("output"))
+            .and_then(|v| v.as_u64()),
+        Some(23)
+    );
+    assert_eq!(trace.context_tokens, Some(925));
+    assert_eq!(trace.started_at_ms, Some(1_200));
+    assert_eq!(trace.updated_at_ms, Some(1_350));
+    let markdown =
+        crate::scrollback::entry::format_tool_traces_markdown(&sb.get(0).unwrap().tool_traces);
+    assert!(markdown.contains("## Input"));
+    assert!(markdown.contains("## Output"));
+    assert!(markdown.contains("## LLM segment usage"));
+}
+
 #[test]
 fn streaming_agent_message() {
     let mut sb = ScrollbackState::new();

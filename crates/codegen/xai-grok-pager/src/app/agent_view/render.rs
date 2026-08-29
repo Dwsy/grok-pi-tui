@@ -4,8 +4,7 @@ use super::{
     ActivePane, AgentPane, AgentView, AgentViewLayout, BlockingCard, CtaPhase, EscStep,
     InlineMediaHitAreas, KeyOwner, MODE_BANNER_FADE_TICKS, PromptInputMode, PromptMode,
     collect_citation_links, dropdown_content_inset, dropdown_items_width, record_dot_pulse,
-    render_dropdown_chrome,
-    supports_osc22,
+    render_dropdown_chrome, supports_osc22,
 };
 use crate::actions::{ActionId, ActionRegistry};
 use crate::appearance::PromptCursor;
@@ -376,6 +375,19 @@ mod prompt_cursor_tests {
             assert_eq!(buf.cell((1, 0)).unwrap().symbol(), expected);
         }
     }
+
+    #[test]
+    fn light_theme_software_cursor_uses_same_color_as_native_cursor() {
+        let theme = Theme::grokday();
+        let color = xai_grok_pager_render::theme::cursor_color_for(&theme);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+
+        assert_eq!(
+            paint_prompt_cursor(&mut buf, Some((1, 0)), PromptCursor::Bar, color),
+            None
+        );
+        assert_eq!(buf.cell((1, 0)).unwrap().fg, theme.text_primary);
+    }
 }
 
 /// What the bottom shortcuts bar renders this frame.
@@ -402,12 +414,11 @@ impl AgentView {
     }
     pub(crate) fn sync_timeline_hover_preview(&mut self) {
         self.timeline_hover_preview = match self.timeline_hover {
-            Some(crate::views::timeline::TimelineHit::Tick(turn_idx)) => {
-                self.scrollback.turn_preview(turn_idx).map(|text| {
-                    let created_at = self.scrollback.turn_created_at(turn_idx);
-                    (turn_idx, text, created_at)
-                })
-            }
+            Some(crate::views::timeline::TimelineHit::Tick(marker_idx)) => self
+                .scrollback
+                .timeline_markers()
+                .get(marker_idx)
+                .map(|marker| (marker_idx, marker.preview.clone(), marker.created_at)),
             _ => None,
         };
     }
@@ -1550,12 +1561,14 @@ impl AgentView {
         } else {
             0
         };
-        let cancel_turn_view_h =
-            if slot_card == Some(BlockingCard::CancelTurn) && rewind_view_h == 0 && fork_view_h == 0 {
-                modal::cancel_turn_panel_height(area.height)
-            } else {
-                0
-            };
+        let cancel_turn_view_h = if slot_card == Some(BlockingCard::CancelTurn)
+            && rewind_view_h == 0
+            && fork_view_h == 0
+        {
+            modal::cancel_turn_panel_height(area.height)
+        } else {
+            0
+        };
         let is_question_input_mode = self
             .question_view
             .as_ref()
@@ -1759,11 +1772,12 @@ impl AgentView {
         let startup_warning_height = 0;
         let external_widgets_above_editor_height = self.external_widgets_above_editor.len() as u16;
         let external_widgets_below_editor_height = self.external_widgets_below_editor.len() as u16;
+        let timeline_markers = self.scrollback.timeline_markers();
         let timeline_width = crate::views::timeline::rail_width(
             appearance.show_timeline,
             self.is_subagent_view,
             area.width,
-            self.scrollback.turn_count(),
+            timeline_markers.len(),
         );
         let mut layout_params = AgentViewLayoutParams {
             area,
@@ -1817,16 +1831,18 @@ impl AgentView {
                 layout.scrollback_content.width,
                 layout.scrollback_content.height,
             );
+            let (active, up_target, down_target) =
+                self.scrollback.timeline_marker_viewport(&timeline_markers);
             let viewport = crate::views::timeline::RailViewport {
-                active: self.scrollback.active_turn_for_viewport(),
-                up_target: self.scrollback.turn_above_viewport_top(),
-                down_target: self.scrollback.turn_below_viewport_top(),
+                active,
+                up_target,
+                down_target,
                 at_bottom: !self.scrollback.has_content_below(),
             };
             match crate::views::timeline::compute_rail(
                 layout.scrollback,
                 layout.timeline_x,
-                self.scrollback.turn_count(),
+                timeline_markers.len(),
                 viewport,
             ) {
                 Some(rail) => {
@@ -2353,19 +2369,23 @@ impl AgentView {
                     rail,
                     self.timeline_hover,
                     &theme,
-                    |turn_idx| self.scrollback.turn_has_compaction_summary(turn_idx),
+                    |marker_idx| {
+                        timeline_markers.get(marker_idx).is_some_and(|marker| {
+                            marker.kind == crate::scrollback::state::TimelineMarkerKind::Compaction
+                        })
+                    },
                 );
-                if let Some(crate::views::timeline::TimelineHit::Tick(turn_idx)) =
+                if let Some(crate::views::timeline::TimelineHit::Tick(marker_idx)) =
                     self.timeline_hover
-                    && let Some((preview_turn, preview, created_at)) =
+                    && let Some((preview_marker, preview, created_at)) =
                         self.timeline_hover_preview.as_ref()
-                    && *preview_turn == turn_idx
+                    && *preview_marker == marker_idx
                 {
                     crate::views::timeline::render_tick_hover_popup(
                         buf,
                         rail,
                         layout.scrollback,
-                        turn_idx,
+                        marker_idx,
                         preview,
                         *created_at,
                         &theme,
@@ -4528,6 +4548,32 @@ impl AgentView {
             };
             viewer.render_content(content_area, buf, &entry, true, &prepend_lines);
             viewer.render_text_drag_overlay(buf);
+            let mut image_escape_emitted = false;
+            if let Some(img) = &viewer.image {
+                if let Some(esc) = crate::terminal::overlay::static_centered(
+                    &img.bytes,
+                    img.width,
+                    img.height,
+                    content_area,
+                    img.owner_id,
+                ) {
+                    prompt_post_flush = Some(esc.into());
+                    image_escape_emitted = true;
+                }
+            }
+            if image_escape_emitted {
+                self.block_viewer_image_active = true;
+            } else if self.block_viewer_image_active {
+                // This viewer replaced (or shrank under) an image viewer:
+                // drop the stale shared-slot placement.
+                self.block_viewer_image_active = false;
+                if crate::terminal::image::detect_graphics_protocol()
+                    == crate::terminal::image::GraphicsProtocol::Kitty
+                {
+                    let clear = crate::terminal::overlay::clear_kitty();
+                    prompt_post_flush = Some(clear.into());
+                }
+            }
             let has_input_bar =
                 viewer.list_state.input_mode().is_some() || viewer.list_state.matcher().is_some();
             let in_visual = viewer.list_state.visual_mode;
@@ -4904,6 +4950,17 @@ impl AgentView {
         if !dropdown_active {
             self.paint_diagram_affordances(buf, scrollback_diagram_affordances, &theme);
         }
+        if self.block_viewer_image_active && self.block_viewer.is_none() {
+            // The block viewer's overlay image outlived the popup: drop the
+            // shared modal placement slot it drew into (Kitty id 1).
+            self.block_viewer_image_active = false;
+            let clear =
+                crate::terminal::overlay::PostFlush::from(crate::terminal::overlay::clear_kitty());
+            match prompt_post_flush.as_mut() {
+                Some(existing) => existing.append(clear),
+                None => prompt_post_flush = Some(clear),
+            }
+        }
         if !self.inline_media_active
             && prompt_post_flush.is_none()
             && crate::terminal::image::detect_graphics_protocol()
@@ -5045,7 +5102,7 @@ impl AgentView {
                 buf,
                 prompt_cursor_pos,
                 appearance.prompt.cursor,
-                prompt_style.accent_color(&theme),
+                xai_grok_pager_render::theme::cursor_color_for(&theme),
             )
         };
         (cursor, prompt_post_flush)

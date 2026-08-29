@@ -13,7 +13,25 @@ pub struct TimelineEntry {
     pub preview: String,
 }
 
-fn prompt_preview(text: &str) -> String {
+/// Semantic kind of one marker in the narrow timeline rail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelineMarkerKind {
+    Prompt,
+    Compaction,
+}
+
+/// One visual marker in the timeline rail, ordered exactly like scrollback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimelineMarker {
+    pub entry_id: EntryId,
+    pub entry_index: usize,
+    pub turn_idx: Option<usize>,
+    pub kind: TimelineMarkerKind,
+    pub created_at: Option<chrono::DateTime<chrono::Local>>,
+    pub preview: String,
+}
+
+fn preview_line(text: &str) -> String {
     let line = text
         .lines()
         .map(str::trim)
@@ -26,6 +44,19 @@ fn prompt_preview(text: &str) -> String {
         preview.push('…');
     }
     preview
+}
+
+fn prompt_preview(text: &str) -> String {
+    preview_line(text)
+}
+
+fn compaction_preview(summary: &str) -> String {
+    let summary = preview_line(summary);
+    if summary.is_empty() {
+        "Compaction summary".to_string()
+    } else {
+        format!("Compaction summary — {summary}")
+    }
 }
 
 impl ScrollbackState {
@@ -48,22 +79,116 @@ impl ScrollbackState {
             .collect()
     }
 
-    /// Whether a turn contains a persisted compaction-summary block.
+    /// Visual markers for the sidebar timeline, in scrollback order.
     ///
-    /// Timeline navigation remains turn-based; this is display metadata only.
-    pub fn turn_has_compaction_summary(&self, turn_idx: usize) -> bool {
-        let Some(turn) = self.turns.get(turn_idx) else {
+    /// `/jump` and review remain turn-based through [`Self::timeline_entries`];
+    /// the narrow rail additionally surfaces persisted compaction summaries as
+    /// first-class markers so context boundaries are visible between prompts.
+    pub fn timeline_markers(&self) -> Vec<TimelineMarker> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(entry_index, (entry_id, entry))| {
+                let turn_idx = self.turn_containing(entry_index);
+                match &entry.block {
+                    RenderBlock::UserPrompt(prompt) => Some(TimelineMarker {
+                        entry_id: *entry_id,
+                        entry_index,
+                        turn_idx,
+                        kind: TimelineMarkerKind::Prompt,
+                        created_at: entry.created_at,
+                        preview: prompt_preview(&prompt.text),
+                    }),
+                    RenderBlock::SessionEvent(block) => match &block.event {
+                        crate::scrollback::blocks::SessionEvent::CompactionSummary { summary } => {
+                            Some(TimelineMarker {
+                                entry_id: *entry_id,
+                                entry_index,
+                                turn_idx,
+                                kind: TimelineMarkerKind::Compaction,
+                                created_at: entry.created_at,
+                                preview: compaction_preview(summary),
+                            })
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// Resolve active/previous/next marker indices from the current viewport.
+    ///
+    /// Marker indices are stable for the frame that built `markers` and are the
+    /// indices stored in [`crate::views::timeline::TimelineHit::Tick`].
+    pub fn timeline_marker_viewport(
+        &self,
+        markers: &[TimelineMarker],
+    ) -> (Option<usize>, Option<usize>, Option<usize>) {
+        if markers.is_empty() {
+            return (None, None, None);
+        }
+        if self.view_mode == ViewMode::SingleTurn {
+            let active = self.current_turn.and_then(|turn_idx| {
+                markers.iter().position(|marker| {
+                    marker.kind == TimelineMarkerKind::Prompt && marker.turn_idx == Some(turn_idx)
+                })
+            });
+            let up = active.and_then(|index| index.checked_sub(1));
+            let down = active
+                .and_then(|index| index.checked_add(1))
+                .filter(|index| *index < markers.len());
+            return (active, up, down);
+        }
+
+        let Some(cache) = self.layout_cache.as_ref() else {
+            return (None, None, None);
+        };
+        let range = self.visible_entry_range();
+        let Some(base) = cache.virtual_y.get(range.start).copied() else {
+            return (None, None, None);
+        };
+        let top = base + self.scroll_offset;
+        let marker_y = |marker: &TimelineMarker| cache.virtual_y.get(marker.entry_index).copied();
+        let active = markers
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, marker)| marker_y(marker).is_some_and(|y| y <= top))
+            .map(|(index, _)| index);
+        let up = markers
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, marker)| marker_y(marker).is_some_and(|y| y < top))
+            .map(|(index, _)| index);
+        let down = markers
+            .iter()
+            .enumerate()
+            .find(|(_, marker)| marker_y(marker).is_some_and(|y| y > top))
+            .map(|(index, _)| index);
+        (active, up, down)
+    }
+
+    /// Jump to a sidebar marker, including a compaction block inside a turn.
+    pub fn jump_to_timeline_marker(&mut self, marker_idx: usize) -> bool {
+        let Some(marker) = self.timeline_markers().into_iter().nth(marker_idx) else {
             return false;
         };
-        turn.range().any(|entry_idx| {
-            self.entries.get_index(entry_idx).is_some_and(|(_, entry)| {
-                matches!(
-                    &entry.block,
-                    RenderBlock::SessionEvent(block)
-                        if matches!(&block.event, crate::scrollback::blocks::SessionEvent::CompactionSummary { .. })
-                )
-            })
-        })
+        let Some(entry_idx) = self.index_of_id(marker.entry_id) else {
+            return false;
+        };
+        self.set_selected(Some(entry_idx));
+        if self.view_mode == ViewMode::AllTurns {
+            self.scroll_to_entry_top(entry_idx);
+        } else {
+            self.scroll_offset = 0;
+            self.follow_mode = false;
+            self.ensure_selected_visible(NavDirection::default());
+        }
+        self.bump_generation();
+        true
     }
 
     /// Preview text for one turn, used by the timeline rail hover card.
@@ -156,7 +281,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compaction_summary_marks_only_its_own_turn() {
+    fn timeline_markers_include_compaction_in_scrollback_order() {
+        let mut state = ScrollbackState::new();
+        state.push_block(RenderBlock::user_prompt("first prompt"));
+        state.push_block(RenderBlock::agent_message("first answer"));
+        state.push_block(RenderBlock::session_event(
+            crate::scrollback::blocks::SessionEvent::CompactionSummary {
+                summary: "preserved context and latest tool results".into(),
+            },
+        ));
+        state.push_block(RenderBlock::user_prompt("second prompt"));
+        state.push_block(RenderBlock::agent_message("second answer"));
+
+        let markers = state.timeline_markers();
+        assert_eq!(markers.len(), 3);
+        assert_eq!(markers[0].kind, TimelineMarkerKind::Prompt);
+        assert_eq!(markers[0].entry_index, 0);
+        assert_eq!(markers[1].kind, TimelineMarkerKind::Compaction);
+        assert_eq!(markers[1].entry_index, 2);
+        assert_eq!(markers[1].turn_idx, Some(0));
+        assert!(markers[1].preview.starts_with("Compaction summary — "));
+        assert!(markers[1].preview.contains("preserved context"));
+        assert_eq!(markers[2].kind, TimelineMarkerKind::Prompt);
+        assert_eq!(markers[2].entry_index, 3);
+    }
+
+    #[test]
+    fn timeline_marker_jump_targets_compaction_block() {
         let mut state = ScrollbackState::new();
         state.push_block(RenderBlock::user_prompt("first prompt"));
         state.push_block(RenderBlock::agent_message("first answer"));
@@ -166,9 +317,10 @@ mod tests {
             },
         ));
         state.push_block(RenderBlock::user_prompt("second prompt"));
-        state.push_block(RenderBlock::agent_message("second answer"));
+        state.prepare_layout(80, 10);
 
-        assert!(state.turn_has_compaction_summary(0));
-        assert!(!state.turn_has_compaction_summary(1));
+        assert!(state.jump_to_timeline_marker(1));
+        assert_eq!(state.selected(), Some(2));
+        assert_eq!(state.current_turn(), Some(0));
     }
 }

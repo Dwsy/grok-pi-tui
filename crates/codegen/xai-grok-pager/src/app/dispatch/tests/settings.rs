@@ -1600,6 +1600,9 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
             };
             let _ = dispatch(Action::SetFollowUpBehavior(away), app);
         }
+        "cancel_turn_key" => {
+            let _ = dispatch(Action::SetCancelTurnKey("ctrl_c".to_string()), app);
+        }
         "simple_mode" => {
             let _ = dispatch(Action::SetSimpleMode(false), app);
         }

@@ -290,6 +290,10 @@
         assert!(
             crate::notifications::system::take_recorded_notifications().is_empty(),
             "an opt-out must suppress an unfocused Q&A notification"
+        );
+    }
+
+    #[test]
     fn mcp_elicit_opens_elicitation_view_and_parks_response() {
         let mut app = make_app_with_agent("sess-A");
         let (tx, mut rx) = tokio::sync::oneshot::channel();

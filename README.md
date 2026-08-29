@@ -38,10 +38,11 @@ The installer picks the matching release asset and installs `grok-pi`:
 
 Defaults: Unix → `~/.local/bin`; Windows → `%LOCALAPPDATA%\grok-pi\bin`. Override with `GROK_PI_INSTALL_DIR`. Pin with `GROK_PI_VERSION=vX.Y.Z`.
 
-Unix also creates a `pi-grok` symlink (Windows: `pi-grok.exe` hardlink/copy):
+The installer also creates `pig` and `pi-grok` aliases (Unix symlinks; Windows `pig.exe` / `pi-grok.exe` hardlinks with copy fallback):
 
 ```bash
 grok-pi --help   # original name
+pig --help       # short alias
 pi-grok --help   # alias
 ```
 
@@ -69,6 +70,8 @@ From any project directory:
 
 ```bash
 grok-pi
+# or
+pig
 # or
 pi-grok
 ```

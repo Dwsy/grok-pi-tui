@@ -79,7 +79,7 @@ use tokio_util::sync::CancellationToken;
 use xai_acp_lib::acp_channels;
 use xai_grok_pager::{
     acp::{AcpConnection, ExternalLogoArt, ExternalUiProfile, ExternalWelcomeBrand},
-    app::{ExternalRunConfig, PagerArgs, run_external},
+    app::{ExternalRunReady, ExternalRunStartConfig, PagerArgs, run_external_deferred},
     pi_resource_config::PiResourceCatalog,
     pi_resource_policy::ResourcePolicy,
 };
@@ -1095,28 +1095,6 @@ async fn run(mut args: Args) -> Result<()> {
             env.push(("GROK_PI_ROLLBACK_CONTROL".to_string(), control.clone()));
         }
     }
-    // Fail fast with OS-aware install hints before spawning the RPC host.
-    // On Windows this also rewrites bare `pi` → absolute `pi.cmd` for CreateProcess.
-    let (_pi_version, resolved_pi_bin) =
-        ensure_compatible_pi_host(&args.pi_bin).context("Pi host version check failed")?;
-    args.pi_bin = resolved_pi_bin;
-
-    // ── Extension self-heal: spawn Pi, and if an extension crashes the RPC
-    // child during bootstrap, binary-search the culprit (VSCode-style),
-    // print a diagnostic, and relaunch without it. ──────────────────────────
-    let (process, bootstrap, _pi_args) =
-        spawn_with_extension_self_heal(&args, &cwd, pi_args, &env).await?;
-
-    if btw_extension.is_some() {
-        env.push(("PI_GROK_BTW".to_string(), "1".to_string()));
-        unsafe {
-            std::env::set_var("PI_GROK_BTW", "1");
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("PI_GROK_BTW");
-        }
-    }
     let bash_control_meta =
         bash_control_meta_for_adapter(bash_bridge_runtime_enabled, bash_extension.as_ref());
     let context_breakdown = context_extension
@@ -1128,6 +1106,7 @@ async fn run(mut args: Args) -> Result<()> {
     let goal_control = goal_extension
         .as_ref()
         .map(|extension| extension.control_path().to_path_buf());
+    let btw_enabled = btw_extension.is_some();
     // Hold the NamedTempFiles so the extension paths remain valid.
     let _navigate_tree_extension = navigate_tree_extension;
     let _bash_extension = bash_extension;
@@ -1148,82 +1127,9 @@ async fn run(mut args: Args) -> Result<()> {
     let _tools_extension = tools_extension;
     let _rollback_extension = rollback_ext;
 
-    let initial_models = bootstrap.acp_models();
-    let initial_commands = bootstrap.acp_commands(workflows_enabled);
-    let session_id = bootstrap.session_id().to_string();
-    let session_title = bootstrap
-        .session_title()
-        .map(str::to_owned)
-        .or_else(|| Some("Pi".to_string()));
-
-    let (client_channel, mut agent_channel) = acp_channels();
-    let adapter = Rc::new(
-        PiAgent::new(
-            process.rpc,
-            agent_channel.tx.clone(),
-            bootstrap,
-            pi_session_dir,
-            bash_control_meta,
-            context_breakdown,
-            plan_mode_control,
-            goal_control,
-            subagent_transport,
-            workflows_enabled,
-            eval_v2_only_tool_policy_applied,
-        )
-        .context("failed to restore Pi plan-mode state")?,
-    );
-
-    let event_adapter = adapter.clone();
-    tokio::task::spawn_local(async move {
-        event_adapter.run_events(process.events).await;
-    });
-
-    let route_adapter = adapter.clone();
-    tokio::task::spawn_local(async move {
-        while let Some(message) = agent_channel.rx.recv().await {
-            message.route_to_agent(route_adapter.clone(), |future| {
-                tokio::task::spawn_local(future);
-            });
-        }
-    });
-
-    let command_profile = PI_GROK_NATIVE_COMMANDS
-        .iter()
-        .map(|name| (*name).to_string())
-        .collect::<Vec<_>>();
     // Keep the upstream tutorial UI/state machine, but install grok-pi product
     // copy before the Pager constructs its slash registry or first modal.
     tutorial_profile::install();
-    // External ACP skips shell `initialize`, so recap must be enabled here.
-    // Adapter still implements initialize.meta.sessionRecap for non-external
-    // paths; `/recap` stays hidden until this flag is true.
-    let mut connection = AcpConnection::external(
-        client_channel.tx,
-        client_channel.rx,
-        initial_models,
-        initial_commands,
-        CancellationToken::new(),
-        ExternalUiProfile {
-            agent_name: "Pi".to_string(),
-            builtin_commands: command_profile.clone(),
-            logo: Some(ExternalLogoArt {
-                full: PI_LOGO,
-                small: PI_LOGO,
-            }),
-            welcome_brand: Some(ExternalWelcomeBrand {
-                title: "grok-pi",
-                subtitle: PI_WELCOME_SUBTITLE,
-                version: GROK_PI_VERSION,
-            }),
-            // Grok worktree product flow is not wired for Pi yet.
-            hide_new_worktree: true,
-            changelog_url: Some("https://github.com/Dwsy/grok-pi/blob/main/CHANGELOG.MD"),
-            enable_voice_dictation: true,
-            host_features: host_feature_manifest.clone(),
-        },
-    );
-    connection.session_recap_available = true;
 
     let mut pager_args = PagerArgs::parse_from(["grok-pi"]);
     pager_args.cwd = Some(cwd.clone());
@@ -1240,20 +1146,120 @@ async fn run(mut args: Args) -> Result<()> {
         || args.session.is_some()
         || args.session_id.is_some()
         || args.fork.is_some();
-
-    run_external(ExternalRunConfig {
+    let emit_resume_hint = !args.no_session;
+    let resume_session_dir = args.session_dir.clone();
+    let start = ExternalRunStartConfig {
         args: pager_args,
-        connection,
-        session_id,
-        session_title,
-        session_cwd: Some(cwd),
-        resume_existing_session,
-        // Ephemeral runs cannot be resumed from disk.
-        emit_resume_hint: !args.no_session,
-        resume_session_dir: args.session_dir.clone(),
+        session_cwd: Some(cwd.clone()),
         product_version: GROK_PI_VERSION.to_string(),
-    })
-    .await
+    };
+
+    let ready = async move {
+        // Keep OS/process probing behind Pager terminal initialization. On
+        // Windows this also rewrites bare `pi` → absolute `pi.cmd`.
+        let (_pi_version, resolved_pi_bin) =
+            ensure_compatible_pi_host(&args.pi_bin).context("Pi host version check failed")?;
+        args.pi_bin = resolved_pi_bin;
+
+        // Extension self-heal still owns Pi bootstrap semantics; only the wait
+        // moved behind the native Pager startup surface.
+        let (process, bootstrap, _pi_args) =
+            spawn_with_extension_self_heal(&args, &cwd, pi_args, &env).await?;
+
+        if btw_enabled {
+            env.push(("PI_GROK_BTW".to_string(), "1".to_string()));
+            unsafe {
+                std::env::set_var("PI_GROK_BTW", "1");
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("PI_GROK_BTW");
+            }
+        }
+
+        let initial_models = bootstrap.acp_models();
+        let initial_commands = bootstrap.acp_commands(workflows_enabled);
+        let session_id = bootstrap.session_id().to_string();
+        let session_title = bootstrap
+            .session_title()
+            .map(str::to_owned)
+            .or_else(|| Some("Pi".to_string()));
+
+        let (client_channel, mut agent_channel) = acp_channels();
+        let adapter = Rc::new(
+            PiAgent::new(
+                process.rpc,
+                agent_channel.tx.clone(),
+                bootstrap,
+                pi_session_dir,
+                bash_control_meta,
+                context_breakdown,
+                plan_mode_control,
+                goal_control,
+                subagent_transport,
+                workflows_enabled,
+                eval_v2_only_tool_policy_applied,
+            )
+            .context("failed to restore Pi plan-mode state")?,
+        );
+
+        let event_adapter = adapter.clone();
+        tokio::task::spawn_local(async move {
+            event_adapter.run_events(process.events).await;
+        });
+
+        let route_adapter = adapter.clone();
+        tokio::task::spawn_local(async move {
+            while let Some(message) = agent_channel.rx.recv().await {
+                message.route_to_agent(route_adapter.clone(), |future| {
+                    tokio::task::spawn_local(future);
+                });
+            }
+        });
+
+        let command_profile = PI_GROK_NATIVE_COMMANDS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        // External ACP skips shell `initialize`, so recap must be enabled here.
+        let mut connection = AcpConnection::external(
+            client_channel.tx,
+            client_channel.rx,
+            initial_models,
+            initial_commands,
+            CancellationToken::new(),
+            ExternalUiProfile {
+                agent_name: "Pi".to_string(),
+                builtin_commands: command_profile.clone(),
+                logo: Some(ExternalLogoArt {
+                    full: PI_LOGO,
+                    small: PI_LOGO,
+                }),
+                welcome_brand: Some(ExternalWelcomeBrand {
+                    title: "grok-pi",
+                    subtitle: PI_WELCOME_SUBTITLE,
+                    version: GROK_PI_VERSION,
+                }),
+                // Grok worktree product flow is not wired for Pi yet.
+                hide_new_worktree: true,
+                changelog_url: Some("https://github.com/Dwsy/grok-pi/blob/main/CHANGELOG.MD"),
+                enable_voice_dictation: true,
+                host_features: host_feature_manifest.clone(),
+            },
+        );
+        connection.session_recap_available = true;
+
+        Ok(ExternalRunReady {
+            connection,
+            session_id,
+            session_title,
+            resume_existing_session,
+            emit_resume_hint,
+            resume_session_dir,
+        })
+    };
+
+    run_external_deferred(start, ready).await
 }
 
 #[cfg(test)]

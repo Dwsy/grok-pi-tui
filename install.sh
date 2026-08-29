@@ -196,9 +196,10 @@ fi
 
 # Convenience alias used by some docs / muscle memory.
 ln -sf "$INSTALL_DIR/grok-pi" "$INSTALL_DIR/pi-grok"
+ln -sf "$INSTALL_DIR/grok-pi" "$INSTALL_DIR/pig"
 
 info ""
-info "Installed $INSTALL_DIR/grok-pi (alias: pi-grok)"
+info "Installed $INSTALL_DIR/grok-pi (aliases: pig, pi-grok)"
 
 if "$INSTALL_DIR/grok-pi" --help >/dev/null 2>&1; then
   info "Binary responds to --help."
@@ -212,6 +213,7 @@ check_pi_host
 info ""
 info "Run:"
 info "  grok-pi"
+info "  # or: pig"
 info "  # or: pi-grok"
 info "  # continue last session: grok-pi --continue"
 info "  # custom Pi host: grok-pi --pi-bin /path/to/pi"

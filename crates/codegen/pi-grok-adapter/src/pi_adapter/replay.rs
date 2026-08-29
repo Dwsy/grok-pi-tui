@@ -159,21 +159,26 @@ impl PiAgent {
                 id,
                 name,
                 arguments,
+                usage,
             } => {
                 let arguments = normalize_tool_raw_input(&name, arguments);
                 if let Some(args) = arguments.clone() {
                     self.state.borrow_mut().tool_args.insert(id.clone(), args);
                 }
-                acp::SessionUpdate::ToolCall(
-                    acp::ToolCall::new(acp::ToolCallId::new(id), name.clone())
-                        .kind(tool_kind(&name))
-                        .status(acp::ToolCallStatus::InProgress)
-                        .content(
-                            edit_diff_content(&name, arguments.as_ref(), None).unwrap_or_default(),
-                        )
-                        .locations(Vec::new())
-                        .raw_input(arguments),
-                )
+                let mut tool_call = acp::ToolCall::new(acp::ToolCallId::new(id), name.clone())
+                    .kind(tool_kind(&name))
+                    .status(acp::ToolCallStatus::InProgress)
+                    .content(
+                        edit_diff_content(&name, arguments.as_ref(), None).unwrap_or_default(),
+                    )
+                    .locations(Vec::new())
+                    .raw_input(arguments);
+                if let Some(usage) = usage {
+                    let mut meta = acp::Meta::new();
+                    meta.insert("piToolUsage".into(), usage);
+                    tool_call = tool_call.meta(Some(meta));
+                }
+                acp::SessionUpdate::ToolCall(tool_call)
             }
             PiHistoryItem::ToolEnd {
                 id,

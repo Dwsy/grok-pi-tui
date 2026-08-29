@@ -106,6 +106,25 @@ impl AgentView {
         InputOutcome::Changed
     }
 
+    /// Close the block viewer, clearing the Kitty overlay image if one was
+    /// placed. Runs outside the draw path, where the per-frame stale-slot
+    /// sweep never sees the closed viewer.
+    pub(crate) fn close_block_viewer(&mut self) {
+        if self
+            .block_viewer
+            .take()
+            .is_some_and(|viewer| viewer.image.is_some())
+        {
+            xai_grok_shell::util::with_locked_stderr(|stderr| {
+                let clear = crate::terminal::overlay::PostFlush::from(
+                    crate::terminal::overlay::clear_kitty(),
+                );
+                let _ = clear.write_to(stderr);
+            });
+            self.block_viewer_image_active = false;
+        }
+    }
+
     // -- Inline media rendering -----------------------------------------------
 
     /// Build Kitty/iTerm2 escape sequences for an inline media placement.

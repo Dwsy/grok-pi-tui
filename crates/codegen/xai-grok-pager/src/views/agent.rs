@@ -795,7 +795,46 @@ pub struct WriteEditPopupFrame {
     pub total_lines: usize,
 }
 
-/// Render a floating popup with expanded Write/Edit details for collapsed tool rows.
+/// Whether `idx` can back the shared tool-detail hover popup.
+///
+/// Besides collapsed Edit rows, a collapsed verb-group header is a target so
+/// the compact "Group tool calls" row can preview the expanded member details
+/// without opening the group in the transcript.
+pub(crate) fn write_edit_hover_popup_target(scrollback: &ScrollbackState, idx: usize) -> bool {
+    let Some(entry) = scrollback.get(idx) else {
+        return false;
+    };
+    if entry.display_mode != crate::scrollback::types::DisplayMode::Collapsed {
+        return false;
+    }
+    if matches!(
+        &entry.block,
+        crate::scrollback::block::RenderBlock::ToolCall(
+            crate::scrollback::blocks::tool::ToolCallBlock::Edit(_)
+        )
+    ) {
+        return true;
+    }
+    let Some(layout) = scrollback
+        .get_cached_entry_layouts()
+        .and_then(|layouts| layouts.get(idx))
+    else {
+        return false;
+    };
+    if !layout.verb_group_header || layout.is_expanded_verb_header() {
+        return false;
+    }
+    scrollback.span_at(idx).is_some_and(|span| {
+        span.range.start == idx
+            && !span.expanded
+            && matches!(
+                span.kind,
+                crate::scrollback::state::groups::GroupKind::VerbRun { .. }
+            )
+    })
+}
+
+/// Render a floating popup with expanded Write/Edit or grouped-tool details.
 ///
 /// Returns the painted popup frame, or `None` when nothing was drawn.
 /// `keep_alive_area` is the previous frame's popup rect: while the pointer
@@ -825,25 +864,18 @@ pub fn render_write_edit_hover_popup(
     let Some(entry) = scrollback.get(hover_idx) else {
         return None;
     };
-    let layout_info = scrollback
-        .get_cached_entry_layouts()
-        .and_then(|layouts| layouts.get(hover_idx));
-    if layout_info.is_some_and(|info| {
-        info.verb_group_header && !info.is_expanded_verb_header() && info.group_header_count > 1
-    }) {
+    if !write_edit_hover_popup_target(scrollback, hover_idx) {
         return None;
     }
-    if entry.display_mode != crate::scrollback::types::DisplayMode::Collapsed {
-        return None;
-    }
-    if !matches!(
-        &entry.block,
-        crate::scrollback::block::RenderBlock::ToolCall(
-            crate::scrollback::blocks::tool::ToolCallBlock::Edit(_)
-        )
-    ) {
-        return None;
-    }
+    let group_range = scrollback.span_at(hover_idx).and_then(|span| {
+        (span.range.start == hover_idx
+            && !span.expanded
+            && matches!(
+                span.kind,
+                crate::scrollback::state::groups::GroupKind::VerbRun { .. }
+            ))
+        .then(|| span.range.clone())
+    });
 
     let Some((entry_area, _, _)) = scrollback.entry_screen_area(hover_idx, scrollback_area) else {
         return None;
@@ -877,15 +909,48 @@ pub fn render_write_edit_hover_popup(
         .saturating_add(body_budget as usize)
         .saturating_add(1)
         .min(u16::MAX as usize) as u16;
-    let ctx = entry.context_with_mode_and_budget(
-        inner_width,
-        crate::scrollback::types::DisplayMode::Expanded,
-        requested_budget,
-        scrollback.appearance(),
-        false,
-        scrollback.cwd(),
-    );
-    let lines = entry.output_with_hooks(&ctx).lines;
+    let lines = if let Some(range) = group_range.as_ref() {
+        let show_thinking = crate::appearance::cache::load_show_thinking_blocks();
+        let mut lines = Vec::new();
+        let total_budget = requested_budget as usize;
+        for idx in range.clone() {
+            if lines.len() >= total_budget {
+                break;
+            }
+            let Some(member) = scrollback.get(idx) else {
+                continue;
+            };
+            if !matches!(
+                crate::scrollback::state::verb_group::run_step(member, show_thinking),
+                crate::scrollback::state::verb_group::RunStep::Member(_)
+            ) {
+                continue;
+            }
+            let remaining = total_budget.saturating_sub(lines.len()).max(1) as u16;
+            // List members as their own collapsed rows — the popup previews
+            // what the fold hides, not each call's expanded output.
+            let ctx = member.context_with_mode_and_budget(
+                inner_width,
+                crate::scrollback::types::DisplayMode::Collapsed,
+                remaining,
+                scrollback.appearance(),
+                false,
+                scrollback.cwd(),
+            );
+            lines.extend(member.output_with_hooks(&ctx).lines.into_iter().take(remaining as usize));
+        }
+        lines
+    } else {
+        let ctx = entry.context_with_mode_and_budget(
+            inner_width,
+            crate::scrollback::types::DisplayMode::Expanded,
+            requested_budget,
+            scrollback.appearance(),
+            false,
+            scrollback.cwd(),
+        );
+        entry.output_with_hooks(&ctx).lines
+    };
     if lines.is_empty() {
         return None;
     }
@@ -942,8 +1007,13 @@ pub fn render_write_edit_hover_popup(
         }
     }
     let border_style = Style::default().fg(theme.gray);
+    let popup_title = if group_range.is_some() {
+        " Group tool details "
+    } else {
+        " Write/Edit details "
+    };
     let block = Block::default()
-        .title(" Write/Edit details ")
+        .title(popup_title)
         .borders(ratatui::widgets::Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
         .border_style(border_style)
@@ -1539,6 +1609,38 @@ mod tests {
         (buf.area.top()..buf.area.bottom())
             .flat_map(|y| (buf.area.left()..buf.area.right()).map(move |x| buf[(x, y)].symbol()))
             .collect()
+    }
+    #[test]
+    fn grouped_tool_hover_popup_shows_expanded_member_details() {
+        crate::appearance::cache::set_group_tool_verbs(true);
+        crate::appearance::cache::set_show_thinking_blocks(false);
+        crate::appearance::cache::set_write_edit_hover_popups(true);
+        let viewport = Rect::new(0, 0, 100, 16);
+        let mut state = ScrollbackState::new();
+        state.push_block(crate::scrollback::RenderBlock::read("first.rs", None));
+        state.push_block(crate::scrollback::RenderBlock::read("second.rs", None));
+        state.prepare_layout(viewport.width, viewport.height);
+        let layout = state.get_cached_entry_layouts().expect("layout cache")[0];
+        assert!(layout.verb_group_header);
+        assert_eq!(layout.group_header_count, 2);
+
+        let mut buf = Buffer::empty(viewport);
+        let frame = render_write_edit_hover_popup(
+            &mut buf,
+            viewport,
+            &state,
+            Some(0),
+            (5, 0),
+            0,
+            None,
+            &Theme::current(),
+        );
+
+        assert!(frame.is_some(), "collapsed tool group should open a hover popup");
+        let text = frame_text(&buf);
+        assert!(text.contains("Group tool details"), "popup title missing: {text:?}");
+        assert!(text.contains("first.rs"), "first member missing: {text:?}");
+        assert!(text.contains("second.rs"), "second member missing: {text:?}");
     }
     #[test]
     fn hook_hover_popup_allows_singleton_verb_header() {
@@ -2465,28 +2567,22 @@ mod tests {
             with_rail.scrollback_content.x + with_rail.scrollback_content.width,
             with_rail.timeline_x,
         );
-        let compact = AgentViewLayout::compute(
-            area,
-            &layout_cfg,
-            &scrollbar_cfg,
-            2,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            1,
-            true,
-        );
+        let layout_cfg = LayoutConfig::default();
+        let normal = AgentViewLayout::compute(AgentViewLayoutParams {
+            layout_cfg,
+            scrollbar_cfg,
+            timeline_width: 2,
+            external_widgets_above_editor_height: 1,
+            ..base_params(area)
+        });
+        let compact = AgentViewLayout::compute(AgentViewLayoutParams {
+            layout_cfg,
+            scrollbar_cfg,
+            timeline_width: 2,
+            external_widgets_above_editor_height: 1,
+            compact: true,
+            ..base_params(area)
+        });
 
         assert_eq!(
             normal.external_widgets_above_editor.x,

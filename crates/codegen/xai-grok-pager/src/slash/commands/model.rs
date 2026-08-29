@@ -696,6 +696,8 @@ mod tests {
             billing_surface_visible: false,
             usage_command_visible: true,
             workflows_available: true,
+            saved_workflows: &[],
+            workflow_runs: &[],
             current_title: None,
         };
         let items = cmd.suggest_args(&ctx, "").unwrap();

@@ -704,6 +704,7 @@ fn rows_contain_categories_and_settings_through_pr_14() {
             // multiline_mode, so it renders first).
             "combine_queued_prompts",
             "follow_up_behavior",
+            "cancel_turn_key",
             "confirm_before_rewind",
             // PAGER-owned multiline (Editor category).
             "multiline_mode",

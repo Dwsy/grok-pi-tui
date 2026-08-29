@@ -6945,7 +6945,7 @@ impl AppView {
             } else if let Some(entry) = agent.scrollback.get_by_id(viewer.entry_id) {
                 needs_redraw |= viewer.tick(entry);
             } else {
-                agent.block_viewer = None;
+                agent.close_block_viewer();
                 needs_redraw = true;
             }
         }

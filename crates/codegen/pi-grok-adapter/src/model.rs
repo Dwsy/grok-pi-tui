@@ -866,6 +866,9 @@ pub enum PiHistoryItem {
         id: String,
         name: String,
         arguments: Option<Value>,
+        /// Usage for the assistant model segment that emitted this tool call.
+        /// Kept opaque so Pi/provider-specific cache/cost fields survive ACP replay.
+        usage: Option<Value>,
     },
     ToolEnd {
         id: String,
@@ -1443,6 +1446,7 @@ fn parse_user_content(value: &Value, output: &mut Vec<PiHistoryItem>) {
 }
 
 fn parse_assistant(value: &Value, message_index: usize, output: &mut Vec<PiHistoryItem>) {
+    let usage = value.get("usage").cloned();
     let Some(content) = value.get("content") else {
         if let Some(text) = content_text(value) {
             output.push(PiHistoryItem::AgentText(text.to_string()));
@@ -1482,6 +1486,7 @@ fn parse_assistant(value: &Value, message_index: usize, output: &mut Vec<PiHisto
                             id,
                             name,
                             arguments,
+                            usage: usage.clone(),
                         });
                     }
                     _ => {
@@ -1576,6 +1581,7 @@ fn parse_bash_execution(value: &Value, message_index: usize, output: &mut Vec<Pi
         id: id.clone(),
         name: "bash".to_string(),
         arguments: Some(serde_json::json!({ "command": command })),
+        usage: None,
     });
     let mut text = string(value, &["output"]).unwrap_or_default().to_string();
     if value.get("cancelled").and_then(Value::as_bool) == Some(true) {

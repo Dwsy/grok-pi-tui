@@ -391,12 +391,12 @@ impl AgentView {
                 if let Some(rail) = self.timeline_rail.as_ref()
                     && rail.rect.contains((mouse.column, mouse.row).into())
                 {
-                    if let Some(turn_idx) = rail
+                    if let Some(marker_idx) = rail
                         .hit(mouse.column, mouse.row)
                         .and_then(|hit| crate::views::timeline::chevron_target(rail, hit))
                     {
                         self.set_active_pane(AgentPane::Scrollback, false);
-                        self.scrollback.jump_to_turn(turn_idx);
+                        self.scrollback.jump_to_timeline_marker(marker_idx);
                         return InputOutcome::Changed;
                     }
                     return InputOutcome::Unchanged;

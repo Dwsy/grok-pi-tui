@@ -1822,6 +1822,12 @@ pub(crate) async fn run(
         app.current_ui.voice_keybind_enabled.unwrap_or(true),
         std::sync::atomic::Ordering::Release,
     );
+    // Seed the F2-configurable running-turn cancellation gesture. Unset and
+    // unknown values resolve to Esc in UiConfig.
+    crate::app::ESC_CANCELS_TURN.store(
+        app.current_ui.cancel_turn_key() == "esc",
+        std::sync::atomic::Ordering::Release,
+    );
     // Resolve the per-tip contextual hints now that `current_ui` is hydrated and
     // propagate the prompt-relevant tips to any agents built at startup. New
     // agents adopt the gates at creation; settings toggles re-apply at runtime.

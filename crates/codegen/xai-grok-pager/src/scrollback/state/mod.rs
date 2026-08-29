@@ -13,7 +13,7 @@ mod types;
 pub mod verb_group;
 
 pub use layout::compute_paint_window;
-pub use timeline::TimelineEntry;
+pub use timeline::{TimelineEntry, TimelineMarker, TimelineMarkerKind};
 pub use types::*;
 
 pub(crate) use layout::ScrollAnchor;

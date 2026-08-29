@@ -301,6 +301,19 @@ const FOLLOW_UP_BEHAVIOR_CHOICES: &[EnumChoice] = &[
     },
 ];
 
+const CANCEL_TURN_KEY_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        canonical: "esc",
+        display: "Esc",
+        description: "Esc cancels a running turn (default). Ctrl+C still works.",
+    },
+    EnumChoice {
+        canonical: "ctrl_c",
+        display: "Ctrl+C",
+        description: "Esc is swallowed while a turn runs; Ctrl+C is required to cancel.",
+    },
+];
+
 // ---------------------------------------------------------------------------
 // Mermaid-rendering catalog.
 //
@@ -788,6 +801,31 @@ pub fn default_settings() -> Vec<SettingMeta> {
             kind: SettingKind::Enum {
                 default: ui_default.follow_up_behavior(),
                 choices: FOLLOW_UP_BEHAVIOR_CHOICES,
+                supports_preview: false,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: false,
+        },
+        SettingMeta {
+            key: "cancel_turn_key",
+            category: SettingCategory::Editor,
+            owner: SettingOwner::Shared,
+            label: "Cancel running turn",
+            description: "Choose whether Esc cancels a running turn or Ctrl+C is required. \
+                          Default: Esc.",
+            keywords: &[
+                "cancel",
+                "stop",
+                "interrupt",
+                "esc",
+                "escape",
+                "ctrl+c",
+                "key",
+            ],
+            kind: SettingKind::Enum {
+                default: ui_default.cancel_turn_key(),
+                choices: CANCEL_TURN_KEY_CHOICES,
                 supports_preview: false,
             },
             restart_required: false,

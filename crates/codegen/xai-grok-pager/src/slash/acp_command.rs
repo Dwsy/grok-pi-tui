@@ -546,6 +546,8 @@ mod tests {
             usage_command_visible: true,
             workflows_available: false,
             screen_mode: crate::app::ScreenMode::Fullscreen,
+            saved_workflows: &[],
+            workflow_runs: &[],
             current_title: None,
         };
         let all = acp_cmd.suggest_args(&ctx, "").expect("items");

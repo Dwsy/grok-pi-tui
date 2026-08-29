@@ -236,7 +236,7 @@ fn dismiss_agent_surfaces(agent: &mut AgentView) {
     agent.image_viewer = None;
     agent.video_viewer = None;
     agent.line_viewer = None;
-    agent.block_viewer = None;
+    agent.close_block_viewer();
     agent.persona_detail = None;
     agent.agents_modal = None;
     agent.show_goal_detail = false;

@@ -110,21 +110,26 @@ impl PiAgent {
                 .insert(id.to_string(), args);
         }
         let content = edit_diff_content(name, args.as_ref(), None).unwrap_or_default();
+        let usage = self.state.borrow_mut().tool_usage.remove(id);
         let ask_user_args = (name == "ask_user_question")
             .then(|| args.clone())
             .flatten();
         // When the tool is Q&A we still spawn even if args is None so the control
         // file gets an error payload instead of leaving the extension polling forever.
         let open_ask_user = name == "ask_user_question";
-        self.send_update(acp::SessionUpdate::ToolCall(
+        let mut tool_call =
             acp::ToolCall::new(acp::ToolCallId::new(id.to_string()), name.to_string())
                 .kind(tool_kind(name))
                 .status(acp::ToolCallStatus::InProgress)
                 .content(content)
                 .locations(Vec::new())
-                .raw_input(args),
-        ))
-        .await;
+                .raw_input(args);
+        if let Some(usage) = usage {
+            let mut meta = acp::Meta::new();
+            meta.insert("piToolUsage".into(), usage);
+            tool_call = tool_call.meta(Some(meta));
+        }
+        self.send_update(acp::SessionUpdate::ToolCall(tool_call)).await;
         if name == "exit_plan_mode" {
             self.request_plan_approval(id).await;
         }
@@ -242,6 +247,15 @@ impl PiAgent {
         }
         if let Err(error) = self.sync_plan_mode_control() {
             tracing::warn!(%error, "failed to publish plan gate before approval");
+            self.state
+                .borrow_mut()
+                .plan_mode
+                .set_awaiting_plan_approval(false);
+            return;
+        }
+        let pi_state = self.state.borrow().bootstrap.state.clone();
+        if let Err(error) = normalize_plan_document(&plan_file_path, &pi_state) {
+            tracing::warn!(%error, "failed to normalize plan document before approval");
             self.state
                 .borrow_mut()
                 .plan_mode

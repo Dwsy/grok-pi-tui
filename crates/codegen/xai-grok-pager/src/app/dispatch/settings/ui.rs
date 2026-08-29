@@ -2,10 +2,11 @@
 
 use super::setters::{
     pr13_effective_default, set_ask_user_question_timeout_enabled_inner, set_auto_dark_theme_inner,
-    set_auto_light_theme_inner, set_auto_update_inner, set_collapsed_edit_blocks_inner,
-    set_combine_queued_prompts_inner, set_compact_mode, set_compact_mode_inner,
-    set_confirm_before_rewind_inner, set_contextual_hint_inner, set_default_model_inner,
-    set_default_selected_permission_inner, set_display_refresh_auto_cadence_inner,
+    set_auto_light_theme_inner, set_auto_update_inner, set_cancel_turn_key_inner,
+    set_collapsed_edit_blocks_inner, set_combine_queued_prompts_inner, set_compact_mode,
+    set_compact_mode_inner, set_confirm_before_rewind_inner, set_contextual_hint_inner,
+    set_default_model_inner, set_default_selected_permission_inner,
+    set_display_refresh_auto_cadence_inner, set_follow_up_behavior_inner,
     set_fork_secondary_model_inner, set_group_tool_verbs_inner, set_hunk_tracker_mode_inner,
     set_invert_scroll_inner, set_keep_text_selection_inner, set_max_thoughts_width_inner,
     set_multiline_mode, set_page_flip_on_send_inner, set_pi_at_search_hidden_inner,
@@ -18,7 +19,7 @@ use super::setters::{
     set_side_by_side_edit_inner, set_simple_mode_inner, set_theme_inner,
     set_thinking_border_colors_inner, set_timeline_inner, set_timestamps, set_timestamps_inner,
     set_vim_mode_inner, set_voice_capture_mode_inner, set_voice_keybind_enabled_inner,
-    set_voice_stt_language_inner, set_write_edit_hover_popups_inner, set_follow_up_behavior_inner,
+    set_voice_stt_language_inner, set_write_edit_hover_popups_inner,
 };
 use crate::app::actions::{Action, Effect};
 use crate::app::app_view::{ActiveView, AppView};
@@ -1158,6 +1159,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("follow_up_behavior", SettingValue::Enum(s)) => {
             crate::appearance::FollowUpBehavior::from_canonical(s).map(Action::SetFollowUpBehavior)
         }
+        ("cancel_turn_key", SettingValue::Enum(s)) => {
+            Some(Action::SetCancelTurnKey((*s).to_string()))
+        }
         ("simple_mode", SettingValue::Bool(b)) => Some(Action::SetSimpleMode(*b)),
         ("contextual_hints.undo", SettingValue::Bool(b)) => Some(Action::SetContextualHintUndo(*b)),
         ("contextual_hints.plan_mode", SettingValue::Bool(b)) => {
@@ -1446,6 +1450,7 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
                 set_follow_up_behavior_inner(app, mode);
             }
         }
+        ("cancel_turn_key", SettingValue::Enum(s)) => set_cancel_turn_key_inner(app, s),
         ("simple_mode", SettingValue::Bool(b)) => set_simple_mode_inner(app, *b),
         ("contextual_hints.undo", SettingValue::Bool(b)) => {
             set_contextual_hint_inner(app, |h, v| h.undo = v, *b)

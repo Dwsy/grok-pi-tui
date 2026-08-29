@@ -16,7 +16,7 @@ use crate::scrollback::blocks::tool::{
     ReadMediaKind, ReadToolCallBlock, ToolCallBlock, UseToolCallBlock, WebFetchToolCallBlock,
     WebSearchToolCallBlock,
 };
-use crate::scrollback::entry::{EntryId, ScrollbackEntry};
+use crate::scrollback::entry::{EntryId, ScrollbackEntry, ToolTraceSnapshot};
 use crate::scrollback::state::ScrollbackState;
 use crate::scrollback::state::verb_group::verb_group_kind_changed;
 use agent_client_protocol as acp;
@@ -35,6 +35,68 @@ fn utc_ms_to_local(ms: i64) -> DateTime<Local> {
         .single()
         .map(|utc| utc.with_timezone(&Local))
         .unwrap_or_else(Local::now)
+}
+
+fn tool_trace_from_call(tc: &acp::ToolCall, meta: &NotificationMeta) -> ToolTraceSnapshot {
+    ToolTraceSnapshot {
+        tool_call_id: tc.tool_call_id.0.to_string(),
+        title: tc.title.clone(),
+        status: format!("{:?}", tc.status),
+        raw_input: tc.raw_input.clone(),
+        raw_output: tc.raw_output.clone(),
+        usage: tc
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("piToolUsage"))
+            .cloned(),
+        context_tokens: meta.total_tokens,
+        stream_start_ms: meta.stream_start_ms,
+        started_at_ms: meta.agent_timestamp_ms,
+        updated_at_ms: meta.agent_timestamp_ms,
+    }
+}
+
+fn refresh_tool_trace(
+    scrollback: &mut ScrollbackState,
+    entry_id: EntryId,
+    tc: &acp::ToolCall,
+    meta: &NotificationMeta,
+) {
+    let Some(entry) = scrollback.get_by_id_mut(entry_id) else {
+        return;
+    };
+    let incoming = tool_trace_from_call(tc, meta);
+    if let Some(trace) = entry
+        .tool_traces
+        .iter_mut()
+        .find(|trace| trace.tool_call_id == incoming.tool_call_id)
+    {
+        trace.title = incoming.title;
+        trace.status = incoming.status;
+        if incoming.raw_input.is_some() {
+            trace.raw_input = incoming.raw_input;
+        }
+        if incoming.raw_output.is_some() {
+            trace.raw_output = incoming.raw_output;
+        }
+        if incoming.usage.is_some() {
+            trace.usage = incoming.usage;
+        }
+        if incoming.context_tokens.is_some() {
+            trace.context_tokens = incoming.context_tokens;
+        }
+        if incoming.stream_start_ms.is_some() {
+            trace.stream_start_ms = incoming.stream_start_ms;
+        }
+        if trace.started_at_ms.is_none() {
+            trace.started_at_ms = incoming.started_at_ms;
+        }
+        if incoming.updated_at_ms.is_some() {
+            trace.updated_at_ms = incoming.updated_at_ms;
+        }
+    } else {
+        entry.tool_traces.push(incoming);
+    }
 }
 /// What the agent is currently doing within a turn.
 ///
@@ -793,11 +855,15 @@ impl AcpUpdateTracker {
     fn finish_completed_tool(
         &mut self,
         block: RenderBlock,
+        trace: ToolTraceSnapshot,
         scrollback: &mut ScrollbackState,
         is_replay: bool,
     ) -> EntryId {
         let wants_hl = Self::edit_wants_file_hl(&block);
         let id = scrollback.push_block(block);
+        if let Some(entry) = scrollback.get_by_id_mut(id) {
+            entry.tool_traces.push(trace);
+        }
         if !is_replay && wants_hl {
             self.pending_edit_hl.push(id);
         }
@@ -808,7 +874,8 @@ impl AcpUpdateTracker {
     /// The Edit block of `entry` if it qualifies for coalescing with an
     /// adjacent same-file Edit: completed successfully with hunks, a
     /// trustworthy one-liner summary, and free of per-entry attachments a
-    /// merge would misplace.
+    /// merge would misplace. Tool traces are concatenated by
+    /// `merge_edit_entries`, so they remain safe to coalesce.
     fn coalescable_edit(entry: &ScrollbackEntry) -> Option<&EditToolCallBlock> {
         if entry.is_running || entry.is_pending_user_input || entry.hook_data.is_some() {
             return None;
@@ -911,12 +978,15 @@ impl AcpUpdateTracker {
         scrollback: &mut ScrollbackState,
         is_replay: bool,
     ) {
-        let (removed_hunks, removed_edit_count) =
-            match scrollback.get_by_id(removed).map(|e| &e.block) {
-                Some(RenderBlock::ToolCall(ToolCallBlock::Edit(edit))) => {
-                    (edit.hunks.clone(), edit.edit_count)
-                }
-                _ => return,
+        let (removed_hunks, removed_edit_count, removed_traces) =
+            match scrollback.get_by_id(removed) {
+                Some(entry) => match &entry.block {
+                    RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) => {
+                        (edit.hunks.clone(), edit.edit_count, entry.tool_traces.clone())
+                    }
+                    _ => return,
+                },
+                None => return,
             };
         if let Some(entry) = scrollback.get_by_id_mut(survivor) {
             if let RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) = &mut entry.block {
@@ -927,6 +997,7 @@ impl AcpUpdateTracker {
                 edit.edit_count = merged_edit_count;
                 edit.highlight = EditHighlightPhase::HunkOnly;
             }
+            entry.tool_traces.extend(removed_traces);
             entry.invalidate_cache();
         }
         scrollback.mark_structurally_dirty(survivor);
@@ -1004,11 +1075,9 @@ impl AcpUpdateTracker {
                 self.drop_stale_blocking_waits(meta.stream_start_ms);
                 self.handle_thought_chunk(thought, meta, scrollback)
             }
-            acp::SessionUpdate::ToolCall(tc) => {
-                self.handle_tool_call(tc, scrollback, meta.is_replay)
-            }
+            acp::SessionUpdate::ToolCall(tc) => self.handle_tool_call(tc, scrollback, meta),
             acp::SessionUpdate::ToolCallUpdate(tcu) => {
-                self.handle_tool_call_update(tcu, scrollback, meta.is_replay)
+                self.handle_tool_call_update(tcu, scrollback, meta)
             }
             acp::SessionUpdate::UserMessageChunk(chunk) => {
                 self.handle_user_message(chunk, meta, scrollback)
@@ -1196,8 +1265,9 @@ impl AcpUpdateTracker {
         &mut self,
         tc: acp::ToolCall,
         scrollback: &mut ScrollbackState,
-        is_replay: bool,
+        meta: &NotificationMeta,
     ) -> bool {
+        let is_replay = meta.is_replay;
         self.finish_thinking(scrollback);
         self.current_agent_msg = None;
         if is_todo_tool(&tc)
@@ -1238,7 +1308,8 @@ impl AcpUpdateTracker {
         if let Some(orphan) = self.orphan_updates.remove(&tc_id) {
             let merged = merge_tool_call_update(tc, orphan);
             let block = tool_call_to_block(&merged, self.session_cwd.as_deref());
-            self.finish_completed_tool(block, scrollback, is_replay);
+            let trace = tool_trace_from_call(&merged, meta);
+            self.finish_completed_tool(block, trace, scrollback, is_replay);
             return true;
         }
         let is_completed = matches!(
@@ -1247,10 +1318,12 @@ impl AcpUpdateTracker {
         );
         if is_completed {
             let block = tool_call_to_block(&tc, self.session_cwd.as_deref());
-            self.finish_completed_tool(block, scrollback, is_replay);
+            let trace = tool_trace_from_call(&tc, meta);
+            self.finish_completed_tool(block, trace, scrollback, is_replay);
         } else {
             let block = tool_call_to_block(&tc, self.session_cwd.as_deref());
             let id = scrollback.push_block(block);
+            refresh_tool_trace(scrollback, id, &tc, meta);
             scrollback.set_last_running(true);
             let started_at = Some(std::time::Instant::now());
             self.pending_tools.insert(
@@ -1270,8 +1343,9 @@ impl AcpUpdateTracker {
         &mut self,
         tcu: acp::ToolCallUpdate,
         scrollback: &mut ScrollbackState,
-        is_replay: bool,
+        meta: &NotificationMeta,
     ) -> bool {
+        let is_replay = meta.is_replay;
         let tc_id_str = tcu.tool_call_id.0.to_string();
         if self.bg_deferred_tools.contains_key(&tc_id_str) {
             return false;
@@ -1331,6 +1405,9 @@ impl AcpUpdateTracker {
             let defer_as_bg = if let Some(pending) = self.pending_tools.get_mut(&tc_id) {
                 let bash_output = extract_bash_output_from_value(&tcu.fields.raw_output);
                 pending.base.update(tcu.fields);
+                if let Some(entry_id) = pending.entry_id {
+                    refresh_tool_trace(scrollback, entry_id, &pending.base, meta);
+                }
                 if pending.entry_id.is_none() && is_bg_tool(&pending.base) {
                     let desc = extract_raw_field(&pending.base, "description");
                     Some((tc_id.clone(), desc, false))
@@ -1380,6 +1457,7 @@ impl AcpUpdateTracker {
                         pending.entry_id = Some(id);
                         id
                     };
+                    refresh_tool_trace(scrollback, entry_id, &pending.base, meta);
                     if let Some(bash_output) = bash_output {
                         if let Some(delta) = &bash_output.output_delta {
                             let text = pending.utf8_decoder.decode(delta);
@@ -1411,6 +1489,7 @@ impl AcpUpdateTracker {
             let merged = merge_tool_call_update(pending.base, tcu);
             let block = tool_call_to_block(&merged, self.session_cwd.as_deref());
             if let Some(entry_id) = pending.entry_id {
+                refresh_tool_trace(scrollback, entry_id, &merged, meta);
                 if scrollback.replace_tool_block(entry_id, block, pending.started_at)
                     && let Some(entry) = scrollback.get_by_id(entry_id)
                 {
@@ -1419,7 +1498,8 @@ impl AcpUpdateTracker {
                 scrollback.finish_running(entry_id);
                 self.try_coalesce_edit(entry_id, scrollback, is_replay);
             } else {
-                self.finish_completed_tool(block, scrollback, is_replay);
+                let trace = tool_trace_from_call(&merged, meta);
+                self.finish_completed_tool(block, trace, scrollback, is_replay);
             }
             true
         } else {

@@ -2926,6 +2926,49 @@ fn delete_session_refuses_conversation_row() {
     );
     assert!(read_toast(&app).contains("isn't supported"));
 }
+
+#[test]
+fn collapse_on_minimal_tool_trace_opens_shared_doc_viewer() {
+    use crate::scrollback::{DisplayMode, RenderBlock};
+    use crate::scrollback::entry::ToolTraceSnapshot;
+    use crate::views::modal::ActiveModal;
+
+    let mut app = test_app_with_agent();
+    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+    let entry_id = agent
+        .scrollback
+        .push_block(RenderBlock::tool_call("read", "README.md", true));
+    let index = agent.scrollback.index_of_id(entry_id).unwrap();
+    let entry = agent.scrollback.get_by_id_mut(entry_id).unwrap();
+    entry.display_mode = DisplayMode::Collapsed;
+    entry.tool_traces.push(ToolTraceSnapshot {
+        tool_call_id: "trace-1".into(),
+        title: "read".into(),
+        status: "Completed".into(),
+        raw_input: Some(serde_json::json!({ "path": "README.md" })),
+        raw_output: Some(serde_json::json!({ "content": "hello" })),
+        usage: Some(serde_json::json!({ "input": 101, "output": 23 })),
+        context_tokens: Some(925),
+        stream_start_ms: Some(1_000),
+        started_at_ms: Some(1_200),
+        updated_at_ms: Some(1_350),
+    });
+    agent.scrollback.set_selected(Some(index));
+
+    let effects = dispatch(Action::Collapse, &mut app);
+    assert!(effects.is_empty());
+    let agent = get_active_agent(&app).expect("active agent");
+    let Some(ActiveModal::DocViewer { title, content, standalone, .. }) =
+        agent.active_modal.as_ref()
+    else {
+        panic!("expected tool trace DocViewer");
+    };
+    assert!(title.contains("read"));
+    assert!(content.contains("README.md"));
+    assert!(content.contains("LLM segment usage"));
+    assert!(*standalone);
+}
+
 /// Expanding a conversation card must not read `chat_history.jsonl`
 /// (it doesn't exist); the row still toggles open.
 #[test]

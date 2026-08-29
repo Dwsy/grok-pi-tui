@@ -1155,6 +1155,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "cancel_turn_key" => {
+            let SettingValue::Enum(s) = value else {
+                return Err(kind_mismatch("cancel_turn_key", "Enum", &value));
+            };
+            xai_grok_shell::util::config::set_cancel_turn_key(s.to_string())
+                .await
+                .map_err(|e| e.to_string())
+        }
         "show_timeline" => {
             let SettingValue::Bool(b) = value else {
                 return Err(kind_mismatch("show_timeline", "Bool", &value));

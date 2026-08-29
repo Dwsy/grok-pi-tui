@@ -171,6 +171,22 @@ pub enum ViewerKind {
     PlainText,
 }
 
+/// Decoded image payload for a Read viewer whose file is an image.
+///
+/// Rendered as a Kitty/iTerm2 overlay centered in the popup's content area;
+/// shares the modal overlay placement slot (Kitty placement id 1) with the
+/// other image modals.
+#[derive(Debug, Clone)]
+pub struct BlockViewerImage {
+    /// Protocol-prepared bytes (PNG for Kitty, as-is for iTerm2).
+    pub bytes: Vec<u8>,
+    /// Decoded pixel dimensions.
+    pub width: u32,
+    pub height: u32,
+    /// Shared terminal overlay upload owner id (allocated once per viewer).
+    pub owner_id: u64,
+}
+
 /// Fullscreen block content viewer.
 ///
 /// Replaces the scrollback area when open. Owns a `ListPaneState` for
@@ -215,6 +231,10 @@ pub struct BlockViewerPane {
     last_theme: ThemeKind,
     /// Modal chrome state (close button hover, popup area, etc.).
     pub modal: ModalWindowState,
+    /// Image payload when this Read viewer shows an image file. `Some` only
+    /// when the terminal supports a graphics protocol and the bytes loaded;
+    /// otherwise the text lines are the content.
+    pub image: Option<BlockViewerImage>,
     /// Cached prepend (preamble) ContentLines from the last render. Combined
     /// with `items` to produce the unified vec the ListPane sees. Needed so
     /// scroll / mouse / key handlers index into the same item space the
@@ -327,6 +347,7 @@ impl BlockViewerPane {
             bg_task_id: None,
             last_theme: Theme::current_kind(),
             modal: ModalWindowState::new(),
+            image: None,
             prepend_items: Vec::new(),
             text_drag: None,
             drag_copy_text: None,
@@ -383,6 +404,7 @@ impl BlockViewerPane {
             bg_task_id: None,
             last_theme: Theme::current_kind(),
             modal: ModalWindowState::new(),
+            image: None,
             prepend_items: Vec::new(),
             text_drag: None,
             drag_copy_text: None,
@@ -438,6 +460,7 @@ impl BlockViewerPane {
             bg_task_id: None,
             last_theme: Theme::current_kind(),
             modal: ModalWindowState::new(),
+            image: None,
             prepend_items: Vec::new(),
             text_drag: None,
             drag_copy_text: None,
@@ -492,33 +515,71 @@ impl BlockViewerPane {
 
         let content = read.content.as_deref().unwrap_or("");
         let raw_lines: Vec<&str> = content.lines().collect();
-        let base_line = read.line_range.map_or(1, |r| r.start);
-        let max_line = base_line + raw_lines.len().saturating_sub(1);
-        let gutter_width = max_line.checked_ilog10().map_or(1, |d| d as usize + 1);
-        let gutter_style = Style::default().fg(theme.gray_dim);
-        let fallback = Style::default().fg(theme.text_primary);
 
-        let syntect = crate::syntax::get_syntect();
-        let mut highlighter =
-            syntect.highlight_lines_by_file_path(std::path::Path::new(&read.path));
+        // Image reads (the read tool returns placeholder text for images):
+        // load the pixels and show them as the popup body. The text lines
+        // below stay as the fallback for terminals without a graphics
+        // protocol or when the file can't be loaded.
+        let image = if crate::prompt_images::ScrollbackImageRef::from_path(&read.path).is_some() {
+            Self::load_read_image(std::path::Path::new(&read.path))
+        } else {
+            None
+        };
 
-        let lines: Vec<Line<'static>> = raw_lines
-            .iter()
-            .enumerate()
-            .map(|(i, text)| {
-                let gutter = format!("{:>w$}  ", base_line + i, w = gutter_width);
-                let mut spans = vec![Span::styled(gutter, gutter_style)];
-                spans.extend(crate::syntax::highlight_line(
-                    text,
-                    &mut highlighter,
-                    syntect,
-                    fallback,
-                ));
-                Line::from(spans)
-            })
-            .collect();
+        let lines: Vec<Line<'static>> = if image.is_some() {
+            // The overlay image is the content; an empty body keeps the
+            // placeholder text from poking out around the pixels.
+            Vec::new()
+        } else {
+            let base_line = read.line_range.map_or(1, |r| r.start);
+            let max_line = base_line + raw_lines.len().saturating_sub(1);
+            let gutter_width = max_line.checked_ilog10().map_or(1, |d| d as usize + 1);
+            let gutter_style = Style::default().fg(theme.gray_dim);
+            let fallback = Style::default().fg(theme.text_primary);
 
-        Some(Self::for_static_content(entry_id, ViewerKind::Read, lines))
+            let syntect = crate::syntax::get_syntect();
+            let mut highlighter =
+                syntect.highlight_lines_by_file_path(std::path::Path::new(&read.path));
+
+            raw_lines
+                .iter()
+                .enumerate()
+                .map(|(i, text)| {
+                    let gutter = format!("{:>w$}  ", base_line + i, w = gutter_width);
+                    let mut spans = vec![Span::styled(gutter, gutter_style)];
+                    spans.extend(crate::syntax::highlight_line(
+                        text,
+                        &mut highlighter,
+                        syntect,
+                        fallback,
+                    ));
+                    Line::from(spans)
+                })
+                .collect()
+        };
+
+        let mut viewer = Self::for_static_content(entry_id, ViewerKind::Read, lines);
+        viewer.image = image;
+        Some(viewer)
+    }
+
+    /// Load protocol-prepared pixels for an image-file Read viewer.
+    ///
+    /// Returns `None` — leaving the text lines as the content — when the
+    /// terminal has no graphics protocol or the file can't be read/decoded.
+    fn load_read_image(path: &std::path::Path) -> Option<BlockViewerImage> {
+        if !crate::terminal::image::detect_graphics_protocol().supports_images() {
+            return None;
+        }
+        let raw = std::fs::read(path).ok()?;
+        let bytes = crate::terminal::image::prepare_overlay_image_bytes(&raw)?;
+        let (width, height) = crate::prompt_images::decode_image_dimensions(&bytes)?;
+        Some(BlockViewerImage {
+            bytes,
+            width,
+            height,
+            owner_id: crate::terminal::overlay::next_owner_id(),
+        })
     }
 
     fn static_lines_from_block(
@@ -819,6 +880,7 @@ impl BlockViewerPane {
             bg_task_id: Some(task_id.to_string()),
             last_theme: Theme::current_kind(),
             modal: ModalWindowState::new(),
+            image: None,
             prepend_items: Vec::new(),
             text_drag: None,
             drag_copy_text: None,
@@ -890,6 +952,7 @@ impl BlockViewerPane {
             bg_task_id: None,
             last_theme: Theme::current_kind(),
             modal: ModalWindowState::new(),
+            image: None,
             prepend_items: Vec::new(),
             text_drag: None,
             drag_copy_text: None,
@@ -1012,6 +1075,7 @@ impl BlockViewerPane {
             bg_task_id: None,
             last_theme: Theme::current_kind(),
             modal: ModalWindowState::new(),
+            image: None,
             prepend_items: Vec::new(),
             text_drag: None,
             drag_copy_text: None,
@@ -2097,5 +2161,70 @@ mod tests {
         assert_eq!(entries[1].tag, ChangeTag::Insert);
         assert_eq!(entries[2].tag, ChangeTag::Equal);
         assert_eq!(entries[2].text, "same\n");
+    }
+
+    #[test]
+    fn for_read_image_file_loads_overlay_payload_instead_of_text() {
+        use crate::scrollback::blocks::tool::ReadToolCallBlock;
+        use crate::terminal::image::{GraphicsProtocol, set_protocol_for_test};
+        let _guard = set_protocol_for_test(GraphicsProtocol::Kitty);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        std::fs::write(&path, test_png()).unwrap();
+
+        let block = RenderBlock::ToolCall(ToolCallBlock::Read(
+            ReadToolCallBlock::new(path.to_string_lossy().as_ref())
+                .with_content("Read image file [image/png]\n[Image: original]".to_owned(), 2),
+        ));
+        let entry = ScrollbackEntry::new(block);
+        let viewer = BlockViewerPane::for_read(entry.id, &entry).unwrap();
+        let image = viewer.image.expect("graphics terminal loads the image");
+        assert_eq!((image.width, image.height), (8, 8));
+        assert!(
+            viewer.items.is_empty(),
+            "placeholder text must not render under the image"
+        );
+
+        // Text reads keep the highlighted text lines and no payload.
+        let text_path = dir.path().join("main.rs");
+        std::fs::write(&text_path, "fn main() {}\n").unwrap();
+        let text_block = RenderBlock::ToolCall(ToolCallBlock::Read(
+            ReadToolCallBlock::new(text_path.to_string_lossy().as_ref())
+                .with_content("fn main() {}".to_owned(), 1),
+        ));
+        let text_entry = ScrollbackEntry::new(text_block);
+        let text_viewer = BlockViewerPane::for_read(text_entry.id, &text_entry).unwrap();
+        assert!(text_viewer.image.is_none());
+        assert!(!text_viewer.items.is_empty());
+    }
+
+    #[test]
+    fn for_read_image_without_graphics_keeps_text_fallback() {
+        use crate::scrollback::blocks::tool::ReadToolCallBlock;
+        use crate::terminal::image::{GraphicsProtocol, set_protocol_for_test};
+        let _guard = set_protocol_for_test(GraphicsProtocol::None);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        std::fs::write(&path, test_png()).unwrap();
+
+        let block = RenderBlock::ToolCall(ToolCallBlock::Read(
+            ReadToolCallBlock::new(path.to_string_lossy().as_ref())
+                .with_content("Read image file [image/png]".to_owned(), 1),
+        ));
+        let entry = ScrollbackEntry::new(block);
+        let viewer = BlockViewerPane::for_read(entry.id, &entry).unwrap();
+        assert!(viewer.image.is_none());
+        assert!(!viewer.items.is_empty(), "text placeholder is the fallback");
+    }
+
+    /// Minimal valid 8x8 PNG (same recipe as the agent_view test fixtures).
+    fn test_png() -> Vec<u8> {
+        use image::{ImageBuffer, Rgba};
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(8, 8, Rgba([128, 64, 32, 255]));
+        let mut buf = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        buf
     }
 }

@@ -26,10 +26,9 @@
 //!       on an empty prompt) re-enters this level and runs CancelTurn.
 //!   → 3. Esc policy (try_handle_esc_policy) on Prompt or Scrollback only,
 //!       after overlays/dropdowns/selection returned Changed / stole Esc:
-//!       turn running, gate ON (`esc_cancels_turn`: minimal mode OR
-//!         `[ui].vim_mode` off) → CancelTurn (even with a draft; the draft
-//!         is preserved, unlike Ctrl+C's clear-first gesture)
-//!       turn running, gate OFF (fullscreen vim mode) → Changed (swallow)
+//!       turn running, F2 cancel policy = Esc → CancelTurn (even with a draft;
+//!         the draft is preserved, unlike Ctrl+C's clear-first gesture)
+//!       turn running, F2 cancel policy = Ctrl+C → Changed (swallow Esc)
 //!       turn cancelling → CancelTurn in every mode (retry lost ack;
 //!         Ctrl+C escalates to Quit)
 //!       idle + non-empty prompt, prompt pane only → ArmPending ClearPrompt (2× within 800ms, hint)
@@ -1396,6 +1395,9 @@ pub struct AgentView {
     pub(crate) pinned_upgrade_cta_live: bool,
     /// Fullscreen block viewer. When `Some`, replaces the scrollback area.
     pub(crate) block_viewer: Option<BlockViewerPane>,
+    /// A block-viewer Kitty overlay image is (or was recently) placed in the
+    /// shared modal slot; the next block-viewer-free frame clears it.
+    pub(crate) block_viewer_image_active: bool,
     /// Active scrollback search session. When `Some`, vim `/` (or `/find`) is
     /// searching the scrollback. Inert until input wiring opens it.
     pub(crate) scrollback_search: Option<ScrollbackSearchState>,
@@ -1524,8 +1526,8 @@ pub struct AgentView {
     /// cancel falls back to that UI/config field, then the prompt panel.
     pub(crate) cancel_subagents_preference: Option<bool>,
     /// What gesture triggered the pending turn-cancel (Ctrl+C / mouse; Esc
-    /// via the mid-turn cancel in minimal / non-vim mode and the cancel-retry
-    /// path while TurnCancelling).
+    /// via the configurable mid-turn cancel and the cancel-retry path while
+    /// TurnCancelling).
     /// Set by the key/mouse handler, consumed by `do_cancel_turn` / the
     /// cancel-retry path so `session/cancel` carries `_meta.cancelTrigger`.
     pub(crate) cancel_trigger_hint: Option<crate::app::actions::CancelTrigger>,
@@ -1545,8 +1547,7 @@ pub struct AgentView {
     /// Timeline geometry built during render and consumed by mouse input.
     pub(crate) timeline_rail: Option<crate::views::timeline::TimelineRail>,
     pub(crate) timeline_hover: Option<crate::views::timeline::TimelineHit>,
-    /// Turn index, prompt preview text, and prompt creation time for the rail
-    /// hover card.
+    /// Marker index, preview text, and creation time for the timeline hover card.
     pub(crate) timeline_hover_preview:
         Option<(usize, String, Option<chrono::DateTime<chrono::Local>>)>,
     /// Running agent definition for this session (`x.ai/session/info` `agentName`).

@@ -469,7 +469,7 @@ pub(super) fn handle_exit_plan_mode(
     // - block_viewer: draw returns on line_viewer (plan visible) but
     //   handle_scroll prefers block_viewer, so wheel hits the hidden Edit pane.
     agent.active_modal = None;
-    agent.block_viewer = None;
+    agent.close_block_viewer();
 
     let source = plan_review_source_for_tool(&params.tool_call_id, agent);
 

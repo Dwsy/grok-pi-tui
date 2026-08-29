@@ -711,21 +711,19 @@ impl Theme {
     }
 }
 
-/// Minimum luminance separation between the cursor color and the theme
-/// canvas for the accent to be emitted as the native cursor color.
+/// Minimum luminance separation required for a theme-provided cursor color
+/// to be considered readable against the canvas.
 const CURSOR_MIN_LUMINANCE_DELTA: f32 = 0.25;
 
 /// Cursor color with a readability floor against the theme canvas.
 ///
-/// `accent_user` is a *styling* accent; themes (especially Pi/custom
-/// palettes) do not guarantee it contrasts with the canvas — a pale accent
-/// on a near-white background leaves the native cursor nearly invisible
-/// after a dark→light switch. When the accent sits within
-/// [`CURSOR_MIN_LUMINANCE_DELTA`] luminance of `bg_base`, fall back to
-/// `text_primary`, and when even that blends, to polarity max-contrast fg.
-/// Transparent canvases (`Color::Reset`) keep the raw accent — the host
-/// background is unknown, so no contrast claim can be made.
-fn cursor_color_for(theme: &Theme) -> ratatui::style::Color {
+/// On light canvases the native cursor follows `text_primary` rather than a
+/// chromatic `accent_user`. A high-contrast red/purple/blue accent is readable
+/// but still looks like a stale dark-theme cursor after switching to a light
+/// theme. Dark canvases retain the user accent when it is readable.
+/// Transparent canvases (`Color::Reset`) keep the raw accent because the host
+/// background polarity is unknown.
+pub fn cursor_color_for(theme: &Theme) -> ratatui::style::Color {
     use ratatui::style::Color;
     let lum = |(r, g, b): (u8, u8, u8)| crate::theme::pi::color::relative_luminance(r, g, b);
     let Some(accent) = crate::render::color::resolve_to_rgb(theme.accent_user) else {
@@ -735,6 +733,14 @@ fn cursor_color_for(theme: &Theme) -> ratatui::style::Color {
         return theme.accent_user;
     };
     let bg_lum = lum(bg);
+    if bg_lum >= 0.5 {
+        if let Some(text) = crate::render::color::resolve_to_rgb(theme.text_primary)
+            && (lum(text) - bg_lum).abs() >= CURSOR_MIN_LUMINANCE_DELTA
+        {
+            return theme.text_primary;
+        }
+        return Color::Black;
+    }
     if (lum(accent) - bg_lum).abs() >= CURSOR_MIN_LUMINANCE_DELTA {
         return theme.accent_user;
     }
@@ -743,19 +749,13 @@ fn cursor_color_for(theme: &Theme) -> ratatui::style::Color {
     {
         return theme.text_primary;
     }
-    // Max-contrast fg for the canvas polarity.
-    if bg_lum >= 0.5 {
-        Color::Black
-    } else {
-        Color::White
-    }
+    Color::White
 }
 
 /// Set the terminal cursor color via OSC 12, honoring the current theme.
 ///
-/// The emitted color is the theme's `accent_user` passed through
-/// [`cursor_color_for`], which swaps in a readable fallback when the accent
-/// would blend into the canvas.
+/// [`cursor_color_for`] uses `text_primary` on light canvases and a readable
+/// `accent_user` on dark canvases, with polarity-safe fallbacks.
 ///
 /// `Theme::current()` quantizes to the terminal's color level, so on
 /// non-truecolor terminals `accent_user` may be `Color::Indexed` or a
@@ -850,18 +850,17 @@ mod tests {
     }
 
     #[test]
-    fn cursor_color_keeps_readable_accent() {
+    fn cursor_color_uses_text_on_light_canvas_and_accent_on_dark_canvas() {
         use ratatui::style::Color;
-        // Light accent on dark canvas (groknight) — unchanged.
         let t = Theme::groknight();
         assert_eq!(cursor_color_for(&t), t.accent_user);
-        // Dark accent on light canvas (grokday) — unchanged.
+
         let t = Theme::grokday();
-        assert_eq!(cursor_color_for(&t), t.accent_user);
-        // Saturated accent on either polarity stays.
+        assert_eq!(cursor_color_for(&t), t.text_primary);
+
         let mut t = Theme::grokday();
-        t.accent_user = Color::Rgb(47, 100, 210);
-        assert_eq!(cursor_color_for(&t), Color::Rgb(47, 100, 210));
+        t.accent_user = Color::Rgb(205, 48, 72);
+        assert_eq!(cursor_color_for(&t), t.text_primary);
     }
 
     #[test]
@@ -1152,9 +1151,9 @@ mod tests {
 
     #[test]
     fn ansi16_overrides_accent_user_uses_high_contrast() {
-        // accent_user drives the selected-user-prompt `>` color and the
-        // OSC 12 cursor color. It's pinned to max-contrast fg in both
-        // polarities so the selection always pops against the canvas:
+        // accent_user drives the selected-user-prompt `>` color and can drive
+        // the OSC 12 cursor on dark canvases. It's pinned to max-contrast fg in
+        // both polarities so the selection always pops against the canvas:
         //   - dark canvas → Color::White
         //   - light canvas → Color::Black
         use ratatui::style::Color;

@@ -124,6 +124,11 @@ pub async fn set_follow_up_behavior(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.follow_up_behavior = Some(value)).await
 }
 
+/// Persist `[ui].cancel_turn_key` (`"esc"` | `"ctrl_c"`).
+pub async fn set_cancel_turn_key(value: String) -> Result<()> {
+    update_config(|cfg| cfg.ui.cancel_turn_key = Some(value)).await
+}
+
 /// Persist `[ui].simple_mode` via `update_config`. Same `Option<bool>`
 /// shape as `show_timestamps`.
 pub async fn set_simple_mode(value: bool) -> Result<()> {

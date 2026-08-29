@@ -3447,7 +3447,7 @@ fn ctrl_c_running_prompt_with_text_clears_text_and_preserves_turn() {
     );
 }
 #[test]
-fn esc_from_prompt_pane_running_turn_cancels_in_non_vim_mode() {
+fn esc_from_prompt_pane_running_turn_cancels_by_default() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);
     let agent = app.agents.get_mut(&id).unwrap();
@@ -3457,7 +3457,7 @@ fn esc_from_prompt_pane_running_turn_cancels_in_non_vim_mode() {
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
         matches!(outcome, InputOutcome::Action(Action::CancelTurn)),
-        "1× Esc while running must cancel in non-vim mode, got {outcome:?}"
+        "1× Esc while running must cancel under the default Esc policy, got {outcome:?}"
     );
     assert!(app.pending_action.is_none());
     assert_eq!(
@@ -3502,7 +3502,7 @@ fn esc_from_prompt_pane_running_turn_with_draft_cancels_preserving_draft() {
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
         matches!(outcome, InputOutcome::Action(Action::CancelTurn)),
-        "mid-turn Esc with draft must cancel in non-vim mode, got {outcome:?}"
+        "mid-turn Esc with draft must cancel under the default Esc policy, got {outcome:?}"
     );
     assert!(app.pending_action.is_none(), "must not arm idle clear");
     assert_eq!(
@@ -3516,7 +3516,7 @@ fn esc_from_prompt_pane_running_turn_with_draft_cancels_preserving_draft() {
     );
 }
 #[test]
-fn esc_from_scrollback_pane_running_turn_cancels_in_non_vim_mode() {
+fn esc_from_scrollback_pane_running_turn_cancels_by_default() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);
     let agent = app.agents.get_mut(&id).unwrap();
@@ -3526,7 +3526,7 @@ fn esc_from_scrollback_pane_running_turn_cancels_in_non_vim_mode() {
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
         matches!(outcome, InputOutcome::Action(Action::CancelTurn)),
-        "1× Esc from scrollback while running must cancel in non-vim mode, got {outcome:?}"
+        "1× Esc from scrollback while running must cancel under the default Esc policy, got {outcome:?}"
     );
     assert!(app.pending_action.is_none());
     assert_eq!(
@@ -3535,7 +3535,7 @@ fn esc_from_scrollback_pane_running_turn_cancels_in_non_vim_mode() {
     );
 }
 #[test]
-fn esc_from_prompt_pane_running_turn_vim_mode_is_swallowed() {
+fn esc_running_turn_is_swallowed_when_ctrl_c_is_required() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);
     let agent = app.agents.get_mut(&id).unwrap();
@@ -3543,22 +3543,24 @@ fn esc_from_prompt_pane_running_turn_vim_mode_is_swallowed() {
     agent.active_pane = crate::views::agent::ActivePane::Prompt;
     agent.vim_mode = true;
     agent.prompt.textarea.set_text("draft while streaming");
+    let previous = crate::app::ESC_CANCELS_TURN.swap(false, std::sync::atomic::Ordering::AcqRel);
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
+    crate::app::ESC_CANCELS_TURN.store(previous, std::sync::atomic::Ordering::Release);
     assert!(
         matches!(outcome, InputOutcome::Changed),
-        "1× Esc while running must swallow in vim mode, got {outcome:?}"
+        "Esc while running must swallow when Ctrl+C is required, got {outcome:?}"
     );
     assert!(app.pending_action.is_none());
     assert!(app.agents[&id].cancel_trigger_hint.is_none());
     assert_eq!(
         app.agents[&id].prompt.textarea.text(),
         "draft while streaming",
-        "vim mid-turn Esc must not clear the draft or arm idle clear"
+        "disabled mid-turn Esc must not clear the draft or arm idle clear"
     );
     assert!(app.agents[&id].session.state.is_turn_running());
 }
 #[test]
-fn esc_from_scrollback_pane_running_turn_vim_mode_is_swallowed() {
+fn esc_from_scrollback_pane_running_turn_vim_mode_still_cancels_by_default() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);
     let agent = app.agents.get_mut(&id).unwrap();
@@ -3567,22 +3569,17 @@ fn esc_from_scrollback_pane_running_turn_vim_mode_is_swallowed() {
     agent.vim_mode = true;
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
-        matches!(outcome, InputOutcome::Changed),
-        "1× Esc from scrollback while running must swallow in vim mode, got {outcome:?}"
+        matches!(outcome, InputOutcome::Action(Action::CancelTurn)),
+        "Esc from scrollback must cancel under the default Esc policy even in vim mode, got {outcome:?}"
     );
     assert!(app.pending_action.is_none());
-    assert!(app.agents[&id].cancel_trigger_hint.is_none());
-    assert!(app.agents[&id].session.state.is_turn_running());
+    assert_eq!(
+        app.agents[&id].cancel_trigger_hint,
+        Some(crate::app::actions::CancelTrigger::Esc)
+    );
 }
 #[test]
-fn esc_cancels_turn_gate_truth_table() {
-    assert!(crate::app::esc_cancels_turn(true, true));
-    assert!(crate::app::esc_cancels_turn(true, false));
-    assert!(crate::app::esc_cancels_turn(false, false));
-    assert!(!crate::app::esc_cancels_turn(false, true));
-}
-#[test]
-fn esc_running_turn_minimal_screen_mode_cancels_even_with_vim_on() {
+fn esc_default_policy_cancels_independent_of_screen_and_vim_mode() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);
     let agent = app.agents.get_mut(&id).unwrap();
@@ -3595,7 +3592,7 @@ fn esc_running_turn_minimal_screen_mode_cancels_even_with_vim_on() {
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
         matches!(outcome, InputOutcome::Action(Action::CancelTurn)),
-        "minimal mode must Esc-cancel even with vim scrollback nav on, got {outcome:?}"
+        "default Esc policy must cancel independent of screen/vim mode, got {outcome:?}"
     );
     assert_eq!(
         app.agents[&id].cancel_trigger_hint,
@@ -5733,12 +5730,12 @@ fn overlay_esc_dismisses_btw_before_dashboard_backout() {
         "second Esc with no /btw must back out to the dashboard, got {second:?}",
     );
 }
-/// Regression: in an overlay, a bare Esc while a turn is
-/// RUNNING must swallow (matching full-screen vim mode), NOT detach to the
-/// dashboard and NOT cancel. The empty-prompt back-out is idle-gated, so Esc
-/// falls through to `try_handle_esc_policy` → mid-turn swallow.
+/// Regression: when F2 requires Ctrl+C, a bare Esc in an overlay while a turn
+/// is RUNNING must swallow, NOT detach to the dashboard and NOT cancel. The
+/// empty-prompt back-out is idle-gated, so Esc falls through to the mid-turn
+/// policy and is consumed there.
 #[test]
-fn overlay_esc_running_turn_empty_prompt_swallows_not_backout() {
+fn overlay_esc_running_turn_empty_prompt_swallows_when_ctrl_c_required() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);
     app.active_view = ActiveView::Agent(id);
@@ -5751,7 +5748,9 @@ fn overlay_esc_running_turn_empty_prompt_swallows_not_backout() {
     agent.session.state = AgentState::TurnRunning;
     agent.vim_mode = true;
     assert!(agent.prompt.text().is_empty());
+    let previous = crate::app::ESC_CANCELS_TURN.swap(false, std::sync::atomic::Ordering::AcqRel);
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
+    crate::app::ESC_CANCELS_TURN.store(previous, std::sync::atomic::Ordering::Release);
     assert!(
         matches!(outcome, InputOutcome::Changed),
         "running-turn overlay Esc (empty prompt) must swallow, not detach/cancel, got {outcome:?}",
@@ -5767,12 +5766,11 @@ fn overlay_esc_running_turn_empty_prompt_swallows_not_backout() {
     assert!(app.agents[&id].cancel_trigger_hint.is_none());
     assert!(app.pending_action.is_none());
 }
-/// Regression: in an overlay, a bare Esc from the
-/// (neutral) bare-scrollback pane while a turn is RUNNING must swallow, NOT
-/// detach — the neutral back-out is idle-gated. The fixture is otherwise
-/// neutral (so the gate, not a missing-neutral, is what suppresses detach).
+/// Regression: when F2 requires Ctrl+C, a bare Esc from the neutral
+/// bare-scrollback pane while a turn is RUNNING must swallow, NOT detach. The
+/// neutral back-out is idle-gated, so the cancellation policy owns the key.
 #[test]
-fn overlay_esc_running_turn_scrollback_swallows_not_backout() {
+fn overlay_esc_running_turn_scrollback_swallows_when_ctrl_c_required() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);
     app.active_view = ActiveView::Agent(id);
@@ -5786,7 +5784,9 @@ fn overlay_esc_running_turn_scrollback_swallows_not_backout() {
     agent.vim_mode = true;
     assert!(agent.is_bare_scrollback() && agent.no_input_overlay_pending());
     assert!(agent.no_esc_consumer_pending());
+    let previous = crate::app::ESC_CANCELS_TURN.swap(false, std::sync::atomic::Ordering::AcqRel);
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
+    crate::app::ESC_CANCELS_TURN.store(previous, std::sync::atomic::Ordering::Release);
     assert!(
         matches!(outcome, InputOutcome::Changed),
         "running-turn overlay Esc (scrollback) must swallow, not detach/cancel, got {outcome:?}",
@@ -5801,10 +5801,10 @@ fn overlay_esc_running_turn_scrollback_swallows_not_backout() {
     );
     assert!(app.agents[&id].cancel_trigger_hint.is_none());
 }
-/// Overlay + non-vim: mid-turn Esc CANCELS (matching full-screen), and
-/// still must not detach to the dashboard.
+/// With the default Esc policy, mid-turn Esc cancels in an overlay and still
+/// must not detach to the dashboard.
 #[test]
-fn overlay_esc_running_turn_non_vim_cancels_not_backout() {
+fn overlay_esc_running_turn_default_policy_cancels_not_backout() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);
     app.active_view = ActiveView::Agent(id);
@@ -5819,7 +5819,7 @@ fn overlay_esc_running_turn_non_vim_cancels_not_backout() {
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
         matches!(outcome, InputOutcome::Action(Action::CancelTurn)),
-        "running-turn overlay Esc must cancel in non-vim mode, got {outcome:?}",
+        "running-turn overlay Esc must cancel under the default Esc policy, got {outcome:?}",
     );
     assert_eq!(
         app.agents[&id].cancel_trigger_hint,

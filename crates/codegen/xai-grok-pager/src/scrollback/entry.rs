@@ -90,6 +90,78 @@ fn wrapped_lines_from_widths(widths: &[u32], content_width: u16) -> u16 {
     total.max(1) as u16
 }
 
+/// Immutable-at-the-UI-boundary diagnostic data for one ACP tool call.
+///
+/// The tracker refreshes this snapshot as ToolCallUpdate messages arrive. Keeping
+/// it beside the rendered entry means the trace modal never needs to read session
+/// JSONL or perform another agent RPC.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolTraceSnapshot {
+    pub tool_call_id: String,
+    pub title: String,
+    pub status: String,
+    pub raw_input: Option<serde_json::Value>,
+    pub raw_output: Option<serde_json::Value>,
+    /// Usage of the assistant model segment that emitted this tool call.
+    pub usage: Option<serde_json::Value>,
+    /// Session/context token count carried by SessionNotification metadata.
+    pub context_tokens: Option<u64>,
+    pub stream_start_ms: Option<i64>,
+    pub started_at_ms: Option<i64>,
+    pub updated_at_ms: Option<i64>,
+}
+
+fn pretty_json(value: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+/// Format one or more ACP-backed tool traces for the shared DocViewer modal.
+pub fn format_tool_traces_markdown(traces: &[ToolTraceSnapshot]) -> String {
+    traces
+        .iter()
+        .enumerate()
+        .map(|(index, trace)| {
+            let mut out = String::new();
+            if traces.len() > 1 {
+                out.push_str(&format!("# Call {}\n\n", index + 1));
+            }
+            out.push_str(&format!(
+                "**Tool:** {}  \n**Tool call ID:** `{}`  \n**Status:** {}",
+                trace.title, trace.tool_call_id, trace.status
+            ));
+            if let Some(tokens) = trace.context_tokens {
+                out.push_str(&format!("  \n**Context tokens at event:** {tokens}"));
+            }
+            if let Some(ms) = trace.started_at_ms {
+                out.push_str(&format!("  \n**Started (UTC ms):** {ms}"));
+            }
+            if let Some(ms) = trace.updated_at_ms {
+                out.push_str(&format!("  \n**Updated (UTC ms):** {ms}"));
+            }
+            if let Some(ms) = trace.stream_start_ms {
+                out.push_str(&format!("  \n**Model stream start (UTC ms):** {ms}"));
+            }
+            out.push_str("\n\n## Input\n\n");
+            match trace.raw_input.as_ref() {
+                Some(value) => out.push_str(&format!("````json\n{}\n````", pretty_json(value))),
+                None => out.push_str("Not reported by agent."),
+            }
+            out.push_str("\n\n## Output\n\n");
+            match trace.raw_output.as_ref() {
+                Some(value) => out.push_str(&format!("````json\n{}\n````", pretty_json(value))),
+                None => out.push_str("Not reported by agent."),
+            }
+            out.push_str("\n\n## LLM segment usage\n\n");
+            match trace.usage.as_ref() {
+                Some(value) => out.push_str(&format!("````json\n{}\n````", pretty_json(value))),
+                None => out.push_str("Not reported by agent."),
+            }
+            out
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n---\n\n")
+}
+
 /// A scrollback entry: block content + display state.
 #[derive(Debug, Clone)]
 pub struct ScrollbackEntry {
@@ -121,6 +193,10 @@ pub struct ScrollbackEntry {
 
     /// Hook data attached to this entry (only meaningful for ToolCall blocks).
     pub hook_data: Option<super::blocks::tool::ToolCallHookData>,
+
+    /// ACP-backed diagnostics for the tool call(s) represented by this row.
+    /// Multiple entries are possible when adjacent Edit rows are coalesced.
+    pub tool_traces: Vec<ToolTraceSnapshot>,
 
     /// When this entry was created (local time).
     pub created_at: Option<DateTime<Local>>,
@@ -221,6 +297,7 @@ impl ScrollbackEntry {
             display_mode_pinned: false,
             raw: false,
             hook_data: None,
+            tool_traces: Vec::new(),
             created_at: Some(Local::now()),
             finished_at: None,
             cached_output: RefCell::new(None),
@@ -254,6 +331,7 @@ impl ScrollbackEntry {
             display_mode_pinned: false,
             raw: false,
             hook_data: None,
+            tool_traces: Vec::new(),
             created_at: Some(Local::now()),
             finished_at: None,
             cached_output: RefCell::new(None),

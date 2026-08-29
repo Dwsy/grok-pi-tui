@@ -458,11 +458,55 @@ fn plan_sidecar_is_scoped_to_jsonl_session() {
         ..PiState::default()
     };
     let plan = plan_file_path(&state, Path::new("/tmp/pi"));
-    assert_eq!(plan, PathBuf::from("/tmp/pi/project/session.plan.md"));
+    assert_eq!(plan, PathBuf::from("/tmp/pi/project/plans/session.plan.md"));
     assert_eq!(
         plan_state_path(&plan),
         PathBuf::from("/tmp/pi/project/session.plan-mode.json")
     );
+}
+
+#[test]
+fn completed_plan_gets_cursor_style_context_front_matter() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let session_file = directory.path().join("session.jsonl");
+    std::fs::write(
+        &session_file,
+        "{\"type\":\"session\",\"id\":\"session-1\",\"timestamp\":\"2026-08-27T02:13:07.584Z\",\"cwd\":\"/repo\"}\n",
+    )
+    .unwrap();
+    let state = PiState {
+        session_id: "session-1".into(),
+        session_file: Some(session_file.display().to_string()),
+        session_name: Some("Fallback session title".into()),
+        model: Some(PiModel {
+            provider: "openai".into(),
+            id: "gpt-test".into(),
+            ..PiModel::default()
+        }),
+        ..PiState::default()
+    };
+    let plan = plan_file_path(&state, directory.path());
+    std::fs::create_dir_all(plan.parent().unwrap()).unwrap();
+    std::fs::write(
+        &plan,
+        "# Shipping Plan\n\n## Goal\nMake startup deterministic and fast.\n\n- Keep behavior stable.\n",
+    )
+    .unwrap();
+
+    normalize_plan_document(&plan, &state).unwrap();
+    let normalized = std::fs::read_to_string(&plan).unwrap();
+    assert!(normalized.starts_with("---\nname: \"Shipping Plan\"\n"));
+    assert!(normalized.contains("overview: \"Make startup deterministic and fast.\"\n"));
+    assert!(normalized.contains("tags:\n  - plan\n"));
+    assert!(normalized.contains("sessionId: \"session-1\"\n"));
+    assert!(normalized.contains("sessionName: \"Fallback session title\"\n"));
+    assert!(normalized.contains("createdAt: \"2026-08-27T02:13:07.584Z\"\n"));
+    assert!(normalized.contains("cwd: \"/repo\"\n"));
+    assert!(normalized.contains("model: \"openai::gpt-test\"\n"));
+    assert!(normalized.contains("isProject: true\n---\n\n# Shipping Plan\n"));
+
+    normalize_plan_document(&plan, &state).unwrap();
+    assert_eq!(std::fs::read_to_string(&plan).unwrap(), normalized);
 }
 
 #[test]

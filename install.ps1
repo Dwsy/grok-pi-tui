@@ -196,8 +196,18 @@ try {
     Copy-Item -LiteralPath $target -Destination $alias -Force
 }
 
+$pigAlias = Join-Path $installDir 'pig.exe'
+try {
+    if (Test-Path -LiteralPath $pigAlias) {
+        Remove-Item -LiteralPath $pigAlias -Force -ErrorAction SilentlyContinue
+    }
+    New-Item -ItemType HardLink -Path $pigAlias -Target $target -ErrorAction Stop | Out-Null
+} catch {
+    Copy-Item -LiteralPath $target -Destination $pigAlias -Force
+}
+
 Write-Info ''
-Write-Info "Installed $target (alias: pi-grok.exe)"
+Write-Info "Installed $target (aliases: pig.exe, pi-grok.exe)"
 Write-Info 'PATH updated for this session and User env (new terminals inherit User PATH).'
 
 Write-PiHostHint
@@ -205,6 +215,7 @@ Write-PiHostHint
 Write-Info ''
 Write-Info 'Run:'
 Write-Info '  grok-pi'
+Write-Info '  # or: pig'
 Write-Info '  # or: pi-grok'
 Write-Info '  # continue: grok-pi --continue'
 Write-Info '  # custom Pi host: grok-pi --pi-bin C:\path\to\pi.cmd'

@@ -202,6 +202,10 @@ struct AdapterState {
     /// Pi tool args keyed by toolCallId. End events may omit args; the pager
     /// still needs path/command when projecting native Read/Execute cards.
     tool_args: HashMap<String, Value>,
+    /// Complete assistant-message usage keyed by toolCallId. `message_end`
+    /// arrives before Pi starts executing the tool, so the following
+    /// `tool_execution_start` can attach this directly to the ACP ToolCall.
+    tool_usage: HashMap<String, Value>,
     /// Latest Pi context-window usage (tokens used). Stamped on ACP session
     /// updates as `_meta.totalTokens` so Grok's native context bar can render.
     last_context_tokens: Option<u64>,
@@ -334,6 +338,7 @@ impl PiAgent {
                 session_dir: session_dir.clone(),
                 session_paths: HashMap::new(),
                 tool_args: HashMap::new(),
+                tool_usage: HashMap::new(),
                 last_context_tokens: None,
                 turn_start_ms: None,
                 stream_start_ms: None,
@@ -899,23 +904,148 @@ fn catalog_session_dir(state: &PiState, configured_dir: &Path) -> PathBuf {
         .unwrap_or_else(|| configured_dir.to_path_buf())
 }
 
-/// Derive a plan sidecar that belongs to precisely one Pi JSONL session.
+/// Derive a plan artifact that belongs to precisely one Pi JSONL session.
 ///
-/// Pi's session store contains files, not Grok-style per-session directories;
-/// `<session>.plan.md` avoids sharing a bare `plan.md` across all sessions.
-/// The fallback is still session-id namespaced when Pi has not materialized a
-/// session file yet.
+/// Completed plans live under the session directory's dedicated `plans/`
+/// folder while retaining the JSONL session stem. The fallback is still
+/// session-id namespaced when Pi has not materialized a session file yet.
 fn plan_file_path(state: &PiState, configured_dir: &Path) -> PathBuf {
     if let Some(session_file) = state
         .session_file
         .as_deref()
         .filter(|value| !value.is_empty())
     {
-        return PathBuf::from(session_file).with_extension("plan.md");
+        let session_file = Path::new(session_file);
+        if let (Some(parent), Some(file_name)) = (
+            session_file.parent(),
+            session_file.with_extension("plan.md").file_name(),
+        ) {
+            return parent.join("plans").join(file_name);
+        }
     }
     configured_dir
         .join("grok-pi-plans")
         .join(format!("{}.plan.md", state.session_id))
+}
+
+fn strip_plan_front_matter(content: &str) -> &str {
+    let Some(rest) = content.strip_prefix("---\n") else {
+        return content;
+    };
+    let Some(end) = rest.find("\n---\n") else {
+        return content;
+    };
+    rest[end + "\n---\n".len()..].trim_start_matches('\n')
+}
+
+fn plan_name(body: &str, state: &PiState) -> String {
+    body.lines()
+        .find_map(|line| line.trim().strip_prefix("# ").map(str::trim))
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            state
+                .session_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| format!("Plan {}", state.session_id))
+}
+
+fn plan_overview(body: &str) -> String {
+    let mut paragraph = Vec::new();
+    for raw in body.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            if !paragraph.is_empty() {
+                break;
+            }
+            continue;
+        }
+        if paragraph.is_empty()
+            && (line.starts_with('#')
+                || line.starts_with("```")
+                || line.starts_with("~~~")
+                || line.starts_with("- ")
+                || line.starts_with("* ")
+                || line.starts_with("> "))
+        {
+            continue;
+        }
+        paragraph.push(line);
+    }
+    paragraph.join(" ")
+}
+
+fn plan_session_context(state: &PiState) -> (Option<String>, Option<String>) {
+    let Some(path) = state.session_file.as_deref().filter(|path| !path.is_empty()) else {
+        return (None, None);
+    };
+    let Ok(file) = std::fs::File::open(path) else {
+        return (None, None);
+    };
+    let mut first_line = String::new();
+    if std::io::BufRead::read_line(&mut std::io::BufReader::new(file), &mut first_line).is_err() {
+        return (None, None);
+    }
+    let Ok(header) = serde_json::from_str::<Value>(&first_line) else {
+        return (None, None);
+    };
+    (
+        string(&header, &["timestamp"]).map(str::to_owned),
+        string(&header, &["cwd"]).map(str::to_owned),
+    )
+}
+
+fn yaml_string(value: &str) -> Result<String> {
+    serde_json::to_string(value).map_err(Into::into)
+}
+
+/// Normalize the completed plan into a Cursor-style Markdown document with
+/// deterministic YAML front matter. This runs immediately before approval so
+/// a model's whole-file write cannot accidentally discard adapter metadata.
+fn normalize_plan_document(path: &Path, state: &PiState) -> Result<()> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|error| anyhow!("read plan file {}: {error}", path.display()))?;
+    let body = strip_plan_front_matter(&content);
+    let name = plan_name(body, state);
+    let overview = plan_overview(body);
+    let (created_at, cwd) = plan_session_context(state);
+    let model = state.model.as_ref().map(model_key);
+
+    let mut front_matter = format!(
+        "---\nname: {}\noverview: {}\ntags:\n  - plan\nsessionId: {}\n",
+        yaml_string(&name)?,
+        yaml_string(&overview)?,
+        yaml_string(&state.session_id)?,
+    );
+    if let Some(session_name) = state
+        .session_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        front_matter.push_str(&format!("sessionName: {}\n", yaml_string(session_name)?));
+    }
+    if let Some(created_at) = created_at {
+        front_matter.push_str(&format!("createdAt: {}\n", yaml_string(&created_at)?));
+    }
+    if let Some(cwd) = cwd {
+        front_matter.push_str(&format!("cwd: {}\n", yaml_string(&cwd)?));
+    }
+    if let Some(model) = model {
+        front_matter.push_str(&format!("model: {}\n", yaml_string(&model)?));
+    }
+    front_matter.push_str("isProject: true\n---\n\n");
+
+    let normalized = format!("{front_matter}{}", body.trim_start_matches('\n'));
+    if normalized != content {
+        std::fs::write(path, normalized)
+            .map_err(|error| anyhow!("write plan file {}: {error}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// Ensure activation has a writable, empty plan artifact without truncating a
@@ -943,7 +1073,17 @@ fn plan_state_path(plan_file: &Path) -> PathBuf {
         .and_then(|name| name.to_str())
         .unwrap_or("plan.md");
     let base = name.strip_suffix(".plan.md").unwrap_or(name);
-    plan_file.with_file_name(format!("{base}.plan-mode.json"))
+    let file_name = format!("{base}.plan-mode.json");
+    let Some(parent) = plan_file.parent() else {
+        return plan_file.with_file_name(file_name);
+    };
+    if parent.file_name().is_some_and(|name| name == "plans") {
+        return parent
+            .parent()
+            .unwrap_or(parent)
+            .join(file_name);
+    }
+    parent.join(file_name)
 }
 
 fn load_plan_tracker(plan_file: &Path) -> Result<crate::plan_mode::PiPlanTracker> {

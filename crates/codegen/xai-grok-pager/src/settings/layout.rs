@@ -76,6 +76,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
 
         // -- Editor ----------------------------------------------------------
         "combine_queued_prompts"
+        | "cancel_turn_key"
         | "multiline_mode"
         | "prompt_suggestions"
         | "pi_at_search_hidden" => "Input",

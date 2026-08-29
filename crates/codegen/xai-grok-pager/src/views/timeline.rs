@@ -1,4 +1,4 @@
-//! Timeline sidebar: a per-turn tick rail that replaces the scrollbar gutter.
+//! Timeline sidebar: prompt and context-compaction markers replacing the scrollbar gutter.
 
 use std::ops::Range;
 
@@ -12,7 +12,7 @@ use crate::theme::Theme;
 
 pub const RAIL_WIDTH: u16 = 2;
 pub const MIN_TERMINAL_WIDTH: u16 = 60;
-pub const MIN_TURNS: usize = 2;
+pub const MIN_MARKERS: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimelineRail {
@@ -45,12 +45,12 @@ pub fn rail_width(
     show_timeline: bool,
     is_subagent_view: bool,
     area_width: u16,
-    turn_count: usize,
+    marker_count: usize,
 ) -> u16 {
     if show_timeline
         && !is_subagent_view
         && area_width >= MIN_TERMINAL_WIDTH
-        && turn_count >= MIN_TURNS
+        && marker_count >= MIN_MARKERS
     {
         RAIL_WIDTH
     } else {
@@ -61,20 +61,20 @@ pub fn rail_width(
 pub fn compute_rail(
     scrollback_area: Rect,
     rail_x: u16,
-    turn_count: usize,
+    marker_count: usize,
     viewport: RailViewport,
 ) -> Option<TimelineRail> {
-    if turn_count < MIN_TURNS {
+    if marker_count < MIN_MARKERS {
         return None;
     }
     let max_ticks = (scrollback_area.height as usize).checked_sub(2)?;
     if max_ticks == 0 {
         return None;
     }
-    let window = if turn_count <= max_ticks {
-        0..turn_count
+    let window = if marker_count <= max_ticks {
+        0..marker_count
     } else {
-        let tail_start = turn_count - max_ticks;
+        let tail_start = marker_count - max_ticks;
         let start = if viewport.at_bottom {
             viewport
                 .active
@@ -82,7 +82,7 @@ pub fn compute_rail(
         } else {
             viewport
                 .active
-                .unwrap_or(turn_count - 1)
+                .unwrap_or(marker_count - 1)
                 .saturating_sub(max_ticks / 2)
                 .min(tail_start)
         };
@@ -109,7 +109,7 @@ pub fn compute_rail(
 
 pub fn chevron_target(rail: &TimelineRail, hit: TimelineHit) -> Option<usize> {
     match hit {
-        TimelineHit::Tick(turn_idx) => Some(turn_idx),
+        TimelineHit::Tick(marker_idx) => Some(marker_idx),
         TimelineHit::Up => rail.up_target,
         TimelineHit::Down => rail.down_target,
     }
@@ -137,12 +137,12 @@ pub fn render_tick_hover_popup(
     buf: &mut Buffer,
     rail: &TimelineRail,
     scrollback_area: Rect,
-    turn_idx: usize,
+    marker_idx: usize,
     preview: &str,
     timestamp: Option<chrono::DateTime<chrono::Local>>,
     theme: &Theme,
 ) {
-    if !rail.window.contains(&turn_idx) {
+    if !rail.window.contains(&marker_idx) {
         return;
     }
     // Wider card than the original text-only popup: the timestamp line and a
@@ -177,7 +177,7 @@ pub fn render_tick_hover_popup(
     if card_height > scrollback_area.height {
         return;
     }
-    let tick_y = rail.ticks_y + (turn_idx - rail.window.start) as u16;
+    let tick_y = rail.ticks_y + (marker_idx - rail.window.start) as u16;
     let card_area = Rect::new(
         rail.rect
             .x
@@ -224,12 +224,12 @@ pub fn render_rail(
     rail: &TimelineRail,
     hovered: Option<TimelineHit>,
     theme: &Theme,
-    is_compaction_turn: impl Fn(usize) -> bool,
+    is_compaction_marker: impl Fn(usize) -> bool,
 ) {
     let dim = Style::default().fg(theme.gray_dim);
     let normal = Style::default().fg(theme.gray);
     let bright = Style::default().fg(theme.text_primary);
-    let compaction = Style::default().fg(theme.accent_tool);
+    let compaction = Style::default().fg(theme.accent_assistant);
     let up_enabled = rail.up_target.is_some();
     let down_enabled = rail.down_target.is_some();
     let up_style = if hovered == Some(TimelineHit::Up) && up_enabled {
@@ -259,29 +259,34 @@ pub fn render_rail(
         &Span::styled(crate::glyphs::timeline_chevron_down(), down_style),
         1,
     );
-    for (row, turn_idx) in rail.window.clone().enumerate() {
+    for (row, marker_idx) in rail.window.clone().enumerate() {
         let y = rail.ticks_y + row as u16;
-        let is_active = rail.active == Some(turn_idx);
-        let is_hovered = hovered == Some(TimelineHit::Tick(turn_idx));
+        let is_active = rail.active == Some(marker_idx);
+        let is_hovered = hovered == Some(TimelineHit::Tick(marker_idx));
 
-        // Upstream rail uses horizontal strokes, not dots:
+        if is_compaction_marker(marker_idx) {
+            // Compaction is a context-boundary event rather than a user turn.
+            // Use both a different glyph and a semantic accent so the marker
+            // stays recognizable even in low-contrast or monochrome themes.
+            let text = if is_active || is_hovered {
+                "◆◆"
+            } else {
+                " ◆"
+            };
+            buf.set_span(rail.rect.x, y, &Span::styled(text, compaction), RAIL_WIDTH);
+            continue;
+        }
+
+        // Prompt markers keep the upstream horizontal-stroke language:
         // active "━━", hover "──", idle right-aligned " ─".
         let (text, style) = if is_active {
             (crate::glyphs::timeline_tick_active(), bright)
         } else if is_hovered {
             (crate::glyphs::timeline_tick_hover(), bright)
         } else {
-            // Short dim tick in the rightmost cell (precomposed pad + light).
             (" \u{2500}", dim)
         };
         buf.set_span(rail.rect.x, y, &Span::styled(text, style), RAIL_WIDTH);
-
-        // The rail is two columns wide. Keep the prompt tick in its normal
-        // style and use the left column as an additional compaction marker.
-        // This preserves turn navigation while showing both semantics at once.
-        if is_compaction_turn(turn_idx) {
-            buf.set_span(rail.rect.x, y, &Span::styled("\u{2500}", compaction), 1);
-        }
     }
 }
 
@@ -290,7 +295,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compaction_tick_uses_distinct_tool_accent() {
+    fn compaction_marker_uses_distinct_glyph_and_assistant_accent() {
         let area = Rect::new(0, 0, RAIL_WIDTH, 4);
         let rail = TimelineRail {
             rect: area,
@@ -307,21 +312,26 @@ mod tests {
 
         render_rail(&mut buf, &rail, None, &theme, |turn_idx| turn_idx == 1);
 
-        assert_eq!(buf[(1, 1)].fg, theme.gray_dim, "prompt tick stays neutral");
         assert_eq!(
-            buf[(0, 2)].fg,
-            theme.accent_tool,
-            "compaction marker must use the tool accent"
+            buf[(1, 1)].symbol(),
+            "─",
+            "prompt marker keeps its line glyph"
         );
         assert_eq!(
-            buf[(1, 2)].fg,
+            buf[(1, 1)].fg,
             theme.gray_dim,
-            "prompt tick keeps its neutral color beside compaction"
+            "prompt marker stays neutral"
+        );
+        assert_eq!(buf[(1, 2)].symbol(), "◆", "compaction uses a diamond glyph");
+        assert_eq!(
+            buf[(1, 2)].fg,
+            theme.accent_assistant,
+            "compaction marker uses the assistant accent"
         );
         assert_ne!(
-            buf[(0, 2)].fg,
-            buf[(1, 2)].fg,
-            "compaction and prompt ticks must remain visually distinct"
+            buf[(1, 2)].symbol(),
+            buf[(1, 1)].symbol(),
+            "compaction and prompt markers stay distinct without color"
         );
     }
 }

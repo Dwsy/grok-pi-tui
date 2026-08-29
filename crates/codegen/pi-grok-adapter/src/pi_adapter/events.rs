@@ -350,6 +350,13 @@ impl PiAgent {
             .map(ToOwned::to_owned);
         for entry in parse_messages(&json!({ "messages": [message] })) {
             match entry.item {
+                PiHistoryItem::ToolStart {
+                    id,
+                    usage: Some(usage),
+                    ..
+                } => {
+                    self.state.borrow_mut().tool_usage.insert(id, usage);
+                }
                 PiHistoryItem::AgentThought(text) if !seen.thought => {
                     self.send_update(acp::SessionUpdate::AgentThoughtChunk(text_chunk(text)))
                         .await;
@@ -378,6 +385,7 @@ impl PiAgent {
             state.stream_start_ms = None;
             state.live_prompt_id = None;
             state.bash_stream_output.clear();
+            state.tool_usage.clear();
             std::mem::take(&mut state.active_prompts)
         };
         for active in active_prompts {

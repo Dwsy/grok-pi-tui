@@ -198,9 +198,7 @@ impl AgentView {
     /// import-Claude modals, and the dashboard's attached-agent popup — all
     /// consume Esc before any agent routing), passed down by the draw path.
     pub(crate) fn esc_would_cancel_turn(&self, esc_owned_before_agent: bool) -> bool {
-        if esc_owned_before_agent
-            || !crate::app::esc_cancels_turn(self.is_minimal_mode(), self.vim_mode)
-        {
+        if esc_owned_before_agent || !crate::app::esc_cancels_turn() {
             return false;
         }
         let pane_clear = match self.active_pane {
@@ -232,8 +230,8 @@ impl AgentView {
     ///
     /// Also gated to an idle agent (no running, cancelling, or wake turn):
     /// while one is in flight, Esc must fall through to
-    /// [`Self::try_handle_esc_policy`] (running → cancel in minimal / non-vim
-    /// mode, swallow in vim mode; cancelling → retry CancelTurn), not detach
+    /// [`Self::try_handle_esc_policy`] (running → cancel when the F2 policy is
+    /// Esc, swallow when Ctrl+C is required; cancelling → retry CancelTurn), not detach
     /// to the dashboard. Detach mid-turn stays on
     /// Ctrl+\ / Left.
     pub(crate) fn overlay_esc_backs_out_from_prompt(&self) -> bool {

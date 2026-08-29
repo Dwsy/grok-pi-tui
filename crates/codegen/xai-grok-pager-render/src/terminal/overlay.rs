@@ -88,7 +88,7 @@ impl From<Escapes> for PostFlush {
     }
 }
 
-pub(crate) fn next_owner_id() -> u64 {
+pub fn next_owner_id() -> u64 {
     NEXT_OWNER_ID.fetch_add(1, Ordering::Relaxed)
 }
 

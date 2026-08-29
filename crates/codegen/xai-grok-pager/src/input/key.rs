@@ -287,6 +287,19 @@ pub fn is_inline_paste_key(key: &KeyEvent) -> bool {
     key!('v', CONTROL | SHIFT).matches(key) || key!('v', SUPER | SHIFT).matches(key)
 }
 
+/// macOS-only shortcut for forcing clipboard text into a temporary attachment.
+pub fn is_force_attachment_paste_key(key: &KeyEvent) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        key!('v', ALT | SHIFT).matches(key)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = key;
+        false
+    }
+}
+
 /// Ctrl+Z / Cmd+Z — the textarea's undo binding. Delegates to the owning
 /// crate's predicate so the chord can never desync from what the key does.
 pub fn is_undo_key(key: &KeyEvent) -> bool {
@@ -620,6 +633,15 @@ mod tests {
             KeyModifiers::SUPER | KeyModifiers::SHIFT,
         );
         assert!(is_inline_paste_key(&ev));
+    }
+
+    #[test]
+    fn is_force_attachment_paste_key_is_macos_only() {
+        let ev = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT | KeyModifiers::SHIFT);
+        assert_eq!(
+            is_force_attachment_paste_key(&ev),
+            cfg!(target_os = "macos")
+        );
     }
 
     #[test]
