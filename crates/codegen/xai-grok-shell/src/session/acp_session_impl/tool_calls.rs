@@ -74,6 +74,20 @@ fn is_interruptible_wait_tool(tool_name: &str, args: &serde_json::Value) -> bool
         _ => false,
     }
 }
+
+/// Foreground tools whose runtime contract supports cancelling the whole turn
+/// when a new user prompt arrives. This is deliberately separate from
+/// [`is_interruptible_wait_tool`]: a wait interruption returns a synthetic
+/// tool result while leaving background work alive; foreground Bash/Eval must
+/// instead take the send-now path so their existing AbortSignal tears down the
+/// process tree / eval kernel execution.
+fn is_message_interruptible_foreground_tool(tool_name: &str, args: &serde_json::Value) -> bool {
+    matches!(tool_name, "bash" | "eval")
+        && !args
+            .get("is_background")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+}
 async fn wait_for_pending_interjection(buf: &InterjectionBuffer<acp::ImageContent>) {
     loop {
         if !buf.is_empty() {
@@ -625,6 +639,10 @@ impl SessionActor {
                 let blocking_wait_depth = self.tool_context.blocking_wait_depth.clone();
                 let interruptible =
                     is_interruptible_wait_tool(&prepared.tool_name, &prepared.parsed_args);
+                let message_interruptible_foreground = is_message_interruptible_foreground_tool(
+                    &prepared.tool_name,
+                    &prepared.parsed_args,
+                );
                 let lock = lock_path_for_args(&prepared.parsed_args)
                     .and_then(|fp| file_locks.get(fp).cloned());
                 let tools_execute_span = tracing::Span::current();
@@ -652,6 +670,13 @@ impl SessionActor {
                             dispatch_tool(&workspace_ops, &prepared, &session_id).await
                         }
                     };
+                    // Unlike a blocking wait, a foreground Bash/Eval keeps its
+                    // normal tool future running here. The guard only opens the
+                    // queue's auto-send-now window; when a user prompt arrives,
+                    // the session cancels this turn and the runtime's existing
+                    // AbortSignal cancels the tool itself.
+                    let _foreground_interrupt_guard = message_interruptible_foreground
+                        .then(|| BlockingWaitGuard::enter(blocking_wait_depth.clone()));
                     let result = if interruptible {
                         let _wait_guard = BlockingWaitGuard::enter(blocking_wait_depth.clone());
                         async {
@@ -3354,7 +3379,7 @@ mod plan_approval_helper_tests {
 mod wait_interrupt_tests {
     use super::{
         BlockingWaitGuard, interrupted_wait_tool_result, is_interruptible_wait_tool,
-        wait_for_pending_interjection,
+        is_message_interruptible_foreground_tool, wait_for_pending_interjection,
     };
     use xai_grok_tools::types::output::ToolOutput;
     use xai_tool_types::TaskOutputOutput;
@@ -3412,6 +3437,29 @@ mod wait_interrupt_tests {
             &serde_json::json!({"task_ids": ["t"]})
         ));
         assert!(!is_interruptible_wait_tool(
+            "read_file",
+            &serde_json::json!({"target_file": "/tmp/x"})
+        ));
+    }
+    #[test]
+    fn message_interruptible_foreground_tool_only_covers_foreground_bash_eval() {
+        assert!(is_message_interruptible_foreground_tool(
+            "bash",
+            &serde_json::json!({"command": "sleep 30"})
+        ));
+        assert!(is_message_interruptible_foreground_tool(
+            "eval",
+            &serde_json::json!({"code": "await sleep(30)"})
+        ));
+        assert!(!is_message_interruptible_foreground_tool(
+            "bash",
+            &serde_json::json!({"command": "sleep 30", "is_background": true})
+        ));
+        assert!(!is_message_interruptible_foreground_tool(
+            "eval",
+            &serde_json::json!({"code": "await sleep(30)", "is_background": true})
+        ));
+        assert!(!is_message_interruptible_foreground_tool(
             "read_file",
             &serde_json::json!({"target_file": "/tmp/x"})
         ));

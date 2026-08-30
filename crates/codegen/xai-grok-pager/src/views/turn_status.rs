@@ -208,6 +208,9 @@ pub struct TurnStatusArgs<'a> {
     /// Mouse affordances + hover state; `None` for keyboard-only hosts.
     pub buttons: Option<MouseButtons>,
     pub has_running_execute: bool,
+    /// Current foreground tool is safe to cancel-and-send when the user submits
+    /// a new message (currently grok-pi Bash/Eval).
+    pub message_interruptible_tool: bool,
     /// Context-window tokens used, shown as `⇣Nk`.
     pub total_tokens: Option<u64>,
     pub mcp_init_progress: Option<&'a McpInitProgress>,
@@ -242,6 +245,7 @@ pub fn render_turn_status(
         drain_blocked,
         buttons,
         has_running_execute,
+        message_interruptible_tool,
         total_tokens,
         mcp_init_progress,
         is_bash_turn,
@@ -471,11 +475,19 @@ pub fn render_turn_status(
         .bg(timer_bg)
         .remove_modifier(Modifier::all());
 
-    // Available width for activity label (only the label truncates)
-    // Layout: spinner + label + phase_timer + queued_hint + gap(1) + turn_timer + cancel
+    // Available width for activity label (only the label truncates).
+    // A foreground Bash/Eval keeps the interrupt affordance visible while the
+    // command/code itself truncates.
+    // Layout: spinner + label + interrupt_hint + phase_timer + queued_hint + gap(1) + turn_timer + cancel
+    let interrupt_hint = if is_tool && message_interruptible_tool {
+        " · send a message to interrupt"
+    } else {
+        ""
+    };
     let min_gap = 1;
     let available_for_label = (area.width as usize)
         .saturating_sub(spinner_width)
+        .saturating_sub(interrupt_hint.width())
         .saturating_sub(phase_timer_width)
         .saturating_sub(min_gap)
         .saturating_sub(right_width);
@@ -557,6 +569,12 @@ pub fn render_turn_status(
                 left_spans.push(Span::styled(prefix, Style::default().fg(theme.gray)));
                 left_spans.extend(crate::views::tasks_pane::highlight_bash_command(&display));
             }
+        }
+        if !interrupt_hint.is_empty() {
+            left_spans.push(Span::styled(
+                interrupt_hint.to_string(),
+                Style::default().fg(theme.gray),
+            ));
         }
     } else {
         // Sendable wait holding queued messages: the persistent inline hint
@@ -1071,6 +1089,7 @@ mod tests {
                 drain_blocked: false,
                 buttons: Some(MouseButtons::default()),
                 has_running_execute: false,
+                message_interruptible_tool: false,
                 total_tokens: None,
                 mcp_init_progress: None,
                 is_bash_turn: false,
@@ -1230,6 +1249,7 @@ mod tests {
             drain_blocked: false,
             buttons: Some(MouseButtons::default()),
             has_running_execute: false,
+            message_interruptible_tool: false,
             total_tokens: None,
             mcp_init_progress: None,
             is_bash_turn: false,
@@ -1501,6 +1521,27 @@ mod tests {
         assert!(
             text.contains("1 command still running") && !text.contains("commands"),
             "single command must use the singular noun, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn foreground_message_interruptible_tool_renders_interrupt_hint() {
+        let activity = Some(TurnActivity::ToolRunning {
+            title: "sleep 30".into(),
+            description: Some("Waiting for command".into()),
+        });
+        let mut args = idle_args(Watchers::default());
+        args.state = &AgentState::TurnRunning;
+        args.activity = &activity;
+        args.message_interruptible_tool = true;
+        let text = render_row_text(args, 120);
+        assert!(
+            text.contains("send a message to interrupt"),
+            "interruptible foreground tool must advertise message preemption, got: {text:?}"
+        );
+        assert!(
+            text.contains("[stop]"),
+            "foreground tool remains running chrome"
         );
     }
 

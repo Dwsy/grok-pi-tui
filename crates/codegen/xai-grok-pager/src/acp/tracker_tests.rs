@@ -2353,6 +2353,49 @@ fn activity_tool_running_when_tool_pending() {
         })
     );
 }
+
+#[test]
+fn message_interruptible_foreground_tool_uses_wire_meta_and_excludes_background() {
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    let mut tool_meta = acp::Meta::new();
+    tool_meta.insert(
+        "x.ai/tool".to_string(),
+        serde_json::json!({ "name": "bash" }),
+    );
+    tracker.handle_update(
+        acp::SessionUpdate::ToolCall(
+            acp::ToolCall::new(acp::ToolCallId::new(Arc::from("tc-bash")), "sleep 30")
+                .kind(acp::ToolKind::Execute)
+                .status(acp::ToolCallStatus::Pending)
+                .raw_input(Some(serde_json::json!({ "command": "sleep 30" })))
+                .content(vec![])
+                .locations(vec![])
+                .meta(Some(tool_meta)),
+        ),
+        &meta(),
+        &mut sb,
+    );
+    assert!(tracker.message_interruptible_foreground_tool_running());
+
+    tracker.handle_update(tool_update_completed("tc-bash"), &meta(), &mut sb);
+    tracker.handle_update(
+        acp::SessionUpdate::ToolCall(
+            acp::ToolCall::new(acp::ToolCallId::new(Arc::from("tc-eval-bg")), "eval")
+                .kind(acp::ToolKind::Other)
+                .status(acp::ToolCallStatus::Pending)
+                .raw_input(Some(serde_json::json!({
+                    "code": "await sleep(30)",
+                    "is_background": true
+                })))
+                .content(vec![])
+                .locations(vec![]),
+        ),
+        &meta(),
+        &mut sb,
+    );
+    assert!(!tracker.message_interruptible_foreground_tool_running());
+}
 /// Foreground execute tools often carry a human `description` in raw_input
 /// (e.g. sleep with "Wait 5 seconds…"). Surface it for the spinner.
 #[test]

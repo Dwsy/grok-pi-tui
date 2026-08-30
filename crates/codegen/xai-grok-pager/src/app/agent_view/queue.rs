@@ -115,6 +115,22 @@ impl AgentView {
                 .is_some_and(|g| matches!(g.status, crate::app::agent::GoalDisplayStatus::Active))
     }
 
+    /// A foreground tool that the shell deliberately exposes as a cancel-and-
+    /// send window (currently grok-pi `bash` / `eval`). Kept separate from
+    /// `is_parked_on_sendable_wait`: this is live work that must be cancelled,
+    /// not a wait future that can return an interrupted synthetic result.
+    pub(crate) fn is_message_interruptible_foreground_tool(&self) -> bool {
+        self.session.state.is_turn_running()
+            && self
+                .session
+                .tracker
+                .message_interruptible_foreground_tool_running()
+            && !self
+                .goal_state
+                .as_ref()
+                .is_some_and(|g| matches!(g.status, crate::app::agent::GoalDisplayStatus::Active))
+    }
+
     /// Whether an explicit send-now dispatched right now will actually cancel
     /// the running turn shell-side. Also requires the front committed so a
     /// spared send-now does not paint under later output from that front.

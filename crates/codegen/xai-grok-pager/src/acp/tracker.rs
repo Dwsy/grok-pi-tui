@@ -695,6 +695,40 @@ impl AcpUpdateTracker {
         self.blocking_waits
             .retain(|_, w| current_stream.is_some() && w.stream_start_ms == current_stream);
     }
+    /// Whether the current visible tool phase includes a foreground tool whose
+    /// runtime contract supports cancel-and-send on a new user message.
+    ///
+    /// The canonical `x.ai/tool.name` is preferred because later ACP updates
+    /// may replace the human-facing title with the command/code. Exact-title
+    /// fallback covers older shells that did not stamp the canonical envelope.
+    pub fn message_interruptible_foreground_tool_running(&self) -> bool {
+        if !matches!(self.activity(), Some(TurnActivity::ToolRunning { .. })) {
+            return false;
+        }
+        self.pending_tools.values().any(|pending| {
+            let base = &pending.base;
+            let explicitly_background = base
+                .raw_input
+                .as_ref()
+                .and_then(|v| v.get("is_background"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            if explicitly_background {
+                return false;
+            }
+            let canonical_name = base
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("x.ai/tool"))
+                .and_then(|tool| tool.get("name"))
+                .and_then(serde_json::Value::as_str);
+            matches!(
+                canonical_name.unwrap_or(base.title.as_str()),
+                "bash" | "eval"
+            )
+        })
+    }
+
     pub fn tool_title(&self, tool_call_id: &str) -> Option<&str> {
         self.pending_tools
             .get(tool_call_id)

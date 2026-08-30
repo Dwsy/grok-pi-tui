@@ -77,7 +77,9 @@ fn combine_queued_prompts_enabled() -> bool {
 /// interjection at the next tool batch or model step.
 pub(super) fn immediate_server_send_eligible(agent: &AgentView, leader_mode: bool) -> bool {
     let server_busy = agent.session.state.is_turn_running() || !agent.shared_queue.is_empty();
-    (leader_mode || crate::appearance::cache::load_follow_up_steer())
+    (leader_mode
+        || crate::appearance::cache::load_follow_up_steer()
+        || agent.is_message_interruptible_foreground_tool())
         && server_busy
         && agent.session.session_id.is_some()
         && agent.session.pending_prompts.is_empty()
@@ -1319,6 +1321,42 @@ mod tests {
             is_monitor: false,
             restored_from_replay: false,
         }
+    }
+
+    #[test]
+    fn foreground_message_interruptible_tool_can_immediate_send_without_leader() {
+        use crate::acp::meta::NotificationMeta;
+        use std::sync::Arc;
+
+        let mut app = test_app_with_agent();
+        let id = AgentId(0);
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.state = AgentState::TurnRunning;
+
+        let mut tool_meta = acp::Meta::new();
+        tool_meta.insert(
+            "x.ai/tool".to_string(),
+            serde_json::json!({ "name": "bash" }),
+        );
+        agent.session.handle_update(
+            acp::SessionUpdate::ToolCall(
+                acp::ToolCall::new(acp::ToolCallId::new(Arc::from("tc-bash")), "sleep 30")
+                    .kind(acp::ToolKind::Execute)
+                    .status(acp::ToolCallStatus::Pending)
+                    .raw_input(Some(serde_json::json!({ "command": "sleep 30" })))
+                    .content(vec![])
+                    .locations(vec![])
+                    .meta(Some(tool_meta)),
+            ),
+            &NotificationMeta::default(),
+            &mut agent.scrollback,
+        );
+
+        assert!(agent.is_message_interruptible_foreground_tool());
+        assert!(
+            immediate_server_send_eligible(agent, false),
+            "foreground Bash/Eval must bypass the leader/steer gate so the shell can auto-send-now"
+        );
     }
 
     #[test]

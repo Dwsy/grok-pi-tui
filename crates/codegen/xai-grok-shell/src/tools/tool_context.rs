@@ -208,9 +208,11 @@ pub struct ToolContext {
     /// Shared `Arc` written at one chokepoint — see
     /// `SessionActor::set_goal_loop_active_resource` for the rationale.
     pub goal_loop_active_gate: Arc<std::sync::atomic::AtomicBool>,
-    /// Count of interruptible blocking waits the running turn is parked in (via
-    /// [`BlockingWaitGuard`]). `queue_input` reads it: a prompt arriving while
-    /// non-zero takes the send-now path.
+    /// Count of windows in which a new user prompt may preempt the running turn
+    /// (via [`BlockingWaitGuard`]). This includes true blocking waits and
+    /// foreground tools with a cancellation-safe runtime contract (currently
+    /// Bash/Eval). `queue_input` reads it: a prompt arriving while non-zero takes
+    /// the send-now path.
     pub blocking_wait_depth: Arc<BlockingWaitState>,
     pub task_output_token_budget: Option<TaskOutputTokenBudget>,
     pub(crate) sampler_retry_only_before_output: bool,

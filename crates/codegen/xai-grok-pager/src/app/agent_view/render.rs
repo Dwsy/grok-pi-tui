@@ -2723,6 +2723,7 @@ impl AgentView {
                             watching_hovered: self.hit_watching_cue.hovered,
                         }),
                         has_running_execute,
+                        message_interruptible_tool: self.is_message_interruptible_foreground_tool(),
                         total_tokens: self.context_state.as_ref().map(|c| c.used),
                         mcp_init_progress: self.mcp_init_progress.as_ref(),
                         is_bash_turn: self.bash_turn,
