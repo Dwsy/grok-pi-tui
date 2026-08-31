@@ -581,7 +581,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                     .selected()
                     .and_then(|index| agent.scrollback.entry(index))
                     .filter(|entry| {
-                        entry.display_mode == DisplayMode::Collapsed && !entry.tool_traces.is_empty()
+                        entry.display_mode == DisplayMode::Collapsed
+                            && !entry.tool_traces.is_empty()
                     })
                     .map(|entry| {
                         let title = if entry.tool_traces.len() == 1 {
@@ -589,20 +590,23 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                         } else {
                             format!("Tool trace · {} calls", entry.tool_traces.len())
                         };
-                        let content = crate::scrollback::entry::format_tool_traces_markdown(
-                            &entry.tool_traces,
-                        );
+                        let content =
+                            crate::scrollback::entry::format_tool_traces_split(&entry.tool_traces);
                         (title, content)
                     });
                 if let Some((title, content)) = trace_modal {
-                    agent.active_modal = Some(crate::views::modal::ActiveModal::DocViewer {
+                    agent.active_modal = Some(crate::views::modal::ActiveModal::ToolTraceViewer {
                         title,
-                        content,
-                        scroll: 0,
+                        input: content.input,
+                        output: content.output,
+                        input_scroll: 0,
+                        output_scroll: 0,
+                        focus: crate::views::modal::ToolTracePane::Input,
+                        input_area: ratatui::layout::Rect::default(),
+                        output_area: ratatui::layout::Rect::default(),
                         window: crate::views::modal_window::ModalWindowState::new(),
-                        cached_lines: None,
-                        previous_palette: None,
-                        standalone: true,
+                        input_cached_lines: None,
+                        output_cached_lines: None,
                     });
                     return vec![];
                 }

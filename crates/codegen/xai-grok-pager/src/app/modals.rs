@@ -415,6 +415,27 @@ impl AgentView {
                 _ => return InputOutcome::Changed,
             }
         }
+        if let ActiveModal::ToolTraceViewer {
+            input_scroll,
+            output_scroll,
+            focus,
+            ..
+        } = modal
+        {
+            return match crate::views::modal::apply_tool_trace_key(
+                key.code,
+                focus,
+                input_scroll,
+                output_scroll,
+            ) {
+                crate::views::modal::ToolTraceKeyOutcome::Close => {
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                crate::views::modal::ToolTraceKeyOutcome::Changed => InputOutcome::Changed,
+                crate::views::modal::ToolTraceKeyOutcome::Unchanged => InputOutcome::Unchanged,
+            };
+        }
         if let ActiveModal::DocViewer {
             window,
             previous_palette,
@@ -745,6 +766,7 @@ impl AgentView {
             | ActiveModal::SessionPicker { .. }
             | ActiveModal::DocPicker { .. }
             | ActiveModal::DocViewer { .. }
+            | ActiveModal::ToolTraceViewer { .. }
             | ActiveModal::ContextInfo { .. }
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
@@ -2134,6 +2156,7 @@ impl AgentView {
                     | ActiveModal::SessionPicker { .. }
                     | ActiveModal::DocPicker { .. }
                     | ActiveModal::DocViewer { .. }
+                    | ActiveModal::ToolTraceViewer { .. }
                     | ActiveModal::ContextInfo { .. }
                     | ActiveModal::ShortcutsHelp { .. }
                     | ActiveModal::RememberNoteReview { .. }
@@ -2147,6 +2170,7 @@ impl AgentView {
                 Some(ActiveModal::SessionPicker { window, .. }) => window,
                 Some(ActiveModal::DocPicker { window, .. }) => window,
                 Some(ActiveModal::DocViewer { window, .. }) => window,
+                Some(ActiveModal::ToolTraceViewer { window, .. }) => window,
                 Some(ActiveModal::ContextInfo { window, .. }) => window,
                 Some(ActiveModal::ShortcutsHelp { window, .. }) => window,
                 Some(ActiveModal::RememberNoteReview { window, .. }) => window,
@@ -2268,6 +2292,43 @@ impl AgentView {
                             }
                             _ => return InputOutcome::Changed,
                         }
+                    }
+                    if let Some(ActiveModal::ToolTraceViewer {
+                        focus,
+                        input_scroll,
+                        output_scroll,
+                        input_area,
+                        output_area,
+                        ..
+                    }) = self.active_modal.as_mut()
+                    {
+                        let pane = modal::tool_trace_pane_at(
+                            *input_area,
+                            *output_area,
+                            mouse.column,
+                            mouse.row,
+                        );
+                        if matches!(
+                            mouse.kind,
+                            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                        ) {
+                            if let Some(pane) = pane {
+                                let scroll = match pane {
+                                    crate::views::modal::ToolTracePane::Input => input_scroll,
+                                    crate::views::modal::ToolTracePane::Output => output_scroll,
+                                };
+                                let _ = modal::apply_doc_mouse_scroll(mouse.kind, scroll);
+                            }
+                            return InputOutcome::Changed;
+                        }
+                        if matches!(
+                            mouse.kind,
+                            MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                        ) && let Some(pane) = pane
+                        {
+                            *focus = pane;
+                        }
+                        return InputOutcome::Changed;
                     }
                     // DocViewer / Context breakdown / RememberNoteReview: wheel scrolls the body.
                     if let Some(
@@ -3798,6 +3859,38 @@ impl AgentView {
                 let compact = self.scrollback.appearance().prompt.compact;
                 modal::render_doc_picker_overlay(
                     buf, area, window, entries, state, compact, &theme,
+                );
+            } else if let modal::ActiveModal::ToolTraceViewer {
+                title,
+                input,
+                output,
+                input_scroll,
+                output_scroll,
+                focus,
+                input_area,
+                output_area,
+                window,
+                input_cached_lines,
+                output_cached_lines,
+            } = active_modal
+            {
+                let compact = self.scrollback.appearance().prompt.compact;
+                modal::render_tool_trace_viewer_overlay(
+                    buf,
+                    area,
+                    window,
+                    title,
+                    input,
+                    output,
+                    input_scroll,
+                    output_scroll,
+                    *focus,
+                    input_area,
+                    output_area,
+                    input_cached_lines,
+                    output_cached_lines,
+                    compact,
+                    &theme,
                 );
             } else if let modal::ActiveModal::DocViewer {
                 title,

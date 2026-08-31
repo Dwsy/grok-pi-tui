@@ -623,6 +623,24 @@ impl AgentView {
                     state.hovered = None;
                     return;
                 }
+                ActiveModal::ToolTraceViewer {
+                    input_scroll,
+                    output_scroll,
+                    input_area,
+                    output_area,
+                    ..
+                } => {
+                    if let Some(pane) =
+                        crate::views::modal::tool_trace_pane_at(*input_area, *output_area, col, row)
+                    {
+                        let scroll = match pane {
+                            crate::views::modal::ToolTracePane::Input => input_scroll,
+                            crate::views::modal::ToolTracePane::Output => output_scroll,
+                        };
+                        crate::views::modal::apply_doc_scroll_delta(scroll, lines);
+                    }
+                    return;
+                }
                 ActiveModal::DocViewer { scroll, .. }
                 | ActiveModal::ContextInfo { scroll, .. }
                 | ActiveModal::RememberNoteReview { scroll, .. } => {

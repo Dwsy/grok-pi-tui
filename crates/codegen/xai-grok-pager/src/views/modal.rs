@@ -273,6 +273,19 @@ pub struct SessionPreviewMessage {
     pub content: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolTracePane {
+    Input,
+    Output,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolTraceKeyOutcome {
+    Close,
+    Changed,
+    Unchanged,
+}
+
 pub enum ActiveModal {
     /// Confirmation for leaving a dirty queued-prompt edit.
     EditConfirm {
@@ -391,6 +404,20 @@ pub enum ActiveModal {
         /// When true, Esc closes the modal directly instead of returning
         /// to the DocPicker list (used for /release-notes).
         standalone: bool,
+    },
+    /// Tool trace viewer with independently scrollable input/output panes.
+    ToolTraceViewer {
+        title: String,
+        input: String,
+        output: String,
+        input_scroll: u16,
+        output_scroll: u16,
+        focus: ToolTracePane,
+        input_area: Rect,
+        output_area: Rect,
+        window: ModalWindowState,
+        input_cached_lines: Option<(u16, Vec<ratatui::text::Line<'static>>)>,
+        output_cached_lines: Option<(u16, Vec<ratatui::text::Line<'static>>)>,
     },
     /// Transient graphical context snapshot. It reuses ContextInfoBlock's
     /// native bar and legend renderer but never enters conversation history.
@@ -924,6 +951,7 @@ impl ActiveModal {
             | ActiveModal::SessionPicker { .. }
             | ActiveModal::DocPicker { .. }
             | ActiveModal::DocViewer { .. }
+            | ActiveModal::ToolTraceViewer { .. }
             | ActiveModal::ContextInfo { .. }
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
@@ -961,6 +989,7 @@ impl ActiveModal {
             },
             ActiveModal::DocPicker { .. } => "How-to Guides",
             ActiveModal::DocViewer { title, .. } => title.as_str(),
+            ActiveModal::ToolTraceViewer { title, .. } => title.as_str(),
             ActiveModal::ContextInfo { .. } => "Context",
             ActiveModal::ShortcutsHelp { .. } => "Keyboard Shortcuts",
             ActiveModal::MemoryBrowser { .. } => "Memory",
@@ -1280,6 +1309,43 @@ pub fn apply_doc_scroll(code: crossterm::event::KeyCode, scroll: &mut u16) -> bo
         _ => false,
     }
 }
+pub fn apply_tool_trace_key(
+    code: crossterm::event::KeyCode,
+    focus: &mut ToolTracePane,
+    input_scroll: &mut u16,
+    output_scroll: &mut u16,
+) -> ToolTraceKeyOutcome {
+    use crossterm::event::KeyCode;
+    if code == KeyCode::Esc {
+        return ToolTraceKeyOutcome::Close;
+    }
+    let next_focus = match code {
+        KeyCode::Left | KeyCode::Char('h') => Some(ToolTracePane::Input),
+        KeyCode::Right | KeyCode::Char('l') => Some(ToolTracePane::Output),
+        KeyCode::Tab | KeyCode::BackTab => Some(match *focus {
+            ToolTracePane::Input => ToolTracePane::Output,
+            ToolTracePane::Output => ToolTracePane::Input,
+        }),
+        _ => None,
+    };
+    if let Some(next_focus) = next_focus {
+        if *focus == next_focus {
+            return ToolTraceKeyOutcome::Unchanged;
+        }
+        *focus = next_focus;
+        return ToolTraceKeyOutcome::Changed;
+    }
+    let scroll = match *focus {
+        ToolTracePane::Input => input_scroll,
+        ToolTracePane::Output => output_scroll,
+    };
+    if apply_doc_scroll(code, scroll) {
+        ToolTraceKeyOutcome::Changed
+    } else {
+        ToolTraceKeyOutcome::Unchanged
+    }
+}
+
 /// Apply a signed line delta to a DocViewer scroll offset (positive = down).
 pub fn apply_doc_scroll_delta(scroll: &mut u16, lines: i32) {
     if lines == 0 {
@@ -1293,6 +1359,21 @@ pub fn apply_doc_scroll_delta(scroll: &mut u16, lines: i32) {
 }
 /// Apply mouse-wheel events to a DocViewer scroll offset. Returns `true` if
 /// the event was a scroll and the offset was updated.
+pub fn tool_trace_pane_at(
+    input_area: Rect,
+    output_area: Rect,
+    col: u16,
+    row: u16,
+) -> Option<ToolTracePane> {
+    if input_area.area() > 0 && input_area.contains((col, row).into()) {
+        Some(ToolTracePane::Input)
+    } else if output_area.area() > 0 && output_area.contains((col, row).into()) {
+        Some(ToolTracePane::Output)
+    } else {
+        None
+    }
+}
+
 pub fn apply_doc_mouse_scroll(kind: crossterm::event::MouseEventKind, scroll: &mut u16) -> bool {
     use crossterm::event::MouseEventKind;
     match kind {
@@ -1739,10 +1820,162 @@ pub fn render_doc_viewer_overlay_with_shortcuts(
         para.render(content_area, buf);
     }
 }
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_tool_trace_viewer_overlay(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    window: &mut super::modal_window::ModalWindowState,
+    title: &str,
+    input: &str,
+    output: &str,
+    input_scroll: &mut u16,
+    output_scroll: &mut u16,
+    focus: ToolTracePane,
+    input_area: &mut Rect,
+    output_area: &mut Rect,
+    input_cached_lines: &mut Option<(u16, Vec<ratatui::text::Line<'static>>)>,
+    output_cached_lines: &mut Option<(u16, Vec<ratatui::text::Line<'static>>)>,
+    compact: bool,
+    theme: &Theme,
+) {
+    use ratatui::layout::{Constraint, Direction, Layout};
+    use ratatui::text::Line;
+    use ratatui::widgets::{Paragraph, Widget, Wrap};
+
+    let shortcuts = [
+        super::modal_window::Shortcut {
+            label: "←/→ pane · Tab switch",
+            clickable: false,
+            id: 0,
+        },
+        super::modal_window::Shortcut {
+            label: "↑/↓ j/k scroll · Esc back",
+            clickable: false,
+            id: 0,
+        },
+    ];
+    let modal_config = super::modal_window::ModalWindowConfig {
+        title,
+        tabs: None,
+        shortcuts: &shortcuts,
+        sizing: super::modal_window::ModalSizing {
+            width_pct: 0.90,
+            max_width: 140,
+            min_width: 52,
+            v_margin: 4,
+            h_pad: 2,
+            v_pad: 1,
+            footer_lines: 2,
+        }
+        .with_compact(compact),
+        fold_info: None,
+    };
+    *input_area = Rect::default();
+    *output_area = Rect::default();
+    let Some(super::modal_window::ModalContentArea {
+        content: content_area,
+        ..
+    }) = super::modal_window::render_modal_window(buf, area, window, &modal_config, theme)
+    else {
+        return;
+    };
+
+    let panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(content_area);
+
+    let mut render_pane =
+        |pane: Rect,
+         label: &str,
+         active: bool,
+         content: &str,
+         scroll: &mut u16,
+         cache: &mut Option<(u16, Vec<ratatui::text::Line<'static>>)>| {
+            if pane.width == 0 || pane.height == 0 {
+                return;
+            }
+            let marker = if active { "▶ " } else { "  " };
+            let label_style = if active {
+                Style::default()
+                    .fg(theme.accent_user)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.gray)
+            };
+            buf.set_line(
+                pane.x,
+                pane.y,
+                &Line::from(Span::styled(format!("{marker}{label}"), label_style)),
+                pane.width,
+            );
+            if pane.height <= 1 {
+                return;
+            }
+            let body = Rect {
+                x: pane.x,
+                y: pane.y + 1,
+                width: pane.width.saturating_sub(1),
+                height: pane.height - 1,
+            };
+            let needs_reparse = cache
+                .as_ref()
+                .is_none_or(|(cached_w, _)| *cached_w != body.width);
+            if needs_reparse {
+                let mc = crate::scrollback::blocks::markdown_content::MarkdownContent::new(content);
+                let rendered = mc.output(body.width as usize);
+                *cache = Some((
+                    body.width,
+                    rendered
+                        .lines
+                        .into_iter()
+                        .map(|block| block.content)
+                        .collect(),
+                ));
+            }
+            let all_lines = &cache.as_ref().unwrap().1;
+            let max_scroll = all_lines.len().saturating_sub(body.height as usize);
+            *scroll = (*scroll as usize).min(max_scroll) as u16;
+            let visible = all_lines
+                .iter()
+                .skip(*scroll as usize)
+                .take(body.height as usize)
+                .cloned()
+                .collect::<Vec<_>>();
+            Paragraph::new(visible)
+                .wrap(Wrap { trim: false })
+                .render(body, buf);
+        };
+
+    *input_area = panes[0];
+    *output_area = panes[1];
+    render_pane(
+        panes[0],
+        "Input",
+        focus == ToolTracePane::Input,
+        input,
+        input_scroll,
+        input_cached_lines,
+    );
+    render_pane(
+        panes[1],
+        "Output",
+        focus == ToolTracePane::Output,
+        output,
+        output_scroll,
+        output_cached_lines,
+    );
+}
+
 #[cfg(test)]
 mod doc_viewer_scroll_tests {
-    use super::{apply_doc_mouse_scroll, apply_doc_scroll, apply_doc_scroll_delta};
+    use super::{
+        ToolTraceKeyOutcome, ToolTracePane, apply_doc_mouse_scroll, apply_doc_scroll,
+        apply_doc_scroll_delta, apply_tool_trace_key, tool_trace_pane_at,
+    };
     use crossterm::event::{KeyCode, MouseEventKind};
+    use ratatui::layout::Rect;
     #[test]
     fn apply_doc_scroll_moves_by_key() {
         let mut scroll = 10u16;
@@ -1755,6 +1988,89 @@ mod doc_viewer_scroll_tests {
         assert!(apply_doc_scroll(KeyCode::End, &mut scroll));
         assert_eq!(scroll, u16::MAX);
     }
+    #[test]
+    fn tool_trace_scrolls_and_switches_each_pane() {
+        let mut focus = ToolTracePane::Input;
+        let mut input_scroll = 0;
+        let mut output_scroll = 0;
+        assert_eq!(
+            apply_tool_trace_key(
+                KeyCode::Down,
+                &mut focus,
+                &mut input_scroll,
+                &mut output_scroll,
+            ),
+            ToolTraceKeyOutcome::Changed
+        );
+        assert_eq!(input_scroll, 3);
+        assert_eq!(output_scroll, 0);
+        assert_eq!(
+            apply_tool_trace_key(
+                KeyCode::Tab,
+                &mut focus,
+                &mut input_scroll,
+                &mut output_scroll,
+            ),
+            ToolTraceKeyOutcome::Changed
+        );
+        assert_eq!(focus, ToolTracePane::Output);
+        assert_eq!(
+            apply_tool_trace_key(
+                KeyCode::Down,
+                &mut focus,
+                &mut input_scroll,
+                &mut output_scroll,
+            ),
+            ToolTraceKeyOutcome::Changed
+        );
+        assert_eq!(input_scroll, 3);
+        assert_eq!(output_scroll, 3);
+        assert_eq!(
+            apply_tool_trace_key(
+                KeyCode::Left,
+                &mut focus,
+                &mut input_scroll,
+                &mut output_scroll,
+            ),
+            ToolTraceKeyOutcome::Changed
+        );
+        assert_eq!(focus, ToolTracePane::Input);
+        assert_eq!(
+            apply_tool_trace_key(
+                KeyCode::Right,
+                &mut focus,
+                &mut input_scroll,
+                &mut output_scroll,
+            ),
+            ToolTraceKeyOutcome::Changed
+        );
+        assert_eq!(focus, ToolTracePane::Output);
+        assert_eq!(
+            apply_tool_trace_key(
+                KeyCode::Esc,
+                &mut focus,
+                &mut input_scroll,
+                &mut output_scroll,
+            ),
+            ToolTraceKeyOutcome::Close
+        );
+    }
+
+    #[test]
+    fn tool_trace_hit_tests_each_pane() {
+        let input = Rect::new(2, 4, 20, 10);
+        let output = Rect::new(22, 4, 20, 10);
+        assert_eq!(
+            tool_trace_pane_at(input, output, 5, 8),
+            Some(ToolTracePane::Input)
+        );
+        assert_eq!(
+            tool_trace_pane_at(input, output, 30, 8),
+            Some(ToolTracePane::Output)
+        );
+        assert_eq!(tool_trace_pane_at(input, output, 1, 8), None);
+    }
+
     #[test]
     fn apply_doc_scroll_delta_saturates_at_zero() {
         let mut scroll = 2u16;

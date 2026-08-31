@@ -162,6 +162,78 @@ pub fn format_tool_traces_markdown(traces: &[ToolTraceSnapshot]) -> String {
         .join("\n\n---\n\n")
 }
 
+fn format_local_timestamp(ms: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+        .map(|dt| {
+            dt.with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S%.3f %:z")
+                .to_string()
+        })
+        .unwrap_or_else(|| ms.to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolTraceSplitContent {
+    pub input: String,
+    pub output: String,
+}
+
+/// Format ACP-backed tool traces into independently scrollable input/output panes.
+pub fn format_tool_traces_split(traces: &[ToolTraceSnapshot]) -> ToolTraceSplitContent {
+    let mut input_parts = Vec::with_capacity(traces.len());
+    let mut output_parts = Vec::with_capacity(traces.len());
+
+    for (index, trace) in traces.iter().enumerate() {
+        let call_heading = (traces.len() > 1)
+            .then(|| format!("# Call {} · {}\n\n", index + 1, trace.title));
+
+        let mut input = call_heading.clone().unwrap_or_default();
+        input.push_str(&format!(
+            "**Tool:** {}  \n**Tool call ID:** `{}`  \n**Status:** {}",
+            trace.title, trace.tool_call_id, trace.status
+        ));
+        if let Some(tokens) = trace.context_tokens {
+            input.push_str(&format!("  \n**Context tokens at event:** {tokens}"));
+        }
+        if let Some(ms) = trace.started_at_ms {
+            input.push_str(&format!("  \n**Started:** {}", format_local_timestamp(ms)));
+        }
+        if let Some(ms) = trace.updated_at_ms {
+            input.push_str(&format!("  \n**Updated:** {}", format_local_timestamp(ms)));
+        }
+        if let Some(ms) = trace.stream_start_ms {
+            input.push_str(&format!(
+                "  \n**Model stream start:** {}",
+                format_local_timestamp(ms)
+            ));
+        }
+        input.push_str("\n\n## Input\n\n");
+        match trace.raw_input.as_ref() {
+            Some(value) => input.push_str(&format!("````json\n{}\n````", pretty_json(value))),
+            None => input.push_str("Not reported by agent."),
+        }
+        input.push_str("\n\n## LLM segment usage\n\n");
+        match trace.usage.as_ref() {
+            Some(value) => input.push_str(&format!("````json\n{}\n````", pretty_json(value))),
+            None => input.push_str("Not reported by agent."),
+        }
+        input_parts.push(input);
+
+        let mut output = call_heading.unwrap_or_default();
+        output.push_str("## Output\n\n");
+        match trace.raw_output.as_ref() {
+            Some(value) => output.push_str(&format!("````json\n{}\n````", pretty_json(value))),
+            None => output.push_str("Not reported by agent."),
+        }
+        output_parts.push(output);
+    }
+
+    ToolTraceSplitContent {
+        input: input_parts.join("\n\n---\n\n"),
+        output: output_parts.join("\n\n---\n\n"),
+    }
+}
+
 /// A scrollback entry: block content + display state.
 #[derive(Debug, Clone)]
 pub struct ScrollbackEntry {

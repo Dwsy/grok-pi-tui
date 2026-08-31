@@ -161,11 +161,13 @@ fn tool_trace_preserves_acp_input_output_usage_and_timing() {
     assert_eq!(trace.context_tokens, Some(925));
     assert_eq!(trace.started_at_ms, Some(1_200));
     assert_eq!(trace.updated_at_ms, Some(1_350));
-    let markdown =
-        crate::scrollback::entry::format_tool_traces_markdown(&sb.get(0).unwrap().tool_traces);
-    assert!(markdown.contains("## Input"));
-    assert!(markdown.contains("## Output"));
-    assert!(markdown.contains("## LLM segment usage"));
+    let content =
+        crate::scrollback::entry::format_tool_traces_split(&sb.get(0).unwrap().tool_traces);
+    assert!(content.input.contains("## Input"));
+    assert!(content.output.contains("## Output"));
+    assert!(content.input.contains("## LLM segment usage"));
+    assert!(content.input.contains("**Started:**"));
+    assert!(!content.input.contains("UTC ms"));
 }
 
 #[test]

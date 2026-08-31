@@ -2928,7 +2928,7 @@ fn delete_session_refuses_conversation_row() {
 }
 
 #[test]
-fn collapse_on_minimal_tool_trace_opens_shared_doc_viewer() {
+fn collapse_on_minimal_tool_trace_opens_split_trace_viewer() {
     use crate::scrollback::{DisplayMode, RenderBlock};
     use crate::scrollback::entry::ToolTraceSnapshot;
     use crate::views::modal::ActiveModal;
@@ -2958,15 +2958,23 @@ fn collapse_on_minimal_tool_trace_opens_shared_doc_viewer() {
     let effects = dispatch(Action::Collapse, &mut app);
     assert!(effects.is_empty());
     let agent = get_active_agent(&app).expect("active agent");
-    let Some(ActiveModal::DocViewer { title, content, standalone, .. }) =
-        agent.active_modal.as_ref()
+    let Some(ActiveModal::ToolTraceViewer {
+        title,
+        input,
+        output,
+        input_scroll,
+        output_scroll,
+        ..
+    }) = agent.active_modal.as_ref()
     else {
-        panic!("expected tool trace DocViewer");
+        panic!("expected ToolTraceViewer");
     };
     assert!(title.contains("read"));
-    assert!(content.contains("README.md"));
-    assert!(content.contains("LLM segment usage"));
-    assert!(*standalone);
+    assert!(input.contains("README.md"));
+    assert!(input.contains("LLM segment usage"));
+    assert!(output.contains("hello"));
+    assert_eq!(*input_scroll, 0);
+    assert_eq!(*output_scroll, 0);
 }
 
 /// Expanding a conversation card must not read `chat_history.jsonl`
