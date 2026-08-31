@@ -991,18 +991,15 @@ impl EditToolCallBlock {
         // The suffix (diffstat / "(N edits)") renders only on the collapsed
         // one-liner: expanded and fullscreen surfaces show the hunks, so
         // their headers stay bare. Diffstat counts keep their diff colors
-        // even when the header is muted; untrusted summaries (multi-file,
-        // title-fallback path) never show counts that would only describe
-        // the first diff. Trusted multi-region edits prefer diffstat over the
-        // generic "(N edits)" fallback so collapsed rows still show +/- totals.
+        // even when the header is muted. `summary_untrusted` means the path /
+        // one-liner may be incomplete, not that hunk-derived +/- counts are
+        // useless; hiding them made multi-edit rows hard to search.
         let collapsed = matches!(
             surface,
             crate::render::tool_paths::ToolPathSurface::Collapsed
         );
-        let show_diffstat = collapsed
-            && !self.hunks.is_empty()
-            && !self.summary_untrusted
-            && (show_summary || self.edit_count > 1);
+        let show_diffstat =
+            collapsed && !self.hunks.is_empty() && (show_summary || self.edit_count > 1);
         let suffix_spans: Vec<Span<'static>> = if show_diffstat {
             let (ins, del) = self.count_changes();
             if ins > 0 || del > 0 {
@@ -1766,9 +1763,9 @@ mod tests {
     }
 
     #[test]
-    fn untrusted_summary_suppresses_diffstat() {
-        // Counts would only describe the first diff of a multi-file call, so
-        // the suffix falls back to "(N edits)" / nothing.
+    fn untrusted_summary_still_shows_diffstat() {
+        // The path / one-liner may be incomplete, but the hunk-derived counts
+        // are still searchable signal for the collapsed row.
         let block =
             EditToolCallBlock::new("src/foo.rs", vec![make_hunk()]).with_untrusted_summary();
         let theme = Theme::current();
@@ -1782,7 +1779,7 @@ mod tests {
             Some(80),
         );
         let text: String = header.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "Edit foo.rs");
+        assert_eq!(text, "Edit foo.rs +1/-1");
 
         let block = block.with_edit_count(3);
         let header = block.header_line(
@@ -1795,7 +1792,7 @@ mod tests {
             Some(80),
         );
         let text: String = header.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "Edit foo.rs (3 edits)");
+        assert_eq!(text, "Edit foo.rs +1/-1");
     }
 
     #[test]
