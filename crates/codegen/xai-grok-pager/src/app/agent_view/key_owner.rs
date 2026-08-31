@@ -80,6 +80,8 @@ pub(crate) enum EscStep {
     DiscardPatternEdit,
     /// Unmark this question's answer.
     ClearSelection,
+    /// Cancel a Pi RPC extension dialog and resolve its blocking response.
+    CancelInteraction,
     /// Return to the dashboard, leaving the card pending. Owned by the
     /// dashboard overlay's own cascade, which runs ahead of the router.
     BackOutOverlay,
@@ -99,6 +101,7 @@ impl EscStep {
             Self::SkipFeedbackTrace => "skip",
             Self::DiscardPatternEdit => "cancel",
             Self::ClearSelection => "unselect",
+            Self::CancelInteraction => "cancel",
             Self::BackOutOverlay => "dashboard",
             Self::ParkFocus => "scrollback",
             Self::KeepRunning => "keep running",
@@ -200,7 +203,12 @@ impl AgentView {
             BlockingCard::CancelTurn => EscStep::KeepRunning,
             BlockingCard::Question => {
                 let qv = self.question_view.as_ref()?;
-                if qv.focus == QuestionFocus::InputMode {
+                // Pi's native extension dialogs bind Escape/Ctrl+C directly
+                // to cancellation. They do not have QuestionView's layered
+                // "leave input / unselect / park in scrollback" semantics.
+                if qv.is_pi_extension_ui() {
+                    EscStep::CancelInteraction
+                } else if qv.focus == QuestionFocus::InputMode {
                     if self.prompt.file_search_visible() {
                         EscStep::DismissFileSearch
                     } else if qv.is_feedback() {
@@ -258,7 +266,9 @@ impl AgentView {
                     self.commit_question_freeform();
                 }
             }
-            EscStep::DismissFeedbackPane | EscStep::SkipFeedbackTrace => {
+            EscStep::DismissFeedbackPane
+            | EscStep::SkipFeedbackTrace
+            | EscStep::CancelInteraction => {
                 return self.submit_question_answers(true);
             }
             EscStep::DiscardPatternEdit => {

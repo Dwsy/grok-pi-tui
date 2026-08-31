@@ -6,9 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-31
+
 ### Added
 
 - `pig` is now installed as a short alias for `grok-pi` on Unix and Windows, alongside the existing `pi-grok` alias.
+- Windows now exposes the built-in PowerShell tool through grok-pi's native tool/settings surfaces.
+- Plan mode command and related native Pager affordances are available on Windows.
 - F2 settings can choose whether `Esc` or `Ctrl+C` is required to cancel a running turn, with the setting applied live and persisted as `[ui].cancel_turn_key`.
 - `Opt+Shift+V` on macOS forces clipboard text into a temporary-file attachment, and image files opened from Read tool calls render directly in the block viewer on supported Kitty/iTerm2 terminals.
 - **Subagents V2 `team_wait` idle semantics**: root never blocks on `team_wait`; children return immediately when no other V2 agent is active, allowing the child turn to finish and enter IDLE for later `team_followup_task` reactivation.
@@ -18,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Pi RPC extension dialogs now preserve Pi's native cancellation contract: `Esc` directly cancels blocking dialogs, and `Ctrl+C` also cancels active input/editor dialogs without parking them in Pager scrollback.
+- Cancelling a running turn now interrupts foreground Bash and Eval work instead of leaving the active tool process running behind the Pager state.
 - Light themes now use the theme text color for both native and software prompt cursors, avoiding stale high-contrast accent colors after a dark-to-light theme switch.
 - Timeline rail navigation now treats persisted compaction summaries as first-class markers, including previews and direct jumps to the compaction boundary.
 - Model usage associated with tool-emitting assistant segments is preserved on live and replayed ACP tool calls instead of being dropped before tool execution.

@@ -335,6 +335,14 @@ impl QuestionViewState {
         self
     }
 
+    /// Whether this blocking question is one of Pi RPC's stock extension UI
+    /// dialogs (`select` / `confirm` / `input` / `editor`). The adapter owns
+    /// this namespace, so the pager can preserve Pi's direct-cancel key
+    /// contract without changing ordinary Grok `ask_user_question` behavior.
+    pub fn is_pi_extension_ui(&self) -> bool {
+        self.response_tx.is_some() && self.tool_call_id.starts_with("pi-extension-ui:")
+    }
+
     /// Number of items for a given question: options + 1 free-form row
     /// (unless `no_freeform` is set).
     pub fn total_items(&self, question_idx: usize) -> usize {

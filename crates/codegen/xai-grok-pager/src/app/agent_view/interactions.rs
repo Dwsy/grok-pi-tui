@@ -339,6 +339,16 @@ impl AgentView {
         if key.code == KeyCode::Esc {
             return self.handle_card_esc();
         }
+        // Pi's `tui.select.cancel` defaults to both Escape and Ctrl+C for all
+        // stock extension dialogs, including input/editor while text is active.
+        if key!('c', CONTROL).matches(key)
+            && self
+                .question_view
+                .as_ref()
+                .is_some_and(crate::views::question_view::QuestionViewState::is_pi_extension_ui)
+        {
+            return self.submit_question_answers(true);
+        }
         let Some(ref mut qv) = self.question_view else {
             return InputOutcome::Unchanged;
         };

@@ -8,7 +8,9 @@ use crate::views::question_view::QuestionViewState;
 use agent_client_protocol as acp;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::Arc;
-use xai_grok_tools::implementations::grok_build::ask_user_question::{Question, QuestionOption};
+use xai_grok_tools::implementations::grok_build::ask_user_question::{
+    AskUserQuestionMode, Question, QuestionOption,
+};
 
 const SHIFT_TAB: [(KeyCode, KeyModifiers); 3] = [
     (KeyCode::BackTab, KeyModifiers::NONE),
@@ -66,6 +68,30 @@ fn open_question(agent: &mut AgentView) {
         vec![question("Which?")],
         StashedPrompt::default(),
     ));
+}
+
+fn open_pi_extension_question(
+    agent: &mut AgentView,
+) -> tokio::sync::oneshot::Receiver<xai_acp_lib::AcpResult<acp::ExtResponse>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    agent.question_view = Some(QuestionViewState::with_response_tx(
+        "pi-extension-ui:dialog-7".into(),
+        vec![question("Which?")],
+        StashedPrompt::default(),
+        Some(tx),
+        AskUserQuestionMode::Default,
+    ));
+    rx
+}
+
+fn cancelled_outcome(
+    rx: &mut tokio::sync::oneshot::Receiver<xai_acp_lib::AcpResult<acp::ExtResponse>>,
+) -> serde_json::Value {
+    let response = rx
+        .try_recv()
+        .expect("Pi extension cancellation must resolve the ACP response")
+        .expect("Pi extension cancellation must be a successful ACP response");
+    serde_json::from_str(response.0.get()).expect("cancel response must be valid JSON")
 }
 
 fn open_plan(agent: &mut AgentView) {
@@ -418,6 +444,49 @@ fn the_esc_hint_names_the_rung_the_key_takes() {
         agent.handle_question_key_for_test(&KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
     assert_eq!(agent.card_esc(), Some(EscStep::ClearSelection));
     assert!(hint_labels(&agent).contains(&"unselect".to_string()));
+}
+
+#[test]
+fn pi_extension_esc_cancels_instead_of_parking() {
+    let mut agent = make_agent();
+    let mut rx = open_pi_extension_question(&mut agent);
+
+    assert_eq!(agent.card_esc(), Some(EscStep::CancelInteraction));
+    assert!(
+        hint_labels(&agent).contains(&"cancel".to_string()),
+        "Pi extension dialogs must advertise Pi's cancel contract"
+    );
+
+    let _ = agent.handle_question_key_for_test(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(
+        agent.question_view.is_none(),
+        "Escape must close the Pi extension dialog, not park it"
+    );
+    assert_eq!(cancelled_outcome(&mut rx)["outcome"], "cancelled");
+}
+
+#[test]
+fn pi_extension_cancel_keys_work_from_input_mode() {
+    use crate::views::question_view::QuestionFocus;
+
+    for (code, modifiers) in [
+        (KeyCode::Esc, KeyModifiers::NONE),
+        (KeyCode::Char('c'), KeyModifiers::CONTROL),
+    ] {
+        let mut agent = make_agent();
+        let mut rx = open_pi_extension_question(&mut agent);
+        agent.question_view.as_mut().expect("question open").focus = QuestionFocus::InputMode;
+        agent.prompt.set_text("draft");
+
+        let _ = agent.handle_question_key_for_test(&KeyEvent::new(code, modifiers));
+
+        assert!(
+            agent.question_view.is_none(),
+            "{code:?}/{modifiers:?} must directly cancel Pi input/editor dialogs"
+        );
+        assert_eq!(cancelled_outcome(&mut rx)["outcome"], "cancelled");
+    }
 }
 
 #[test]
