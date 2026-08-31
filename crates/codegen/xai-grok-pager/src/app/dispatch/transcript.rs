@@ -291,33 +291,6 @@ pub(super) fn dispatch_open_block_viewer(app: &mut AppView) {
             return;
         };
 
-        // ACP-backed tool entries always prefer the raw trace viewer. This is
-        // independent of the rendered tool block's normal-viewer capability:
-        // failed Read/Search/ListDir calls often have no successful output,
-        // but their raw input/output/error trace is still valuable.
-        if !entry.tool_traces.is_empty() {
-            let title = if entry.tool_traces.len() == 1 {
-                format!("Tool trace · {}", entry.tool_traces[0].title)
-            } else {
-                format!("Tool trace · {} calls", entry.tool_traces.len())
-            };
-            let content = crate::scrollback::entry::format_tool_traces_split(&entry.tool_traces);
-            agent.active_modal = Some(crate::views::modal::ActiveModal::ToolTraceViewer {
-                title,
-                input: content.input,
-                output: content.output,
-                input_scroll: 0,
-                output_scroll: 0,
-                focus: crate::views::modal::ToolTracePane::Input,
-                input_area: ratatui::layout::Rect::default(),
-                output_area: ratatui::layout::Rect::default(),
-                window: crate::views::modal_window::ModalWindowState::new(),
-                input_cached_lines: None,
-                output_cached_lines: None,
-            });
-            return;
-        }
-
         // Block has images/media but terminal can't render pixels — toast and bail.
         let has_media =
             !entry.block.image_references().is_empty() || entry.block.inline_media().is_some();

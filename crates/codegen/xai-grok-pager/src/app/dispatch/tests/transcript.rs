@@ -86,10 +86,9 @@ fn open_block_viewer_on_group_header_toggles_group() {
 }
 
 #[test]
-fn open_block_viewer_opens_failed_tool_trace_even_without_normal_viewer() {
+fn open_block_viewer_does_not_open_failed_tool_trace() {
     use crate::scrollback::blocks::tool::search::SearchToolCallBlock;
     use crate::scrollback::entry::ToolTraceSnapshot;
-    use crate::views::modal::{ActiveModal, ToolTracePane};
 
     let mut app = test_app_with_agent();
     let id = AgentId(0);
@@ -119,19 +118,10 @@ fn open_block_viewer_opens_failed_tool_trace_even_without_normal_viewer() {
     assert!(effects.is_empty());
     let agent = app.agents.get(&id).unwrap();
     assert!(agent.block_viewer.is_none());
-    let Some(ActiveModal::ToolTraceViewer {
-        input,
-        output,
-        focus,
-        ..
-    }) = agent.active_modal.as_ref()
-    else {
-        panic!("expected failed tool to open ToolTraceViewer");
-    };
-    assert!(input.contains("Failed"));
-    assert!(input.contains("needle"));
-    assert!(output.contains("boom"));
-    assert_eq!(*focus, ToolTracePane::Input);
+    assert!(
+        agent.active_modal.is_none(),
+        "Enter/OpenBlockViewer must not open ToolTraceViewer; collapsed tool traces are opened by Left/Collapse"
+    );
 }
 
 #[test]
