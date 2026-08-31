@@ -15,6 +15,21 @@ import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 const BRIDGE_TYPE = "pi-grok-goal/v1";
+const GOAL_MESSAGE_TYPE = "pi-grok-goal/message/v1";
+
+type GoalEvent =
+  | "goal_created"
+  | "goal_replaced"
+  | "goal_resumed"
+  | "goal_paused"
+  | "goal_cleared"
+  | "goal_completed"
+  | "progress";
+
+type GoalMessageOptions = {
+  triggerTurn?: boolean;
+  deliverAs?: "steer" | "followUp" | "nextTurn";
+};
 
 type GoalControl = {
   goalId: string;
@@ -69,20 +84,64 @@ function parseSetArgs(args: string): { objective: string; budget?: number } {
   return { objective: parts.join(" ").trim(), budget };
 }
 
-function rulesReminder(objective: string): string {
-  return (
-    `<system-reminder>\n` +
-    `You are in GOAL MODE. Objective:\n${objective}\n\n` +
-    `Rules:\n` +
-    `1. Work until the objective is fully achieved with verifiable evidence.\n` +
-    `2. Prefer concrete checks (tests, builds, file inspection) over claims.\n` +
-    `3. Call update_goal({ completed: true, message: "..." }) ONLY when done.\n` +
-    `4. Call update_goal({ blocked_reason: "..." }) only after repeated failures.\n` +
-    `5. Optional progress: update_goal({ message: "..." }).\n` +
-    `6. Do not stop early. Do not invent success.\n` +
-    `Start now.\n` +
-    `</system-reminder>`
-  );
+function goalStateReminder(control: GoalControl, event: GoalEvent, detail?: string): string {
+  const cleanDetail = detail?.trim();
+  const stateLines = [
+    `Event: ${event}`,
+    `Objective:\n${control.objective}`,
+    `Status: ${control.status}`,
+    `Phase: ${control.phase}`,
+    control.tokenBudget !== undefined ? `Token budget: ${control.tokenBudget}` : undefined,
+    cleanDetail ? `Detail: ${cleanDetail}` : undefined,
+  ].filter((line): line is string => Boolean(line));
+
+  const guidance =
+    control.status === "active"
+      ? [
+          "Goal mode is active.",
+          "Work until the objective is fully achieved with verifiable evidence.",
+          "Prefer concrete checks (tests, builds, file inspection) over claims.",
+          'Call update_goal({ completed: true, message: "..." }) ONLY when done.',
+          'Call update_goal({ blocked_reason: "..." }) only after repeated failures.',
+          'Optional progress: update_goal({ message: "..." }).',
+          "Do not stop early. Do not invent success. Continue now.",
+        ].join("\n")
+      : control.status === "blocked" || control.status === "user_paused"
+        ? "Goal mode is paused. Do not continue autonomous goal work until the user resumes or changes the goal."
+        : control.status === "complete"
+          ? "Goal mode is complete. Do not continue the goal loop unless the user sets or resumes another goal."
+          : "Goal mode is cleared. Stop goal-mode behavior for this objective.";
+
+  return `<system-reminder>\n${stateLines.join("\n")}\n\n${guidance}\n</system-reminder>`;
+}
+
+function sendGoalMessage(
+  pi: ExtensionAPI,
+  control: GoalControl,
+  event: GoalEvent,
+  detail?: string,
+  options?: GoalMessageOptions,
+): void {
+  try {
+    pi.sendMessage(
+      {
+        customType: GOAL_MESSAGE_TYPE,
+        content: goalStateReminder(control, event, detail),
+        display: false,
+        details: {
+          version: 1,
+          event,
+          detail: detail?.trim() || null,
+          goalId: control.goalId,
+          status: control.status,
+          phase: control.phase,
+        },
+      },
+      options,
+    );
+  } catch {
+    // Model-context injection is best-effort; control file + bridge still carry state.
+  }
 }
 
 function emitBridge(
@@ -147,6 +206,7 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         c.lastEventDetail = "user";
         writeControl(c);
         emitBridge(pi, c, "goal_paused", "user");
+        sendGoalMessage(pi, c, "goal_paused", "user", { triggerTurn: false });
         ctx.ui.notify("Goal paused. Use /goal resume to continue.", "info");
         return;
       }
@@ -156,10 +216,10 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         if (!c || (c.status !== "user_paused" && c.status !== "blocked")) {
           if (c?.status === "active") {
             // Mid-turn resume: queue, don't crash on active stream (upstream GoalSet replaces).
-            pi.sendUserMessage(
-              `${rulesReminder(c.objective)}\nContinue the active goal.`,
-              { deliverAs: "followUp" },
-            );
+            sendGoalMessage(pi, c, "goal_resumed", "already active", {
+              triggerTurn: true,
+              deliverAs: "followUp",
+            });
             return;
           }
           ctx.ui.notify("No paused goal to resume.", "warning");
@@ -171,10 +231,10 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         c.lastEvent = "goal_resumed";
         writeControl(c);
         emitBridge(pi, c, "goal_resumed");
-        pi.sendUserMessage(
-          `${rulesReminder(c.objective)}\nResume the goal now.`,
-          { deliverAs: "followUp" },
-        );
+        sendGoalMessage(pi, c, "goal_resumed", undefined, {
+          triggerTurn: true,
+          deliverAs: "followUp",
+        });
         return;
       }
 
@@ -189,6 +249,7 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         c.lastEvent = "goal_cleared";
         writeControl(c);
         emitBridge(pi, c, "goal_cleared");
+        sendGoalMessage(pi, c, "goal_cleared", undefined, { triggerTurn: false });
         ctx.ui.notify("Goal cleared.", "info");
         return;
       }
@@ -220,7 +281,10 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         "info",
       );
       // deliverAs followUp: mid-turn /goal must queue, never throw "already processing".
-      pi.sendUserMessage(rulesReminder(objective), { deliverAs: "followUp" });
+      sendGoalMessage(pi, control, replacing ? "goal_replaced" : "goal_created", undefined, {
+        triggerTurn: true,
+        deliverAs: "followUp",
+      });
     },
   });
 
@@ -288,6 +352,10 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         c.lastEventDetail = "blocked";
         writeControl(c);
         emitBridge(pi, c, "goal_paused", "blocked");
+        sendGoalMessage(pi, c, "goal_paused", "blocked", {
+          triggerTurn: false,
+          deliverAs: "nextTurn",
+        });
         return {
           content: [
             {
@@ -306,6 +374,10 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         c.lastEventDetail = params.message?.trim() || undefined;
         writeControl(c);
         emitBridge(pi, c, "goal_completed", params.message?.trim());
+        sendGoalMessage(pi, c, "goal_completed", params.message?.trim(), {
+          triggerTurn: false,
+          deliverAs: "nextTurn",
+        });
         return {
           content: [
             {
@@ -322,6 +394,10 @@ export default function piGrokGoal(pi: ExtensionAPI) {
       c.phase = "executing";
       writeControl(c);
       emitBridge(pi, c, "progress", params.message?.trim());
+      sendGoalMessage(pi, c, "progress", params.message?.trim(), {
+        triggerTurn: false,
+        deliverAs: "nextTurn",
+      });
       return {
         content: [
           {

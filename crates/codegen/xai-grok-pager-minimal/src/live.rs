@@ -573,6 +573,8 @@ fn render_minimal_status(
             watchers,
             parked,
             flat_background: true,
+            message_interruptible_tool:
+                minimal_api::is_message_interruptible_foreground_tool(agent),
             held_queue: minimal_api::held_queue_count(agent),
             held_queue_top_sendable: minimal_api::held_queue_top_sendable(agent),
         },

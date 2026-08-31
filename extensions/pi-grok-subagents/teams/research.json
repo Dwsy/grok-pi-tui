@@ -20,7 +20,7 @@
       "name": "synthesizer",
       "agent": "plan",
       "description": "Research synthesizer",
-      "task": "Coordinate the research team for: {{task}}. Use team_wait while researcher/critic work, integrate their messages, resolve disagreements from available evidence, and return a concise final synthesis to your parent."
+      "task": "Coordinate the research team for: {{task}}. Use team_wait only while researcher/critic are still active, integrate their messages, resolve disagreements from available evidence, then finish your turn with a concise final synthesis; do not keep waiting after no active peers remain."
     }
   ]
 }

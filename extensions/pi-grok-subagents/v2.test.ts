@@ -410,10 +410,40 @@ test("spawn_team registers the full roster before starting any member", async ()
   assert.ok(firstSchedule > lastCreate, runtime.order.join(", "));
 });
 
-test("team_wait wakes on activity and team_interrupt delegates cancellation", async () => {
+test("team_wait returns immediately when a child has no active peers", async () => {
   const { fakePi, runtime } = setup();
   await execute(fakePi.tools.get("spawn_team_agent"), "spawn", { task_name: "worker", message: "work" });
-  const waitPromise = execute(fakePi.tools.get("team_wait"), "wait", { timeout_ms: 5_000 });
+  const childWait = (runtime.created[0].options.customTools ?? []).find((tool) => tool.name === "team_wait");
+
+  const startedAt = Date.now();
+  const waited = await execute(childWait, "child-wait-idle", { timeout_ms: 1_000 });
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal((waited.details as any).activity, false);
+  assert.equal((waited.details as any).idle, true);
+  assert.ok(elapsedMs < 250, `idle team_wait blocked for ${elapsedMs}ms`);
+});
+
+test("root team_wait returns immediately while background agents run", async () => {
+  const { fakePi } = setup();
+  await execute(fakePi.tools.get("spawn_team_agent"), "spawn", { task_name: "worker", message: "work" });
+
+  const startedAt = Date.now();
+  const waited = await execute(fakePi.tools.get("team_wait"), "root-wait", { timeout_ms: 5_000 });
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal((waited.details as any).activity, false);
+  assert.equal((waited.details as any).idle, true);
+  assert.equal((waited.details as any).root, true);
+  assert.ok(elapsedMs < 250, `root team_wait blocked for ${elapsedMs}ms`);
+});
+
+test("child team_wait wakes on activity and team_interrupt delegates cancellation", async () => {
+  const { fakePi, runtime } = setup();
+  await execute(fakePi.tools.get("spawn_team_agent"), "spawn-worker", { task_name: "worker", message: "work" });
+  await execute(fakePi.tools.get("spawn_team_agent"), "spawn-peer", { task_name: "peer", message: "peer work" });
+  const childWait = (runtime.created[0].options.customTools ?? []).find((tool) => tool.name === "team_wait");
+  const waitPromise = execute(childWait, "child-wait", { timeout_ms: 5_000 });
   await execute(fakePi.tools.get("team_send_message"), "send", { target: "/root/worker", message: "wake" });
   const waited = await waitPromise;
   assert.equal((waited.details as any).activity, true);

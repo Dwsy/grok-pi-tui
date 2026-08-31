@@ -259,7 +259,9 @@ function finishTask(pi: ExtensionAPI, task: BackgroundTask, code: number | null,
 		if (task.backgrounded) {
 			publishTerminalState(task);
 			try {
-				emitCompleted(pi, task);
+				// kill_task already returns the cancellation result; do not inject a
+				// user message between the kill call and its tool result.
+				if (!task.explicitlyKilled) emitCompleted(pi, task);
 			} catch {
 				// `pi.sendMessage` throws on a stale extension instance (session
 				// replacement / reload). Waking the model is best effort; the

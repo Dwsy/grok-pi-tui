@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `pig` is now installed as a short alias for `grok-pi` on Unix and Windows, alongside the existing `pi-grok` alias.
 - F2 settings can choose whether `Esc` or `Ctrl+C` is required to cancel a running turn, with the setting applied live and persisted as `[ui].cancel_turn_key`.
 - `Opt+Shift+V` on macOS forces clipboard text into a temporary-file attachment, and image files opened from Read tool calls render directly in the block viewer on supported Kitty/iTerm2 terminals.
+- **Subagents V2 `team_wait` idle semantics**: root never blocks on `team_wait`; children return immediately when no other V2 agent is active, allowing the child turn to finish and enter IDLE for later `team_followup_task` reactivation.
+- ACP-backed tool entries always open the raw tool trace viewer on block interaction, independent of the rendered block's viewer capability (failed Read/Search calls often have no successful output, but their raw input/output/error is still valuable).
+- `pi-grok-subagents` exposes a bundled `multi-agent-proactive` skill via `resources_discover` when `PI_GROK_SUBAGENTS=1`, providing parent-level proactive orchestration for both V1 `spawn_subagent` and V2 `spawn_team_agent` tools.
+- Bash `kill_task` no longer injects a completion context message after explicit cancellation; the kill result is returned directly.
 
 ### Fixed
 

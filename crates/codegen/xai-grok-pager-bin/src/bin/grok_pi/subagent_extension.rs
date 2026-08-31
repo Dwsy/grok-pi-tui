@@ -93,6 +93,13 @@ pub(super) fn write_subagent_extension() -> Result<SubagentExtension> {
     )?;
     write_source_file(
         source_dir.path(),
+        "skills/multi-agent-proactive/SKILL.md",
+        include_str!(
+            "../../../../../../extensions/pi-grok-subagents/skills/multi-agent-proactive/SKILL.md"
+        ),
+    )?;
+    write_source_file(
+        source_dir.path(),
         "teams/research.json",
         include_str!("../../../../../../extensions/pi-grok-subagents/teams/research.json"),
     )?;
@@ -213,13 +220,23 @@ mod tests {
         assert!(runtime.contains("this.emit(record, \"child_update\""));
         assert!(index.contains("process.env.PI_GROK_SUBAGENTS !== \"1\""));
         assert!(index.contains("process.env.PI_GROK_SUBAGENTS_V2 === \"1\""));
+        assert!(index.contains("resources_discover"));
+        assert!(index.contains("multi-agent-proactive"));
+        let proactive_skill =
+            std::fs::read_to_string(dir.join("skills/multi-agent-proactive/SKILL.md"))
+                .expect("read bundled proactive skill");
+        assert!(proactive_skill.contains("spawn_subagent"));
+        assert!(proactive_skill.contains("spawn_team_agent"));
+        assert!(proactive_skill.contains("child 没有因为父级 Proactive/Ultra 自动继续 fan-out"));
         assert!(tools_v1.contains("name: \"spawn_subagent\""));
         assert!(tools_v1.contains("__pi_grok_subagent_cancel"));
         assert!(shared.contains("__pi_grok_subagent_replay"));
         assert!(tools_v1.contains("pi.registerCommand(\"subagents\""));
         assert!(config_ui.contains("PI_GROK_SUBAGENT_EXTENSION_CATALOG"));
-        assert!(runtime.contains("additionalExtensionPaths"));
-        assert!(runtime.contains("additionalSkillPaths"));
+        assert!(runtime.contains("noExtensions: true"));
+        assert!(runtime.contains("noSkills: true"));
+        assert!(runtime.contains("additionalExtensionPaths: definition?.extensions ?? []"));
+        assert!(runtime.contains("additionalSkillPaths: definition?.skills ?? []"));
         assert!(runtime.contains("customTools"));
         assert!(v2.contains("pi-grok-team-message/v2"));
         assert!(v2.contains("name: \"spawn_team\""));

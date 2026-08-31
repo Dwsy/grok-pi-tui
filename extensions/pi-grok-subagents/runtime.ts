@@ -386,6 +386,9 @@ export class SubagentRuntime {
     const systemPrompt = options.systemPromptSuffix?.trim()
       ? `${baseSystemPrompt}\n\n${options.systemPromptSuffix.trim()}`
       : baseSystemPrompt;
+    // Parent resources, including the built-in multi-agent-proactive skill, do not
+    // flow into children. Only an agent definition can explicitly opt a child into
+    // extension/skill paths; V1 and V2 both pass through this loader.
     const resourceLoader = new DefaultResourceLoader({
       cwd: ctx.cwd,
       agentDir,

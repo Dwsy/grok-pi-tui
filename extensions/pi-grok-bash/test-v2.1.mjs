@@ -69,8 +69,12 @@ async function createHarness(register, version, options = {}) {
   else process.env.PI_GROK_BASH_MAX_WAIT_MINS = String(options.bashMaxWaitMins);
 
   let activeToolNames = (options.activeToolNames ?? options.toolInfo?.map((tool) => tool.name) ?? []).slice();
+  const customMessages = [];
   const pi = {
     events: { emit() {} },
+    sendMessage(message, options) {
+      customMessages.push({ message, options });
+    },
     on(event, handler) {
       const existing = handlers.get(event) ?? [];
       existing.push(handler);
@@ -108,6 +112,7 @@ async function createHarness(register, version, options = {}) {
     getActiveTools() {
       return [...activeToolNames];
     },
+    customMessages,
     async run(params, signal) {
       return evalTool.execute(
         `test-${Math.random().toString(16).slice(2)}`,
@@ -541,6 +546,32 @@ console.log(JSON.stringify({
     const bashFullOutput = await readFile(bashOutput.output_file, "utf8");
     assert.equal(bashFullOutput.split("\n").filter((line) => line === "x").length, 3000);
     console.log("PASS 11b background Bash truncates model output by Pi limits while preserving full temp output");
+
+    const killTool = v2.registeredTools.get("kill_task");
+    assert(killTool);
+    const cancelledBackground = await bashTool.execute(
+      "cancelled-background-bash",
+      { command: "sleep 30", task_name: "cancelled background", is_background: true },
+      new AbortController().signal,
+      undefined,
+      { cwd: repoRoot },
+    );
+    const cancelledTask = JSON.parse(cancelledBackground.content[0].text);
+    await killTool.execute(
+      "kill-cancelled-background-bash",
+      { task_id: cancelledTask.task_id },
+      new AbortController().signal,
+    );
+    await bashWaitTool.execute(
+      "wait-cancelled-background-bash",
+      { task_ids: [cancelledTask.task_id], mode: "wait_all", timeout_ms: 3000 },
+      new AbortController().signal,
+    );
+    assert.equal(
+      v2.customMessages.filter((entry) => entry.message?.details?.taskId === cancelledTask.task_id).length,
+      0,
+    );
+    console.log("PASS 11b.1 killed background Bash does not inject a context message");
   } finally {
     await v2.close();
   }

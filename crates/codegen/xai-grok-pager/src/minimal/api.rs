@@ -586,6 +586,13 @@ pub fn held_queue_top_sendable(v: &AgentView) -> bool {
     v.held_queue_top_sendable()
 }
 
+/// [`AgentView::is_message_interruptible_foreground_tool`] — a foreground
+/// tool that the shell deliberately exposes as a cancel-and-send window
+/// (currently grok-pi `bash` / `eval`).
+pub fn is_message_interruptible_foreground_tool(v: &AgentView) -> bool {
+    v.is_message_interruptible_foreground_tool()
+}
+
 /// [`AgentView::sync_pending_user_input_marks`].
 pub fn sync_pending_user_input_marks(v: &mut AgentView) {
     v.sync_pending_user_input_marks();

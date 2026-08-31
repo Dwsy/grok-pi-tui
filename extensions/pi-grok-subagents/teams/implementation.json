@@ -14,7 +14,7 @@
       "name": "reviewer",
       "agent": "explore",
       "description": "Independent reviewer",
-      "task": "Review the objective and current codebase while the implementer works: {{task}}. Wait for the implementer's follow-up, inspect the resulting diff/tests, and report concrete defects or approval to your parent."
+      "task": "Review the objective and current codebase while the implementer works: {{task}}. Finish your initial turn instead of waiting in team_wait; the implementer's team_followup_task will reactivate this same session when the change is ready. Then inspect the resulting diff/tests and report concrete defects or approval to your parent."
     }
   ]
 }

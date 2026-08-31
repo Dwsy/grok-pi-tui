@@ -140,7 +140,8 @@ export class TeamCoordinator {
     return [
       `You are ${path}, an agent in a grok-pi Subagents V2 team. Your parent is ${parentPath}.`,
       "All team agents share the same working directory and can see each other's filesystem changes.",
-      "Use spawn_team_agent to create a nested child, team_send_message for a queue-only semantic message, team_followup_task to trigger a new recipient task, team_wait to wait for team activity, team_list to inspect the team tree, and team_interrupt to stop a running agent.",
+      "Use spawn_team_agent to create a nested child, team_send_message for a queue-only semantic message, team_followup_task to trigger a new recipient task, team_wait only while another agent is actively running, team_list to inspect the team tree, and team_interrupt to stop a running agent.",
+      "When no other agent is active, finish your turn instead of waiting; you become IDLE and team_followup_task can reactivate this same child session later.",
       "Use absolute /root/... paths when messaging siblings. A final response from your turn is automatically delivered to your parent as FINAL_ANSWER.",
       extra?.trim() ?? "",
     ].filter(Boolean).join("\n\n");
@@ -315,6 +316,14 @@ export class TeamCoordinator {
     }
   }
 
+  private hasActivePeer(senderPath: string): boolean {
+    return [...this.agents.values()].some((agent) => {
+      if (agent.path === senderPath) return false;
+      const status = this.status(agent);
+      return status === "running" || status === "queued";
+    });
+  }
+
   private async waitForActivity(timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
     const timeout = Math.min(Math.max(timeoutMs, 1_000), MAX_TEAM_WAIT_MS);
     return await new Promise<boolean>((resolve) => {
@@ -432,15 +441,37 @@ export class TeamCoordinator {
     const waitTool = defineTool({
       name: "team_wait",
       label: "Wait for Team Activity",
-      description: "Wait for the next V2 team activity without busy polling. Returns early on message, spawn, completion, or interruption.",
-      promptSnippet: "Wait for team activity; prefer longer waits instead of polling.",
+      description: "Wait for V2 team activity while another child agent is active. Root never blocks here: it returns immediately so background agents can continue and FINAL_ANSWER can reactivate the root turn.",
+      promptSnippet: "Root must not park on team_wait; children wait only while another V2 agent is active, otherwise finish the turn and become IDLE.",
       parameters: Type.Object({
         timeout_ms: Type.Optional(Type.Integer({ minimum: 1_000, maximum: MAX_TEAM_WAIT_MS, description: "Wait timeout in milliseconds. Defaults to 120000." })),
       }),
       execute: async (_toolCallId, params, signal) => {
+        if (senderPath === ROOT_PATH) {
+          return toolText(`Root does not block on team_wait. Finish this turn while background agents continue; FINAL_ANSWER will reactivate /root when results arrive.\n\n${this.listText()}`, {
+            activity: false,
+            idle: true,
+            root: true,
+            version: this.activityVersion,
+          });
+        }
+        if (!this.hasActivePeer(senderPath)) {
+          return toolText(`No other V2 agent is active. Finish this turn to become IDLE; a future team_followup_task can reactivate this child session.\n\n${this.listText()}`, {
+            activity: false,
+            idle: true,
+            version: this.activityVersion,
+          });
+        }
         const activity = await this.waitForActivity(params.timeout_ms ?? DEFAULT_TEAM_WAIT_MS, signal);
-        return toolText(`${activity ? "Team activity observed." : "Team wait timed out or was interrupted."}\n\n${this.listText()}`, {
+        const idle = !this.hasActivePeer(senderPath);
+        const status = idle
+          ? "No other V2 agent is active now. Finish this turn to become IDLE; a future team_followup_task can reactivate this child session."
+          : activity
+            ? "Team activity observed."
+            : "Team wait timed out or was interrupted.";
+        return toolText(`${status}\n\n${this.listText()}`, {
           activity,
+          idle,
           version: this.activityVersion,
         });
       },
