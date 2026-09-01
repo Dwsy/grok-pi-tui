@@ -122,9 +122,9 @@ Colors generated at runtime (syntax highlighting, background blending) are also 
 
 ## Cursor Color
 
-Grok uses one theme-aware cursor color for both the terminal-native cursor and software prompt cursors (`block`, `underline`, `bar`, and custom glyphs). Dark themes use a readable `accent_user`; light themes use `text_primary` so a chromatic prompt accent cannot leave the cursor looking stale after a dark→light switch. For the native cursor, Grok applies that color with OSC 12 on startup and theme switches, then resets the terminal default with OSC 112 on exit.
+Terminal-native and software prompt cursors intentionally use separate color policies. The native cursor preserves stock Grok behavior: it uses the active theme's `accent_user`, applies that color with OSC 12 on startup and theme switches, and resets the terminal default with OSC 112 on exit. Software cursors (`block`, `underline`, `bar`, and custom glyphs) use a readability-aware color derived from the theme; on light canvases they prefer `text_primary`, while dark canvases keep a readable `accent_user` with contrast fallbacks.
 
-This works in terminals that support OSC 12 (most modern terminals).
+Native cursor coloring works in terminals that support OSC 12.
 
 ---
 

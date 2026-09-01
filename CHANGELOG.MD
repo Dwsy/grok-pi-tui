@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-09-01
+
+### Fixed
+
+- Terminal-native cursor coloring again follows the active theme's `accent_user` via OSC 12, preserving stock Grok behavior while software prompt cursors keep their readability-aware light-theme color.
+- Release tags now validate their matching changelog section before starting the build matrix, so malformed release notes fail before expensive distribution builds begin.
+
 ## [0.1.4] - 2026-09-01
 
 ### Fixed

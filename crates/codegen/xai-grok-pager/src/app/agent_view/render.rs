@@ -377,7 +377,7 @@ mod prompt_cursor_tests {
     }
 
     #[test]
-    fn light_theme_software_cursor_uses_same_color_as_native_cursor() {
+    fn light_theme_software_cursor_uses_readability_color() {
         let theme = Theme::grokday();
         let color = xai_grok_pager_render::theme::cursor_color_for(&theme);
         let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));

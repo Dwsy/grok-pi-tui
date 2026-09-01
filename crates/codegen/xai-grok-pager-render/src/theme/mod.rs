@@ -752,24 +752,25 @@ pub fn cursor_color_for(theme: &Theme) -> ratatui::style::Color {
     Color::White
 }
 
-/// Set the terminal cursor color via OSC 12, honoring the current theme.
+/// Set the terminal cursor color to the current theme's `accent_user` via OSC 12.
 ///
-/// [`cursor_color_for`] uses `text_primary` on light canvases and a readable
-/// `accent_user` on dark canvases, with polarity-safe fallbacks.
+/// Native cursors intentionally keep stock Grok's OSC 12 semantics. Software
+/// prompt cursors use [`cursor_color_for`] for their additional readability
+/// policy, but that policy must not change the terminal-native cursor contract.
 ///
 /// `Theme::current()` quantizes to the terminal's color level, so on
 /// non-truecolor terminals `accent_user` may be `Color::Indexed` or a
 /// named ANSI variant. OSC 12 accepts an RGB triple regardless of the
 /// terminal's normal SGR color depth, so we resolve every variant back
 /// to RGB via [`crate::render::color::resolve_to_rgb`]. Reset (when
-/// `NO_COLOR` is set or the canvas is transparent) yields `None` — we skip
-/// emission entirely so the terminal keeps its profile-defined cursor color.
+/// `NO_COLOR` is set) yields `None` — we skip emission entirely so the
+/// terminal keeps its profile-defined cursor color.
 ///
 /// Escape sequence: `\x1b]12;rgb:RR/GG/BB\x07`.
 pub fn apply_cursor_color() {
     use std::io::Write;
     let theme = Theme::current();
-    let Some((r, g, b)) = crate::render::color::resolve_to_rgb(cursor_color_for(&theme)) else {
+    let Some((r, g, b)) = crate::render::color::resolve_to_rgb(theme.accent_user) else {
         return;
     };
     xai_grok_shared::stderr::with_locked_stderr(|stderr| {
