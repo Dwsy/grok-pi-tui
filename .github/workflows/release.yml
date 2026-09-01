@@ -10,8 +10,34 @@ permissions:
   contents: write
 
 jobs:
+  validate-changelog:
+    name: Validate changelog
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Require changelog section for release tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            echo "Not a release tag; changelog validation skipped."
+            exit 0
+          fi
+
+          ref="${GITHUB_REF_NAME}"
+          ver="${ref#v}"
+          python3 scripts/extract-changelog-section.py --self-test
+          python3 scripts/extract-changelog-section.py \
+            "$ver" CHANGELOG.MD \
+            --strict \
+            -o "$RUNNER_TEMP/release-notes.md"
+          echo "Validated CHANGELOG.MD section [$ver] for $ref"
+
   build:
     name: ${{ matrix.name }}
+    needs: validate-changelog
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false

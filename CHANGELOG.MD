@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-09-01
+
+### Fixed
+
+- Enter no longer opens the raw Tool Trace viewer; use the Left Arrow/Collapse action to inspect collapsed tool traces.
+
 ## [0.1.3] - 2026-08-31
 
 ### Added
