@@ -206,6 +206,79 @@ impl NotificationListState {
     }
 }
 
+pub struct SubagentHistoryEntry {
+    pub id: String,
+    pub description: String,
+    pub status: String,
+    pub subagent_type: String,
+    pub turn_count: u64,
+    pub tool_call_count: u64,
+    pub model_id: Option<String>,
+    pub background: bool,
+}
+
+pub struct SubagentHistoryRequest {
+    pub title: String,
+    pub entries: Vec<SubagentHistoryEntry>,
+}
+
+pub struct SubagentHistoryPickerState {
+    pub title: String,
+    pub entries: Vec<SubagentHistoryEntry>,
+    pub picker: crate::views::picker::PickerState,
+    response_tx: Option<
+        tokio::sync::oneshot::Sender<xai_acp_lib::AcpResult<agent_client_protocol::ExtResponse>>,
+    >,
+}
+
+impl SubagentHistoryPickerState {
+    pub fn new(
+        request: SubagentHistoryRequest,
+        response_tx: tokio::sync::oneshot::Sender<
+            xai_acp_lib::AcpResult<agent_client_protocol::ExtResponse>,
+        >,
+    ) -> Self {
+        Self {
+            title: request.title,
+            entries: request.entries,
+            picker: crate::views::picker::PickerState::input_active(),
+            response_tx: Some(response_tx),
+        }
+    }
+
+    pub fn filtered_entries(&self) -> Vec<&SubagentHistoryEntry> {
+        let query = self.picker.query().trim().to_lowercase();
+        self.entries
+            .iter()
+            .filter(|entry| {
+                query.is_empty()
+                    || entry.id.to_lowercase().contains(&query)
+                    || entry.description.to_lowercase().contains(&query)
+                    || entry.status.to_lowercase().contains(&query)
+                    || entry.subagent_type.to_lowercase().contains(&query)
+                    || entry
+                        .model_id
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .contains(&query)
+            })
+            .collect()
+    }
+
+    pub fn complete(&mut self, selected_id: Option<&str>) {
+        let payload = match selected_id {
+            Some(id) => serde_json::json!({ "outcome": "accepted", "id": id }),
+            None => serde_json::json!({ "outcome": "cancelled" }),
+        };
+        let raw = serde_json::value::to_raw_value(&payload)
+            .expect("subagent history picker response should be serializable");
+        if let Some(tx) = self.response_tx.take() {
+            let _ = tx.send(Ok(agent_client_protocol::ExtResponse::new(raw.into())));
+        }
+    }
+}
+
 #[cfg(test)]
 mod notification_list_tests {
     use super::*;
@@ -251,6 +324,63 @@ mod notification_list_tests {
             "notifications must open nav-first so e/y/arrows are not swallowed as search input"
         );
         assert!(state.picker.query().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod subagent_history_tests {
+    use super::*;
+
+    fn request() -> SubagentHistoryRequest {
+        SubagentHistoryRequest {
+            title: "Subagent history".into(),
+            entries: vec![
+                SubagentHistoryEntry {
+                    id: "a1b2c3".into(),
+                    description: "Inspect parser".into(),
+                    status: "COMPLETED".into(),
+                    subagent_type: "explore".into(),
+                    turn_count: 2,
+                    tool_call_count: 4,
+                    model_id: Some("provider/model".into()),
+                    background: true,
+                },
+                SubagentHistoryEntry {
+                    id: "d4e5f6".into(),
+                    description: "Fix tests".into(),
+                    status: "FAILED".into(),
+                    subagent_type: "general-purpose".into(),
+                    turn_count: 1,
+                    tool_call_count: 1,
+                    model_id: None,
+                    background: false,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn filters_history_by_metadata() {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let mut state = SubagentHistoryPickerState::new(request(), tx);
+        state.picker.set_query("explore");
+        assert_eq!(state.filtered_entries()[0].id, "a1b2c3");
+        state.picker.set_query("failed");
+        assert_eq!(state.filtered_entries()[0].id, "d4e5f6");
+    }
+
+    #[tokio::test]
+    async fn returns_selected_stable_id() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut state = SubagentHistoryPickerState::new(request(), tx);
+        state.complete(Some("a1b2c3"));
+        let response = rx
+            .await
+            .expect("history response")
+            .expect("valid ext response");
+        let value: serde_json::Value = serde_json::from_str(response.0.get()).unwrap();
+        assert_eq!(value["outcome"], "accepted");
+        assert_eq!(value["id"], "a1b2c3");
     }
 }
 
@@ -337,6 +467,11 @@ pub enum ActiveModal {
     /// Process-local Pi extension notification events for the active session.
     Notifications {
         state: NotificationListState,
+        window: ModalWindowState,
+    },
+    /// Native picker for persisted Pi subagent runs opened by `/subagent-history`.
+    SubagentHistory {
+        state: SubagentHistoryPickerState,
         window: ModalWindowState,
     },
     /// Session picker (opened from /resume command or command palette).
@@ -948,6 +1083,7 @@ impl ActiveModal {
             | ActiveModal::SessionTree { .. }
             | ActiveModal::TreeMap { .. }
             | ActiveModal::Notifications { .. }
+            | ActiveModal::SubagentHistory { .. }
             | ActiveModal::SessionPicker { .. }
             | ActiveModal::DocPicker { .. }
             | ActiveModal::DocViewer { .. }
@@ -976,6 +1112,7 @@ impl ActiveModal {
             ActiveModal::SessionTree { .. } => "Session tree",
             ActiveModal::TreeMap { .. } => "Branch map",
             ActiveModal::Notifications { .. } => "Notifications",
+            ActiveModal::SubagentHistory { state, .. } => state.title.as_str(),
             ActiveModal::SessionPicker { .. } => "Resume session",
             ActiveModal::ArgPicker {
                 command,

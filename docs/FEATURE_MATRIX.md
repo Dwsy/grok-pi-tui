@@ -92,7 +92,7 @@ Status definitions: **Native** = implemented by a Grok Pager component; **Adapte
 | `setWidget` | Native+Adapted | persistent native banner surface |
 | `setTitle` | Native+Adapted | terminal title |
 | `set_editor_text` | Native+Adapted | PromptWidget |
-| `select` | Native+Adapted | QuestionView option list |
+| `select` | Native+Adapted | QuestionView option list; the bundled `/subagent-history` command uses a product-owned select envelope that upgrades to a native searchable `SubagentHistory` ModalWindow/Picker with status, type, turn/tool, foreground/background, and model metadata, then returns the stable subagent id to the extension before opening the persisted transcript. |
 | `confirm` | Native+Adapted | QuestionView Yes/No |
 | `input` | Native+Adapted | QuestionView freeform PromptWidget |
 | `editor` | Native+Adapted | QuestionView multiline PromptWidget |

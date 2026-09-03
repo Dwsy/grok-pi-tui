@@ -623,6 +623,17 @@ impl AgentView {
                     state.hovered = None;
                     return;
                 }
+                ActiveModal::SubagentHistory { state, .. } => {
+                    let delta = lines.unsigned_abs() as usize;
+                    let current = state.picker.scroll_offset.unwrap_or(0);
+                    state.picker.scroll_offset = Some(if lines > 0 {
+                        current + delta
+                    } else {
+                        current.saturating_sub(delta)
+                    });
+                    state.picker.hovered = None;
+                    return;
+                }
                 ActiveModal::ToolTraceViewer {
                     input_scroll,
                     output_scroll,

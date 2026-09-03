@@ -275,11 +275,10 @@ export class SubagentRuntime {
         if (record.maxTurns > 0 && record.turnCount >= record.maxTurns && !record.turnLimitReached) {
           record.turnLimitReached = true;
           const summaryPrompt =
-            "[SYSTEM] You have reached the maximum number of turns allowed (" +
+            "[SYSTEM] You have reached the configured soft turn limit (" +
             String(record.maxTurns) +
-            "). Stop all further tool calls immediately. " +
-            "Produce your final summary now — return a concise, evidence-based result " +
-            "of everything you have gathered so far. Do not make any more tool calls.";
+            "). Please wrap up and provide a concise, evidence-based result when practical. " +
+            "This is a reminder, not a hard stop: you may continue using tools if needed to complete or verify the task.";
           void record.session.prompt(summaryPrompt, { streamingBehavior: "steer" }).catch(() => undefined);
         }
       }

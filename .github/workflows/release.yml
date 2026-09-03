@@ -101,8 +101,15 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: "v2-release"
-          shared-key: ${{ matrix.name }}
+          # Cache local workspace crates too. The default dependency-only cache
+          # still leaves this large workspace recompiling most local crates for
+          # every release tag.
+          cache-workspace-crates: true
+          cache-on-failure: true
+          # Bump the prefix when changing cache contents so GitHub does not keep
+          # serving an older immutable cache entry without workspace artifacts.
+          prefix-key: "v3-release"
+          shared-key: release-${{ matrix.target }}
 
       - name: Install protoc on Linux
         if: runner.os == 'Linux'

@@ -745,11 +745,19 @@ impl PiAgent {
         let resource_picker = (method == "select")
             .then(|| extension_resource_picker(raw_title))
             .flatten();
+        let subagent_history = (method == "select")
+            .then(|| extension_subagent_history(raw_title))
+            .flatten();
         let resource_picker_title = resource_picker
             .as_ref()
             .and_then(|picker| picker.get("title"))
             .and_then(Value::as_str);
+        let subagent_history_title = subagent_history
+            .as_ref()
+            .and_then(|picker| picker.get("title"))
+            .and_then(Value::as_str);
         let title = resource_picker_title
+            .or(subagent_history_title)
             .or(multi_select_title.as_deref())
             .unwrap_or(raw_title);
         let mut options = Vec::new();
@@ -809,6 +817,12 @@ impl PiAgent {
                 .expect("extension question params must be an object")
                 .insert("piGrokResourcePicker".to_owned(), resource_picker);
         }
+        if let Some(subagent_history) = subagent_history.clone() {
+            params
+                .as_object_mut()
+                .expect("extension question params must be an object")
+                .insert("piGrokSubagentHistory".to_owned(), subagent_history);
+        }
         let raw = serde_json::value::to_raw_value(&params)?;
         let request = acp::ExtRequest::new("x.ai/ask_user_question", raw.into());
         let response = match extension_dialog_timeout(&event) {
@@ -846,6 +860,8 @@ impl PiAgent {
         }
         let answer = if resource_picker.is_some() {
             extension_resource_picker_answer(result).unwrap_or_else(|| "[]".to_string())
+        } else if subagent_history.is_some() {
+            extension_subagent_history_answer(result).unwrap_or_default()
         } else if multi_select_title.is_some() {
             extension_multi_select_answer(result).unwrap_or_else(|| "[]".to_string())
         } else {

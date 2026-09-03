@@ -6,6 +6,7 @@ import { SessionManager, type AgentSession, type ExtensionCommandContext, type E
 import { BRIDGE_TYPE, SHORT_SUBAGENT_ID_LENGTH, textFromContent, type CapabilityMode } from "./shared.ts";
 
 export const SUBAGENT_STATE_SUFFIX = ".subagents.jsonl";
+const SUBAGENT_HISTORY_TITLE_PREFIX = "__pi_grok_subagent_history_v1__:";
 const BRIDGE_CONNECT_TIMEOUT_MS = 5_000;
 
 export type BridgeKind = "spawned" | "finished" | "child_update" | "replay_complete";
@@ -76,9 +77,9 @@ export type SubagentRecord = {
   /** Final assistant text captured when this run finished. Required when V2 reuses the child session later. */
   finalOutputText?: string;
   cancelRequested: boolean;
-  /** Max turns before injecting a summary prompt. 0 = unlimited. */
+  /** Soft turn threshold before injecting a wrap-up reminder. 0 = unlimited. */
   maxTurns: number;
-  /** Set when turn limit triggers abort-then-summarize. */
+  /** Set after the turn-limit reminder has been sent. */
   turnLimitReached: boolean;
   /** Resolved when finish() is called — enables true blocking wait. */
   donePromise: Promise<void>;
@@ -347,11 +348,22 @@ export async function showSubagentHistory(
     }
   } else {
     const ids = snapshots.map((candidate) => candidate.id);
-    const choices = [...snapshots].reverse().map((candidate) => {
+    const entries = [...snapshots].reverse().map((candidate) => {
       const shortId = shortSubagentIdFor(candidate.id, ids);
-      return `${shortId} · [${persistedStatusLabel(records, candidate)}] ${candidate.description}`;
+      return {
+        id: shortId,
+        description: candidate.description,
+        status: persistedStatusLabel(records, candidate),
+        type: candidate.type,
+        turnCount: candidate.turnCount,
+        toolCallCount: candidate.toolCallCount,
+        modelId: candidate.modelId,
+        background: candidate.background,
+      };
     });
-    const selected = await ctx.ui.select("Subagent history", choices);
+    const pickerTitle = `${SUBAGENT_HISTORY_TITLE_PREFIX}${JSON.stringify({ title: "Subagent history", entries })}`;
+    const choices = entries.map((entry) => `${entry.id} · [${entry.status}] ${entry.description}`);
+    const selected = await ctx.ui.select(pickerTitle, choices);
     if (!selected) return;
     const selectedId = selected.split(" · ", 1)[0];
     snapshot = resolvePersistedSubagent(snapshots, selectedId);

@@ -66,7 +66,9 @@ test("runtime subscription mutates the canonical SubagentRecord", () => {
   assert.equal(record.turnCount, 1);
   assert.equal(record.turnLimitReached, true);
   assert.equal(prompts.length, 1);
-  assert.match(prompts[0].text, /maximum number of turns allowed \(1\)/);
+  assert.match(prompts[0].text, /configured soft turn limit \(1\)/);
+  assert.match(prompts[0].text, /reminder, not a hard stop/);
+  assert.doesNotMatch(prompts[0].text, /Stop all further tool calls|Do not make any more tool calls/);
   unsubscribe();
 });
 

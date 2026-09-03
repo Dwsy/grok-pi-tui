@@ -1369,6 +1369,7 @@ fn extension_dialog_timeout(event: &Value) -> Option<Duration> {
 
 const PI_GROK_MULTI_SELECT_TITLE_PREFIX: &str = "__pi_grok_multi_select_v1__:";
 const PI_GROK_RESOURCE_PICKER_TITLE_PREFIX: &str = "__pi_grok_resource_picker_v1__:";
+const PI_GROK_SUBAGENT_HISTORY_TITLE_PREFIX: &str = "__pi_grok_subagent_history_v1__:";
 
 /// Decode a narrow, product-owned request to render a normal Pi `ui.select`
 /// callback with QuestionView's native checkbox mode. The payload is not a new
@@ -1399,6 +1400,28 @@ fn extension_resource_picker(title: &str) -> Option<Value> {
         .filter(|title| !title.is_empty())?;
     let types = object.get("resourceTypes")?.as_array()?;
     (!types.is_empty() && types.iter().all(Value::is_string)).then_some(value)
+}
+
+/// Decode the product-owned subagent-history catalog envelope. The extension
+/// still uses Pi's normal `ui.select`; only grok-pi upgrades its presentation
+/// to a native Pager modal and returns the selected stable subagent id.
+fn extension_subagent_history(title: &str) -> Option<Value> {
+    let encoded = title.strip_prefix(PI_GROK_SUBAGENT_HISTORY_TITLE_PREFIX)?;
+    let value = serde_json::from_str::<Value>(encoded).ok()?;
+    let object = value.as_object()?;
+    object
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())?;
+    let entries = object.get("entries")?.as_array()?;
+    (!entries.is_empty()
+        && entries.iter().all(|entry| {
+            entry.get("id").and_then(Value::as_str).is_some()
+                && entry.get("description").and_then(Value::as_str).is_some()
+                && entry.get("status").and_then(Value::as_str).is_some()
+        }))
+    .then_some(value)
 }
 
 const ASK_USER_CANCEL_TEXT: &str = "User declined to answer the questions. Continue with the task using your best judgment, or ask different questions.";
@@ -1655,6 +1678,15 @@ fn extension_resource_picker_answer(value: &Value) -> Option<String> {
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
     serde_json::to_string(&paths).ok()
+}
+
+fn extension_subagent_history_answer(value: &Value) -> Option<String> {
+    value
+        .get("id")?
+        .as_str()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn ext_response(value: Value) -> Result<acp::ExtResponse> {

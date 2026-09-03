@@ -434,6 +434,20 @@ fn product_resource_picker_envelope_round_trips_selected_paths() {
 }
 
 #[test]
+fn product_subagent_history_envelope_round_trips_selected_id() {
+    let picker = extension_subagent_history(
+        "__pi_grok_subagent_history_v1__:{\"title\":\"Subagent history\",\"entries\":[{\"id\":\"abc123\",\"description\":\"Inspect parser\",\"status\":\"COMPLETED\",\"type\":\"explore\",\"turnCount\":2,\"toolCallCount\":4,\"modelId\":\"provider/model\",\"background\":true}]}",
+    )
+    .expect("valid subagent-history envelope");
+    assert_eq!(picker["entries"][0]["id"], "abc123");
+    assert!(extension_subagent_history("ordinary select").is_none());
+    assert_eq!(
+        extension_subagent_history_answer(&json!({ "id": "abc123" })),
+        Some("abc123".into())
+    );
+}
+
+#[test]
 fn normalizes_system_language_tags() {
     assert_eq!(normalize_language_tag("zh_CN.UTF-8"), Some("zh-CN".into()));
     assert_eq!(normalize_language_tag("\"en-US\""), Some("en-US".into()));

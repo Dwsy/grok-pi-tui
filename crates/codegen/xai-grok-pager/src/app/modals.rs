@@ -142,6 +142,7 @@ impl AgentView {
             ActiveModal::CommandPalette { .. }
                 | ActiveModal::ArgPicker { .. }
                 | ActiveModal::Notifications { .. }
+                | ActiveModal::SubagentHistory { .. }
                 | ActiveModal::SessionPicker { .. }
                 | ActiveModal::DocPicker { .. }
         ) {
@@ -154,6 +155,9 @@ impl AgentView {
                     (window, state.query().is_empty(), false, false)
                 }
                 ActiveModal::Notifications { window, state } => {
+                    (window, state.picker.query().is_empty(), true, false)
+                }
+                ActiveModal::SubagentHistory { window, state } => {
                     (window, state.picker.query().is_empty(), true, false)
                 }
                 ActiveModal::SessionPicker {
@@ -205,6 +209,9 @@ impl AgentView {
                             ActiveModal::Notifications { state, .. } => {
                                 state.picker.clear_query();
                             }
+                            ActiveModal::SubagentHistory { state, .. } => {
+                                state.picker.clear_query();
+                            }
                             _ => {}
                         }
                         return InputOutcome::Changed;
@@ -218,6 +225,9 @@ impl AgentView {
                     if matches!(self.active_modal, Some(ActiveModal::Notifications { .. })) {
                         return self.handle_notifications_input(&ev);
                     }
+                    if matches!(self.active_modal, Some(ActiveModal::SubagentHistory { .. })) {
+                        return self.handle_subagent_history_input(&ev);
+                    }
                     return self.handle_palette_or_arg_input_with_registry(&ev, registry);
                 }
                 ModalWindowOutcome::Unhandled => {
@@ -229,6 +239,9 @@ impl AgentView {
                     }
                     if matches!(self.active_modal, Some(ActiveModal::Notifications { .. })) {
                         return self.handle_notifications_input(&ev);
+                    }
+                    if matches!(self.active_modal, Some(ActiveModal::SubagentHistory { .. })) {
+                        return self.handle_subagent_history_input(&ev);
                     }
                     return self.handle_palette_or_arg_input_with_registry(&ev, registry);
                 }
@@ -761,6 +774,7 @@ impl AgentView {
             ActiveModal::CommandPalette { .. }
             | ActiveModal::ArgPicker { .. }
             | ActiveModal::Notifications { .. }
+            | ActiveModal::SubagentHistory { .. }
             | ActiveModal::SessionTree { .. }
             | ActiveModal::TreeMap { .. }
             | ActiveModal::SessionPicker { .. }
@@ -790,6 +804,9 @@ impl AgentView {
         let event = crossterm::event::Event::Paste(text.to_owned());
         if matches!(self.active_modal, Some(ActiveModal::DocPicker { .. })) {
             return self.handle_doc_input(&event);
+        }
+        if matches!(self.active_modal, Some(ActiveModal::SubagentHistory { .. })) {
+            return self.handle_subagent_history_input(&event);
         }
         if matches!(
             self.active_modal,
@@ -2004,6 +2021,71 @@ impl AgentView {
         }
     }
 
+    fn handle_subagent_history_input(&mut self, ev: &crossterm::event::Event) -> InputOutcome {
+        use crate::views::picker::{PickerConfig, PickerOutcome, handle_picker_input};
+
+        let outcome = {
+            let Some(ActiveModal::SubagentHistory { state, .. }) = self.active_modal.as_mut()
+            else {
+                return InputOutcome::Changed;
+            };
+            let entry_count = state.filtered_entries().len();
+            let config = PickerConfig {
+                title: None,
+                show_search_hint: true,
+                expandable: false,
+                esc_clears_query: true,
+                shortcuts: Some(crate::views::picker::picker_shortcuts()),
+                pending_hint: None,
+                non_selectable: &[],
+                non_selectable_clickable: &[],
+                shortcuts_area: None,
+                tabs: None,
+                active_tab: 0,
+                filter_label: None,
+                filter_key_hint: None,
+                filter_active: false,
+                header_note: None,
+                action_keys: &[],
+                disable_search: false,
+                compact_bottom_bar: false,
+                search_only_on_slash: false,
+                vim_normal_first: false,
+            };
+            handle_picker_input(ev, &mut state.picker, entry_count, &config)
+        };
+
+        match outcome {
+            PickerOutcome::Closed => {
+                if let Some(ActiveModal::SubagentHistory { state, .. }) = self.active_modal.as_mut()
+                {
+                    state.complete(None);
+                }
+                self.active_modal = None;
+                InputOutcome::Changed
+            }
+            PickerOutcome::Selected(index) => {
+                let selected_id = self.active_modal.as_ref().and_then(|modal| {
+                    let ActiveModal::SubagentHistory { state, .. } = modal else {
+                        return None;
+                    };
+                    state
+                        .filtered_entries()
+                        .get(index)
+                        .map(|entry| entry.id.clone())
+                });
+                if let Some(ActiveModal::SubagentHistory { state, .. }) = self.active_modal.as_mut()
+                {
+                    state.complete(selected_id.as_deref());
+                }
+                self.active_modal = None;
+                InputOutcome::Changed
+            }
+            PickerOutcome::Unchanged => InputOutcome::Unchanged,
+            _ => InputOutcome::Changed,
+        }
+    }
+
     /// Basic input handler for documentation modals (DocPicker list / DocViewer panel).
     fn handle_doc_input(&mut self, ev: &crossterm::event::Event) -> InputOutcome {
         use crate::views::modal::ActiveModal;
@@ -2153,6 +2235,7 @@ impl AgentView {
                 ActiveModal::CommandPalette { .. }
                     | ActiveModal::ArgPicker { .. }
                     | ActiveModal::Notifications { .. }
+                    | ActiveModal::SubagentHistory { .. }
                     | ActiveModal::SessionPicker { .. }
                     | ActiveModal::DocPicker { .. }
                     | ActiveModal::DocViewer { .. }
@@ -2167,6 +2250,7 @@ impl AgentView {
                 Some(ActiveModal::CommandPalette { window, .. }) => window,
                 Some(ActiveModal::ArgPicker { window, .. }) => window,
                 Some(ActiveModal::Notifications { window, .. }) => window,
+                Some(ActiveModal::SubagentHistory { window, .. }) => window,
                 Some(ActiveModal::SessionPicker { window, .. }) => window,
                 Some(ActiveModal::DocPicker { window, .. }) => window,
                 Some(ActiveModal::DocViewer { window, .. }) => window,
@@ -2216,6 +2300,9 @@ impl AgentView {
                     // double-take bug where the first consume drops the value
                     // before the second branch can match.
                     match self.active_modal.take() {
+                        Some(ActiveModal::SubagentHistory { mut state, .. }) => {
+                            state.complete(None);
+                        }
                         Some(ActiveModal::DocViewer {
                             previous_palette,
                             standalone,
@@ -2362,6 +2449,9 @@ impl AgentView {
                     }
                     if matches!(self.active_modal, Some(ActiveModal::Notifications { .. })) {
                         return self.handle_notifications_input(&ev);
+                    }
+                    if matches!(self.active_modal, Some(ActiveModal::SubagentHistory { .. })) {
+                        return self.handle_subagent_history_input(&ev);
                     }
                     if let Some(ActiveModal::ShortcutsHelp {
                         entries,
@@ -3054,6 +3144,110 @@ impl AgentView {
                     if let Some(detail_area) = detail_area {
                         render_model_picker_detail(buf, detail_area, &detail_lines, &theme);
                     }
+                }
+            } else if let modal::ActiveModal::SubagentHistory { state, window } = active_modal {
+                let rows: Vec<(String, String, Vec<String>)> = state
+                    .filtered_entries()
+                    .into_iter()
+                    .map(|entry| {
+                        let label = format!("{}  {}", entry.id, entry.description);
+                        let right = entry.status.clone();
+                        let mode = if entry.background {
+                            "background"
+                        } else {
+                            "foreground"
+                        };
+                        let model = entry.model_id.as_deref().unwrap_or("default model");
+                        let summary = vec![format!(
+                            "{} · {} turns · {} tools · {} · {}",
+                            entry.subagent_type,
+                            entry.turn_count,
+                            entry.tool_call_count,
+                            mode,
+                            model
+                        )];
+                        (label, right, summary)
+                    })
+                    .collect();
+                let summary_lines: Vec<Vec<&str>> = rows
+                    .iter()
+                    .map(|(_, _, summary)| summary.iter().map(String::as_str).collect())
+                    .collect();
+                let picker_entries: Vec<PickerEntry> = rows
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (label, right, _))| {
+                        PickerEntry::Row(PickerRow {
+                            label,
+                            right_label: right,
+                            selected: state.picker.hovered == Some(index)
+                                || (state.picker.hovered.is_none()
+                                    && index == state.picker.selected),
+                            expanded: false,
+                            fields: &[],
+                            description_lines: &[],
+                            summary_lines: &summary_lines[index],
+                            dimmed: false,
+                            indent: 0,
+                            label_color: None,
+                            badge: "",
+                            badge_color: None,
+                            collapsible: false,
+                            underline_last_desc: false,
+                        })
+                    })
+                    .collect();
+                let shortcuts = [
+                    mw::Shortcut {
+                        label: "↑/↓ nav",
+                        clickable: false,
+                        id: 0,
+                    },
+                    mw::Shortcut {
+                        label: "↵ open",
+                        clickable: false,
+                        id: 0,
+                    },
+                    mw::Shortcut {
+                        label: "type search",
+                        clickable: false,
+                        id: 0,
+                    },
+                    mw::Shortcut {
+                        label: "Esc close",
+                        clickable: false,
+                        id: 0,
+                    },
+                ];
+                let modal_config = ModalWindowConfig {
+                    title: state.title.as_str(),
+                    tabs: None,
+                    shortcuts: &shortcuts,
+                    sizing: ModalSizing {
+                        width_pct: 0.78,
+                        max_width: 132,
+                        min_width: 56,
+                        v_margin: 3,
+                        h_pad: 2,
+                        v_pad: 1,
+                        footer_lines: 2,
+                    }
+                    .with_compact(compact),
+                    fold_info: None,
+                };
+                if let Some(mca) = mw::render_modal_window(buf, area, window, &modal_config, &theme)
+                {
+                    picker::render_picker_in_modal(
+                        buf,
+                        mca.content,
+                        mca.inner_x,
+                        mca.inner_width,
+                        &theme,
+                        &mut state.picker,
+                        &picker_entries,
+                        &[],
+                        false,
+                    );
                 }
             } else if let modal::ActiveModal::Notifications { state, window } = active_modal {
                 // label = first line preview; expand body = full multi-line message.

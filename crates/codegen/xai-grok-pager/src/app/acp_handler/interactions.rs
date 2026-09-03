@@ -77,6 +77,75 @@ fn pi_grok_resource_picker_request(
     }))
 }
 
+fn pi_grok_subagent_history_request(
+    raw_params: &serde_json::Value,
+) -> Result<Option<crate::views::modal::SubagentHistoryRequest>, String> {
+    use crate::views::modal::{SubagentHistoryEntry, SubagentHistoryRequest};
+
+    let Some(value) = raw_params.get("piGrokSubagentHistory") else {
+        return Ok(None);
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| "piGrokSubagentHistory must be an object".to_owned())?;
+    let title = object
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .ok_or_else(|| "piGrokSubagentHistory.title is required".to_owned())?
+        .to_owned();
+    let raw_entries = object
+        .get("entries")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "piGrokSubagentHistory.entries is required".to_owned())?;
+    if raw_entries.is_empty() {
+        return Err("piGrokSubagentHistory.entries must not be empty".to_owned());
+    }
+    let mut entries = Vec::with_capacity(raw_entries.len());
+    for value in raw_entries {
+        let entry = value
+            .as_object()
+            .ok_or_else(|| "piGrokSubagentHistory.entries must contain objects".to_owned())?;
+        let required = |key: &str| {
+            entry
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| format!("piGrokSubagentHistory entry {key} is required"))
+        };
+        entries.push(SubagentHistoryEntry {
+            id: required("id")?,
+            description: required("description")?,
+            status: required("status")?,
+            subagent_type: required("type")?,
+            turn_count: entry
+                .get("turnCount")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "piGrokSubagentHistory entry turnCount is required".to_owned())?,
+            tool_call_count: entry
+                .get("toolCallCount")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| {
+                    "piGrokSubagentHistory entry toolCallCount is required".to_owned()
+                })?,
+            model_id: entry
+                .get("modelId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+            background: entry
+                .get("background")
+                .and_then(serde_json::Value::as_bool)
+                .ok_or_else(|| "piGrokSubagentHistory entry background is required".to_owned())?,
+        });
+    }
+    Ok(Some(SubagentHistoryRequest { title, entries }))
+}
+
 /// Resolve a superseded elicitation's reverse-request with `Cancel` so the
 /// awaiting MCP server is released before a replacement takes the slot.
 fn cancel_elicitation_request(
@@ -206,6 +275,15 @@ pub(crate) fn handle_ask_user_question(
             return false;
         }
     };
+    let subagent_history_request = match pi_grok_subagent_history_request(&raw_params) {
+        Ok(request) => request,
+        Err(error) => {
+            ext.response_tx
+                .send(Err(acp::Error::new(-32602, error)))
+                .ok();
+            return false;
+        }
+    };
 
     let ext_req: AskUserQuestionExtRequest = match serde_json::from_value(raw_params.clone()) {
         Ok(r) => r,
@@ -241,6 +319,15 @@ pub(crate) fn handle_ask_user_question(
         drop(ext.response_tx);
         return false;
     };
+
+    if let Some(request) = subagent_history_request {
+        agent.active_modal = Some(crate::views::modal::ActiveModal::SubagentHistory {
+            state: crate::views::modal::SubagentHistoryPickerState::new(request, ext.response_tx),
+            window: crate::views::modal_window::ModalWindowState::new(),
+        });
+        agent.last_active_at = Some(std::time::Instant::now());
+        return is_active;
+    }
 
     if let Some(request) = resource_picker_request {
         let cwd = agent.session.cwd.clone();

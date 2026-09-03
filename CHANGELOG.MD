@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-09-03
+
+### Added
+
+- `/subagent-history` now opens a Pager-native searchable history picker with persisted subagent status, type, turn/tool counts, foreground/background mode, and model metadata while preserving extension-owned transcript loading.
+
+### Changed
+
+- Subagent `maxTurns` is now a soft wrap-up threshold: reaching it sends one reminder to summarize when practical but no longer forbids additional tool calls needed to complete or verify the task.
+- Release builds cache local workspace crates per target and retain failed-build cache state, reducing repeated compilation work across release tags.
+
+### Fixed
+
+- Closing or cancelling the native subagent-history picker now resolves the pending Pi extension UI request explicitly, preventing orphaned reverse requests.
+
 ## [0.1.5] - 2026-09-01
 
 ### Fixed
