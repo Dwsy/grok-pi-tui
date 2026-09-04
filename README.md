@@ -41,8 +41,8 @@ Defaults: Unix → `~/.local/bin`; Windows → `%LOCALAPPDATA%\grok-pi\bin`. Ove
 The installer also creates `pig` and `pi-grok` aliases (Unix symlinks; Windows `pig.exe` / `pi-grok.exe` hardlinks with copy fallback):
 
 ```bash
-grok-pi --help   # original name
 pig --help       # short alias
+grok-pi --help   # original name
 pi-grok --help   # alias
 ```
 
