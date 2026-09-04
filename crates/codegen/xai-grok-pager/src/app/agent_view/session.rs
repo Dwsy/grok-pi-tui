@@ -9,6 +9,7 @@ use super::{
 };
 use crate::app::agent::AgentSession;
 use crate::app::app_view::InputOutcome;
+use crate::app::subagent::SubagentInfo;
 use crate::scrollback::state::ScrollbackState;
 use crate::scrollback::text_selection::ResolvedSelectionModel;
 use crate::views::prompt_widget::PromptWidget;

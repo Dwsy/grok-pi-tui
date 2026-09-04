@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-09-05
+
+### Fixed
+
+- Release builds now import the nested subagent metadata type used by descendant Tasks-pane resolvers, fixing the cross-platform compile failure that prevented `v0.1.7` from publishing.
+
 ## [0.1.7] - 2026-09-04
 
 ### Added
