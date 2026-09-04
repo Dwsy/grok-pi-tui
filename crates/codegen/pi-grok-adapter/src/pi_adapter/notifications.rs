@@ -111,6 +111,16 @@ impl PiAgent {
         let Some(projection) = parse_bridge_message(event, &root_session_id)? else {
             return Ok(false);
         };
+        let parent_session_id = projection.parent_session_id.clone();
+        let parent_known = parent_session_id == root_session_id
+            || self
+                .state
+                .borrow()
+                .subagent_session_to_id
+                .contains_key(&parent_session_id);
+        if !parent_known {
+            bail!("subagent bridge parentSessionId is not a known Pager session");
+        }
         if !self.accept_subagent_bridge_sequence(
             &projection.subagent_id,
             projection.sequence,
@@ -143,10 +153,21 @@ impl PiAgent {
                     if !replay && !reconcile {
                         fields = fields.status(Some(acp::ToolCallStatus::InProgress));
                     }
-                    self.send_update(acp::SessionUpdate::ToolCallUpdate(
-                        acp::ToolCallUpdate::new(acp::ToolCallId::new(tool_call_id), fields),
-                    ))
-                    .await;
+                    let update = acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                        acp::ToolCallId::new(tool_call_id),
+                        fields,
+                    ));
+                    if parent_session_id == root_session_id {
+                        self.send_update(update).await;
+                    } else {
+                        self.send_update_for_session(
+                            &parent_session_id,
+                            update,
+                            replay,
+                            &event_id,
+                        )
+                        .await;
+                    }
                 }
                 BridgeOperation::ParentLifecycle(notification) => {
                     let method = if replay {

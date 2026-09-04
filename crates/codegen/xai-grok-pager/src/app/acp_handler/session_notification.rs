@@ -1395,6 +1395,278 @@ pub(super) fn handle_child_session_notification(
         _ => false,
     }
 }
+/// Apply subagent lifecycle emitted by a child session to that child's own
+/// `AgentView`. This is the recursive counterpart of the root lifecycle path:
+/// the direct child keeps normal subagent chrome while its descendants live in
+/// its own `subagent_sessions` / `subagent_views` maps.
+fn handle_nested_subagent_lifecycle(
+    update: XaiSessionUpdate,
+    parent: &mut AgentView,
+    meta: Option<&serde_json::Value>,
+) -> bool {
+    match update {
+        XaiSessionUpdate::SubagentSpawned {
+            subagent_id,
+            child_session_id,
+            subagent_type,
+            description,
+            persona,
+            role,
+            model,
+            effective_context_source,
+            resumed_from,
+            capability_mode,
+            context_normalized,
+            parent_prompt_id,
+            workflow_run_id,
+            ..
+        } => {
+            let tracked_background = parent
+                .session
+                .tracker
+                .task_tool_background
+                .remove(&subagent_id);
+            let is_background = meta
+                .and_then(|value| value.get("subagentBackground"))
+                .and_then(serde_json::Value::as_bool)
+                .or(tracked_background)
+                .unwrap_or(false);
+            let persona_display = persona.clone();
+            let role_display = role.clone();
+            let model_display = model.clone();
+            parent.subagent_sessions.insert(
+                child_session_id.clone(),
+                SubagentInfo {
+                    subagent_id: Arc::from(subagent_id),
+                    child_session_id: Arc::from(child_session_id.clone()),
+                    description: Arc::from(description.clone()),
+                    subagent_type: Arc::from(subagent_type.clone()),
+                    persona: persona.map(Arc::from),
+                    role: role.map(Arc::from),
+                    model: model.map(Arc::from),
+                    context_source: effective_context_source.map(Arc::from),
+                    resumed_from: resumed_from.map(Arc::from),
+                    capability_mode: capability_mode.map(Arc::from),
+                    workflow_run_id: workflow_run_id.clone().map(Arc::from),
+                    context_normalized,
+                    parent_prompt_id: parent_prompt_id.map(Arc::from),
+                    started_at: std::time::Instant::now(),
+                    last_progress_at: std::time::Instant::now(),
+                    finished: false,
+                    status: None,
+                    error: None,
+                    duration_ms: None,
+                    tool_calls: None,
+                    turns: None,
+                    turn_count: None,
+                    tool_call_count: None,
+                    tokens_used: None,
+                    context_window_tokens: None,
+                    context_usage_pct: None,
+                    tools_used: Vec::new(),
+                    error_count: None,
+                    activity_label: None,
+                    is_background,
+                    pending_kill: false,
+                    kill_requested_at: None,
+                    scrollback_entry_id: None,
+                    prompt: None,
+                    child_cwd: None,
+                    worktree_path: None,
+                    transcript: Default::default(),
+                },
+            );
+            let (effective_child_cwd, effective_is_worktree) = derive_child_cwd(
+                &parent.session.cwd,
+                parent.subagent_sessions.get(&child_session_id),
+            );
+            let child_session = AgentSession {
+                id: AgentId(0),
+                acp_tx: parent.session.acp_tx.clone(),
+                session_id: Some(acp::SessionId::new(child_session_id.clone())),
+                models: parent.session.models.clone(),
+                state: AgentState::TurnRunning,
+                tracker: AcpUpdateTracker::new(),
+                cwd: effective_child_cwd,
+                is_worktree: effective_is_worktree,
+                forked_from: None,
+                pending_prompts: std::collections::VecDeque::new(),
+                next_queue_id: 0,
+                yolo_mode: true,
+                auto_mode: false,
+                prompt_history: Vec::new(),
+                prompt_history_loading: false,
+                loading_replay: false,
+                restore_degree: None,
+                rate_limited: false,
+                model_incompatible: false,
+                credit_limit_blocked: false,
+                free_usage_blocked: false,
+                bg_tasks: std::collections::BTreeMap::new(),
+                bg_tool_call_to_task: std::collections::HashMap::new(),
+                scheduled_tasks: std::collections::HashMap::new(),
+                available_commands: Vec::new(),
+                available_commands_generation: 0,
+                available_tools: None,
+                model_switch_pending: false,
+                user_model_preference: None,
+                deferred_model_switch: None,
+                in_flight_prompt: None,
+                compact_held_prompt: None,
+                current_prompt_id: None,
+                created_via_new: false,
+            };
+            let mut child_scrollback = crate::scrollback::state::ScrollbackState::new();
+            child_scrollback.set_appearance(parent.scrollback.appearance().clone());
+            let mut child_view = AgentView::new(child_session, child_scrollback);
+            child_view
+                .prompt
+                .file_search
+                .set_default_hidden(parent.prompt.file_search.default_hidden());
+            child_view.set_input_mode(InputMode::Vim);
+            child_view.active_pane = crate::views::agent::ActivePane::Scrollback;
+            child_view.set_sharing_enabled(parent.sharing_enabled);
+            child_view.set_billing_surface_visible(parent.billing_surface_visible);
+            child_view.set_usage_command_visible(parent.usage_command_visible);
+            child_view.set_dashboard_visible(
+                parent.prompt.slash_controller.registry().get("dashboard").is_some(),
+            );
+            child_view.set_has_session_announcements(
+                parent.prompt.slash_controller.has_session_announcements(),
+            );
+            child_view
+                .prompt
+                .set_screen_mode(parent.prompt.slash_controller.screen_mode());
+            child_view.app_chat_mode = parent.app_chat_mode;
+            child_view.set_session_recap_available(
+                parent.prompt.slash_controller.registry().get("recap").is_some(),
+            );
+            child_view.set_voice_mode_available(
+                parent.prompt.slash_controller.registry().get("voice").is_some(),
+            );
+            let restricted = parent
+                .prompt
+                .slash_controller
+                .registry()
+                .restricted_commands();
+            child_view.set_restricted_commands(&restricted);
+            parent.insert_subagent_view(child_session_id.clone(), Box::new(child_view));
+
+            if workflow_run_id.is_none() {
+                let block = crate::scrollback::blocks::SubagentBlock::started(
+                    &description,
+                    &child_session_id,
+                    &subagent_type,
+                    persona_display,
+                    role_display,
+                    model_display,
+                    is_background,
+                );
+                let entry_id = parent.scrollback.push_block(RenderBlock::Subagent(block));
+                parent.scrollback.set_last_running(true);
+                if let Some(info) = parent.subagent_sessions.get_mut(&child_session_id) {
+                    info.scrollback_entry_id = Some(entry_id);
+                }
+            }
+            true
+        }
+        XaiSessionUpdate::SubagentProgress {
+            child_session_id,
+            duration_ms,
+            turn_count,
+            tool_call_count,
+            tokens_used,
+            context_window_tokens,
+            context_usage_pct,
+            tools_used,
+            error_count,
+            ..
+        } => {
+            if let Some(info) = parent.subagent_sessions.get_mut(&child_session_id) {
+                info.duration_ms = Some(duration_ms);
+                info.turn_count = Some(turn_count);
+                info.tool_call_count = Some(tool_call_count);
+                info.tokens_used = Some(tokens_used);
+                info.context_window_tokens = Some(context_window_tokens);
+                info.context_usage_pct = Some(context_usage_pct);
+                info.tools_used = tools_used.into_iter().map(Arc::from).collect();
+                info.error_count = Some(error_count);
+                info.last_progress_at = std::time::Instant::now();
+            }
+            if let Some(child_view) = parent.subagent_views.get_mut(&child_session_id)
+                && context_window_tokens > 0
+            {
+                child_view
+                    .session
+                    .models
+                    .override_context_window(context_window_tokens);
+            }
+            let activity_label = parent
+                .subagent_views
+                .get(&child_session_id)
+                .and_then(|view| subagent_activity_label(view));
+            sync_subagent_activity(parent, &child_session_id, activity_label);
+            true
+        }
+        XaiSessionUpdate::SubagentFinished {
+            child_session_id,
+            status,
+            error,
+            tool_calls,
+            turns,
+            duration_ms,
+            tokens_used,
+            ..
+        } => {
+            let elapsed = std::time::Duration::from_millis(duration_ms);
+            let entry_id = parent
+                .subagent_sessions
+                .get(&child_session_id)
+                .and_then(|info| info.scrollback_entry_id);
+            if let Some(entry_id) = entry_id {
+                parent.scrollback.finish_running(entry_id);
+                if let Some(entry) = parent.scrollback.get_by_id_mut(entry_id) {
+                    if let RenderBlock::Subagent(ref mut block) = entry.block {
+                        block.kind = match status.as_str() {
+                            "completed" => crate::scrollback::blocks::SubagentBlockKind::Completed { elapsed },
+                            "cancelled" => crate::scrollback::blocks::SubagentBlockKind::Cancelled { elapsed },
+                            _ => crate::scrollback::blocks::SubagentBlockKind::Failed {
+                                elapsed,
+                                error: error.clone(),
+                            },
+                        };
+                        block.turn_count = (turns > 0).then_some(turns);
+                        block.tokens_used = (tokens_used > 0).then_some(tokens_used);
+                    }
+                    entry.invalidate_cache();
+                }
+            }
+            sync_subagent_activity(parent, &child_session_id, None);
+            if let Some(info) = parent.subagent_sessions.get_mut(&child_session_id) {
+                info.finished = true;
+                info.status = Some(Arc::from(status));
+                info.error = error.map(Arc::from);
+                info.duration_ms = Some(duration_ms);
+                info.tool_calls = Some(tool_calls);
+                info.turns = Some(turns);
+                if tokens_used > 0 {
+                    info.tokens_used = Some(tokens_used);
+                }
+                info.pending_kill = false;
+                info.kill_requested_at = None;
+                info.last_progress_at = std::time::Instant::now();
+                info.transcript.retry_disk_after_finish();
+            }
+            if let Some(child_view) = parent.subagent_views.get_mut(&child_session_id) {
+                child_view.session.state = AgentState::Idle;
+                crate::app::subagent::finalize_finished_child_view(child_view, elapsed);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Apply one xAI session event to a child view: the scrollback/session
 /// rendering shared by the live child routing above and the from-disk child
 /// replay (`crate::app::subagent::replay_inherited_updates`), so a rebuilt

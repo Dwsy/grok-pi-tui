@@ -581,15 +581,10 @@ impl AgentView {
                                     }
                                     TaskEntryId::Agent(sid) => {
                                         if let Some(child_sid) = self
-                                            .subagent_sessions
-                                            .iter()
-                                            .find(|(_, info)| {
-                                                info.subagent_id.as_ref() == sid.as_str()
-                                            })
-                                            .map(|(k, _)| k.clone())
-                                            && self.subagent_views.contains_key(&child_sid)
+                                            .descendant_subagent_info(sid)
+                                            .map(|info| info.child_session_id.to_string())
+                                            && self.open_descendant_subagent_fullscreen(child_sid)
                                         {
-                                            self.open_subagent_fullscreen(child_sid);
                                             return InputOutcome::Changed;
                                         }
                                     }
@@ -600,15 +595,10 @@ impl AgentView {
                                             .get(tid)
                                             .and_then(|info| info.last_subagent_id.clone())
                                             && let Some(child_sid) = self
-                                                .subagent_sessions
-                                                .iter()
-                                                .find(|(_, info)| {
-                                                    info.subagent_id.as_ref() == sid.as_str()
-                                                })
-                                                .map(|(k, _)| k.clone())
-                                            && self.subagent_views.contains_key(&child_sid)
+                                                .descendant_subagent_info(&sid)
+                                                .map(|info| info.child_session_id.to_string())
+                                            && self.open_descendant_subagent_fullscreen(child_sid)
                                         {
-                                            self.open_subagent_fullscreen(child_sid);
                                             return InputOutcome::Changed;
                                         }
                                     }
@@ -650,10 +640,10 @@ impl AgentView {
                                 self.last_bg_click = None;
                                 return InputOutcome::Changed;
                             }
-                            if let Some(child_sid) = self.tasks.selected_child_session_id()
-                                && self.subagent_views.contains_key(child_sid)
+                            if let Some(child_sid) =
+                                self.tasks.selected_child_session_id().map(str::to_string)
+                                && self.open_descendant_subagent_fullscreen(child_sid)
                             {
-                                self.open_subagent_fullscreen(child_sid.to_string());
                                 self.last_bg_click = None;
                                 return InputOutcome::Changed;
                             }

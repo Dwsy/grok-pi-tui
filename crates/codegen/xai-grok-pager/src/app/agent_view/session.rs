@@ -431,6 +431,125 @@ impl AgentView {
         child_view.mark_as_subagent_view();
         self.subagent_views.insert(child_sid, child_view);
     }
+    /// Whether this view owns a subagent at any depth.
+    pub(crate) fn has_descendant_subagent_view(&self, child_sid: &str) -> bool {
+        self.subagent_views.contains_key(child_sid)
+            || self
+                .subagent_views
+                .values()
+                .any(|child| child.has_descendant_subagent_view(child_sid))
+    }
+    /// Locate durable subagent metadata by public subagent id at any depth.
+    pub(crate) fn descendant_subagent_info(&self, subagent_id: &str) -> Option<&SubagentInfo> {
+        if let Some(info) = self
+            .subagent_sessions
+            .values()
+            .find(|info| info.subagent_id.as_ref() == subagent_id)
+        {
+            return Some(info);
+        }
+        self.subagent_views
+            .values()
+            .find_map(|child| child.descendant_subagent_info(subagent_id))
+    }
+    /// Locate the AgentView that directly owns a subagent id at any depth.
+    /// This is the authority boundary for cancel RPCs: nested agents must be
+    /// cancelled through their direct parent's session, not the root session.
+    pub(crate) fn descendant_subagent_owner_mut(
+        &mut self,
+        subagent_id: &str,
+    ) -> Option<&mut AgentView> {
+        let owns = self
+            .subagent_sessions
+            .values()
+            .any(|info| info.subagent_id.as_ref() == subagent_id);
+        if owns {
+            return Some(self);
+        }
+        for child in self.subagent_views.values_mut() {
+            if let Some(owner) = child.descendant_subagent_owner_mut(subagent_id) {
+                return Some(owner);
+            }
+        }
+        None
+    }
+    /// Locate a subagent view at any depth. Direct children keep the existing
+    /// replay-before-first-live-update funnel; deeper children recurse through
+    /// their direct parent so the same invariant holds at every level.
+    pub(crate) fn descendant_view_for_live_update_mut(
+        &mut self,
+        child_sid: &str,
+    ) -> Option<&mut AgentView> {
+        if self.subagent_views.contains_key(child_sid) {
+            return self.child_view_for_live_update_mut(child_sid);
+        }
+        for child in self.subagent_views.values_mut() {
+            if let Some(found) = child.descendant_view_for_live_update_mut(child_sid) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    /// Locate the direct parent view that owns `child_sid`, at any depth.
+    pub(crate) fn descendant_parent_view_mut(
+        &mut self,
+        child_sid: &str,
+    ) -> Option<&mut AgentView> {
+        if self.subagent_views.contains_key(child_sid) {
+            return Some(self);
+        }
+        for child in self.subagent_views.values_mut() {
+            if let Some(found) = child.descendant_parent_view_mut(child_sid) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    /// Flatten the recursive subagent hierarchy for the root Tasks pane while
+    /// retaining enough display metadata to render a stable tree. Child views
+    /// deliberately do not use this path, so their existing flat/top chrome is
+    /// unchanged.
+    pub(crate) fn subagent_tree_rows(
+        &self,
+    ) -> Vec<crate::views::tasks_pane::SubagentTreeRow> {
+        fn collect(
+            view: &AgentView,
+            visual_prefix: &str,
+            order_prefix: &str,
+            rows: &mut Vec<crate::views::tasks_pane::SubagentTreeRow>,
+        ) {
+            let mut infos: Vec<_> = view.subagent_sessions.values().cloned().collect();
+            infos.sort_by(|left, right| {
+                left.started_at
+                    .cmp(&right.started_at)
+                    .then_with(|| left.child_session_id.cmp(&right.child_session_id))
+            });
+            let count = infos.len();
+            for (index, info) in infos.into_iter().enumerate() {
+                let last = index + 1 == count;
+                let connector = if last { "└─ " } else { "├─ " };
+                let prefix = format!("{visual_prefix}{connector}");
+                let order = format!("{order_prefix}{index:06}/");
+                let child_sid = info.child_session_id.to_string();
+                rows.push(crate::views::tasks_pane::SubagentTreeRow {
+                    info,
+                    order: order.clone(),
+                    prefix,
+                });
+                if let Some(child) = view.subagent_views.get(&child_sid) {
+                    let next_visual = format!(
+                        "{visual_prefix}{}",
+                        if last { "   " } else { "│  " },
+                    );
+                    collect(child, &next_visual, &order, rows);
+                }
+            }
+        }
+
+        let mut rows = Vec::new();
+        collect(self, "", "", &mut rows);
+        rows
+    }
     /// Clear the turn-timing fields and stamp `last_active_at` to "now".
     ///
     /// Call this from every site that ends a turn (success, failure,

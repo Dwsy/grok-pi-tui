@@ -277,6 +277,7 @@ export class TeamCoordinator {
     if (this.agents.has(path) || this.reservedPaths.has(path)) throw new Error(`team agent path already exists: ${path}`);
     this.reservedPaths.add(path);
     try {
+      const parentRecord = senderPath === ROOT_PATH ? undefined : this.agents.get(senderPath)?.record;
       const customTools = this.controlTools(path);
       const record = await this.runtime.createRecord(
         toolCallId,
@@ -293,6 +294,12 @@ export class TeamCoordinator {
         {
           customTools,
           systemPromptSuffix: this.usageHint(path, senderPath, options.systemPromptExtra),
+          teamIdentity: {
+            agentPath: path,
+            parentAgentPath: senderPath,
+            team: options.team,
+            bridgeParentSessionId: parentRecord?.childSessionId,
+          },
           onFinished: (finishedRecord, status, error) => this.handleFinished(path, finishedRecord, status, error),
         },
       );

@@ -43,6 +43,12 @@ export type PersistedRecord = {
   turnCount: number;
   toolCallCount: number;
   tokensUsed: number;
+  /** Stable Subagents V2 path. Absent for V1 records. */
+  agentPath?: string;
+  /** Stable Subagents V2 parent path. Absent for V1 records. */
+  parentAgentPath?: string;
+  /** Team preset/name when the V2 agent belongs to one. */
+  team?: string;
   lastError?: string;
 };
 
@@ -55,6 +61,8 @@ export type SubagentRecord = {
   endLeafId: string | null;
   stateFile: string;
   parentSessionId: string;
+  /** Pager parent run identity used only for live bridge routing. */
+  bridgeParentSessionId?: string;
   parentToolCallId: string;
   prompt: string;
   description: string;
@@ -69,6 +77,12 @@ export type SubagentRecord = {
   toolsUsed: Set<string>;
   errorCount: number;
   tokensUsed: number;
+  /** Stable Subagents V2 path. Absent for V1 records. */
+  agentPath?: string;
+  /** Stable Subagents V2 parent path. Absent for V1 records. */
+  parentAgentPath?: string;
+  /** Team preset/name when the V2 agent belongs to one. */
+  team?: string;
   finished: boolean;
   /** Terminal status set by finish(): "completed" | "failed" | "cancelled". */
   terminalStatus: "completed" | "failed" | "cancelled" | null;
@@ -92,7 +106,7 @@ export interface RecordLookup {
   has(id: string): boolean;
 }
 
-export type BridgeRef = Pick<SubagentRecord, "id" | "childSessionId" | "parentSessionId">;
+export type BridgeRef = Pick<SubagentRecord, "id" | "childSessionId" | "parentSessionId" | "bridgeParentSessionId">;
 
 export type BridgeEmitter = ((
   record: BridgeRef,
@@ -137,7 +151,7 @@ export function createBridgeEmitter(): BridgeEmitter {
       sequence: nextSequence,
       replay,
       kind,
-      parentSessionId: record.parentSessionId,
+      parentSessionId: record.bridgeParentSessionId ?? record.parentSessionId,
       subagentId: record.id,
       childSessionId: record.childSessionId,
       payload,
@@ -179,6 +193,9 @@ export function persistedRecord(value: unknown): PersistedRecord | undefined {
     typeof candidate.turnCount !== "number" ||
     typeof candidate.toolCallCount !== "number" ||
     typeof candidate.tokensUsed !== "number" ||
+    (candidate.agentPath !== undefined && typeof candidate.agentPath !== "string") ||
+    (candidate.parentAgentPath !== undefined && typeof candidate.parentAgentPath !== "string") ||
+    (candidate.team !== undefined && typeof candidate.team !== "string") ||
     (candidate.lastError !== undefined && typeof candidate.lastError !== "string")
   ) {
     return undefined;
@@ -405,6 +422,9 @@ export function persist(record: SubagentRecord, status: PersistedRecord["status"
     turnCount: record.turnCount,
     toolCallCount: record.toolCallCount,
     tokensUsed: record.tokensUsed,
+    agentPath: record.agentPath,
+    parentAgentPath: record.parentAgentPath,
+    team: record.team,
     lastError: record.lastError,
   };
   appendPersistedRecord(record.stateFile, snapshot);

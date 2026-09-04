@@ -213,6 +213,13 @@ impl GroupKind {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
+pub struct SubagentTreeRow {
+    pub info: SubagentInfo,
+    pub order: String,
+    pub prefix: String,
+}
+
+#[derive(Debug, Clone)]
 pub enum TaskEntry {
     BgTask {
         id: u64,
@@ -234,8 +241,11 @@ pub enum TaskEntry {
         running: bool,
         started_at: Instant,
         /// Capitalized agent-type / persona label (e.g. `Explore`, `Plan`,
-        /// `General`). Used to order subagents by type within their group.
+        /// `General`). Used to order flat subagent lists by type.
         type_label: String,
+        /// Root AgentView supplies this for recursive team rows; child views
+        /// leave it unset and keep the existing flat ordering/style.
+        tree_order: Option<String>,
     },
     Scheduled {
         id: u64,
@@ -456,7 +466,28 @@ impl TaskEntry {
             running: info.is_running(),
             started_at: info.started_at,
             type_label,
+            tree_order: None,
         }
+    }
+
+    fn from_subagent_tree(row: &SubagentTreeRow) -> Self {
+        let mut entry = Self::from_subagent(&row.info);
+        if let TaskEntry::Agent {
+            styled,
+            label,
+            tree_order,
+            ..
+        } = &mut entry
+        {
+            let theme = Theme::current();
+            styled.spans.insert(
+                0,
+                Span::styled(row.prefix.clone(), Style::default().fg(theme.gray)),
+            );
+            *label = format!("{}{}", row.prefix, label);
+            *tree_order = Some(row.order.clone());
+        }
+        entry
     }
 
     fn from_workflow_run(run: &crate::views::workflows::WorkflowRunSnapshot) -> Self {
@@ -914,6 +945,48 @@ impl TasksPane {
         queued_cron_ids: &std::collections::HashSet<&str>,
         workflow_runs: &[crate::views::workflows::WorkflowRunSnapshot],
     ) {
+        self.sync_inner(
+            bg_tasks,
+            subagents,
+            None,
+            scheduled,
+            current_cron_task_id,
+            queued_cron_ids,
+            workflow_runs,
+        );
+    }
+
+    pub fn sync_with_subagent_tree(
+        &mut self,
+        bg_tasks: &std::collections::BTreeMap<String, BgTaskState>,
+        subagents: &HashMap<String, SubagentInfo>,
+        subagent_tree: &[SubagentTreeRow],
+        scheduled: &HashMap<String, ScheduledTaskInfo>,
+        current_cron_task_id: Option<&str>,
+        queued_cron_ids: &std::collections::HashSet<&str>,
+        workflow_runs: &[crate::views::workflows::WorkflowRunSnapshot],
+    ) {
+        self.sync_inner(
+            bg_tasks,
+            subagents,
+            Some(subagent_tree),
+            scheduled,
+            current_cron_task_id,
+            queued_cron_ids,
+            workflow_runs,
+        );
+    }
+
+    fn sync_inner(
+        &mut self,
+        bg_tasks: &std::collections::BTreeMap<String, BgTaskState>,
+        subagents: &HashMap<String, SubagentInfo>,
+        subagent_tree: Option<&[SubagentTreeRow]>,
+        scheduled: &HashMap<String, ScheduledTaskInfo>,
+        current_cron_task_id: Option<&str>,
+        queued_cron_ids: &std::collections::HashSet<&str>,
+        workflow_runs: &[crate::views::workflows::WorkflowRunSnapshot],
+    ) {
         // Detect theme switch and refresh caches.
         let current_theme = Theme::current_kind();
         if current_theme != self.last_theme {
@@ -935,12 +1008,24 @@ impl TasksPane {
             }
         }
 
-        for info in subagents.values() {
-            if info.workflow_run_id.is_some() {
-                continue;
+        if let Some(tree) = subagent_tree {
+            for row in tree {
+                let info = &row.info;
+                if info.workflow_run_id.is_some() {
+                    continue;
+                }
+                if self.show_done || info.is_running() {
+                    self.items.push(TaskEntry::from_subagent_tree(row));
+                }
             }
-            if self.show_done || info.is_running() {
-                self.items.push(TaskEntry::from_subagent(info));
+        } else {
+            for info in subagents.values() {
+                if info.workflow_run_id.is_some() {
+                    continue;
+                }
+                if self.show_done || info.is_running() {
+                    self.items.push(TaskEntry::from_subagent(info));
+                }
             }
         }
 
@@ -984,6 +1069,16 @@ impl TasksPane {
                 //    loops order newest-first. Avoids mixing SystemTime and
                 //    Instant across types.
                 .then_with(|| match (a, b) {
+                    (
+                        TaskEntry::Agent {
+                            tree_order: Some(ta),
+                            ..
+                        },
+                        TaskEntry::Agent {
+                            tree_order: Some(tb),
+                            ..
+                        },
+                    ) => ta.cmp(tb),
                     (
                         TaskEntry::Agent {
                             type_label: ta,

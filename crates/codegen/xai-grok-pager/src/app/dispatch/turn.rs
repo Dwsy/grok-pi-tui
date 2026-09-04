@@ -766,12 +766,16 @@ pub(super) fn dispatch_kill_subagent(app: &mut AppView, subagent_id: String) -> 
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };
-    let Some(session_id) = agent.session.session_id.clone() else {
+    let Some(owner) = agent.descendant_subagent_owner_mut(&subagent_id) else {
+        return vec![];
+    };
+    let Some(session_id) = owner.session.session_id.clone() else {
         return vec![];
     };
 
-    // Mark as pending_kill for UI feedback
-    for info in agent.subagent_sessions.values_mut() {
+    // Mark as pending_kill for UI feedback on the row owned by the same
+    // session that will receive the cancel RPC.
+    for info in owner.subagent_sessions.values_mut() {
         if info.subagent_id.as_ref() == subagent_id {
             info.pending_kill = true;
             info.kill_requested_at = Some(Instant::now());

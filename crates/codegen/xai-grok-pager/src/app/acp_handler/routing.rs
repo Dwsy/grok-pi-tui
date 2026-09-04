@@ -101,7 +101,7 @@ pub(super) fn resolve_target_view<'a>(
         // `TaskCompleted` block for a resumed child always follows the funneled
         // tool_call that spawned the task, so the child is never still
         // prompt-only + NeedsReplay here.
-        let child_view = agent.subagent_views.get_mut(child_sid)?;
+        let child_view = agent.descendant_view_for_live_update_mut(child_sid)?;
         Some((&mut child_view.session, &mut child_view.scrollback))
     } else {
         Some((&mut agent.session, &mut agent.scrollback))
@@ -146,7 +146,7 @@ pub(super) fn find_session_match(
         if agent.session.session_id.as_ref() == Some(session_id) {
             return Some(SessionMatch::Root(*id));
         }
-        if child_match.is_none() && agent.subagent_views.contains_key(child_key) {
+        if child_match.is_none() && agent.has_descendant_subagent_view(child_key) {
             child_match = Some(*id);
         }
     }

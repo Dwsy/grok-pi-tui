@@ -538,8 +538,8 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
 
                     let activity_label = {
                         let child_view = parent
-                            .child_view_for_live_update_mut(child_key)
-                            .expect("find_session_match returned an existing subagent_views key");
+                            .descendant_view_for_live_update_mut(child_key)
+                            .expect("find_session_match returned an existing descendant subagent view");
                         if let Some(tokens) = meta.total_tokens {
                             confirm_context_used(child_view, tokens);
                         }
@@ -570,7 +570,9 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         subagent_activity_label(child_view)
                     };
 
-                    sync_subagent_activity(parent, child_key, activity_label);
+                    if let Some(owner) = parent.descendant_parent_view_mut(child_key) {
+                        sync_subagent_activity(owner, child_key, activity_label);
+                    }
 
                     is_active
                 }

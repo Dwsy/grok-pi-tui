@@ -438,6 +438,39 @@ impl AgentView {
         tracing::debug!(child_sid = %child_sid, ?replay_outcome, "opened subagent fullscreen");
         self.active_subagent = Some(child_sid);
     }
+    /// Open a descendant subagent from the root Tasks tree. Each ancestor is
+    /// activated in turn so rendering naturally drills through the existing
+    /// fullscreen-child stack instead of inventing a second navigation model.
+    pub(crate) fn open_descendant_subagent_fullscreen(&mut self, child_sid: String) -> bool {
+        if self.subagent_views.contains_key(&child_sid) {
+            self.open_subagent_fullscreen(child_sid);
+            return true;
+        }
+        let Some(next_sid) = self.subagent_views.iter().find_map(|(sid, child)| {
+            child
+                .has_descendant_subagent_view(&child_sid)
+                .then(|| sid.clone())
+        }) else {
+            return false;
+        };
+        self.open_subagent_fullscreen(next_sid.clone());
+        self.subagent_views
+            .get_mut(&next_sid)
+            .is_some_and(|child| child.open_descendant_subagent_fullscreen(child_sid))
+    }
+    fn clear_stale_descendant_subagent_kills(&mut self, now: Instant, timeout_secs: u64) {
+        for info in self.subagent_sessions.values_mut() {
+            if let Some(requested) = info.kill_requested_at
+                && now.duration_since(requested).as_secs() >= timeout_secs
+            {
+                info.pending_kill = false;
+                info.kill_requested_at = None;
+            }
+        }
+        for child in self.subagent_views.values_mut() {
+            child.clear_stale_descendant_subagent_kills(now, timeout_secs);
+        }
+    }
     /// Close the fullscreen subagent takeover (if any), evicting the closed
     /// child when finished (see [`crate::app::subagent::evict_finished_child_view`]
     /// for rationale and guards). All close sites route through here.
@@ -1679,14 +1712,7 @@ impl AgentView {
                     task.kill_requested_at = None;
                 }
             }
-            for info in self.subagent_sessions.values_mut() {
-                if let Some(requested) = info.kill_requested_at
-                    && now.duration_since(requested).as_secs() >= PENDING_KILL_TIMEOUT_SECS
-                {
-                    info.pending_kill = false;
-                    info.kill_requested_at = None;
-                }
-            }
+            self.clear_stale_descendant_subagent_kills(now, PENDING_KILL_TIMEOUT_SECS);
         }
         let queued_cron_ids: HashSet<&str> = self
             .session
@@ -1695,14 +1721,31 @@ impl AgentView {
             .filter(|p| p.kind == crate::app::agent::QueueEntryKind::Cron)
             .filter_map(|p| p.task_id.as_deref())
             .collect();
-        self.tasks.sync(
-            &self.session.bg_tasks,
-            &self.subagent_sessions,
-            &self.session.scheduled_tasks,
-            self.cron_task_id.as_deref(),
-            &queued_cron_ids,
-            &self.workflow_runs,
-        );
+        let root_subagent_tree = if self.is_subagent_view {
+            None
+        } else {
+            Some(self.subagent_tree_rows())
+        };
+        if let Some(subagent_tree) = root_subagent_tree.as_ref() {
+            self.tasks.sync_with_subagent_tree(
+                &self.session.bg_tasks,
+                &self.subagent_sessions,
+                subagent_tree,
+                &self.session.scheduled_tasks,
+                self.cron_task_id.as_deref(),
+                &queued_cron_ids,
+                &self.workflow_runs,
+            );
+        } else {
+            self.tasks.sync(
+                &self.session.bg_tasks,
+                &self.subagent_sessions,
+                &self.session.scheduled_tasks,
+                self.cron_task_id.as_deref(),
+                &queued_cron_ids,
+                &self.workflow_runs,
+            );
+        }
         if self.active_pane == ActivePane::Tasks && !self.tasks.is_visible() {
             self.active_pane = ActivePane::Scrollback;
         }
@@ -2476,13 +2519,21 @@ impl AgentView {
         }
         if tasks_height > 0 {
             let bg_focused = self.active_pane == ActivePane::Tasks && !overlay_focused;
+            let descendant_subagents = root_subagent_tree.as_ref().map(|rows| {
+                rows.iter()
+                    .map(|row| (row.info.child_session_id.to_string(), row.info.clone()))
+                    .collect::<std::collections::HashMap<_, _>>()
+            });
+            let rendered_subagents = descendant_subagents
+                .as_ref()
+                .unwrap_or(&self.subagent_sessions);
             self.tasks.render(
                 layout.tasks,
                 buf,
                 bg_focused,
                 layout_cfg,
                 &self.session.bg_tasks,
-                &self.subagent_sessions,
+                rendered_subagents,
                 &self.session.scheduled_tasks,
             );
             let close_rect = agent::render_todo_chrome(

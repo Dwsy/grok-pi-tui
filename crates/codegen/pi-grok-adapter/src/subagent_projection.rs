@@ -26,6 +26,7 @@ pub(crate) struct BridgeProjection {
     pub sequence: u64,
     pub replay: bool,
     pub kind: String,
+    pub parent_session_id: String,
     pub subagent_id: String,
     pub child_session_id: String,
     pub operations: Vec<BridgeOperation>,
@@ -65,7 +66,7 @@ pub(crate) fn bridge_parent_session_id(event: &Value) -> Result<Option<&str>> {
 
 pub(crate) fn parse_bridge_message(
     event: &Value,
-    root_session_id: &str,
+    _root_session_id: &str,
 ) -> Result<Option<BridgeProjection>> {
     let Some(details) = bridge_details(event)? else {
         return Ok(None);
@@ -78,10 +79,9 @@ pub(crate) fn parse_bridge_message(
         .get("replay")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let parent_session_id = bridge_parent_session_id(event)?.expect("validated subagent bridge");
-    if parent_session_id != root_session_id {
-        bail!("subagent bridge parentSessionId does not match active Pi session");
-    }
+    let parent_session_id = bridge_parent_session_id(event)?
+        .expect("validated subagent bridge")
+        .to_string();
     let subagent_id = required_str(details, "subagentId")?.to_string();
     let child_session_id = required_str(details, "childSessionId")?.to_string();
     let payload = details
@@ -118,7 +118,7 @@ pub(crate) fn parse_bridge_message(
                 }
             }
             let mut lifecycle =
-                session_update_envelope(root_session_id, update, replay, &subagent_id, sequence);
+                session_update_envelope(&parent_session_id, update, replay, &subagent_id, sequence);
             lifecycle["_meta"]["subagentBackground"] = Value::Bool(background);
             vec![
                 BridgeOperation::ParentTaskMetadata {
@@ -149,7 +149,7 @@ pub(crate) fn parse_bridge_message(
                 "error_count": required_u64_value(payload, "errorCount")?,
             });
             vec![BridgeOperation::ParentLifecycle(session_update_envelope(
-                root_session_id,
+                &parent_session_id,
                 update,
                 replay,
                 &subagent_id,
@@ -179,7 +179,7 @@ pub(crate) fn parse_bridge_message(
                 update["output"] = output.clone();
             }
             vec![BridgeOperation::ParentLifecycle(session_update_envelope(
-                root_session_id,
+                &parent_session_id,
                 update,
                 replay,
                 &subagent_id,
@@ -203,6 +203,7 @@ pub(crate) fn parse_bridge_message(
         sequence,
         replay,
         kind: kind.to_string(),
+        parent_session_id,
         subagent_id,
         child_session_id,
         operations,
@@ -539,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn parent_session_mismatch_is_rejected() {
+    fn nested_parent_session_is_preserved_for_routing() {
         let event = bridge_message(
             "progress",
             json!({
@@ -549,6 +550,13 @@ mod tests {
                 "errorCount": 0,
             }),
         );
-        assert!(parse_bridge_message(&event, "another-parent").is_err());
+        let projection = parse_bridge_message(&event, "root-session")
+            .unwrap()
+            .expect("bridge event");
+        assert_eq!(projection.parent_session_id, "parent-1");
+        let [BridgeOperation::ParentLifecycle(lifecycle)] = projection.operations.as_slice() else {
+            panic!("expected one parent lifecycle event");
+        };
+        assert_eq!(lifecycle["sessionId"], "parent-1");
     }
 }

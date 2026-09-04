@@ -605,6 +605,7 @@ const NAVIGATE_TREE_COMMAND: &str = "__pi_navigate_tree";
 const LABEL_TREE_COMMAND: &str = "__pi_tree_label";
 const RELOAD_COMMAND: &str = "__pi_reload";
 const SUBAGENT_CANCEL_COMMAND: &str = "__pi_grok_subagent_cancel";
+const LOOP_DELETE_COMMAND: &str = "__pi_grok_loop_delete";
 const RECAP_COMMAND: &str = "__pi_grok_recap";
 const BTW_COMMAND: &str = "__pi_grok_btw";
 const CONTEXT_BREAKDOWN_COMMAND: &str = "__pi_context_breakdown";
@@ -615,6 +616,7 @@ fn is_bridge_command(name: &str) -> bool {
         || name.eq_ignore_ascii_case(LABEL_TREE_COMMAND)
         || name.eq_ignore_ascii_case(RELOAD_COMMAND)
         || name.eq_ignore_ascii_case(SUBAGENT_CANCEL_COMMAND)
+        || name.eq_ignore_ascii_case(LOOP_DELETE_COMMAND)
         || name.eq_ignore_ascii_case(RECAP_COMMAND)
         || name.eq_ignore_ascii_case(BTW_COMMAND)
         || name.eq_ignore_ascii_case(CONTEXT_BREAKDOWN_COMMAND)

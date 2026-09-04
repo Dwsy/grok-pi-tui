@@ -68,13 +68,23 @@ pub(crate) fn finalize_killed_subagent(
     subagent_id: &str,
     status: &str,
 ) -> bool {
-    let Some(SessionMatch::Root(agent_id)) = find_session_match(app, session_id) else {
+    let Some(matched) = find_session_match(app, session_id) else {
         return false;
     };
-    let Some(agent) = app.agents.get(&agent_id) else {
+    let agent_id = matched.agent_id();
+    let child_key: &str = session_id.0.as_ref();
+    let Some(agent) = app.agents.get_mut(&agent_id) else {
         return false;
     };
-    let Some(info) = agent
+    let owner = if matches!(matched, SessionMatch::Child(_)) {
+        let Some(child) = agent.descendant_view_for_live_update_mut(child_key) else {
+            return false;
+        };
+        child
+    } else {
+        agent
+    };
+    let Some(info) = owner
         .subagent_sessions
         .values()
         .find(|info| info.subagent_id.as_ref() == subagent_id)

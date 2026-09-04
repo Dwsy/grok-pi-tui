@@ -366,8 +366,7 @@ impl AgentView {
                     child_session_id, ..
                 }) => {
                     let child_sid = child_session_id.clone();
-                    if self.subagent_views.contains_key(&child_sid) {
-                        self.open_subagent_fullscreen(child_sid);
+                    if self.open_descendant_subagent_fullscreen(child_sid) {
                         return InputOutcome::Changed;
                     }
                 }
@@ -396,9 +395,10 @@ impl AgentView {
                 }
                 Some(TaskEntry::Agent { subagent_id, .. }) => {
                     let subagent_id = subagent_id.clone();
-                    if self.subagent_sessions.values().any(|s| {
-                        s.subagent_id.as_ref() == subagent_id && s.is_running() && !s.pending_kill
-                    }) {
+                    if self
+                        .descendant_subagent_info(&subagent_id)
+                        .is_some_and(|s| s.is_running() && !s.pending_kill)
+                    {
                         return InputOutcome::Action(Action::KillSubagent(subagent_id));
                     }
                 }

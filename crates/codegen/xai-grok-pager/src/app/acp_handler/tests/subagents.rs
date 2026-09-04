@@ -2,6 +2,34 @@
     use super::*;
 
     #[test]
+    fn nested_subagent_spawn_builds_descendant_agent_view() {
+        let mut app = make_app_with_agent("sess-parent");
+        assert!(handle(
+            make_ext_session_notification(
+                "sess-parent",
+                test_subagent_spawned("sess-parent", "child-parent"),
+            ),
+            &mut app,
+        ));
+        assert!(handle(
+            make_ext_session_notification(
+                "child-parent",
+                test_subagent_spawned("child-parent", "grandchild"),
+            ),
+            &mut app,
+        ));
+
+        let root = app.agents.get(&AgentId(0)).unwrap();
+        let child = root.subagent_views.get("child-parent").expect("direct child view");
+        assert!(child.subagent_views.contains_key("grandchild"));
+        assert!(child.subagent_sessions.contains_key("grandchild"));
+        assert!(matches!(
+            find_session_match(&app, &acp::SessionId::new("grandchild".to_owned())),
+            Some(SessionMatch::Child(AgentId(0)))
+        ));
+    }
+
+    #[test]
     fn replayed_subagent_finished_marks_orphan_terminal() {
         let mut app = make_app_with_agent("sess-1");
         app.agents

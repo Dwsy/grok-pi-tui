@@ -58,6 +58,13 @@ export type RecordCreateOptions = {
   customTools?: ToolDefinition[];
   systemPromptSuffix?: string;
   onFinished?: RecordFinishHandler;
+  /** Stable Subagents V2 identity persisted alongside the Pi child JSONL path. */
+  teamIdentity?: {
+    agentPath: string;
+    parentAgentPath: string;
+    team?: string;
+    bridgeParentSessionId?: string;
+  };
 };
 
 function lastAssistantText(session: SubagentRecord["session"]): string {
@@ -448,6 +455,10 @@ export class SubagentRuntime {
       toolsUsed: new Set<string>(),
       errorCount: 0,
       tokensUsed: 0,
+      agentPath: options.teamIdentity?.agentPath,
+      parentAgentPath: options.teamIdentity?.parentAgentPath,
+      team: options.teamIdentity?.team,
+      bridgeParentSessionId: options.teamIdentity?.bridgeParentSessionId,
       finished: false,
       terminalStatus: null,
       finalOutputText: undefined,
@@ -473,6 +484,9 @@ export class SubagentRuntime {
       capabilityMode: profile.capabilityMode,
       model: model.id,
       prompt,
+      agentPath: completeRecord.agentPath,
+      parentAgentPath: completeRecord.parentAgentPath,
+      team: completeRecord.team,
     });
     completeRecord.removeAbortListener = this.bindAbort(completeRecord, signal);
     return completeRecord;
@@ -513,6 +527,10 @@ export class SubagentRuntime {
       toolsUsed: new Set<string>(),
       errorCount: 0,
       tokensUsed: 0,
+      agentPath: previous.agentPath,
+      parentAgentPath: previous.parentAgentPath,
+      team: previous.team,
+      bridgeParentSessionId: previous.bridgeParentSessionId,
       finished: false,
       terminalStatus: null,
       finalOutputText: undefined,
@@ -539,6 +557,9 @@ export class SubagentRuntime {
       prompt,
       resumed: true,
       resumedFromSubagentId: previous.id,
+      agentPath: record.agentPath,
+      parentAgentPath: record.parentAgentPath,
+      team: record.team,
     });
     record.removeAbortListener = this.bindAbort(record, signal);
     return record;

@@ -193,6 +193,13 @@ test("sidecar validation rejects unknown capability and status", () => {
     tokensUsed: 1,
   };
   assert.ok(persistedRecord(base));
+  assert.ok(persistedRecord({
+    ...base,
+    agentPath: "/root/worker/helper",
+    parentAgentPath: "/root/worker",
+    team: "review",
+  }));
+  assert.equal(persistedRecord({ ...base, agentPath: 42 }), undefined);
   assert.equal(persistedRecord({ ...base, capabilityMode: "root" }), undefined);
   assert.equal(persistedRecord({ ...base, status: "unknown" }), undefined);
 });

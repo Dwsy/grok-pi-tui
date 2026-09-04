@@ -60,8 +60,13 @@ class FakeRuntime {
     this.childMessages.set(id, delivered);
     const record = {
       id,
+      childSessionId: id,
       prompt: params.prompt,
       description: params.description,
+      agentPath: options.teamIdentity?.agentPath,
+      parentAgentPath: options.teamIdentity?.parentAgentPath,
+      team: options.teamIdentity?.team,
+      bridgeParentSessionId: options.teamIdentity?.bridgeParentSessionId,
       finished: false,
       terminalStatus: null,
       lastError: undefined,
@@ -250,6 +255,12 @@ test("V2 routes queue-only and triggering messages across root and child session
   const nestedSpawn = childTools.find((tool) => tool.name === "spawn_team_agent");
   const nested = await execute(nestedSpawn, "nested", { task_name: "helper", message: "assist" });
   assert.equal((nested.details as any).agentPath, "/root/worker/helper");
+  assert.deepEqual(runtime.created.map(({ record }) => [record.agentPath, record.parentAgentPath]), [
+    ["/root/worker", "/root"],
+    ["/root/worker/helper", "/root/worker"],
+  ]);
+  assert.equal(runtime.created[0].record.bridgeParentSessionId, undefined);
+  assert.equal(runtime.created[1].record.bridgeParentSessionId, "fake-1");
 
   const finish = runtime.finishHandlers.get("fake-1");
   assert.ok(finish);

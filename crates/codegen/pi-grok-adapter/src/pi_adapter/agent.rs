@@ -471,6 +471,17 @@ impl acp::Agent for PiAgent {
                     .await
             }
             "x.ai/task/kill" => self.handle_bash_kill_request(arguments.params.get()).await,
+            "x.ai/scheduler/delete" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).map_err(acp_internal)?;
+                let task_id = string(&params, &["taskId", "task_id"])
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| acp::Error::invalid_params().data("taskId is required"))?;
+                self.run_bridge_command(LOOP_DELETE_COMMAND, task_id)
+                    .await?;
+                ext_response(json!({ "taskId": task_id, "deleted": true })).map_err(acp_internal)
+            }
             "x.ai/recap" => self.handle_recap_request(arguments.params.get()).await,
             "x.ai/btw" => self.handle_btw_request(arguments.params.get()).await,
             "x.ai/compact_conversation" => {

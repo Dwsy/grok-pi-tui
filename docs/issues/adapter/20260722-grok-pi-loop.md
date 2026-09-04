@@ -96,3 +96,8 @@ tags: ["loop", "scheduler", "pi-grok", "f2", "extension"]
 4. After interval (or immediate fire) → followUp prompt injected
 5. `/loop list` / `/loop stop <id>` / `scheduler_delete`
 6. F2 off → restart → `/loop` gone
+
+## Regression fix (2026-09-03)
+
+- Fixed native tasks-pane **X** cancellation for Pi `/loop`: Pager's `x.ai/scheduler/delete` now routes through the adapter to the injected loop extension, which clears the live timer instead of only removing the optimistic UI row.
+- Regression check: hidden loop-delete bridge command removes the runtime task; `git diff --check` passes. Full extension typecheck remains blocked by the pre-existing missing `highlight.js/lib/index.js` declaration under `pi-main`.

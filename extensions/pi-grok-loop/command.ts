@@ -8,7 +8,17 @@ import {
 } from "./scheduler.ts";
 import { MIN_INTERVAL_SECS, runtime } from "./shared.ts";
 
+export const LOOP_DELETE_COMMAND = "__pi_grok_loop_delete";
+
 export function registerLoopCommand(pi: ExtensionAPI): void {
+  pi.registerCommand(LOOP_DELETE_COMMAND, {
+    description: "Delete a scheduled loop by task id",
+    handler: async (args: string) => {
+      const taskId = args.trim();
+      if (taskId) removeTask(pi, taskId, "user");
+    },
+  });
+
   pi.registerCommand("loop", {
     description: "Run a prompt on a recurring interval",
     handler: async (args: string, ctx: ExtensionCommandContext) => {

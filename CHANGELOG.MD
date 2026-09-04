@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-09-04
+
+### Added
+
+- Subagents V2 now persists stable hierarchical agent identities and parent/team metadata in per-session sidecars, allowing nested teams to survive session reloads and be reconstructed outside the live Pager process.
+- The root Pager Tasks pane now renders the complete recursive subagent hierarchy while child AgentViews preserve their existing focused direct-child presentation.
+- Pi Session Manager integration can reconstruct persisted Grok Pi teams recursively from child session sidecars.
+
+### Changed
+
+- Nested subagent routing now follows the direct parent AgentView/session boundary for live updates, navigation, cancellation, and reconciliation instead of assuming every subagent belongs directly to the root.
+- Pager deep-tree rows now support the same status overlays, open/view actions, keyboard/mouse navigation, and kill behavior as direct children.
+
+### Fixed
+
+- Cancelling a deeply nested subagent now sends the RPC through its actual parent session and clears pending-kill state recursively, including the `NothingLive` reconciliation path.
+
 ## [0.1.6] - 2026-09-03
 
 ### Added
