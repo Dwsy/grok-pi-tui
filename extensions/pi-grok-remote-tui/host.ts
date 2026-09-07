@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CURSOR_MARKER,
+  isKeyRelease,
   KeybindingsManager,
   setKeybindings,
   TUI_KEYBINDINGS,
@@ -31,6 +32,13 @@ export const HOST_MARK = "__piGrokRemoteTuiHost";
 type PatchableUi = RemoteTuiDemoUi & {
   custom: ((...args: unknown[]) => unknown) & { [HOST_MARK]?: boolean };
 };
+
+/** Mirror Pi TUI's focused-component dispatch semantics for remote input. */
+export function dispatchComponentInput(target: ComponentLike | null | undefined, data: string): void {
+  if (!target?.handleInput) return;
+  if (isKeyRelease(data) && !target.wantsKeyRelease) return;
+  target.handleInput(data);
+}
 
 export function installCustomPatch(ui: PatchableUi): void {
   // Pi may rebind uiContext after session_start (noOp → RPC). Patch every new object.
@@ -129,17 +137,15 @@ export function installCustomPatch(ui: PatchableUi): void {
         }).__piGrokShortcutIntercept;
         if (shortcutIntercept?.(data)) return;
         const target = focused ?? component;
-        if (target?.handleInput) {
-          try {
-            target.handleInput(data);
-          } catch (error) {
-            if (closed) return;
-            closed = true;
-            host.closed = true;
-            cleanup();
-            reject(error instanceof Error ? error : new Error(String(error)));
-            return;
-          }
+        try {
+          dispatchComponentInput(target, data);
+        } catch (error) {
+          if (closed) return;
+          closed = true;
+          host.closed = true;
+          cleanup();
+          reject(error instanceof Error ? error : new Error(String(error)));
+          return;
         }
         pushFrame();
       };

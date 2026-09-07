@@ -57,6 +57,7 @@ class MockSettingsList {
 
 mock.module("@earendil-works/pi-tui", () => ({
   CURSOR_MARKER: "\x1b_pi:c\x07",
+  isKeyRelease: (data: string) => /:3(?:u|~|[ABCDHF])/.test(data),
   KeybindingsManager: class {
     matches() {
       return false;
@@ -72,6 +73,43 @@ const {
   createDemoSelector,
   applyDemoCapabilities,
 } = await import("./index.ts");
+const { dispatchComponentInput } = await import("./host.ts");
+
+test("remote host filters key release unless component opts in", () => {
+  const regularInputs: string[] = [];
+  const releaseAwareInputs: string[] = [];
+  const press = "\x1b[B";
+  const release = "\x1b[1;1:3B";
+
+  dispatchComponentInput(
+    {
+      invalidate() {},
+      render: () => [],
+      handleInput: (data) => regularInputs.push(data),
+    },
+    press,
+  );
+  dispatchComponentInput(
+    {
+      invalidate() {},
+      render: () => [],
+      handleInput: (data) => regularInputs.push(data),
+    },
+    release,
+  );
+  dispatchComponentInput(
+    {
+      wantsKeyRelease: true,
+      invalidate() {},
+      render: () => [],
+      handleInput: (data) => releaseAwareInputs.push(data),
+    },
+    release,
+  );
+
+  expect(regularInputs).toEqual([press]);
+  expect(releaseAwareInputs).toEqual([release]);
+});
 
 test("custom host is NOT installed under native Pi (no PI_GROK)", async () => {
   const previousGrok = process.env.PI_GROK;

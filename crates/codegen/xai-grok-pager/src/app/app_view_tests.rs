@@ -442,24 +442,24 @@ fn remote_tui_key_sequence_maps_arrows_enter_esc() {
 }
 
 #[test]
-fn remote_tui_key_sequence_drops_navigation_repeat_but_keeps_text_repeat() {
+fn remote_tui_key_sequence_preserves_navigation_and_text_repeat() {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-    for code in [
-        KeyCode::Up,
-        KeyCode::Down,
-        KeyCode::Left,
-        KeyCode::Right,
-        KeyCode::Home,
-        KeyCode::End,
-        KeyCode::PageUp,
-        KeyCode::PageDown,
+    for (code, expected) in [
+        (KeyCode::Up, "\u{1b}[1;1:2A"),
+        (KeyCode::Down, "\u{1b}[1;1:2B"),
+        (KeyCode::Left, "\u{1b}[1;1:2D"),
+        (KeyCode::Right, "\u{1b}[1;1:2C"),
+        (KeyCode::Home, "\u{1b}[1;1:2H"),
+        (KeyCode::End, "\u{1b}[1;1:2F"),
+        (KeyCode::PageUp, "\u{1b}[5;1:2~"),
+        (KeyCode::PageDown, "\u{1b}[6;1:2~"),
     ] {
         let mut repeat = KeyEvent::new(code, KeyModifiers::NONE);
         repeat.kind = KeyEventKind::Repeat;
         assert_eq!(
-            AppView::remote_tui_key_sequence(&repeat),
-            None,
-            "remote navigation repeat must not advance multiple Pi-TUI items"
+            AppView::remote_tui_key_sequence(&repeat).as_deref(),
+            Some(expected),
+            "remote navigation repeat should match native Pi hold-to-scroll behavior"
         );
     }
 
