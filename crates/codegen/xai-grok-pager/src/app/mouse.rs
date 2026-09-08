@@ -547,63 +547,68 @@ impl AgentView {
                                 }
                             }
                         }
-                        for (entry_id, rect) in &self.tasks.view_button_rects {
-                            if rect.contains((mouse.column, mouse.row).into()) {
-                                match entry_id {
-                                    TaskEntryId::BgTask(tid) => {
-                                        let already_open = self
-                                            .block_viewer
-                                            .as_ref()
-                                            .and_then(|v| v.bg_task_id.as_deref())
-                                            == Some(tid);
-                                        if already_open {
-                                            self.block_viewer = None;
-                                            return InputOutcome::Changed;
-                                        }
-                                        if let Some(task) = self.session.bg_tasks.get(tid) {
-                                            let entry_id =
-                                                task.scrollback_entry_id.unwrap_or_else(|| {
-                                                    crate::scrollback::entry::EntryId::new(0)
-                                                });
-                                            let is_running = task.status
-                                                == crate::app::agent::BgTaskStatus::Running;
-                                            self.block_viewer = Some(
-                                                crate::views::block_viewer::BlockViewerPane::for_bg_task(
-                                                    entry_id,
-                                                    tid,
-                                                    &task.stdout,
-                                                    is_running,
-                                                ),
-                                            );
-                                            self.set_active_pane(AgentPane::Scrollback, true);
-                                            return InputOutcome::Changed;
-                                        }
+                        let clicked_view_entry = self
+                            .tasks
+                            .view_button_rects
+                            .iter()
+                            .find_map(|(entry_id, rect)| {
+                                rect.contains((mouse.column, mouse.row).into())
+                                    .then(|| entry_id.clone())
+                            });
+                        if let Some(entry_id) = clicked_view_entry {
+                            match &entry_id {
+                                TaskEntryId::BgTask(tid) => {
+                                    let already_open = self
+                                        .block_viewer
+                                        .as_ref()
+                                        .and_then(|v| v.bg_task_id.as_deref())
+                                        == Some(tid.as_str());
+                                    if already_open {
+                                        self.block_viewer = None;
+                                        return InputOutcome::Changed;
                                     }
-                                    TaskEntryId::Agent(sid) => {
-                                        if let Some(child_sid) = self
-                                            .descendant_subagent_info(sid)
-                                            .map(|info| info.child_session_id.to_string())
-                                            && self.open_descendant_subagent_fullscreen(child_sid)
-                                        {
-                                            return InputOutcome::Changed;
-                                        }
+                                    if let Some(task) = self.session.bg_tasks.get(tid) {
+                                        let entry_id = task.scrollback_entry_id.unwrap_or_else(|| {
+                                            crate::scrollback::entry::EntryId::new(0)
+                                        });
+                                        let is_running =
+                                            task.status == crate::app::agent::BgTaskStatus::Running;
+                                        self.block_viewer = Some(
+                                            crate::views::block_viewer::BlockViewerPane::for_bg_task(
+                                                entry_id,
+                                                tid,
+                                                &task.stdout,
+                                                is_running,
+                                            ),
+                                        );
+                                        self.set_active_pane(AgentPane::Scrollback, true);
+                                        return InputOutcome::Changed;
                                     }
-                                    TaskEntryId::Scheduled(tid) => {
-                                        if let Some(sid) = self
-                                            .session
-                                            .scheduled_tasks
-                                            .get(tid)
-                                            .and_then(|info| info.last_subagent_id.clone())
-                                            && let Some(child_sid) = self
-                                                .descendant_subagent_info(&sid)
-                                                .map(|info| info.child_session_id.to_string())
-                                            && self.open_descendant_subagent_fullscreen(child_sid)
-                                        {
-                                            return InputOutcome::Changed;
-                                        }
-                                    }
-                                    TaskEntryId::Workflow(_) => {}
                                 }
+                                TaskEntryId::Agent(sid) => {
+                                    if let Some(child_sid) = self
+                                        .descendant_subagent_info(sid)
+                                        .map(|info| info.child_session_id.to_string())
+                                        && self.open_descendant_subagent_fullscreen(child_sid)
+                                    {
+                                        return InputOutcome::Changed;
+                                    }
+                                }
+                                TaskEntryId::Scheduled(tid) => {
+                                    if let Some(sid) = self
+                                        .session
+                                        .scheduled_tasks
+                                        .get(tid)
+                                        .and_then(|info| info.last_subagent_id.clone())
+                                        && let Some(child_sid) = self
+                                            .descendant_subagent_info(&sid)
+                                            .map(|info| info.child_session_id.to_string())
+                                        && self.open_descendant_subagent_fullscreen(child_sid)
+                                    {
+                                        return InputOutcome::Changed;
+                                    }
+                                }
+                                TaskEntryId::Workflow(_) => {}
                             }
                         }
                         self.tasks.handle_mouse(
