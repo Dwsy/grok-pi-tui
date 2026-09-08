@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-09-08
+
+### Added
+
+- **Browser config console** — `/pi-config web` and `/pi-models web` serve the resource manager, provider/model editor, and F2 settings in a browser via the injected `pi-grok-web-config` Pi extension: random loopback port, per-start one-time token, `Host` validation, schema-checked atomic writes, and a zh/en UI that follows the browser locale. Without the `web` argument both commands still open the native Pager modals.
+- User prompt blocks in the transcript can now be opened in the markdown block viewer.
+
+### Fixed
+
+- Tasks-pane view-button handling now releases its hit-test borrow before opening descendant subagents, fixing the remaining release-build borrow-check failure in Subagents V2.
+- The raw Tool Trace viewer now decodes `Vec<u8>` tool payloads (`BashOutput.output`, `GrepSearchOutput.stdout`/`stderr`) back to text, so command output no longer renders as a list of ASCII byte values.
+- Remote TUI keyboard repeat/release handling now mirrors Pi's focused-component dispatch semantics, fixing repeated key input over the bridge.
+
 ## [0.1.8] - 2026-09-05
 
 ### Fixed

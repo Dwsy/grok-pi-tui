@@ -9,6 +9,70 @@
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-09-08
+
+### 新增
+
+- **浏览器配置台** — `/pi-config web` 与 `/pi-models web` 由注入的 `pi-grok-web-config` Pi 扩展在浏览器中提供资源管理、provider/model 编辑与 F2 设置：随机回环端口、每次启动一次性 token、`Host` 校验、结构校验 + 原子写入，界面中/英随浏览器语言自动切换。不带 `web` 参数时两个命令仍打开原生 Pager 模态。
+- Transcript 中的用户消息 block 现在可以用 Markdown block viewer 打开。
+
+### 修复
+
+- Tasks-pane 的 view 按钮处理现在会先释放 hit-test 借用再打开后代 subagent，修复 Subagents V2 残留的 release 构建借用检查失败。
+- 原始 Tool Trace 查看器现在会把 `Vec<u8>` 工具载荷（`BashOutput.output`、`GrepSearchOutput.stdout`/`stderr`）解码回文本，命令输出不再渲染为一串 ASCII 字节值。
+- Remote TUI 键盘 repeat/release 处理对齐 Pi 的焦点组件分发语义，修复桥接上的按键重复问题。
+
+## [0.1.8] - 2026-09-05
+
+### 修复
+
+- Release 构建现在会导入后代 Tasks-pane 解析器所需的嵌套 subagent 元数据类型，修复导致 `v0.1.7` 无法发布的跨平台编译失败。
+
+## [0.1.7] - 2026-09-04
+
+### 新增
+
+- Subagents V2 现在把稳定的层级 agent 身份与 parent/team 元数据持久化到每会话 sidecar，嵌套团队可在会话重载后存活，并能在存活的 Pager 进程之外重建。
+- 根 Pager Tasks pane 现在渲染完整的递归 subagent 层级；子 AgentView 保持既有的直接子级焦点展示。
+- Pi Session Manager 集成可从子会话 sidecar 递归重建已持久化的 Grok Pi 团队。
+
+### 变更
+
+- 嵌套 subagent 路由现在遵循直接的父 AgentView/会话边界进行实时更新、导航、取消与对账，不再假设每个 subagent 都直接挂在根上。
+- Pager 深层级行支持与直接子级相同的状态覆盖、打开/查看动作、键鼠导航与 kill 行为。
+
+### 修复
+
+- 取消深层嵌套的 subagent 现在会通过其实际父会话发送 RPC，并递归清理 pending-kill 状态，包括 `NothingLive` 对账路径。
+
+## [0.1.6] - 2026-09-03
+
+### 新增
+
+- `/subagent-history` 现在打开 Pager 原生的可搜索历史选择器，展示持久化的 subagent 状态、类型、turn/工具计数、前台/后台模式与模型元数据，同时保留扩展自有的 transcript 加载。
+
+### 变更
+
+- Subagent `maxTurns` 改为软性收尾阈值：达到后只发送一次总结提醒（在可行时），不再禁止完成或验证任务所需的额外工具调用。
+- Release 构建按 target 缓存本地 workspace crate 并保留失败构建的缓存状态，减少跨 release tag 的重复编译。
+
+### 修复
+
+- 关闭或取消原生 subagent 历史选择器时现在会显式 resolve 挂起的 Pi 扩展 UI 请求，避免孤儿反向请求。
+
+## [0.1.5] - 2026-09-01
+
+### 修复
+
+- 终端原生光标着色重新跟随活动主题的 `accent_user`（OSC 12），保持 stock Grok 行为；软件 prompt 光标继续使用面向可读性的浅色主题配色。
+- Release tag 现在会在构建矩阵开始前校验对应 changelog 段，格式错误的 release notes 会在昂贵的分发构建开始前失败。
+
+## [0.1.4] - 2026-09-01
+
+### 修复
+
+- Enter 不再打开原始 Tool Trace 查看器；请使用 Left Arrow/Collapse 动作查看折叠的工具 trace。
+
 ## [0.1.3] - 2026-08-31
 
 ### 新增
