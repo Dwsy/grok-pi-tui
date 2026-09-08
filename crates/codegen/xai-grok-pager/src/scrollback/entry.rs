@@ -111,8 +111,53 @@ pub struct ToolTraceSnapshot {
     pub updated_at_ms: Option<i64>,
 }
 
+/// Render tool trace JSON for the DocViewer, decoding raw byte payloads.
+///
+/// Native tool payloads carry stdout/stderr as `Vec<u8>` (`BashOutput.output`,
+/// `GrepSearchOutput.stdout`/`stderr`), which serde emits as an array of byte
+/// values. Those arrays are decoded to text so the trace shows the command
+/// output instead of a wall of ASCII codes.
 fn pretty_json(value: &serde_json::Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+    let readable = decode_byte_arrays(value);
+    serde_json::to_string_pretty(&readable).unwrap_or_else(|_| value.to_string())
+}
+
+/// Recursively replace JSON byte arrays with their decoded text.
+fn decode_byte_arrays(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(items) => match decode_bytes(items) {
+            Some(text) => serde_json::Value::String(text),
+            None => serde_json::Value::Array(items.iter().map(decode_byte_arrays).collect()),
+        },
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), decode_byte_arrays(value)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Decode an array as UTF-8 bytes when every element is a byte and the result
+/// is text. Genuine numeric arrays (line numbers, exit codes) decode to control
+/// characters or fail UTF-8 validation, so they pass through untouched.
+fn decode_bytes(items: &[serde_json::Value]) -> Option<String> {
+    if items.is_empty() {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(items.len());
+    for item in items {
+        bytes.push(u8::try_from(item.as_u64()?).ok()?);
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    let is_text = text.chars().all(is_text_char);
+    is_text.then_some(text)
+}
+
+/// Terminal output keeps ANSI escapes and simple bells/backspaces inline; every
+/// other control byte means the array is binary data, not text.
+fn is_text_char(char: char) -> bool {
+    !char.is_control() || matches!(char, '\n' | '\r' | '\t' | '\u{7}' | '\u{8}' | '\u{1b}')
 }
 
 /// Format one or more ACP-backed tool traces for the shared DocViewer modal.
@@ -926,6 +971,41 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use ratatui::style::Color;
+
+    #[test]
+    fn pretty_json_decodes_byte_arrays_to_text() {
+        let raw = serde_json::json!({
+            "type": "GrepSearch",
+            "stdout": "a/b.json".as_bytes().to_vec(),
+            "stderr": Vec::<u8>::new(),
+            "file_matches": [],
+            "line_numbers": [1, 2, 3],
+        });
+        let rendered = pretty_json(&raw);
+        assert!(rendered.contains("\"stdout\": \"a/b.json\""), "{rendered}");
+        // Empty byte arrays and genuine numeric arrays stay as-is.
+        assert!(rendered.contains("\"stderr\": []"), "{rendered}");
+        // serde_json pretty-prints with two-space indentation, so a numeric
+        // array that survived decoding still shows one number per indented line.
+        assert!(rendered.contains("\"line_numbers\": [\n    1,"), "{rendered}");
+    }
+
+    #[test]
+    fn pretty_json_leaves_non_text_byte_arrays_alone() {
+        // Invalid UTF-8 (0xff) and control bytes are not text.
+        let rendered = pretty_json(&serde_json::json!({"output": [104, 0, 255]}));
+        assert!(rendered.contains("104"), "{rendered}");
+    }
+
+    #[test]
+    fn pretty_json_keeps_ansi_escapes_in_decoded_output() {
+        let raw = serde_json::json!({"output": "\u{1b}[32mok\u{1b}[0m".as_bytes().to_vec()});
+        assert!(
+            pretty_json(&raw).contains("\\u001b[32mok\\u001b[0m"),
+            "{}",
+            pretty_json(&raw)
+        );
+    }
 
     #[test]
     fn test_entry_new() {
