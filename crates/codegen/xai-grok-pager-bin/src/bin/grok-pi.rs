@@ -69,6 +69,8 @@ mod tools_extension;
 mod tree_bridge;
 #[path = "grok_pi/tutorial_profile.rs"]
 mod tutorial_profile;
+#[path = "grok_pi/web_config_extension.rs"]
+mod web_config_extension;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -128,6 +130,7 @@ use tools_extension::{
     has_no_tools_arg, merge_tool_exclusions, tool_name_allowed_by_cli, write_tools_extension,
 };
 use tree_bridge::write_navigate_tree_extension;
+use web_config_extension::write_web_config_extension;
 
 /// Grok pager commands that are meaningful when Pi is the ACP backend.
 ///
@@ -493,6 +496,11 @@ async fn run(mut args: Args) -> Result<()> {
         .then(|| write_plan_mode_extension())
         .transpose()
         .context("failed to create Pi plan-mode extension")?;
+    // Pi-owned web config surface behind `/pi-config web` / `/pi-models web`.
+    let web_config_extension = bridge_extensions_enabled
+        .then(|| write_web_config_extension())
+        .transpose()
+        .context("failed to create Pi web config extension")?;
     // Resolve session dir after first-class flags are merged so --session-dir
     // is visible whether it came from clap or from `--` passthrough.
     let mut pi_args = pi_args_with_startup_flags(
@@ -878,6 +886,9 @@ async fn run(mut args: Args) -> Result<()> {
         native_commands_extension
             .as_ref()
             .map(|extension| extension.path()),
+        web_config_extension
+            .as_ref()
+            .map(|extension| extension.source_path()),
         bash_extension
             .as_ref()
             .map(|extension| extension.source_path()),
@@ -1008,6 +1019,16 @@ async fn run(mut args: Args) -> Result<()> {
             std::env::remove_var("PI_GROK_ASK_USER");
             std::env::remove_var("PI_GROK_ASK_USER_DIR");
         }
+    }
+    if let Some(extension) = web_config_extension.as_ref() {
+        env.push((
+            "PI_GROK_WEB_CONFIG_UI".to_string(),
+            extension.ui_path().to_string_lossy().into_owned(),
+        ));
+        env.push((
+            "PI_GROK_WEB_CONFIG_CATALOG".to_string(),
+            extension.catalog_path().to_string_lossy().into_owned(),
+        ));
     }
     if let Some(context_extension) = context_extension.as_ref() {
         env.push((
