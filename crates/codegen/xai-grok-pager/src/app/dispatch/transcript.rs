@@ -316,6 +316,7 @@ pub(super) fn dispatch_open_block_viewer(app: &mut AppView) {
 
         // Try to create a normal viewer for the selected block type.
         let viewer = match &entry.block {
+            RenderBlock::UserPrompt(_) => BlockViewerPane::for_markdown(entry.id, entry),
             RenderBlock::Thinking(_)
             | RenderBlock::AgentMessage(_)
             | RenderBlock::SessionEvent(_) => BlockViewerPane::for_markdown(entry.id, entry),
