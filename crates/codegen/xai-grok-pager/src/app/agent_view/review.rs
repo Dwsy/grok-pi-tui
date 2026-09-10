@@ -11,6 +11,21 @@ use crossterm::event::{KeyEvent, MouseEvent};
 use std::path::Path;
 
 impl AgentView {
+    fn copy_review_path(&mut self) -> InputOutcome {
+        let Some(path) = self
+            .review_state
+            .as_ref()
+            .and_then(|s| s.current_file())
+            .map(|f| f.path.clone())
+        else {
+            self.show_toast("No file to copy");
+            return InputOutcome::Changed;
+        };
+        // copy_to_clipboard shows its own delivery toast.
+        self.copy_to_clipboard(&path);
+        InputOutcome::Changed
+    }
+
     fn open_review_path(&mut self) -> InputOutcome {
         let path = self
             .review_state
@@ -53,6 +68,7 @@ impl AgentView {
                 InputOutcome::Action(Action::SetReviewIncludeReads(enabled))
             }
             ReviewInput::OpenPath => self.open_review_path(),
+            ReviewInput::CopyPath => self.copy_review_path(),
             ReviewInput::AskSubmit(question) => InputOutcome::Action(Action::ReviewAsk(question)),
             ReviewInput::Changed | ReviewInput::Consumed => {
                 if let Some(state) = self.review_state.as_mut() {

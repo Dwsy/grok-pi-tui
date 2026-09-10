@@ -658,6 +658,8 @@ pub enum ReviewInput {
     ToggleIncludeReads,
     /// Ctrl+click (or path hit) — open current file in OS default app.
     OpenPath,
+    /// `p` — copy the current file's full path to the clipboard.
+    CopyPath,
     /// QA question submitted via the Right Ask bar — caller fires /btw.
     AskSubmit(String),
     Consumed,
@@ -746,6 +748,9 @@ pub fn handle_review_list_key(state: &mut ReviewState, key: &KeyEvent) -> Review
         KeyCode::Char('r') if key.modifiers == KeyModifiers::NONE => {
             ReviewInput::ToggleIncludeReads
         }
+        // p copies the current file's full path; o opens it in the OS default app.
+        KeyCode::Char('p') if key.modifiers == KeyModifiers::NONE => ReviewInput::CopyPath,
+        KeyCode::Char('o') if key.modifiers == KeyModifiers::NONE => ReviewInput::OpenPath,
         KeyCode::Up | KeyCode::Char('k') => {
             state.move_sel(-1);
             ReviewInput::Changed
@@ -860,6 +865,9 @@ pub fn handle_review_preview_shell_key(
         KeyCode::Char('r') if key.modifiers == KeyModifiers::NONE => {
             Some(ReviewInput::ToggleIncludeReads)
         }
+        // p copies the current file's full path; o opens it in the OS default app.
+        KeyCode::Char('p') if key.modifiers == KeyModifiers::NONE => Some(ReviewInput::CopyPath),
+        KeyCode::Char('o') if key.modifiers == KeyModifiers::NONE => Some(ReviewInput::OpenPath),
         // a activates the Right Ask QA bar.
         KeyCode::Char('a') if key.modifiers == KeyModifiers::NONE => {
             state.focus = ReviewFocus::Ask;
@@ -1185,7 +1193,7 @@ pub fn render_review_modal(
             )
         }
         ReviewFocus::Preview => {
-            " ]/[ hunk  ./, file  /search n/N  d/u half  g/G  w=wrap  y=copy  a=ask  ?=help  ←list  Esc ".into()
+            " ]/[ hunk  ./, file  /search n/N  d/u half  g/G  w=wrap  y=copy  p=path  o=open  a=ask  ?=help  ←list  Esc ".into()
         }
         ReviewFocus::Ask => " Enter=send  ↑↓ scroll answer  Tab=files  Esc=back ".into(),
     };
@@ -1297,7 +1305,8 @@ fn render_help_overlay(buf: &mut Buffer, outer: Rect, theme: &Theme) {
         row("  Enter ↑↓     ", "send question / scroll answer"),
         Line::from(section("Global")),
         row("  ? q Esc      ", "this help / dismiss modal"),
-        row("  Ctrl+click   ", "open file in OS default app"),
+        row("  p            ", "copy current file's full path"),
+        row("  o / Ctrl+click", "open current file in OS default app"),
     ];
     Paragraph::new(lines).render(inner, buf);
 }
