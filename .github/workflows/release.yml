@@ -5,6 +5,16 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (vX.Y.Z or vX.Y.Z-beta.N)"
+        required: true
+        type: string
+
+env:
+  # One canonical tag drives version stamping, changelog extraction and publishing.
+  # Tag pushes use github.ref_name; manual runs must provide the release tag.
+  GROK_PI_RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: write
@@ -21,12 +31,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
-            echo "Not a release tag; changelog validation skipped."
-            exit 0
+          ref="${GROK_PI_RELEASE_TAG}"
+          if [[ ! "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
+            echo "Unsupported release tag: $ref" >&2
+            echo "Expected vX.Y.Z or vX.Y.Z-beta.N." >&2
+            exit 1
           fi
 
-          ref="${GITHUB_REF_NAME}"
           ver="${ref#v}"
           python3 scripts/extract-changelog-section.py --self-test
           python3 scripts/extract-changelog-section.py \
@@ -149,7 +160,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          ref="${GITHUB_REF_NAME:-0.0.0-dev}"
+          ref="${GROK_PI_RELEASE_TAG}"
           ver="${ref#v}"
           echo "version=${ver}" >> "$GITHUB_OUTPUT"
           echo "Resolved GROK_PI_VERSION=${ver}"
@@ -209,7 +220,7 @@ jobs:
   release:
     name: Publish GitHub release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     steps:
@@ -234,7 +245,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ref="${GITHUB_REF_NAME}"
+          ref="${GROK_PI_RELEASE_TAG}"
           ver="${ref#v}"
           mkdir -p dist
 
@@ -281,4 +292,11 @@ jobs:
           # history to every release body.
           body_path: dist/release-notes.md
           generate_release_notes: false
+          # Manual dispatch and tag pushes share the exact same release tag.
+          tag_name: ${{ env.GROK_PI_RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          # A beta tag ships the same six platform assets, but is not promoted
+          # by GitHub's stable `releases/latest` pointer. Unsupported prerelease
+          # suffixes are rejected before the build starts.
+          prerelease: ${{ contains(env.GROK_PI_RELEASE_TAG, '-beta.') }}
           files: release-assets/*

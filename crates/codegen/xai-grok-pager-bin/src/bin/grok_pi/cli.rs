@@ -58,9 +58,11 @@ Extension startup recovery:
   it does not send absolute paths, stack traces, or session data.
 
 Update (GitHub releases only):
-  grok-pi update            Install latest from Dwsy/grok-pi
-  grok-pi update --check    Print current vs latest
-  Welcome Ctrl+U            Same install when an update is offered
+  grok-pi update                    Install latest for the configured channel
+  grok-pi update --check            Print current vs channel target
+  grok-pi update --channel beta     Switch to beta and install its target
+  grok-pi update --channel stable   Switch back to stable
+  Welcome Ctrl+U                    Same channel-aware install when offered
 
 Home (isolated from stock Grok ~/.grok):
   Default state dir: ~/.grok-pi  (override with GROK_HOME)
@@ -232,6 +234,9 @@ pub(super) enum Command {
         /// Named `--to` so it does not clash with clap's global `--version`.
         #[arg(long = "to", value_name = "VERSION")]
         version: Option<String>,
+        /// Persist and use the grok-pi update channel.
+        #[arg(long, value_name = "CHANNEL", value_parser = ["stable", "beta"])]
+        channel: Option<String>,
     },
 
     /// Copy allowlisted state from stock Grok home (`~/.grok`) into grok-pi home (`~/.grok-pi`).

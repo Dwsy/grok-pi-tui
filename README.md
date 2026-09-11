@@ -36,7 +36,13 @@ The installer picks the matching release asset and installs `grok-pi`:
 | Windows x64 | `grok-pi-windows-x86_64.zip` |
 | Windows ARM64 | `grok-pi-windows-aarch64.zip` |
 
-Defaults: Unix → `~/.local/bin`; Windows → `%LOCALAPPDATA%\grok-pi\bin`. Override with `GROK_PI_INSTALL_DIR`. Pin with `GROK_PI_VERSION=vX.Y.Z`.
+Defaults: Unix → `~/.local/bin`; Windows → `%LOCALAPPDATA%\grok-pi\bin`. Override with `GROK_PI_INSTALL_DIR`. To install a specific stable or beta release, use `GROK_PI_VERSION=vX.Y.Z` or `GROK_PI_VERSION=vX.Y.Z-beta.N` with the installer from that same release tag.
+
+```bash
+# Example: install a specific beta on macOS / Linux
+curl -fsSL https://github.com/Dwsy/grok-pi/releases/download/v1.2.0-beta.1/install.sh | \
+  GROK_PI_VERSION=v1.2.0-beta.1 sh
+```
 
 The installer also creates `pig` and `pi-grok` aliases (Unix symlinks; Windows `pig.exe` / `pi-grok.exe` hardlinks with copy fallback):
 
@@ -84,7 +90,11 @@ Useful commands:
 grok-pi --help
 grok-pi update --check
 grok-pi update
+grok-pi update --channel beta    # persist beta in ~/.grok-pi/config.toml
+grok-pi update --channel stable  # switch back; stable is the default
 ```
+
+Update channels are product-local and persisted in `~/.grok-pi/config.toml` under `[update].channel`. `stable` is the default and never selects prereleases. `beta` follows valid `-beta.N` GitHub prereleases, but will also advance to a newer final release when semver makes it the newer target. `grok-pi --version` shows the active channel, and `grok-pi update --check --json` includes the resolved `channel`.
 
 ## What it provides
 
@@ -101,7 +111,7 @@ grok-pi update
 | Rhai workflows | Upstream `xai-workflow` host (F2 **Pi workflows**); `/workflow`, `/workflows`, `/create-workflow`; scripts under `~/.grok-pi/workflows` and `<repo>/.grok-pi/workflows` |
 | Session workflow | Resume, tree navigation, labels, recap, context inspection, and session picker |
 | Resource management | Native manager for Pi extensions, skills, prompts, and themes |
-| Updates | GitHub Releases-based update check and installation |
+| Updates | Isolated `stable` / `beta` GitHub Release channels, persisted under `~/.grok-pi/config.toml`; channel-aware background checks, `grok-pi update`, `--check --json`, and target-tag installer downloads |
 
 For field-level behavior and intentional omissions, see the [feature matrix](docs/FEATURE_MATRIX.md).
 

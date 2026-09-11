@@ -245,7 +245,20 @@ fn main() -> Result<()> {
     xai_crash_handler::install_terminal_restore_only();
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let mut args = Args::parse_from(normalize_compound_short_flags(std::env::args_os()));
+    let normalized_args = normalize_compound_short_flags(std::env::args_os());
+    if normalized_args.len() == 2
+        && normalized_args[1]
+            .to_str()
+            .is_some_and(|arg| arg == "--version" || arg == "-V")
+    {
+        println!(
+            "grok-pi {} [{}]",
+            GROK_PI_VERSION,
+            xai_grok_update::load_pi_update_channel().as_str()
+        );
+        return Ok(());
+    }
+    let mut args = Args::parse_from(normalized_args);
     // Default host is system `pi` (min 0.84.3). Override with --pi-bin or PI_BIN.
     if args.pi_bin == "pi" {
         if let Ok(pi_bin) = std::env::var("PI_BIN") {
@@ -270,6 +283,7 @@ fn main() -> Result<()> {
         json,
         force,
         version,
+        channel,
     }) = args.command
     {
         return runtime.block_on(async move {
@@ -279,6 +293,7 @@ fn main() -> Result<()> {
                     check_only: check,
                     force,
                     version,
+                    channel,
                     json,
                 },
             )

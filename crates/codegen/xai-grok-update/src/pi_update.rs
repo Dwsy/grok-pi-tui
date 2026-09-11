@@ -6,7 +6,7 @@
 //! JSP proxy. The unscoped `grok-pi` npm package is a foreign package and is
 //! intentionally never used.
 
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -14,14 +14,45 @@ use serde_json::Value;
 
 use crate::auto_update::UpdateAvailable;
 
-/// GitHub Releases "latest" API for this project's published binaries.
+/// grok-pi's independent GitHub release channels.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PiUpdateChannel {
+    #[default]
+    Stable,
+    Beta,
+}
+
+impl PiUpdateChannel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Beta => "beta",
+        }
+    }
+}
+
+impl FromStr for PiUpdateChannel {
+    type Err = anyhow::Error;
+
+    fn from_str(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "stable" => Ok(Self::Stable),
+            "beta" => Ok(Self::Beta),
+            other => anyhow::bail!("unsupported grok-pi update channel '{other}'"),
+        }
+    }
+}
+
+/// GitHub Releases "latest" API for stable published binaries.
 pub const PI_GH_RELEASES_LATEST_URL: &str =
-    "https://api.github.com/repos/Dwsy/grok-pi-tui/releases/latest";
+    "https://api.github.com/repos/Dwsy/grok-pi/releases/latest";
+/// GitHub Releases list used by the beta channel.
+const PI_GH_RELEASES_URL: &str = "https://api.github.com/repos/Dwsy/grok-pi/releases?per_page=100";
 /// Official GitHub Releases page. Unlike the API, this is not subject to the
-/// unauthenticated API rate limit and redirects to the canonical latest tag.
+/// unauthenticated API rate limit and redirects to the canonical stable tag.
 const PI_GH_RELEASES_PAGE_LATEST_URL: &str = "https://github.com/Dwsy/grok-pi/releases/latest";
 /// Official npm package metadata. Do not use the unscoped `grok-pi` package:
-/// it belongs to another project.
+/// it belongs to another project. This is a stable-only fallback.
 const PI_NPM_PACKAGE_METADATA_URL: &str = "https://registry.npmjs.org/@dwsy%2Fgrok-pi";
 /// JSP proxy route for the GitHub API. Only the proxy prefix is encoded so
 /// the upstream host and repository remain visible in the source.
@@ -30,28 +61,44 @@ const JSP_PROXY_PREFIX_B64: &str =
 const JSP_PROXY_REFERER_PREFIX_B64: &str = "aHR0cHM6Ly9qc3AuZHdzeS5saW5rLz8=";
 const JSP_PROXY_REFERER_SUFFIX: &str = "--ver=110&--mode=cors&--type=&--aceh=1&--level=1";
 
-/// Fetch the latest `grok-pi` version string (no leading `v`) from GitHub.
+/// Fetch the latest target for the persisted grok-pi channel.
 pub async fn fetch_pi_latest_version() -> Result<String> {
-    let (version, source) = fetch_release_latest().await?;
-    tracing::info!(%version, source, "pi update: latest version");
+    fetch_pi_latest_version_for_channel(load_pi_update_channel()).await
+}
+
+async fn fetch_pi_latest_version_for_channel(channel: PiUpdateChannel) -> Result<String> {
+    let (version, source) = match channel {
+        PiUpdateChannel::Stable => fetch_release_latest_stable().await?,
+        PiUpdateChannel::Beta => fetch_release_latest_beta().await?,
+    };
+    tracing::info!(%version, source, channel = channel.as_str(), "pi update: latest version");
     Ok(version)
 }
 
-async fn fetch_release_latest() -> Result<(String, &'static str)> {
+async fn fetch_release_latest_stable() -> Result<(String, &'static str)> {
     let client = http_client()?;
     let mut errors = Vec::new();
 
-    match fetch_release_from_url(&client, PI_GH_RELEASES_LATEST_URL, "github-api").await {
+    match fetch_release_from_url(&client, PI_GH_RELEASES_LATEST_URL, "github-api")
+        .await
+        .and_then(require_stable_version)
+    {
         Ok(version) => return Ok((version, "github-api")),
         Err(error) => errors.push(format!("github-api: {error}")),
     }
 
-    match fetch_github_release_page_latest(&client).await {
+    match fetch_github_release_page_latest(&client)
+        .await
+        .and_then(require_stable_version)
+    {
         Ok(version) => return Ok((version, "github-releases-page")),
         Err(error) => errors.push(format!("github-releases-page: {error}")),
     }
 
-    match fetch_npm_release_latest(&client).await {
+    match fetch_npm_release_latest(&client)
+        .await
+        .and_then(require_stable_version)
+    {
         Ok(version) => return Ok((version, "npm")),
         Err(error) => errors.push(format!("npm: {error}")),
     }
@@ -60,13 +107,46 @@ async fn fetch_release_latest() -> Result<(String, &'static str)> {
         "{}Dwsy/grok-pi/releases/latest",
         decode_proxy_part(JSP_PROXY_PREFIX_B64)
     );
-    match fetch_release_from_url(&client, &proxy_url, "jsp-proxy").await {
+    match fetch_release_from_url(&client, &proxy_url, "jsp-proxy")
+        .await
+        .and_then(require_stable_version)
+    {
         Ok(version) => return Ok((version, "jsp-proxy")),
         Err(error) => errors.push(format!("jsp-proxy: {error}")),
     }
 
     anyhow::bail!(
-        "failed to fetch latest grok-pi release ({})",
+        "failed to fetch latest stable grok-pi release ({})",
+        errors.join("; ")
+    )
+}
+
+async fn fetch_release_latest_beta() -> Result<(String, &'static str)> {
+    let client = http_client()?;
+    let mut errors = Vec::new();
+
+    match fetch_release_list_from_url(&client, PI_GH_RELEASES_URL, "github-api").await {
+        Ok(value) => match select_release_for_channel(&value, PiUpdateChannel::Beta) {
+            Ok(version) => return Ok((version, "github-api")),
+            Err(error) => errors.push(format!("github-api: {error}")),
+        },
+        Err(error) => errors.push(format!("github-api: {error}")),
+    }
+
+    let proxy_url = format!(
+        "{}Dwsy/grok-pi/releases?per_page=100",
+        decode_proxy_part(JSP_PROXY_PREFIX_B64)
+    );
+    match fetch_release_list_from_url(&client, &proxy_url, "jsp-proxy").await {
+        Ok(value) => match select_release_for_channel(&value, PiUpdateChannel::Beta) {
+            Ok(version) => return Ok((version, "jsp-proxy")),
+            Err(error) => errors.push(format!("jsp-proxy: {error}")),
+        },
+        Err(error) => errors.push(format!("jsp-proxy: {error}")),
+    }
+
+    anyhow::bail!(
+        "failed to fetch latest beta grok-pi release ({})",
         errors.join("; ")
     )
 }
@@ -173,6 +253,99 @@ async fn fetch_release_from_url(
     normalize_version(tag)
 }
 
+async fn fetch_release_list_from_url(
+    client: &reqwest::Client,
+    url: &str,
+    source: &str,
+) -> Result<Value> {
+    let mut request = client
+        .get(url)
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "grok-pi-update-check");
+    if source == "jsp-proxy" {
+        request = request.header(
+            reqwest::header::REFERER,
+            format!(
+                "{}{}",
+                decode_proxy_part(JSP_PROXY_REFERER_PREFIX_B64),
+                JSP_PROXY_REFERER_SUFFIX
+            ),
+        );
+    }
+    let resp = request
+        .send()
+        .await
+        .with_context(|| format!("GET {source} releases"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "{source} releases HTTP {status}: {}",
+            body.chars().take(200).collect::<String>().trim()
+        );
+    }
+    resp.json()
+        .await
+        .with_context(|| format!("decode {source} releases JSON"))
+}
+
+fn require_stable_version(version: String) -> Result<String> {
+    if release_channel_from_tag(&version) != Some(PiUpdateChannel::Stable) {
+        anyhow::bail!("stable source returned prerelease or unsupported version '{version}'");
+    }
+    Ok(version)
+}
+
+fn release_channel_from_tag(tag: &str) -> Option<PiUpdateChannel> {
+    let version = semver::Version::parse(tag.trim().trim_start_matches('v')).ok()?;
+    if version.pre.is_empty() {
+        return Some(PiUpdateChannel::Stable);
+    }
+    if version.pre.as_str().starts_with("beta.") {
+        return Some(PiUpdateChannel::Beta);
+    }
+    None
+}
+
+fn select_release_for_channel(value: &Value, channel: PiUpdateChannel) -> Result<String> {
+    let releases = value
+        .as_array()
+        .ok_or_else(|| anyhow!("GitHub releases response was not an array"))?;
+    releases
+        .iter()
+        .filter(|release| {
+            !release
+                .get("draft")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .filter_map(|release| {
+            let tag = release.get("tag_name").and_then(Value::as_str)?;
+            let tag_channel = release_channel_from_tag(tag)?;
+            let github_prerelease = release
+                .get("prerelease")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if (tag_channel == PiUpdateChannel::Beta) != github_prerelease {
+                return None;
+            }
+            let allowed = match channel {
+                PiUpdateChannel::Stable => tag_channel == PiUpdateChannel::Stable,
+                // Beta users track betas, but must still see a newer final release.
+                PiUpdateChannel::Beta => true,
+            };
+            if !allowed {
+                return None;
+            }
+            let normalized = normalize_version(tag).ok()?;
+            let parsed = semver::Version::parse(&normalized).ok()?;
+            Some((parsed, normalized))
+        })
+        .max_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, version)| version)
+        .ok_or_else(|| anyhow!("no release found for {} channel", channel.as_str()))
+}
+
 fn decode_proxy_part(encoded: &str) -> String {
     String::from_utf8(
         BASE64
@@ -196,6 +369,60 @@ fn http_client() -> Result<reqwest::Client> {
         .timeout(Duration::from_secs(12))
         .build()
         .context("build HTTP client")
+}
+
+/// Read `[update].channel` from grok-pi's isolated `$GROK_HOME/config.toml`.
+/// Missing or invalid values fail closed to stable.
+pub fn load_pi_update_channel() -> PiUpdateChannel {
+    let path = xai_grok_shell::util::grok_home::grok_home().join("config.toml");
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return PiUpdateChannel::Stable;
+    };
+    let Ok(doc) = raw.parse::<toml_edit::DocumentMut>() else {
+        tracing::warn!(path = %path.display(), "pi update: invalid config.toml; using stable channel");
+        return PiUpdateChannel::Stable;
+    };
+    let Some(raw_channel) = doc
+        .get("update")
+        .and_then(toml_edit::Item::as_table_like)
+        .and_then(|table| table.get("channel"))
+        .and_then(toml_edit::Item::as_str)
+    else {
+        return PiUpdateChannel::Stable;
+    };
+    raw_channel.parse().unwrap_or_else(|error| {
+        tracing::warn!(%error, path = %path.display(), "pi update: invalid channel; using stable");
+        PiUpdateChannel::Stable
+    })
+}
+
+fn render_pi_update_channel_config(raw: &str, channel: PiUpdateChannel) -> Result<String> {
+    let mut doc = if raw.trim().is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        raw.parse::<toml_edit::DocumentMut>()?
+    };
+    if doc.get("update").is_some_and(|item| !item.is_table_like()) {
+        anyhow::bail!("non-table [update] configuration");
+    }
+    doc["update"]["channel"] = toml_edit::value(channel.as_str());
+    Ok(doc.to_string())
+}
+
+fn persist_pi_update_channel(channel: PiUpdateChannel) -> Result<()> {
+    let home = xai_grok_shell::util::grok_home::grok_home();
+    std::fs::create_dir_all(&home)
+        .with_context(|| format!("create grok-pi home {}", home.display()))?;
+    let path = home.join("config.toml");
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+    };
+    let rendered = render_pi_update_channel_config(&raw, channel)
+        .with_context(|| format!("parse {}", path.display()))?;
+    std::fs::write(&path, rendered).with_context(|| format!("write {}", path.display()))?;
+    Ok(())
 }
 
 /// Background check: `Some(UpdateAvailable)` when remote is newer than the
@@ -251,8 +478,10 @@ pub struct PiUpdateOptions {
     pub check_only: bool,
     /// Install even when the remote version is not newer.
     pub force: bool,
-    /// Pin a specific semver (with or without `v` prefix). `None` = latest.
+    /// Pin a specific semver (with or without `v` prefix). `None` = channel target.
     pub version: Option<String>,
+    /// Persist and use this channel before resolving the target.
+    pub channel: Option<String>,
     /// Emit machine-readable JSON for `--check`.
     pub json: bool,
 }
@@ -262,40 +491,72 @@ pub struct PiUpdateOptions {
 /// Returns the installed version when an install ran; `None` for check-only
 /// or when already up to date without `--force`.
 pub async fn run_pi_update(current: &str, opts: PiUpdateOptions) -> Result<Option<String>> {
+    let configured_channel = load_pi_update_channel();
+    let channel = match opts.channel.as_deref() {
+        Some(raw) => raw.parse::<PiUpdateChannel>()?,
+        None => configured_channel,
+    };
+    if opts.channel.is_some() {
+        // An explicit channel is a persistence command even when the effective
+        // fallback is already the same value. This materializes missing config
+        // and repairs an invalid channel entry in otherwise valid TOML.
+        persist_pi_update_channel(channel)?;
+        if channel != configured_channel {
+            eprintln!("Switched grok-pi update channel to {}.", channel.as_str());
+        }
+    }
+
     let target = match opts.version.as_deref() {
         Some(v) => normalize_version(v)?,
-        None => fetch_pi_latest_version().await?,
+        None => fetch_pi_latest_version_for_channel(channel).await?,
     };
 
     if opts.check_only {
-        print_pi_update_status(&current, &target, opts.json)?;
+        print_pi_update_status(current, &target, channel, opts.json)?;
         return Ok(None);
     }
 
-    if !opts.force && !is_remote_newer(&target, &current) {
-        eprintln!("Already up to date (v{current}).");
+    if !opts.force && !is_remote_newer(&target, current) {
+        eprintln!(
+            "Already up to date (v{current}, {} channel).",
+            channel.as_str()
+        );
         return Ok(None);
     }
 
-    eprintln!("Updating grok-pi {current} → {target}…");
+    eprintln!(
+        "Updating grok-pi {current} → {target} ({} channel)…",
+        channel.as_str()
+    );
     install_pi_from_github(&target).await?;
     eprintln!("Installed grok-pi v{target} from GitHub releases.");
     Ok(Some(target))
 }
 
-fn print_pi_update_status(current: &str, latest: &str, json: bool) -> Result<()> {
+fn print_pi_update_status(
+    current: &str,
+    latest: &str,
+    channel: PiUpdateChannel,
+    json: bool,
+) -> Result<()> {
     let update_available = is_remote_newer(latest, current);
     if json {
+        let sources: &[&str] = match channel {
+            PiUpdateChannel::Stable => &["github-api", "github-releases-page", "npm", "jsp-proxy"],
+            PiUpdateChannel::Beta => &["github-api", "jsp-proxy"],
+        };
         let payload = serde_json::json!({
             "current": current,
             "latest": latest,
+            "channel": channel.as_str(),
             "updateAvailable": update_available,
-            "sources": ["github-api", "github-releases-page", "npm", "jsp-proxy"],
+            "sources": sources,
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
     }
     println!("Current:  v{current}");
+    println!("Channel:  {}", channel.as_str());
     println!("Latest:   v{latest}");
     if update_available {
         println!("Update available. Run: grok-pi update");
@@ -316,6 +577,7 @@ pub async fn install_pi_update(current: &str, version: Option<&str>) -> Result<S
             check_only: false,
             force: true,
             version: version.map(str::to_owned),
+            channel: None,
             json: false,
         },
     )
@@ -337,8 +599,7 @@ async fn install_pi_from_github(version: &str) -> Result<()> {
 
 #[cfg(not(windows))]
 async fn install_pi_unix_sh(tag: &str) -> Result<()> {
-    // The installer script is identical across tags; pin the binary via env.
-    let script_url = "https://github.com/Dwsy/grok-pi/releases/latest/download/install.sh";
+    let script_url = format!("https://github.com/Dwsy/grok-pi/releases/download/{tag}/install.sh");
     let mut cmd = tokio::process::Command::new("sh");
     cmd.arg("-c").arg(format!(
         "curl -fsSL {script_url} | GROK_PI_VERSION={tag} sh"
@@ -356,7 +617,7 @@ async fn install_pi_unix_sh(tag: &str) -> Result<()> {
 #[cfg(windows)]
 async fn install_pi_windows_ps1(tag: &str) -> Result<()> {
     let script = format!(
-        "$env:GROK_PI_VERSION='{tag}'; irm https://github.com/Dwsy/grok-pi/releases/latest/download/install.ps1 | iex"
+        "$env:GROK_PI_VERSION='{tag}'; irm https://github.com/Dwsy/grok-pi/releases/download/{tag}/install.ps1 | iex"
     );
     let mut cmd = tokio::process::Command::new("powershell");
     cmd.args([
@@ -402,8 +663,7 @@ mod tests {
 
     #[test]
     fn official_release_page_extracts_redirected_tag() {
-        let url =
-            url::Url::parse("https://github.com/Dwsy/grok-pi-tui/releases/tag/v0.1.0").unwrap();
+        let url = url::Url::parse("https://github.com/Dwsy/grok-pi/releases/tag/v0.1.0").unwrap();
         assert_eq!(normalize_github_release_page_url(&url).unwrap(), "0.1.0");
     }
 
@@ -415,6 +675,88 @@ mod tests {
         assert_eq!(
             source_order,
             ["github-api", "github-releases-page", "npm", "jsp-proxy"]
+        );
+    }
+
+    #[test]
+    fn stable_source_guard_rejects_every_prerelease_kind() {
+        assert_eq!(require_stable_version("1.2.3".to_owned()).unwrap(), "1.2.3");
+        assert!(require_stable_version("1.2.3-beta.1".to_owned()).is_err());
+        assert!(require_stable_version("1.2.3-alpha.1".to_owned()).is_err());
+        assert!(require_stable_version("1.2.3-rc.1".to_owned()).is_err());
+    }
+
+    #[test]
+    fn explicit_channel_render_materializes_and_repairs_stable() {
+        let fresh = render_pi_update_channel_config("", PiUpdateChannel::Stable).unwrap();
+        assert!(fresh.contains("channel = \"stable\""));
+
+        let repaired = render_pi_update_channel_config(
+            "[update]\nchannel = \"invalid\"\n[other]\nkeep = true\n",
+            PiUpdateChannel::Stable,
+        )
+        .unwrap();
+        assert!(repaired.contains("channel = \"stable\""));
+        assert!(repaired.contains("keep = true"));
+    }
+
+    #[test]
+    fn tag_channel_classification_is_strict() {
+        assert_eq!(
+            release_channel_from_tag("v1.2.0"),
+            Some(PiUpdateChannel::Stable)
+        );
+        assert_eq!(
+            release_channel_from_tag("v1.2.0-beta.3"),
+            Some(PiUpdateChannel::Beta)
+        );
+        assert_eq!(release_channel_from_tag("v1.2.0-alpha.1"), None);
+    }
+
+    #[test]
+    fn stable_channel_filters_prereleases() {
+        let releases = serde_json::json!([
+            {"tag_name": "v1.3.0-beta.2", "prerelease": true, "draft": false},
+            {"tag_name": "v1.2.1", "prerelease": false, "draft": false},
+            {"tag_name": "v1.2.2", "prerelease": false, "draft": true}
+        ]);
+        assert_eq!(
+            select_release_for_channel(&releases, PiUpdateChannel::Stable).unwrap(),
+            "1.2.1"
+        );
+    }
+
+    #[test]
+    fn beta_channel_tracks_beta_but_accepts_newer_stable() {
+        let beta_ahead = serde_json::json!([
+            {"tag_name": "v1.2.0-beta.2", "prerelease": true, "draft": false},
+            {"tag_name": "v1.1.9", "prerelease": false, "draft": false}
+        ]);
+        assert_eq!(
+            select_release_for_channel(&beta_ahead, PiUpdateChannel::Beta).unwrap(),
+            "1.2.0-beta.2"
+        );
+
+        let stable_ahead = serde_json::json!([
+            {"tag_name": "v1.2.0-beta.1", "prerelease": true, "draft": false},
+            {"tag_name": "v1.2.0", "prerelease": false, "draft": false}
+        ]);
+        assert_eq!(
+            select_release_for_channel(&stable_ahead, PiUpdateChannel::Beta).unwrap(),
+            "1.2.0"
+        );
+        assert!(is_remote_newer("1.2.0", "1.2.0-beta.1"));
+    }
+
+    #[test]
+    fn beta_channel_rejects_mislabeled_prerelease_metadata() {
+        let releases = serde_json::json!([
+            {"tag_name": "v1.3.0-beta.1", "prerelease": false, "draft": false},
+            {"tag_name": "v1.2.0-beta.9", "prerelease": true, "draft": false}
+        ]);
+        assert_eq!(
+            select_release_for_channel(&releases, PiUpdateChannel::Beta).unwrap(),
+            "1.2.0-beta.9"
         );
     }
 

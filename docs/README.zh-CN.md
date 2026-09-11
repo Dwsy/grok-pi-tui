@@ -33,7 +33,13 @@ irm https://github.com/Dwsy/grok-pi/releases/latest/download/install.ps1 | iex
 | Windows x64 | `grok-pi-windows-x86_64.zip` |
 | Windows ARM64 | `grok-pi-windows-aarch64.zip` |
 
-默认路径：Unix → `~/.local/bin`；Windows → `%LOCALAPPDATA%\grok-pi\bin`。可用 `GROK_PI_INSTALL_DIR` 覆盖，用 `GROK_PI_VERSION=vX.Y.Z` 钉版本。
+默认路径：Unix → `~/.local/bin`；Windows → `%LOCALAPPDATA%\grok-pi\bin`。可用 `GROK_PI_INSTALL_DIR` 覆盖，安装指定 stable 或 beta 版本时，请配合对应 release tag 的安装器使用 `GROK_PI_VERSION=vX.Y.Z` 或 `GROK_PI_VERSION=vX.Y.Z-beta.N`。
+
+```bash
+# 示例：macOS / Linux 安装指定 beta
+curl -fsSL https://github.com/Dwsy/grok-pi/releases/download/v1.2.0-beta.1/install.sh | \
+  GROK_PI_VERSION=v1.2.0-beta.1 sh
+```
 
 Unix 会创建 `pi-grok` 符号链接（Windows 为 `pi-grok.exe` 硬链/副本）：
 
@@ -78,7 +84,11 @@ pi-grok
 grok-pi --help
 grok-pi update --check
 grok-pi update
+grok-pi update --channel beta    # 持久化到 ~/.grok-pi/config.toml
+grok-pi update --channel stable  # 切回 stable；默认即 stable
 ```
+
+更新通道是 grok-pi 产品隔离状态，持久化在 `~/.grok-pi/config.toml` 的 `[update].channel`。`stable` 为默认通道且永远不会选择 prerelease；`beta` 跟踪合法的 `-beta.N` GitHub prerelease，但当正式版 semver 更高时也会继续升级。`grok-pi --version` 会显示当前通道，`grok-pi update --check --json` 会返回解析后的 `channel`。
 
 ## 能力概览
 
@@ -95,7 +105,7 @@ grok-pi update
 | Rhai Workflow | 上游 `xai-workflow` 宿主（F2 **Pi workflows**）；`/workflow`、`/workflows`、`/create-workflow`；脚本目录 `~/.grok-pi/workflows` 与 `<repo>/.grok-pi/workflows` |
 | 会话流程 | Resume、树导航、标签、回顾、上下文查看和会话选择器 |
 | 资源管理 | Pi 扩展、skills、prompt 和主题的原生管理器 |
-| 更新 | 基于 GitHub Releases 的更新检查与安装 |
+| 更新 | 产品隔离的 `stable` / `beta` GitHub Release 通道；持久化到 `~/.grok-pi/config.toml`，后台检查、`grok-pi update`、`--check --json` 与目标 tag 安装器下载均感知通道 |
 
 详细行为和有意边界见[功能矩阵（中文）](FEATURE_MATRIX.zh-CN.md) / [English](FEATURE_MATRIX.md)。
 

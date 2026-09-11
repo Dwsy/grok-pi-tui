@@ -7,7 +7,7 @@
 #   $env:GROK_PI_VERSION='v0.0.1'; irm https://github.com/Dwsy/grok-pi/releases/download/v0.0.1/install.ps1 | iex
 #
 # Env overrides:
-#   $env:GROK_PI_VERSION = 'v0.0.1' | 'latest'
+#   $env:GROK_PI_VERSION = 'v0.0.1' | 'v0.0.2-beta.1' | 'latest'
 #   $env:GROK_PI_INSTALL_DIR = "$env:LOCALAPPDATA\grok-pi\bin"
 #   $env:GROK_PI_REPO = 'Dwsy/grok-pi'
 #   $env:GROK_PI_SKIP_PI_HINT = '1'
@@ -49,7 +49,7 @@ function Resolve-DownloadUrl([string]$Repository, [string]$Version, [string]$Ass
     if ($Version -match '^\d') {
         return "https://github.com/$Repository/releases/download/v$Version/$Asset"
     }
-    Fail "GROK_PI_VERSION must be 'latest', 'vX.Y.Z', or 'X.Y.Z' (got: $Version)."
+    Fail "GROK_PI_VERSION must be 'latest' or a semver tag/version (for example v1.2.3-beta.1; got: $Version)."
 }
 
 function Ensure-UserPathContains([string]$Dir) {

@@ -8,7 +8,7 @@
 #   curl -fsSL https://github.com/Dwsy/grok-pi/releases/download/v0.0.1/install.sh | GROK_PI_VERSION=v0.0.1 sh
 #
 # Env overrides:
-#   GROK_PI_VERSION=v0.0.1|latest     (default: latest)
+#   GROK_PI_VERSION=v0.0.1|v0.0.2-beta.1|latest  (default: latest)
 #   GROK_PI_INSTALL_DIR=$HOME/.local/bin
 #   GROK_PI_REPO=Dwsy/grok-pi
 #   GROK_PI_SKIP_PI_HINT=1            skip Pi host install hint
@@ -82,7 +82,7 @@ resolve_url() {
           printf '%s\n' "https://github.com/${REPOSITORY}/releases/download/v${VERSION}/${asset}"
           ;;
         *)
-          fail "GROK_PI_VERSION must be 'latest', 'vX.Y.Z', or 'X.Y.Z' (got: $VERSION)"
+          fail "GROK_PI_VERSION must be 'latest' or a semver tag/version (for example v1.2.3-beta.1; got: $VERSION)"
           ;;
       esac
       ;;

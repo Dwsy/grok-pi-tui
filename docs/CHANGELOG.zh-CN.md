@@ -9,6 +9,18 @@
 
 ## [Unreleased]
 
+## [0.1.10-beta.1] - 2026-09-11
+
+### 新增
+
+- **stable / beta 更新通道** — `grok-pi update --channel beta|stable` 现在会把产品隔离的通道持久化到 `~/.grok-pi/config.toml` 的 `[update].channel`；默认仍为 stable，`grok-pi --version` 会显示当前通道。
+- `grok-pi update --check --json` 现在输出解析后的 `channel`；beta 用户可跟踪合法的 `-beta.N` GitHub prerelease，同时在 semver 更高时继续升级到新的正式版。
+
+### 变更
+
+- 带 `-beta.` 的 release tag 现在由现有 6 平台 GitHub Actions 发布流程标记为 GitHub prerelease；stable tag 继续保持普通 release 行为。
+- 通道感知安装会从目标 release tag 精确获取 `install.sh` / `install.ps1`；安装器支持 `GROK_PI_VERSION=v1.2.0-beta.1` 这类 prerelease 固定版本。stable 更新发现永远不会选择 prerelease。
+
 ## [0.1.9] - 2026-09-08
 
 ### 新增

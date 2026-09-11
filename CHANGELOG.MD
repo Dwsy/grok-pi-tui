@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.10-beta.1] - 2026-09-11
+
+### Added
+
+- **Stable / beta update channels** — `grok-pi update --channel beta|stable` now persists the product-local channel in `~/.grok-pi/config.toml` under `[update].channel`; stable remains the default, and `grok-pi --version` shows the active channel.
+- `grok-pi update --check --json` now reports the resolved `channel`, and beta users can follow valid `-beta.N` GitHub prereleases while still advancing to a newer final release when semver makes it the newer target.
+
+### Changed
+
+- Release tags containing `-beta.` are published by the existing six-platform GitHub Actions release workflow as GitHub prereleases; stable tags keep the existing non-prerelease behavior.
+- Channel-aware installs fetch `install.sh` / `install.ps1` from the exact target release tag, and the installers accept pinned prerelease versions such as `GROK_PI_VERSION=v1.2.0-beta.1`. Stable update discovery never selects prereleases.
+
 ## [0.1.9] - 2026-09-08
 
 ### Added
