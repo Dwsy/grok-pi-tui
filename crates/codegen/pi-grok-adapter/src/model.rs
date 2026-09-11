@@ -1328,7 +1328,59 @@ pub fn parse_entries(value: &Value) -> Vec<PiReplayEntry> {
     cache.replay_entries()
 }
 
+/// Eval-v2-only nested host tool calls never enter Pi's model transcript; the
+/// extension persists each `start`/`update`/`end` projection as a Pi `custom`
+/// entry (appendEntry). The adapter renders them live from `entry_appended`;
+/// replay re-projects the terminal entry so the native tool cards also survive
+/// session resume. Shared with `pi_adapter::tools` to keep one wire contract.
+pub(crate) const EVAL_TOOL_UI_BRIDGE_TYPE: &str = "pi-grok-eval-tool/v1";
+
+fn eval_tool_bridge_entry(entry: &Value) -> bool {
+    string(entry, &["type"]) == Some("custom")
+        && string(entry, &["customType"]) == Some(EVAL_TOOL_UI_BRIDGE_TYPE)
+}
+
+/// Rebuild the native tool-card pair for one Eval-v2-only nested host call.
+///
+/// Only the terminal (`phase == "end"`) projection is replayed: it carries the
+/// final `args`/`result`/`isError`, so an aborted call never resurrects as a
+/// dangling in-progress card. This mirrors Codex's rollout policy, which
+/// persists completed code-mode tool items but treats begin/start as ephemeral.
+fn parse_eval_tool_bridge_history(entry: &Value) -> Option<Vec<PiHistoryItem>> {
+    let data = entry.get("data")?;
+    if data.get("version").and_then(Value::as_u64) != Some(1)
+        || data.get("phase").and_then(Value::as_str) != Some("end")
+    {
+        return None;
+    }
+    let id = string(data, &["toolCallId", "tool_call_id"])?.to_string();
+    let name = string(data, &["toolName", "tool_name", "name"])
+        .unwrap_or("Tool")
+        .to_string();
+    let arguments = data.get("args").or_else(|| data.get("input")).cloned();
+    let result = data.get("result").cloned().unwrap_or(Value::Null);
+    let (content, raw_output) = tool_result_payload(&result);
+    Some(vec![
+        PiHistoryItem::ToolStart {
+            id: id.clone(),
+            name: name.clone(),
+            arguments,
+            usage: None,
+        },
+        PiHistoryItem::ToolEnd {
+            id,
+            name,
+            content,
+            raw_output,
+            is_error: data.get("isError").and_then(Value::as_bool) == Some(true),
+        },
+    ])
+}
+
 fn replayable_entry(entry: &Value) -> bool {
+    if eval_tool_bridge_entry(entry) {
+        return true;
+    }
     match string(entry, &["type"]).unwrap_or_default() {
         "message" | "compaction" | "branch_summary" => true,
         "custom_message" => entry.get("display").and_then(Value::as_bool) != Some(false),
@@ -1341,7 +1393,15 @@ fn parse_replay_values<'a>(values: impl IntoIterator<Item = &'a Value>) -> Vec<P
     for (message_index, message) in values.into_iter().enumerate() {
         let timestamp_ms = extract_message_timestamp(message);
         let mut items = Vec::new();
-        parse_message(message, message_index, &mut items);
+        if eval_tool_bridge_entry(message) {
+            // Non-terminal phases carry no card on their own; the `end`
+            // projection below is the complete, self-contained record.
+            if let Some(mut bridge_items) = parse_eval_tool_bridge_history(message) {
+                items.append(&mut bridge_items);
+            }
+        } else {
+            parse_message(message, message_index, &mut items);
+        }
         for item in items {
             history.push(PiReplayEntry { item, timestamp_ms });
         }
@@ -1540,13 +1600,11 @@ fn parse_agent_content(value: &Value, output: &mut Vec<PiHistoryItem>) {
     }
 }
 
-fn parse_tool_result(value: &Value, output: &mut Vec<PiHistoryItem>) {
-    let Some(id) = string(value, &["toolCallId", "tool_call_id", "id"]) else {
-        return;
-    };
-    let name = string(value, &["toolName", "tool_name", "name"])
-        .unwrap_or("Tool")
-        .to_string();
+/// Split a Pi tool-result-shaped object (`{content, details?}`) into the typed
+/// replay content blocks and the `raw_output` payload the ACP projection
+/// normalizes. Shared by persisted `toolResult` messages and the Eval-v2-only
+/// nested-call bridge entries, whose `data.result` uses the same shape.
+fn tool_result_payload(value: &Value) -> (Vec<PiToolContent>, Option<Value>) {
     let mut content = Vec::new();
     if let Some(items) = value.get("content").and_then(Value::as_array) {
         for item in items {
@@ -1565,6 +1623,17 @@ fn parse_tool_result(value: &Value, output: &mut Vec<PiHistoryItem>) {
         .get("details")
         .cloned()
         .or_else(|| value.get("content").cloned());
+    (content, raw_output)
+}
+
+fn parse_tool_result(value: &Value, output: &mut Vec<PiHistoryItem>) {
+    let Some(id) = string(value, &["toolCallId", "tool_call_id", "id"]) else {
+        return;
+    };
+    let name = string(value, &["toolName", "tool_name", "name"])
+        .unwrap_or("Tool")
+        .to_string();
+    let (content, raw_output) = tool_result_payload(value);
     output.push(PiHistoryItem::ToolEnd {
         id: id.to_string(),
         name,

@@ -3,7 +3,7 @@ id: "2026-08-18-eval-bridge-v2-rlm-runtime"
 title: "Eval Bridge v2 与 RLM runtime"
 status: "in_progress"
 created: "2026-08-18"
-updated: "2026-08-19"
+updated: "2026-09-11"
 category: "adapter"
 tags: ["workhub", "grok-pi", "eval", "rlm", "omp", "agent-runtime", "tool-bridge"]
 ---
@@ -868,3 +868,4 @@ git diff --check
 - **2026-08-19**: 修复 eval-v2-only 的 host-tool 空目录：不再用 `--tools eval` 过滤 Pi registry；grok-pi 只在 host-owned eval-only policy 生效时向 bridge 标记模式，并由 extension 在 `session_start` 将顶层 active set 收敛到 `eval`。普通 v2 与显式 CLI tool policy 继续只允许 active tools；eval-only 下 Eval catalog 可见 registry 中仍被允许的工具，inactive nested call 绕过原生 `invokeTool` 的 active gate，改走 captured wrapped extension/core 路径并保留 Pi tool lifecycle hooks。
 - **2026-08-19**: 完成 eval-v2-only host-tool 修复的真实 Pi 运行时验证：Pi `0.84.x` + `3838-completions/ark-code-latest` 下，`session_start` 后顶层 `getActiveTools()` 为 `["eval"]`；Eval 内 `Object.keys(tool)` 可见 registry 中仍允许的 `read` 等工具，`await tool.read({path:"README.md", ...})` 成功返回文件内容。另以 `--exclude-tools read` 做反向探针，Eval catalog 不再包含 `read`，确认显式 CLI registry policy 仍保持权威。
 - **2026-08-21**: 按新需求扩展 Eval v2：新增 F2 单值 `pi_eval_v2_language = "js" | "py" | "all"`（默认 `js`、restart-required），恢复 v2 Python worker 并与 JS 共享 host RPC / store-load / skills / completion / task contract；`tools.describe(name)` 在 JS REPL 裸输出时深层展开 schema，不再出现 `[Object]`；Eval v2 复用 Bash 的统一 task API 与 Pager 原生 task status channel，支持显式 `is_background:true`、前台超过统一 max-wait 后原地自动转后台、`get_task_output` / `wait_tasks` / `kill_task`、output spill/truncation。`agent()` 仍保持 blocking leaf，`background=true` fail fast。
+- **2026-09-11**: 修复 eval-v2-only effects 展示无法跨 resume 持久化。live 路径本就把顶层 `eval` 块从 UI 隐藏、只投影 nested effects，但 history replay 缺两条对称逻辑：(1) `replayable_entry` 只接受 `message|compaction|branch_summary|custom_message`，直接丢弃 extension 用 `appendEntry` 落盘的 `pi-grok-eval-tool/v1` 条目，导致 nested tool 卡在重新打开后全部消失；(2) `replay_history_item` 没有 live 的 eval-v2-only 隐藏 guard，于是 resume 又把顶层 `eval` 当普通工具卡渲染出来。现在 replay 从终端 `phase=="end"` 条目重建 `ToolStart+ToolEnd`（只投影 completed，start/update 丢弃，与 Codex「只持久化 completed item」一致），并与 live 共用 `eval_v2_only_top_level_hidden` 谓词隐藏顶层 eval 卡；`tool_result_payload()` 抽出共享以消除与 `parse_tool_result` 的形状分叉。真实 session（`~/.pi/agent/sessions/--Users-dengwenyu-Dev-AI-pi-grok-build--`）核对确认：`pi-grok-eval-tool/v1` 条目确已落盘，`data` 含 `version/phase/toolCallId/toolName/args`，`end` 另有 `result/isError`，eval toolResult 的 `details.bridgeVersion == "v2"`，与实现一致。

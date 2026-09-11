@@ -1,5 +1,6 @@
 use super::*;
 use crate::btw_bridge::BtwHistoryEntry;
+use crate::pi_adapter::tools::eval_v2_only_top_level_hidden;
 
 impl PiAgent {
     /// Publish Pi-owned session metadata title. This is distinct from an
@@ -161,6 +162,11 @@ impl PiAgent {
                 arguments,
                 usage,
             } => {
+                // Suppress the top-level Eval card exactly like the live
+                // handlers, so resume shows only the replayed nested effects.
+                if eval_v2_only_top_level_hidden(self.eval_v2_only, &name) {
+                    return;
+                }
                 let arguments = normalize_tool_raw_input(&name, arguments);
                 if let Some(args) = arguments.clone() {
                     self.state.borrow_mut().tool_args.insert(id.clone(), args);
@@ -187,6 +193,11 @@ impl PiAgent {
                 raw_output,
                 is_error,
             } => {
+                // Suppress the top-level Eval card exactly like the live
+                // handlers, so resume shows only the replayed nested effects.
+                if eval_v2_only_top_level_hidden(self.eval_v2_only, &name) {
+                    return;
+                }
                 let mut raw = raw_output.unwrap_or(Value::Null);
                 // History often stores `details` as raw_output and the body in
                 // separate content blocks. Fold text into the payload so bash/read

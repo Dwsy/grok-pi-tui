@@ -1,6 +1,14 @@
 use super::*;
+use crate::model::EVAL_TOOL_UI_BRIDGE_TYPE;
 
-const EVAL_TOOL_UI_BRIDGE_TYPE: &str = "pi-grok-eval-tool/v1";
+/// In Eval-v2-only mode the top-level `eval` call stays model-visible but is
+/// never rendered as a native tool card; only its nested effects are. Live
+/// handlers and history replay share this predicate so a resumed turn matches
+/// the live one instead of resurrecting an Eval card. Kept in one place so the
+/// two paths cannot drift again.
+pub(super) fn eval_v2_only_top_level_hidden(eval_v2_only: bool, name: &str) -> bool {
+    eval_v2_only && name.eq_ignore_ascii_case("eval")
+}
 
 impl PiAgent {
     pub(super) async fn execute_bash(
@@ -96,7 +104,7 @@ impl PiAgent {
     pub(super) async fn handle_tool_start(&self, event: &Value) {
         let id = string(event, &["toolCallId", "id"]).unwrap_or("pi-tool");
         let name = string(event, &["toolName", "name"]).unwrap_or("Tool");
-        if self.eval_v2_only && name.eq_ignore_ascii_case("eval") {
+        if eval_v2_only_top_level_hidden(self.eval_v2_only, name) {
             return;
         }
         let args = normalize_tool_raw_input(
@@ -353,7 +361,7 @@ impl PiAgent {
             .cloned()
             .unwrap_or(Value::Null);
         let name = string(event, &["toolName", "name"]).unwrap_or_default();
-        if self.eval_v2_only && name.eq_ignore_ascii_case("eval") {
+        if eval_v2_only_top_level_hidden(self.eval_v2_only, name) {
             return;
         }
         let args = normalize_tool_raw_input(
@@ -442,7 +450,7 @@ impl PiAgent {
             acp::ToolCallStatus::Completed
         };
         let name = string(event, &["toolName", "name"]).unwrap_or_default();
-        if self.eval_v2_only && name.eq_ignore_ascii_case("eval") {
+        if eval_v2_only_top_level_hidden(self.eval_v2_only, name) {
             return;
         }
         let args = normalize_tool_raw_input(

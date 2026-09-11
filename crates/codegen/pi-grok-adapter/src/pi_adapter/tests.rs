@@ -589,3 +589,13 @@ fn compaction_events_project_to_native_session_updates() {
         "auto_compact_cancelled"
     );
 }
+
+#[test]
+fn eval_v2_only_hides_only_the_top_level_eval_card() {
+    use super::tools::eval_v2_only_top_level_hidden;
+    assert!(eval_v2_only_top_level_hidden(true, "eval"));
+    assert!(eval_v2_only_top_level_hidden(true, "EVAL"));
+    assert!(!eval_v2_only_top_level_hidden(false, "eval"));
+    assert!(!eval_v2_only_top_level_hidden(true, "read"));
+    assert!(!eval_v2_only_top_level_hidden(true, "get_task_output"));
+}

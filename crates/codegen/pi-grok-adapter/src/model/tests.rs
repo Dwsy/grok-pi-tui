@@ -204,6 +204,187 @@ fn entries_replay_preserves_messages_across_compaction() {
 }
 
 #[test]
+fn entries_replay_reprojects_eval_tool_bridge_cards() {
+    let items = parse_entries(&json!({
+        "entries": [
+            {
+                "type": "message",
+                "timestamp": "2026-07-01T00:00:01Z",
+                "message": { "role": "user", "content": "run eval" }
+            },
+            {
+                "type": "custom",
+                "customType": "pi-grok-eval-tool/v1",
+                "timestamp": "2026-07-01T00:00:02Z",
+                "data": {
+                    "version": 1,
+                    "phase": "start",
+                    "toolCallId": "eval-host-1",
+                    "toolName": "read",
+                    "args": { "path": "a.txt" }
+                }
+            },
+            {
+                "type": "custom",
+                "customType": "pi-grok-eval-tool/v1",
+                "timestamp": "2026-07-01T00:00:03Z",
+                "data": {
+                    "version": 1,
+                    "phase": "end",
+                    "toolCallId": "eval-host-1",
+                    "toolName": "read",
+                    "args": { "path": "a.txt" },
+                    "result": { "content": [{ "type": "text", "text": "file body" }] }
+                }
+            },
+            {
+                "type": "custom",
+                "customType": "other-extension/v1",
+                "data": { "phase": "end", "toolCallId": "x", "toolName": "ignored" }
+            }
+        ]
+    }));
+
+    assert_eq!(
+        items.len(),
+        3,
+        "only the terminal end projection becomes a card; other custom entries are dropped"
+    );
+    assert!(matches!(
+        items[0].item,
+        PiHistoryItem::UserText(ref text) if text == "run eval"
+    ));
+    match &items[1].item {
+        PiHistoryItem::ToolStart {
+            id,
+            name,
+            arguments,
+            ..
+        } => {
+            assert_eq!(id, "eval-host-1");
+            assert_eq!(name, "read");
+            assert_eq!(
+                arguments
+                    .as_ref()
+                    .and_then(|args| args.get("path"))
+                    .and_then(Value::as_str),
+                Some("a.txt")
+            );
+        }
+        other => panic!("expected replayed ToolStart, got {other:?}"),
+    }
+    match &items[2].item {
+        PiHistoryItem::ToolEnd {
+            id,
+            name,
+            content,
+            raw_output,
+            is_error,
+        } => {
+            assert_eq!(id, "eval-host-1");
+            assert_eq!(name, "read");
+            assert_eq!(content, &vec![PiToolContent::Text("file body".to_string())]);
+            assert_eq!(
+                raw_output,
+                &Some(json!([{ "type": "text", "text": "file body" }]))
+            );
+            assert!(!is_error);
+        }
+        other => panic!("expected replayed ToolEnd, got {other:?}"),
+    }
+    // Both replayed rows inherit the terminal entry's timestamp; the discarded
+    // `start`/`update` phases never contribute a card.
+    assert_eq!(items[1].timestamp_ms, Some(1_782_864_003_000));
+    assert_eq!(items[2].timestamp_ms, Some(1_782_864_003_000));
+}
+
+#[test]
+fn entries_replay_reprojects_eval_tool_bridge_error_and_image() {
+    let items = parse_entries(&json!({
+        "entries": [
+            {
+                "type": "custom",
+                "customType": "pi-grok-eval-tool/v1",
+                "timestamp": "2026-07-01T00:00:05Z",
+                "data": {
+                    "version": 1,
+                    "phase": "start",
+                    "toolCallId": "eval-host-err",
+                    "toolName": "bash",
+                    "args": { "command": "exit 1" }
+                }
+            },
+            {
+                "type": "custom",
+                "customType": "pi-grok-eval-tool/v1",
+                "timestamp": "2026-07-01T00:00:06Z",
+                "data": {
+                    "version": 1,
+                    "phase": "end",
+                    "toolCallId": "eval-host-err",
+                    "toolName": "bash",
+                    "args": { "command": "exit 1" },
+                    "result": { "content": [{ "type": "text", "text": "boom" }] },
+                    "isError": true
+                }
+            },
+            {
+                "type": "custom",
+                "customType": "pi-grok-eval-tool/v1",
+                "timestamp": "2026-07-01T00:00:07Z",
+                "data": {
+                    "version": 1,
+                    "phase": "end",
+                    "toolCallId": "eval-host-img",
+                    "toolName": "read",
+                    "args": { "path": "shot.png" },
+                    "result": {
+                        "content": [
+                            { "type": "text", "text": "screenshot" },
+                            { "type": "image", "data": "aGk=", "mimeType": "image/png" }
+                        ]
+                    }
+                }
+            }
+        ]
+    }));
+
+    assert_eq!(
+        items.len(),
+        4,
+        "each terminal entry replays a start/end pair"
+    );
+    match &items[1].item {
+        PiHistoryItem::ToolEnd {
+            id,
+            content,
+            is_error,
+            ..
+        } => {
+            assert_eq!(id, "eval-host-err");
+            assert!(is_error);
+            assert_eq!(content, &vec![PiToolContent::Text("boom".to_string())]);
+        }
+        other => panic!("expected replayed ToolEnd, got {other:?}"),
+    }
+    match &items[3].item {
+        PiHistoryItem::ToolEnd { content, .. } => {
+            assert_eq!(
+                content,
+                &vec![
+                    PiToolContent::Text("screenshot".to_string()),
+                    PiToolContent::Image {
+                        data: "aGk=".to_string(),
+                        mime_type: "image/png".to_string(),
+                    },
+                ]
+            );
+        }
+        other => panic!("expected replayed ToolEnd, got {other:?}"),
+    }
+}
+
+#[test]
 fn entries_replay_selects_only_the_active_parent_chain() {
     let items = parse_entries(&json!({
         "entries": [
