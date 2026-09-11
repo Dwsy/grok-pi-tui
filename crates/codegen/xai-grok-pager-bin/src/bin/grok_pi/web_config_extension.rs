@@ -80,11 +80,48 @@ pub(super) fn write_web_config_extension() -> Result<WebConfigExtension> {
         "ui.html",
         include_str!("../../../../../../extensions/pi-grok-web-config/web/index.html"),
     )?;
-    let catalog_path = write_source_file(
+    write_source_file(
         source_dir.path(),
-        "host-catalog.json",
-        &host_catalog_json(),
+        "styles.css",
+        include_str!("../../../../../../extensions/pi-grok-web-config/web/styles.css"),
     )?;
+    write_source_file(
+        source_dir.path(),
+        "app.js",
+        include_str!("../../../../../../extensions/pi-grok-web-config/web/app.js"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "ui-config.json",
+        include_str!("../../../../../../extensions/pi-grok-web-config/web/ui-config.json"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "i18n.json",
+        include_str!("../../../../../../extensions/pi-grok-web-config/web/i18n.json"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "models.js",
+        include_str!("../../../../../../extensions/pi-grok-web-config/web/models.js"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "resources.js",
+        include_str!("../../../../../../extensions/pi-grok-web-config/web/resources.js"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "host.js",
+        include_str!("../../../../../../extensions/pi-grok-web-config/web/host.js"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "settings.js",
+        include_str!("../../../../../../extensions/pi-grok-web-config/web/settings.js"),
+    )?;
+    let catalog_path =
+        write_source_file(source_dir.path(), "host-catalog.json", &host_catalog_json())?;
     Ok(WebConfigExtension {
         _source_dir: source_dir,
         source_path,
@@ -118,6 +155,14 @@ mod tests {
         config_store: String,
         server: String,
         ui: String,
+        styles: String,
+        app: String,
+        ui_config: String,
+        i18n: String,
+        models_ui: String,
+        resources_ui: String,
+        host_ui: String,
+        settings_ui: String,
         catalog: String,
     }
 
@@ -133,6 +178,14 @@ mod tests {
             config_store: read("config-store.ts"),
             server: read("server.ts"),
             ui: read("ui.html"),
+            styles: read("styles.css"),
+            app: read("app.js"),
+            ui_config: read("ui-config.json"),
+            i18n: read("i18n.json"),
+            models_ui: read("models.js"),
+            resources_ui: read("resources.js"),
+            host_ui: read("host.js"),
+            settings_ui: read("settings.js"),
             catalog: read("host-catalog.json"),
         };
         (extension, bundle)
@@ -152,22 +205,51 @@ mod tests {
         assert!(bundle.shared.contains("PI_GROK_WEB_CONFIG_UI"));
         assert!(bundle.server.contains("startWebConfigServer"));
         assert!(bundle.server.contains("x-pi-token"));
+        assert!(bundle.server.contains("styles.css"));
+        assert!(bundle.server.contains("app.js"));
+        assert!(bundle.server.contains("ui-config.json"));
+        assert!(bundle.server.contains("i18n.json"));
+        assert!(bundle.server.contains("models.js"));
+        assert!(bundle.server.contains("resources.js"));
+        assert!(bundle.server.contains("host.js"));
+        assert!(bundle.server.contains("settings.js"));
         assert!(bundle.config_store.contains("collectState"));
-        assert!(bundle.ui.contains("__PI_GROK_WEB_CONFIG_TOKEN__"));
+        assert!(bundle.ui.contains("__PI_GROK_WEB_CONFIG_STYLES__"));
+        assert!(bundle.ui.contains("__PI_GROK_WEB_CONFIG_APP__"));
+        assert!(bundle.styles.contains(".app-shell"));
+        assert!(bundle.app.contains("__PI_GROK_WEB_CONFIG_TOKEN__"));
+        assert!(bundle.app.contains("__PI_GROK_WEB_CONFIG_UI_CONFIG__"));
+        assert!(bundle.app.contains("__PI_GROK_WEB_CONFIG_I18N__"));
+        assert!(bundle.app.contains("__PI_GROK_WEB_CONFIG_MODELS__"));
+        assert!(bundle.app.contains("__PI_GROK_WEB_CONFIG_RESOURCES__"));
+        assert!(bundle.app.contains("__PI_GROK_WEB_CONFIG_HOST__"));
+        assert!(bundle.app.contains("__PI_GROK_WEB_CONFIG_SETTINGS__"));
+        let ui_config: serde_json::Value =
+            serde_json::from_str(&bundle.ui_config).expect("UI config is valid JSON");
+        assert!(ui_config["settings"]["quickToggles"].is_array());
+        assert!(ui_config["theme"]["modes"].is_array());
+        let i18n: serde_json::Value =
+            serde_json::from_str(&bundle.i18n).expect("i18n is valid JSON");
+        assert!(i18n["en"].is_object());
+        assert!(i18n["zh"].is_object());
+        assert!(bundle.models_ui.contains("renderModels"));
+        assert!(bundle.resources_ui.contains("renderResources"));
+        assert!(bundle.host_ui.contains("renderHost"));
+        assert!(bundle.settings_ui.contains("renderSettings"));
         // The F2 catalog mirrors the baked grok-pi.json manifests.
         let parsed: serde_json::Value =
             serde_json::from_str(&bundle.catalog).expect("host catalog is valid JSON");
         let sources = parsed.as_array().expect("catalog array");
         assert!(
-            sources
-                .iter()
-                .any(|item| item["source"]
-                    .as_str()
-                    .is_some_and(|value| value.contains("pi-grok-loop"))),
+            sources.iter().any(|item| item["source"]
+                .as_str()
+                .is_some_and(|value| value.contains("pi-grok-loop"))),
             "catalog must include the pi-grok-loop manifest"
         );
         assert!(
-            sources.iter().all(|item| item["manifest"]["settings"].is_array()),
+            sources
+                .iter()
+                .all(|item| item["manifest"]["settings"].is_array()),
             "every catalog entry carries a settings array"
         );
         assert_eq!(
@@ -178,7 +260,10 @@ mod tests {
             Some("ts")
         );
         assert_eq!(
-            extension.ui_path().extension().and_then(|value| value.to_str()),
+            extension
+                .ui_path()
+                .extension()
+                .and_then(|value| value.to_str()),
             Some("html")
         );
         assert!(extension.ui_path().exists());

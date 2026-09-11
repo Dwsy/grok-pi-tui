@@ -9,6 +9,13 @@
 
 ## [Unreleased]
 
+## [0.1.10-beta.2] - 2026-09-11
+
+### 变更
+
+- **浏览器配置 UI 模块化** — 注入式 Pi Web Config 配置台从单体 HTML 拆分为 CSS、主 app、i18n、UI 配置、models、resources、host settings 与 settings 模块，同时保持随机回环端口、token 安全边界与原生 host catalog 接线。
+- Web Config 的宿主注入与 server 校验现在会显式打包并验证这些模块化 UI 资源，包括 JSON 结构校验与 script/style marker 安全检查；相关实现与设计记录一并进入本版本。
+
 ## [0.1.10-beta.1] - 2026-09-11
 
 ### 新增

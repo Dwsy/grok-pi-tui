@@ -1,7 +1,7 @@
 # `/pi-config web` / `/pi-models web`：Pi 扩展托管的浏览器配置台
 
 日期：2026-09-08
-状态：已实现（待端到端人工验证）
+状态：已实现（源码与真实 `server.ts` 临时实例回归通过；待下一次正常构建后确认实际注入页）
 
 ## 目标
 
@@ -12,6 +12,43 @@
   Rust 侧不渲染、不编辑任何配置。
 - 随机端口（`listen(0)`），仅回环绑定，每次启动生成一次性 token。
 - 保留原生模态：不带参数时行为完全不变。
+
+## 2026-09-09 UI/UX 重构阶段
+
+### 目标
+
+- 保留现有模型、资源、F2、settings.json 全部能力与安全边界，不改配置所有权。
+- 重做页面信息架构：让“模型”“资源”“主机设置”“原始设置”各自有明确主任务、上下文与危险操作层级。
+- 去掉当前单文件里状态、API、渲染、表单、i18n、样式互相缠绕的结构；在不引入前端框架/依赖的前提下拆出清晰职责。
+- 改善响应式、键盘可达性、焦点、空状态、错误/保存反馈与编辑确认。
+- 以真实 `/pi-config web` 页面做浏览器回归，覆盖窄屏与主要编辑路径。
+
+### 验收标准
+
+- [x] `/pi-models web`：provider 搜索/选择、模型查看、切换当前、设默认、新增/编辑/删除语义保持可用。
+- [x] `/pi-config web`：extensions 增删、skills/prompts/themes 浏览与过滤保持可用。
+- [x] F2 设置：catalog 分区、标量编辑、restart 提示、只读嵌套表保持可用。
+- [x] settings.json：常用开关与原始 JSON 编辑、校验、保存状态保持可用。
+- [x] 页面在窄宽度下不横向溢出；语义控件、可见焦点、键盘操作可用。
+- [x] 前端结构不再把全部 CSS/HTML/JS 逻辑堆在一个 1250 行文件里；注入器完整物化新资源。
+- [x] 不运行 Cargo；使用针对性静态检查、TypeScript/Node 检查和真实浏览器交互验证本次改动。
+
+### 2026-09-09 验证记录
+
+- 前端拆为 `index.html`、`styles.css`、`app.js`、`models.js`、`resources.js`、`host.js`、`settings.js`，并以 `ui-config.json` / `i18n.json` 作为外部配置与文案 SSOT；页面职责不再堆在单文件。
+- 所有 JS 源片段通过 `node --check`；现有 Bun 对扩展入口完成 TypeScript 转译；服务端完整组装 web 源文件后无未解析 marker。
+- `rustfmt --check` 与限定范围 `git diff --check` 通过；本次未运行 Cargo，也未安装缺失的 `@types/node`。直接 `tsc` 因本机缺少该类型包只能停在环境依赖，改用已有 Bun 做无下载转译验证。
+- 使用真实 `server.ts` + 内存配置依赖启动临时 loopback 实例：未带 token 的 `/api/state` 为 401，带 token 为 200；最终 HTML 含完整 UI 且无组装 marker。
+- `agent-browser` 回归通过：新增 Provider（2→3）、切换当前模型到 `xai/grok-4`、把 OpenAI 设为默认、extension 删除/新增（33→32→33）、F2 bool 写入、Settings 快捷开关写入、非法 JSON 错误/dirty 状态、390px 宽度无横向溢出；浏览器错误列表为空。
+- 由于 Rust 侧通过 `include_str!` 烘焙这些源文件，当前已经运行的旧二进制不会热更新到新 UI；按本次“不运行 Cargo”的约束，实际注入页留到下一次正常构建/重启后确认。
+
+### 2026-09-09 JSON 配置与日夜模式
+
+- `ui-config.json` 统一声明页面标题键、资源类型与分页大小、快捷 Settings 项、语言 storage key，以及主题 storage key / 模式顺序；JS 只消费该配置，不再内嵌这些项目常量。
+- `i18n.json` 作为中英文文案唯一来源；旧 `i18n.js` 已移除。快捷 Settings 标题/说明、主题文案和校验错误也全部使用 i18n key。
+- `server.ts` 启动时解析并校验两个 JSON 必须是对象，再 `JSON.stringify` 后安全内联到单页脚本；仍不增加任何静态资源 HTTP 路由，浏览器拿到的仍是一份 HTML。
+- 主题支持 `system` / `light` / `dark` 三态，存入 `piWebTheme`。`system` 跟随 `prefers-color-scheme`；显式 Day/Night 通过 `data-theme` 覆盖系统主题，并沿用同一套 CSS token。
+- `agent-browser` + 真实 `server.ts` 临时实例回归：最终 HTML 同时含 `UI_CONFIG` / `I18N` 且 marker=0；资源页按 JSON 的 24 条分页；System→Day→Night 切换后分别得到无 `data-theme` / `light` / `dark`，Day 背景 `#f5f6f8`、Night 背景 `#111318`；Night reload 后保持；切换中文后主题文案变为“主题 · 夜间”，6 个快捷 Settings 文案均来自 JSON；390px 无横向溢出且浏览器错误为空。
 
 ## 架构
 
@@ -86,7 +123,7 @@ Pi 侧注册同名命令会被内建注册表遮蔽。因此扩展使用独立�
 - 401（丢了 token 的刷新）与启动加载失败改为整页 fatal 视图并给出可行动提示。
 - 表单：Enter 提交 / Esc 关闭；清空可选字段现在会真正删除键（含 cost 全空时删除）。
 - token 列格式化（200000 → 200k）；provider 列表标注 current/default；
-  资源页与 F2 页各加过滤框；hash 用 `history.replaceState`。
+  资源页与 F2 页各加过滤框；hash 保留深链接并响应 `hashchange`。
 
 ## 已知取舍
 

@@ -1,0 +1,36 @@
+{
+  "pages": {
+    "models": ["page_models_kicker", "page_models_title", "page_models_description"],
+    "resources": ["page_resources_kicker", "page_resources_title", "page_resources_description"],
+    "host": ["page_host_kicker", "page_host_title", "page_host_description"],
+    "settings": ["page_settings_kicker", "page_settings_title", "page_settings_description"]
+  },
+  "resources": {
+    "pageSize": 24,
+    "kinds": [
+      { "key": "extensions", "labelKey": "res_extensions" },
+      { "key": "skills", "labelKey": "res_skills" },
+      { "key": "prompts", "labelKey": "res_prompts" },
+      { "key": "themes", "labelKey": "res_themes" }
+    ]
+  },
+  "settings": {
+    "quickToggles": [
+      { "key": "hideThinkingBlock", "labelKey": "setting_hide_thinking", "descriptionKey": "setting_hide_thinking_desc" },
+      { "key": "enableSkillCommands", "labelKey": "setting_skill_commands", "descriptionKey": "setting_skill_commands_desc" },
+      { "key": "quietStartup", "labelKey": "setting_quiet_startup", "descriptionKey": "setting_quiet_startup_desc" },
+      { "key": "collapseChangelog", "labelKey": "setting_collapse_changelog", "descriptionKey": "setting_collapse_changelog_desc" },
+      { "key": "enableInstallTelemetry", "labelKey": "setting_install_telemetry", "descriptionKey": "setting_install_telemetry_desc" },
+      { "key": "enableAnalytics", "labelKey": "setting_analytics", "descriptionKey": "setting_analytics_desc" }
+    ]
+  },
+  "language": {
+    "storageKey": "piWebLang",
+    "supported": ["en", "zh"]
+  },
+  "theme": {
+    "storageKey": "piWebTheme",
+    "default": "system",
+    "modes": ["system", "light", "dark"]
+  }
+}

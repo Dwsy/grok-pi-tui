@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.10-beta.2] - 2026-09-11
+
+### Changed
+
+- **Browser config UI modularization** — the injected Pi web-config console now assembles its HTML from separate CSS, app, i18n, UI-config, models, resources, host-settings, and settings modules instead of one monolithic page, while preserving the loopback/token security boundary and native host catalog wiring.
+- Web-config host injection and server validation now explicitly bundle and validate the modular UI assets, including JSON shape checks and script/style marker safety checks; related implementation and design notes are included in the release.
+
 ## [0.1.10-beta.1] - 2026-09-11
 
 ### Added

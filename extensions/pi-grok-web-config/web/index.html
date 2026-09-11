@@ -3,1247 +3,198 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="color-scheme" content="light dark" />
 		<title>Pi config · grok-pi</title>
-		<style>
-			:root {
-				--bg: #14161a;
-				--bg-soft: #1b1e24;
-				--bg-hover: #23272f;
-				--line: #2c313a;
-				--fg: #e6e8ec;
-				--fg-dim: #9aa3b2;
-				--accent: #6ea8fe;
-				--ok: #4ec9a0;
-				--warn: #e0b341;
-				--danger: #f2777a;
-				--radius: 8px;
-				color-scheme: dark;
-			}
-			* { box-sizing: border-box; }
-			body {
-				margin: 0;
-				background: var(--bg);
-				color: var(--fg);
-				font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-			}
-			code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-			.topbar {
-				display: flex; align-items: center; justify-content: space-between;
-				gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--line);
-				background: var(--bg-soft); position: sticky; top: 0; z-index: 10;
-			}
-			.brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-			.brand strong { font-size: 15px; }
-			.hint { color: var(--fg-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-			.topbar-actions { display: flex; gap: 8px; flex: none; align-items: center; }
-			.btn {
-				background: var(--bg-hover); color: var(--fg); border: 1px solid var(--line);
-				border-radius: 6px; padding: 5px 10px; font-size: 13px; cursor: pointer;
-			}
-			.btn:hover { border-color: #3a414d; }
-			.btn.primary { background: #2b4a7d; border-color: #35578f; }
-			.btn.danger { color: var(--danger); }
-			.btn.ghost { background: transparent; }
-			.btn:disabled { opacity: 0.45; cursor: default; }
-			.tabs { display: flex; gap: 4px; padding: 8px 16px 0; border-bottom: 1px solid var(--line); }
-			.tab {
-				background: transparent; border: 1px solid transparent; border-bottom: none;
-				color: var(--fg-dim); padding: 7px 14px; border-radius: 6px 6px 0 0; cursor: pointer; font-size: 13px;
-			}
-			.tab.active { background: var(--bg-soft); color: var(--fg); border-color: var(--line); }
-			main { padding: 16px; }
-			.hidden { display: none !important; }
-			.split { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
-			@media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
-			.card { background: var(--bg-soft); border: 1px solid var(--line); border-radius: var(--radius); }
-			.card.warn-card { border-color: #5a4a20; }
-			.card-head {
-				display: flex; align-items: center; justify-content: space-between; gap: 8px;
-				padding: 10px 12px; border-bottom: 1px solid var(--line);
-			}
-			.card-head h2, .card-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
-			.card-body { padding: 12px; }
-			.pane-head { display: flex; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); }
-			.list { list-style: none; margin: 0; padding: 0; max-height: 70vh; overflow: auto; }
-			.list li { border-bottom: 1px solid var(--line); }
-			.list button {
-				width: 100%; text-align: left; background: transparent; border: none; color: var(--fg);
-				padding: 9px 12px; cursor: pointer; display: flex; flex-direction: column; gap: 2px;
-			}
-			.list button:hover { background: var(--bg-hover); }
-			.list button.active { background: var(--bg-hover); box-shadow: inset 2px 0 0 var(--accent); }
-			.row { display: flex; align-items: center; gap: 8px; }
-			.row.wrap { flex-wrap: wrap; }
-			.spread { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-			.badge {
-				font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line);
-				color: var(--fg-dim); white-space: nowrap;
-			}
-			.badge.ok { color: var(--ok); border-color: #2c5a48; }
-			.badge.warn { color: var(--warn); border-color: #5a4a20; }
-			.badge.accent { color: var(--accent); border-color: #33507e; }
-			.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-dim); flex: none; }
-			.dot.ok { background: var(--ok); }
-			.dot.warn { background: var(--warn); }
-			table { width: 100%; border-collapse: collapse; font-size: 13px; }
-			th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
-			th { color: var(--fg-dim); font-weight: 500; font-size: 12px; }
-			tbody tr:hover { background: var(--bg-hover); }
-			input[type="text"], input[type="number"], input[type="password"], select, textarea {
-				background: var(--bg); color: var(--fg); border: 1px solid var(--line);
-				border-radius: 6px; padding: 5px 8px; font-size: 13px; width: 100%;
-				font-family: inherit;
-			}
-			textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
-			input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
-			label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--fg-dim); }
-			.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
-			.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg); }
-			.check input { width: auto; }
-			.muted { color: var(--fg-dim); }
-			.small { font-size: 12px; }
-			.stack { display: flex; flex-direction: column; gap: 12px; }
-			.host-row {
-				display: grid; grid-template-columns: minmax(180px, 1fr) auto; gap: 12px;
-				padding: 10px 0; border-bottom: 1px solid var(--line); align-items: start;
-			}
-			.host-row:last-child { border-bottom: none; }
-			.host-value { display: flex; align-items: center; gap: 8px; justify-content: flex-end; min-width: 160px; }
-			.host-value input[type="text"], .host-value input[type="number"] { width: 200px; }
-			.toast {
-				position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
-				background: var(--bg-hover); border: 1px solid var(--line); color: var(--fg);
-				padding: 8px 14px; border-radius: 999px; font-size: 13px; z-index: 100;
-				box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4); max-width: 80vw;
-			}
-			.toast.error { border-color: #6b3033; color: #ffc9cb; }
-			.modal-backdrop {
-				position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); z-index: 50;
-				display: flex; align-items: center; justify-content: center; padding: 24px;
-			}
-			.modal {
-				background: var(--bg-soft); border: 1px solid var(--line); border-radius: var(--radius);
-				width: min(640px, 100%); max-height: 90vh; overflow: auto;
-			}
-			.modal footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px; }
-			.path { font-size: 11px; color: var(--fg-dim); word-break: break-all; }
-		</style>
+		<style>__PI_GROK_WEB_CONFIG_STYLES__</style>
 	</head>
 	<body>
-		<header class="topbar">
-			<div class="brand">
-				<strong>Pi config</strong>
-				<span class="hint mono" id="meta"></span>
-			</div>
-			<div class="topbar-actions">
-				<button class="btn ghost" id="btn-lang"></button>
-				<button class="btn" id="btn-refresh" data-i18n="refresh"></button>
-				<button class="btn" id="btn-reload" data-i18n="reload_pi"></button>
-				<button class="btn danger" id="btn-stop" data-i18n="stop_server"></button>
-			</div>
-		</header>
-
-		<nav class="tabs" id="tabs">
-			<button class="tab" data-tab="models" data-i18n="tab_models"></button>
-			<button class="tab" data-tab="resources" data-i18n="tab_resources"></button>
-			<button class="tab" data-tab="host" data-i18n="tab_host"></button>
-			<button class="tab" data-tab="settings" data-i18n="tab_settings"></button>
-		</nav>
-
-		<main>
-			<section class="panel hidden" id="panel-models">
-				<div id="models-banner" class="hidden"></div>
-				<div class="split">
-					<aside class="card">
-						<div class="pane-head">
-							<input type="text" id="model-search" data-i18n-placeholder="search_providers" />
-							<button class="btn primary" id="btn-add-provider" data-i18n="add_provider"></button>
-						</div>
-						<ul class="list" id="provider-list"></ul>
-					</aside>
-					<div class="card">
-						<div class="card-head">
-							<h2 id="provider-title"></h2>
-							<div class="row" id="provider-actions"></div>
-						</div>
-						<div class="card-body" id="provider-detail"></div>
+		<div class="app-shell">
+			<aside class="sidebar" aria-label="Pi config">
+				<div class="brand-block">
+					<div class="brand-mark" aria-hidden="true">Pi</div>
+					<div class="brand-copy">
+						<strong>Pi config</strong>
+						<span id="meta-model">grok-pi</span>
 					</div>
 				</div>
-			</section>
 
-			<section class="panel hidden" id="panel-resources">
-				<div id="resources-banner" class="hidden"></div>
-				<div class="stack" id="resources-body"></div>
-			</section>
+				<nav class="section-nav" id="tabs" aria-label="Configuration sections">
+					<button class="nav-item" type="button" data-tab="models">
+						<span data-i18n="tab_models"></span><span class="nav-count" id="nav-models-count">—</span>
+					</button>
+					<button class="nav-item" type="button" data-tab="resources">
+						<span data-i18n="tab_resources"></span><span class="nav-count" id="nav-resources-count">—</span>
+					</button>
+					<button class="nav-item" type="button" data-tab="host">
+						<span data-i18n="tab_host"></span><span class="nav-count" id="nav-host-count">—</span>
+					</button>
+					<button class="nav-item" type="button" data-tab="settings">
+						<span data-i18n="tab_settings"></span><span class="nav-count" id="nav-settings-count">—</span>
+					</button>
+				</nav>
 
-			<section class="panel hidden" id="panel-host">
-				<div id="host-banner" class="hidden"></div>
-				<div class="stack" id="host-body"></div>
-			</section>
+				<div class="sidebar-meta">
+					<div class="meta-row"><span data-i18n="workspace_label"></span><code id="meta-workspace">—</code></div>
+					<div class="meta-row"><span data-i18n="config_label"></span><code id="meta-config">—</code></div>
+				</div>
 
-			<section class="panel hidden" id="panel-settings">
-				<div class="card">
-					<div class="card-head">
-						<h2>settings.json</h2>
-						<div class="row">
-							<span class="badge" id="settings-state"></span>
-							<button class="btn" id="btn-settings-validate" data-i18n="validate"></button>
-							<button class="btn primary" id="btn-settings-save" data-i18n="save_reload"></button>
+				<div class="sidebar-footer">
+					<button class="btn quiet" type="button" id="btn-theme"></button>
+					<button class="btn quiet" type="button" id="btn-lang"></button>
+					<details class="service-menu">
+						<summary data-i18n="service_actions"></summary>
+						<div class="service-actions">
+							<button class="btn quiet" type="button" id="btn-reload" data-i18n="reload_pi"></button>
+							<button class="btn danger quiet" type="button" id="btn-stop" data-i18n="stop_server"></button>
 						</div>
+					</details>
+				</div>
+			</aside>
+
+			<div class="workspace">
+				<header class="pagebar">
+					<div class="page-copy">
+						<p class="eyebrow" id="page-kicker"></p>
+						<h1 id="page-title"></h1>
+						<p class="page-description" id="page-description"></p>
 					</div>
-					<div class="card-body stack">
+					<div class="page-actions">
+						<span class="sync-state" id="sync-state" aria-live="polite"></span>
+						<button class="btn" type="button" id="btn-refresh" data-i18n="refresh"></button>
+					</div>
+				</header>
+
+				<div class="status-banner hidden" id="global-status" role="status" aria-live="polite"></div>
+
+				<main id="main-content">
+					<section class="panel hidden" id="panel-models" aria-labelledby="page-title">
+						<div id="models-banner" class="hidden"></div>
+						<div class="models-layout">
+							<aside class="surface provider-pane">
+								<div class="surface-header compact">
+									<label class="search-field">
+										<span class="sr-only" data-i18n="search_providers"></span>
+										<input type="search" id="model-search" autocomplete="off" data-i18n-placeholder="search_providers" />
+									</label>
+									<button class="btn primary" type="button" id="btn-add-provider" data-i18n="add_provider"></button>
+								</div>
+								<div class="provider-summary" id="provider-summary"></div>
+								<ul class="provider-list" id="provider-list"></ul>
+							</aside>
+
+							<section class="surface provider-detail-shell">
+								<header class="surface-header">
+									<div class="surface-title-group">
+										<p class="eyebrow" data-i18n="provider_details"></p>
+										<h2 id="provider-title">Provider</h2>
+									</div>
+									<div class="button-row" id="provider-actions"></div>
+								</header>
+								<div class="surface-body" id="provider-detail"></div>
+							</section>
+						</div>
+					</section>
+
+					<section class="panel hidden" id="panel-resources" aria-labelledby="page-title">
+						<div id="resources-banner" class="hidden"></div>
+						<div class="metric-grid" id="resource-stats"></div>
+						<div class="surface resource-browser">
+							<div class="surface-header resource-toolbar">
+								<div class="segmented" id="resource-kinds" aria-label="Resource type"></div>
+								<label class="search-field resource-search">
+									<span class="sr-only" data-i18n="res_filter"></span>
+									<input type="search" id="resource-filter" autocomplete="off" data-i18n-placeholder="res_filter" />
+								</label>
+							</div>
+							<div class="surface-body" id="resources-body"></div>
+						</div>
+					</section>
+
+					<section class="panel hidden" id="panel-host" aria-labelledby="page-title">
+						<div id="host-banner" class="hidden"></div>
+						<div class="surface">
+							<div class="surface-header resource-toolbar">
+								<div class="surface-title-group">
+									<p class="eyebrow">config.toml</p>
+									<h2 data-i18n="host_registered_settings"></h2>
+								</div>
+								<label class="search-field resource-search">
+									<span class="sr-only" data-i18n="host_filter"></span>
+									<input type="search" id="host-filter" autocomplete="off" data-i18n-placeholder="host_filter" />
+								</label>
+							</div>
+							<div class="host-section-nav" id="host-section-nav"></div>
+						</div>
+						<div class="host-sections" id="host-body"></div>
+					</section>
+
+					<section class="panel hidden" id="panel-settings" aria-labelledby="page-title">
 						<div id="settings-banner" class="hidden"></div>
-						<div class="grid" id="settings-toggles"></div>
-						<label class="field">
-							<span data-i18n="raw_json"></span>
-							<textarea id="settings-json" rows="22" spellcheck="false"></textarea>
-						</label>
-						<div class="path mono" id="settings-path"></div>
+						<div class="settings-grid">
+							<section class="surface">
+								<header class="surface-header">
+									<div class="surface-title-group">
+										<p class="eyebrow" data-i18n="common_settings"></p>
+										<h2 data-i18n="quick_settings"></h2>
+									</div>
+								</header>
+								<div class="surface-body settings-toggles" id="settings-toggles"></div>
+							</section>
+
+							<section class="surface raw-settings-card">
+								<details id="raw-settings-details">
+									<summary class="raw-summary">
+										<span>
+											<strong data-i18n="raw_json"></strong>
+											<small data-i18n="raw_json_hint"></small>
+										</span>
+										<span class="state-badge" id="settings-state"></span>
+									</summary>
+									<div class="raw-settings-body">
+										<textarea id="settings-json" rows="22" spellcheck="false" aria-label="settings.json"></textarea>
+										<div class="raw-settings-footer">
+											<code class="path" id="settings-path"></code>
+											<div class="button-row">
+												<button class="btn" type="button" id="btn-settings-validate" data-i18n="validate"></button>
+												<button class="btn primary" type="button" id="btn-settings-save" data-i18n="save_reload"></button>
+											</div>
+										</div>
+									</div>
+								</details>
+							</section>
+						</div>
+					</section>
+				</main>
+			</div>
+		</div>
+
+		<dialog class="editor-dialog" id="editor-dialog">
+			<form id="editor-form">
+				<header class="dialog-header">
+					<div>
+						<p class="eyebrow" data-i18n="edit_configuration"></p>
+						<h2 id="editor-title"></h2>
+						<p class="dialog-description" id="editor-description"></p>
 					</div>
-				</div>
-			</section>
-		</main>
-
-		<div class="toast hidden" id="toast"></div>
-		<div id="modal-root"></div>
-
-		<script>
-			// ── i18n (zh / en, auto-detected, override persisted) ────────
-			const I18N = {
-				en: {
-					refresh: "Refresh", reload_pi: "Reload Pi", stop_server: "Stop server",
-					tab_models: "Models", tab_resources: "Resources", tab_host: "F2 Settings", tab_settings: "Settings",
-					search_providers: "Search providers / models", add_provider: "+ Provider",
-					no_provider_match: "No provider matches.", pick_provider: "Select a provider, or add one.",
-					edit: "Edit", delete: "Delete", use: "Use", current: "current", set_default: "Set default", is_default: "default",
-					add_model: "+ Model", models_count: "Models ({n})", no_models: "No models yet.",
-					auth_configured: "auth: {what}", auth_missing: "auth: not configured",
-					api_badge: "api: {what}", no_baseurl: "no baseUrl", headers_badge: "headers: {n}",
-					overrides_badge: "modelOverrides: {keys}",
-					cancel: "Cancel", save: "Save", validate: "Validate", save_reload: "Save & reload",
-					edit_provider: "Edit {id}", add_provider_title: "Add provider",
-					edit_model: "Edit {id}", add_model_title: "Add model to {provider}",
-					f_id: "provider id", f_name: "name", f_baseurl: "baseUrl", f_api: "api",
-					f_apikey: "apiKey (use $ENV_VAR)", f_authheader: "send Authorization header",
-					f_model_id: "model id", f_ctx: "contextWindow", f_maxtokens: "maxTokens",
-					f_reasoning: "reasoning", f_images: "accepts images",
-					f_cost_input: "cost / input", f_cost_output: "cost / output",
-					f_cost_cache_read: "cost / cacheRead", f_cost_cache_write: "cost / cacheWrite",
-					res_extensions: "Extensions ({n})", res_skills: "Skills ({n})",
-					res_prompts: "Prompt templates ({n})", res_themes: "Themes ({n})",
-					res_hint: "settings.json `extensions` + Pi CLI paths",
-					res_filter: "Filter resources", add: "Add", remove: "Remove", res_none: "None.",
-					res_scan_warning: "Resource scan warning: {error}",
-					settings_saved: "saved", settings_unsaved: "unsaved", raw_json: "Raw JSON",
-					host_config_path: "config.toml", host_filter: "Filter settings",
-					host_restart: "restart", host_section_other: "Other [ui] keys",
-					host_readonly_tables: "Nested [ui.*] tables (read-only)",
-					host_error_banner: "config.toml could not be read — editing is disabled: {error}",
-					host_saved: "{key} saved", host_restart_hint: "restart grok-pi to apply",
-					banner_models: "models.json failed to parse — saving is disabled until the file is fixed: {error}",
-					banner_settings: "settings.json failed to parse — saving is disabled until the file is fixed: {error}",
-					toast_refreshed: "Refreshed", toast_pi_reloaded: "Pi reloaded",
-					toast_now_using: "Now using {provider}/{model}",
-					toast_default_set: "Default model set to {provider}/{model}",
-					toast_deleted_provider: "Deleted provider {id}", toast_deleted_model: "Deleted {provider}/{model}",
-					toast_saved_provider: "Saved provider {id}", toast_saved_model: "Saved {provider}/{model}",
-					toast_valid: "Valid JSON", toast_settings_saved: "settings.json saved and Pi reloaded",
-					toast_key_set: "{key} = {value}", toast_added: "Added to {key}", toast_removed: "Removed from {key}",
-					toast_already: "Already configured",
-					toast_host_saved: "{key} saved", toast_host_saved_restart: "{key} saved — restart grok-pi to apply",
-					confirm_delete_provider: "Delete provider \"{id}\" from models.json?",
-					confirm_delete_model: "Delete model \"{id}\"?",
-					err_provider_id: "provider id is required", err_provider_exists: "provider {id} already exists",
-					err_model_id: "model id is required", err_settings_empty: "settings.json is empty",
-					fatal_title: "Pi web config unavailable",
-					fatal_401: "Unauthorized. Open the URL printed in grok-pi (it contains ?token=…).",
-					fatal_load: "Failed to load state: {error}",
-					stopped: "Server stopped. Run /pi-config web or /pi-models web in grok-pi to start it again.",
-					lang_label: "中文",
-				},
-				zh: {
-					refresh: "刷新", reload_pi: "重载 Pi", stop_server: "停止服务",
-					tab_models: "模型", tab_resources: "资源", tab_host: "F2 设置", tab_settings: "设置",
-					search_providers: "搜索 provider / 模型", add_provider: "+ Provider",
-					no_provider_match: "没有匹配的 provider。", pick_provider: "选择一个 provider，或新增一个。",
-					edit: "编辑", delete: "删除", use: "使用", current: "当前", set_default: "设为默认", is_default: "默认",
-					add_model: "+ 模型", models_count: "模型（{n}）", no_models: "暂无模型。",
-					auth_configured: "鉴权：{what}", auth_missing: "鉴权：未配置",
-					api_badge: "api：{what}", no_baseurl: "无 baseUrl", headers_badge: "headers：{n}",
-					overrides_badge: "modelOverrides：{keys}",
-					cancel: "取消", save: "保存", validate: "校验", save_reload: "保存并重载",
-					edit_provider: "编辑 {id}", add_provider_title: "新增 provider",
-					edit_model: "编辑 {id}", add_model_title: "向 {provider} 添加模型",
-					f_id: "provider id", f_name: "名称", f_baseurl: "baseUrl", f_api: "api",
-					f_apikey: "apiKey（建议用 $ENV_VAR）", f_authheader: "发送 Authorization 头",
-					f_model_id: "模型 id", f_ctx: "contextWindow", f_maxtokens: "maxTokens",
-					f_reasoning: "reasoning", f_images: "支持图片输入",
-					f_cost_input: "cost / input", f_cost_output: "cost / output",
-					f_cost_cache_read: "cost / cacheRead", f_cost_cache_write: "cost / cacheWrite",
-					res_extensions: "扩展（{n}）", res_skills: "Skills（{n}）",
-					res_prompts: "提示词模板（{n}）", res_themes: "主题（{n}）",
-					res_hint: "settings.json 的 `extensions` + Pi CLI 路径",
-					res_filter: "过滤资源", add: "添加", remove: "移除", res_none: "无。",
-					res_scan_warning: "资源扫描警告：{error}",
-					settings_saved: "已保存", settings_unsaved: "未保存", raw_json: "原始 JSON",
-					host_config_path: "config.toml", host_filter: "过滤设置项",
-					host_restart: "需重启", host_section_other: "其他 [ui] 键",
-					host_readonly_tables: "嵌套 [ui.*] 表（只读）",
-					host_error_banner: "config.toml 读取失败——已禁用编辑：{error}",
-					host_saved: "{key} 已保存", host_restart_hint: "重启 grok-pi 后生效",
-					banner_models: "models.json 解析失败——修复文件前已禁用保存：{error}",
-					banner_settings: "settings.json 解析失败——修复文件前已禁用保存：{error}",
-					toast_refreshed: "已刷新", toast_pi_reloaded: "Pi 已重载",
-					toast_now_using: "已切换到 {provider}/{model}",
-					toast_default_set: "默认模型已设为 {provider}/{model}",
-					toast_deleted_provider: "已删除 provider {id}", toast_deleted_model: "已删除 {provider}/{model}",
-					toast_saved_provider: "已保存 provider {id}", toast_saved_model: "已保存 {provider}/{model}",
-					toast_valid: "JSON 有效", toast_settings_saved: "settings.json 已保存，Pi 已重载",
-					toast_key_set: "{key} = {value}", toast_added: "已添加到 {key}", toast_removed: "已从 {key} 移除",
-					toast_already: "已在配置中",
-					toast_host_saved: "{key} 已保存", toast_host_saved_restart: "{key} 已保存——重启 grok-pi 后生效",
-					confirm_delete_provider: "确定从 models.json 删除 provider“{id}”吗？",
-					confirm_delete_model: "确定删除模型“{id}”吗？",
-					err_provider_id: "provider id 不能为空", err_provider_exists: "provider {id} 已存在",
-					err_model_id: "模型 id 不能为空", err_settings_empty: "settings.json 为空",
-					fatal_title: "Pi web 配置台不可用",
-					fatal_401: "未授权。请打开 grok-pi 输出的 URL（包含 ?token=…）。",
-					fatal_load: "加载状态失败：{error}",
-					stopped: "服务已停止。在 grok-pi 中重新运行 /pi-config web 或 /pi-models web 即可再次启动。",
-					lang_label: "English",
-				},
-			};
-
-			function detectLang() {
-				const stored = localStorage.getItem("piWebLang");
-				if (stored === "zh" || stored === "en") return stored;
-				return (navigator.language || "en").toLowerCase().startsWith("zh") ? "zh" : "en";
-			}
-			let lang = detectLang();
-			function t(key, vars) {
-				let text = I18N[lang][key] ?? I18N.en[key] ?? key;
-				if (vars) {
-					for (const [name, value] of Object.entries(vars)) {
-						text = text.replaceAll(`{${name}}`, String(value));
-					}
-				}
-				return text;
-			}
-			function applyI18n() {
-				document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
-				document.getElementById("btn-lang").textContent = t("lang_label");
-				for (const node of document.querySelectorAll("[data-i18n]")) {
-					node.textContent = t(node.dataset.i18n);
-				}
-				for (const node of document.querySelectorAll("[data-i18n-placeholder]")) {
-					node.placeholder = t(node.dataset.i18nPlaceholder);
-				}
-			}
-
-			// ── DOM helpers ───────────────────────────────────────────────
-			const INJECTED_TOKEN = "__PI_GROK_WEB_CONFIG_TOKEN__";
-			const TOKEN = INJECTED_TOKEN.startsWith("__PI_GROK")
-				? new URLSearchParams(location.search).get("token") || ""
-				: INJECTED_TOKEN;
-
-			function el(tag, attrs, children) {
-				const node = document.createElement(tag);
-				for (const [key, value] of Object.entries(attrs || {})) {
-					if (value === undefined || value === null || value === false) continue;
-					if (key === "class") node.className = value;
-					else if (key === "text") node.textContent = value;
-					else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
-					else if (key === "checked" || key === "disabled") node[key] = true;
-					else node.setAttribute(key, String(value));
-				}
-				for (const child of [].concat(children || [])) {
-					if (child === null || child === undefined || child === false) continue;
-					node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
-				}
-				return node;
-			}
-
-			let toastTimer = null;
-			function toast(message, isError) {
-				const node = document.getElementById("toast");
-				node.textContent = message;
-				node.classList.toggle("error", Boolean(isError));
-				node.classList.remove("hidden");
-				clearTimeout(toastTimer);
-				toastTimer = setTimeout(() => node.classList.add("hidden"), 4000);
-			}
-
-			function showFatal(message) {
-				document.body.textContent = "";
-				document.body.appendChild(
-					el("div", { class: "card", style: "margin:24px" }, [
-						el("div", { class: "card-body stack" }, [
-							el("strong", { text: t("fatal_title") }),
-							el("div", { class: "small muted", text: message }),
-						]),
-					]),
-				);
-			}
-
-			function renderBanner(id, message) {
-				const node = document.getElementById(id);
-				node.textContent = "";
-				node.classList.toggle("hidden", !message);
-				if (!message) return;
-				node.appendChild(
-					el("div", { class: "card warn-card", style: "margin-bottom:16px" }, [
-						el("div", { class: "card-body small", style: "color: var(--warn)", text: message }),
-					]),
-				);
-			}
-
-			function fmtTokens(value) {
-				if (typeof value !== "number" || !value) return "—";
-				if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}M`;
-				if (value >= 1_000) return `${Math.round(value / 1_000)}k`;
-				return String(value);
-			}
-
-			/** Set provided fields, delete cleared ones; preserve untouched keys. */
-			function withOptionalFields(base, fields) {
-				const out = { ...base };
-				for (const [key, value] of Object.entries(fields)) {
-					if (value === undefined || value === null || value === "") delete out[key];
-					else out[key] = value;
-				}
-				return out;
-			}
-
-			async function api(path, options) {
-				let res;
-				try {
-					res = await fetch(path, {
-						...options,
-						headers: {
-							...(options && options.headers),
-							"content-type": "application/json",
-							"x-pi-token": TOKEN,
-						},
-					});
-				} catch (error) {
-					throw new Error(`${t("fatal_load", { error: error.message })}`);
-				}
-				let payload = {};
-				try {
-					payload = await res.json();
-				} catch {
-					/* empty body */
-				}
-				if (res.status === 401) {
-					showFatal(t("fatal_401"));
-					throw new Error(t("fatal_401"));
-				}
-				if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
-				return payload;
-			}
-
-			// ── State ────────────────────────────────────────────────────
-			let state = null;
-			const VALID_TABS = ["models", "resources", "host", "settings"];
-			let tab = VALID_TABS.includes(location.hash.replace("#", "")) ? location.hash.replace("#", "") : "models";
-			let selectedProvider = null;
-			let settingsDirty = false;
-			let resourceQuery = "";
-			let hostQuery = "";
-
-			async function refresh() {
-				state = await api("/api/state");
-				renderMeta();
-				renderModels();
-				renderResources();
-				renderHost();
-				renderSettings();
-			}
-
-			function renderAll() {
-				applyI18n();
-				if (!state) return;
-				renderMeta();
-				renderModels();
-				renderResources();
-				renderHost();
-				renderSettings();
-			}
-
-			async function putModels() {
-				if (state.modelsError) throw new Error(t("banner_models", { error: state.modelsError }));
-				await api("/api/models", { method: "PUT", body: JSON.stringify(state.models) });
-				await refresh();
-			}
-
-			async function putSettings(doc) {
-				if (state.settingsError) throw new Error(t("banner_settings", { error: state.settingsError }));
-				await api("/api/settings", { method: "PUT", body: JSON.stringify(doc) });
-				await refresh();
-			}
-
-			async function putHostUi(key, value, restartRequired) {
-				await api("/api/host-ui", { method: "PUT", body: JSON.stringify({ [key]: value }) });
-				await refresh();
-				toast(t(restartRequired ? "toast_host_saved_restart" : "toast_host_saved", { key }));
-			}
-
-			// ── Models tab ───────────────────────────────────────────────
-			function providerIds() {
-				return Object.keys(state.models.providers || {}).sort();
-			}
-
-			function renderMeta() {
-				const bits = [state.agentDir];
-				if (state.current) bits.push(`model: ${state.current.provider}/${state.current.modelId}`);
-				document.getElementById("meta").textContent = bits.join("  ·  ");
-			}
-
-			function searchQuery() {
-				return document.getElementById("model-search").value.trim().toLowerCase();
-			}
-
-			function matches(providerId, query) {
-				if (!query) return true;
-				const provider = state.models.providers[providerId];
-				if (providerId.toLowerCase().includes(query)) return true;
-				if ((provider.name || "").toLowerCase().includes(query)) return true;
-				return (provider.models || []).some((model) => (model.id || "").toLowerCase().includes(query));
-			}
-
-			function renderModels() {
-				renderBanner(
-					"models-banner",
-					state.modelsError ? t("banner_models", { error: state.modelsError }) : null,
-				);
-				const query = searchQuery();
-				const list = document.getElementById("provider-list");
-				list.textContent = "";
-				const ids = providerIds().filter((id) => matches(id, query));
-				if (ids.length === 0) {
-					list.appendChild(el("li", { class: "muted small", style: "padding:10px 12px" }, t("no_provider_match")));
-				}
-				for (const id of ids) {
-					const provider = state.models.providers[id];
-					const auth = state.providerAuth[id];
-					const isCurrent = state.current && state.current.provider === id;
-					const isDefault = state.defaults.provider === id;
-					list.appendChild(
-						el("li", {}, [
-							el(
-								"button",
-								{ class: id === selectedProvider ? "active" : "", onclick: () => selectProvider(id) },
-								[
-									el("span", { class: "row" }, [
-										el("span", { class: `dot ${auth && auth.configured ? "ok" : ""}` }),
-										el("span", { text: provider.name || id }),
-										isCurrent ? el("span", { class: "badge accent", text: t("current") }) : null,
-										isDefault ? el("span", { class: "badge ok", text: t("is_default") }) : null,
-									]),
-									el("span", { class: "small muted mono", text: `${id} · ${(provider.models || []).length}` }),
-								],
-							),
-						]),
-					);
-				}
-				renderProviderDetail();
-			}
-
-			function selectProvider(id) {
-				selectedProvider = id;
-				renderModels();
-			}
-
-			function renderProviderDetail() {
-				const title = document.getElementById("provider-title");
-				const actions = document.getElementById("provider-actions");
-				const body = document.getElementById("provider-detail");
-				actions.textContent = "";
-				body.textContent = "";
-
-				const id = selectedProvider;
-				if (!id || !state.models.providers[id]) {
-					title.textContent = "Provider";
-					body.appendChild(el("p", { class: "muted small" }, t("pick_provider")));
-					return;
-				}
-				const provider = state.models.providers[id];
-				title.textContent = `${provider.name || id}  (${id})`;
-				actions.appendChild(el("button", { class: "btn", onclick: () => editProvider(id) }, t("edit")));
-				actions.appendChild(el("button", { class: "btn danger", onclick: () => deleteProvider(id) }, t("delete")));
-
-				const auth = state.providerAuth[id];
-				const headerCount = Object.keys(provider.headers || {}).length;
-				const overrideKeys = Object.keys(provider.modelOverrides || {});
-				body.appendChild(
-					el("div", { class: "stack" }, [
-						el("div", { class: "row wrap" }, [
-							el("span", {
-								class: `badge ${auth && auth.configured ? "ok" : "warn"}`,
-								text: auth && auth.configured
-									? t("auth_configured", { what: auth.label || auth.source || "configured" })
-									: t("auth_missing"),
-							}),
-							el("span", { class: "badge", text: t("api_badge", { what: provider.api || "default" }) }),
-							el("span", { class: "badge mono", text: provider.baseUrl || t("no_baseurl") }),
-							headerCount ? el("span", { class: "badge", text: t("headers_badge", { n: headerCount }) }) : null,
-						]),
-						provider.apiKey ? el("div", { class: "path mono", text: `apiKey: ${provider.apiKey}` }) : null,
-						el("div", { class: "spread" }, [
-							el("h3", { text: t("models_count", { n: (provider.models || []).length }) }),
-							el("button", { class: "btn primary", onclick: () => editModel(id, null) }, t("add_model")),
-						]),
-						renderModelTable(id, provider),
-						overrideKeys.length
-							? el("div", { class: "small muted", text: t("overrides_badge", { keys: overrideKeys.join(", ") }) })
-							: null,
-					]),
-				);
-			}
-
-			function renderModelTable(providerId, provider) {
-				const query = searchQuery();
-				const rows = (provider.models || []).filter(
-					(model) => !query || (model.id || "").toLowerCase().includes(query),
-				);
-				if (rows.length === 0) return el("p", { class: "muted small" }, t("no_models"));
-				const table = el("table", {}, [
-					el("thead", {}, [
-						el("tr", {}, [
-							el("th", { text: "id" }),
-							el("th", { text: t("f_name") }),
-							el("th", { text: t("f_ctx") }),
-							el("th", { text: t("f_reasoning") }),
-							el("th", { text: "" }),
-						]),
-					]),
-				]);
-				const tbody = el("tbody");
-				for (const model of rows) {
-					const isCurrent = state.current && state.current.provider === providerId && state.current.modelId === model.id;
-					const isDefault = state.defaults.provider === providerId && state.defaults.modelId === model.id;
-					tbody.appendChild(
-						el("tr", {}, [
-							el("td", { class: "mono", text: model.id }),
-							el("td", { text: model.name || "" }),
-							el("td", { class: "small muted", text: fmtTokens(model.contextWindow) }),
-							el("td", { class: "small", text: model.reasoning ? "✓" : "—" }),
-							el("td", {}, [
-								el("div", { class: "row" }, [
-									el("button", {
-										class: "btn ghost small",
-										disabled: isCurrent,
-										onclick: () => useModel(providerId, model.id),
-										text: isCurrent ? t("current") : t("use"),
-									}),
-									el("button", {
-										class: "btn ghost small",
-										disabled: isDefault,
-										onclick: () => setDefault(providerId, model.id),
-										text: isDefault ? t("is_default") : t("set_default"),
-									}),
-									el("button", { class: "btn ghost small", onclick: () => editModel(providerId, model) }, t("edit")),
-									el("button", { class: "btn ghost small", onclick: () => deleteModel(providerId, model.id) }, t("delete")),
-								]),
-							]),
-						]),
-					);
-				}
-				table.appendChild(tbody);
-				return table;
-			}
-
-			async function useModel(providerId, modelId) {
-				try {
-					await api("/api/use-model", { method: "POST", body: JSON.stringify({ provider: providerId, modelId }) });
-					await refresh();
-					toast(t("toast_now_using", { provider: providerId, model: modelId }));
-				} catch (error) {
-					toast(error.message, true);
-				}
-			}
-
-			async function setDefault(providerId, modelId) {
-				const doc = { ...state.settings, defaultProvider: providerId, defaultModel: modelId };
-				try {
-					await putSettings(doc);
-					toast(t("toast_default_set", { provider: providerId, model: modelId }));
-				} catch (error) {
-					toast(error.message, true);
-				}
-			}
-
-			async function deleteProvider(id) {
-				if (!confirm(t("confirm_delete_provider", { id }))) return;
-				const providers = { ...state.models.providers };
-				delete providers[id];
-				state.models = { ...state.models, providers };
-				if (selectedProvider === id) selectedProvider = null;
-				try {
-					await putModels();
-					toast(t("toast_deleted_provider", { id }));
-				} catch (error) {
-					toast(error.message, true);
-					await refresh();
-				}
-			}
-
-			async function deleteModel(providerId, modelId) {
-				if (!confirm(t("confirm_delete_model", { id: modelId }))) return;
-				const provider = state.models.providers[providerId];
-				provider.models = (provider.models || []).filter((model) => model.id !== modelId);
-				try {
-					await putModels();
-					toast(t("toast_deleted_model", { provider: providerId, model: modelId }));
-				} catch (error) {
-					toast(error.message, true);
-					await refresh();
-				}
-			}
-
-			// ── Forms ────────────────────────────────────────────────────
-			let modalKeyHandler = null;
-
-			function closeModal() {
-				if (modalKeyHandler) document.removeEventListener("keydown", modalKeyHandler);
-				modalKeyHandler = null;
-				document.getElementById("modal-root").textContent = "";
-			}
-
-			function openForm(title, fields, onSubmit) {
-				const values = {};
-				const inputs = {};
-				const grid = el("div", { class: "grid" });
-				for (const field of fields) {
-					let input;
-					if (field.type === "checkbox") {
-						input = el("input", { type: "checkbox" });
-						input.checked = Boolean(field.value);
-						grid.appendChild(el("label", { class: "check" }, [input, field.label]));
-					} else {
-						input = el("input", {
-							type: field.type || "text",
-							value: field.value === undefined || field.value === null ? "" : String(field.value),
-							placeholder: field.placeholder || "",
-							list: field.list || null,
-							disabled: field.disabled ? true : null,
-						});
-						grid.appendChild(el("label", { class: "field" }, [el("span", { text: field.label }), input]));
-					}
-					inputs[field.key] = { input, type: field.type || "text" };
-				}
-
-				const submit = async () => {
-					for (const [key, entry] of Object.entries(inputs)) {
-						if (entry.type === "checkbox") values[key] = entry.input.checked;
-						else if (entry.type === "number") values[key] = entry.input.value === "" ? undefined : Number(entry.input.value);
-						else values[key] = entry.input.value.trim();
-					}
-					try {
-						await onSubmit(values);
-						closeModal();
-					} catch (error) {
-						toast(error.message, true);
-					}
-				};
-
-				const modal = el("div", { class: "modal" }, [
-					el("div", { class: "card-head" }, [el("h2", { text: title })]),
-					el("div", { class: "card-body" }, [grid]),
-					el("footer", {}, [
-						el("button", { class: "btn", onclick: closeModal }, t("cancel")),
-						el("button", { class: "btn primary", onclick: submit }, t("save")),
-					]),
-				]);
-				const backdrop = el("div", { class: "modal-backdrop", onclick: (event) => {
-					if (event.target === backdrop) closeModal();
-				} }, [modal]);
-				document.getElementById("modal-root").appendChild(backdrop);
-				modalKeyHandler = (event) => {
-					if (event.key === "Escape") {
-						event.preventDefault();
-						closeModal();
-					} else if (event.key === "Enter" && event.target.tagName !== "TEXTAREA") {
-						event.preventDefault();
-						submit();
-					}
-				};
-				document.addEventListener("keydown", modalKeyHandler);
-				const first = modal.querySelector("input:not([disabled])");
-				if (first) first.focus();
-			}
-
-			const API_LIST = ["openai-completions", "openai-responses", "anthropic-messages", "azure-openai-responses", "bedrock-converse-stream"];
-
-			function apiDatalist() {
-				const list = el("datalist", { id: "api-options" });
-				for (const api of API_LIST) list.appendChild(el("option", { value: api }));
-				return list;
-			}
-
-			function editProvider(id) {
-				const existing = Boolean(id);
-				const provider = existing ? state.models.providers[id] : {};
-				const fields = [
-					{ key: "id", label: t("f_id"), value: id || "", disabled: existing },
-					{ key: "name", label: t("f_name"), value: provider.name || "" },
-					{ key: "baseUrl", label: t("f_baseurl"), value: provider.baseUrl || "", placeholder: "https://api.example.com/v1" },
-					{ key: "api", label: t("f_api"), value: provider.api || "", list: "api-options", placeholder: "openai-completions" },
-					{ key: "apiKey", label: t("f_apikey"), value: provider.apiKey || "" },
-					{ key: "authHeader", label: t("f_authheader"), type: "checkbox", value: provider.authHeader !== false },
-				];
-				openForm(existing ? t("edit_provider", { id }) : t("add_provider_title"), fields, async (values) => {
-					const providerId = existing ? id : values.id;
-					if (!providerId) throw new Error(t("err_provider_id"));
-					if (!existing && state.models.providers[providerId]) throw new Error(t("err_provider_exists", { id: providerId }));
-					const base = existing ? state.models.providers[providerId] : {};
-					state.models.providers[providerId] = {
-						...withOptionalFields(base, {
-							name: values.name,
-							baseUrl: values.baseUrl,
-							api: values.api,
-							apiKey: values.apiKey,
-						}),
-						authHeader: values.authHeader,
-					};
-					selectedProvider = providerId;
-					await putModels();
-					toast(t("toast_saved_provider", { id: providerId }));
-				});
-				document.getElementById("modal-root").appendChild(apiDatalist());
-			}
-
-			function editModel(providerId, model) {
-				const existing = Boolean(model);
-				const cost = (model && model.cost) || {};
-				const fields = [
-					{ key: "id", label: t("f_model_id"), value: model ? model.id : "", disabled: existing },
-					{ key: "name", label: t("f_name"), value: model ? model.name || "" : "" },
-					{ key: "api", label: t("f_api"), value: model ? model.api || "" : "", list: "api-options" },
-					{ key: "baseUrl", label: t("f_baseurl"), value: model ? model.baseUrl || "" : "" },
-					{ key: "contextWindow", label: t("f_ctx"), type: "number", value: model ? model.contextWindow : undefined },
-					{ key: "maxTokens", label: t("f_maxtokens"), type: "number", value: model ? model.maxTokens : undefined },
-					{ key: "costInput", label: t("f_cost_input"), type: "number", value: cost.input },
-					{ key: "costOutput", label: t("f_cost_output"), type: "number", value: cost.output },
-					{ key: "costCacheRead", label: t("f_cost_cache_read"), type: "number", value: cost.cacheRead },
-					{ key: "costCacheWrite", label: t("f_cost_cache_write"), type: "number", value: cost.cacheWrite },
-					{ key: "reasoning", label: t("f_reasoning"), type: "checkbox", value: model ? Boolean(model.reasoning) : false },
-					{ key: "imageInput", label: t("f_images"), type: "checkbox", value: model ? (model.input || []).includes("image") : false },
-				];
-				openForm(
-					existing ? t("edit_model", { id: model.id }) : t("add_model_title", { provider: providerId }),
-					fields,
-					async (values) => {
-						const modelId = existing ? model.id : values.id;
-						if (!modelId) throw new Error(t("err_model_id"));
-						const provider = state.models.providers[providerId];
-						const models = [...(provider.models || [])];
-						const previous = existing ? models.find((candidate) => candidate.id === modelId) || {} : {};
-						const entry = withOptionalFields(previous, {
-							name: values.name,
-							api: values.api,
-							baseUrl: values.baseUrl,
-							contextWindow: values.contextWindow,
-							maxTokens: values.maxTokens,
-						});
-						entry.id = modelId;
-						entry.reasoning = values.reasoning;
-						entry.input = values.imageInput ? ["text", "image"] : ["text"];
-						const hasCost = [values.costInput, values.costOutput, values.costCacheRead, values.costCacheWrite].some(
-							(value) => typeof value === "number",
-						);
-						if (hasCost) {
-							entry.cost = {
-								input: values.costInput ?? 0,
-								output: values.costOutput ?? 0,
-								cacheRead: values.costCacheRead ?? 0,
-								cacheWrite: values.costCacheWrite ?? 0,
-							};
-						} else {
-							delete entry.cost;
-						}
-						const index = models.findIndex((candidate) => candidate.id === modelId);
-						if (index >= 0) models[index] = entry;
-						else models.push(entry);
-						provider.models = models;
-						await putModels();
-						toast(t("toast_saved_model", { provider: providerId, model: modelId }));
-					},
-				);
-				document.getElementById("modal-root").appendChild(apiDatalist());
-			}
-
-			// ── Resources tab ────────────────────────────────────────────
-			function filterEntries(entries, query) {
-				if (!query) return entries;
-				const needle = query.toLowerCase();
-				return entries.filter((entry) =>
-					[entry.name, entry.path, entry.description].some((text) => (text || "").toLowerCase().includes(needle)),
-				);
-			}
-
-			function renderResources() {
-				renderBanner(
-					"resources-banner",
-					state.resources.error ? t("res_scan_warning", { error: state.resources.error }) : null,
-				);
-				const body = document.getElementById("resources-body");
-				body.textContent = "";
-
-				const query = resourceQuery.trim().toLowerCase();
-				const extensions = filterEntries(state.resources.extensions || [], query);
-				const addInput = el("input", { type: "text", placeholder: "/abs/path/to/extension.ts" });
-				body.appendChild(
-					el("div", { class: "card" }, [
-						el("div", { class: "card-head" }, [
-							el("h2", { text: t("res_extensions", { n: extensions.length }) }),
-							el("span", { class: "small muted", text: t("res_hint") }),
-						]),
-						el("div", { class: "card-body stack" }, [
-							el("div", { class: "row" }, [
-								addInput,
-								el("button", {
-									class: "btn primary",
-									onclick: () => addResourcePath("extensions", addInput.value),
-								}, t("add")),
-							]),
-							resourceTable(
-								extensions,
-								(entry) =>
-									entry.source === "settings"
-										? el("button", { class: "btn ghost small", onclick: () => removeResourcePath("extensions", entry.path) }, t("remove"))
-										: el("span", { class: "badge", text: "cli" }),
-							),
-						]),
-					]),
-				);
-
-				for (const [key, labelKey] of [["skills", "res_skills"], ["prompts", "res_prompts"], ["themes", "res_themes"]]) {
-					const entries = filterEntries(state.resources[key] || [], query);
-					body.appendChild(
-						el("div", { class: "card" }, [
-							el("div", { class: "card-head" }, [el("h2", { text: t(labelKey, { n: entries.length }) })]),
-							el("div", { class: "card-body" }, [resourceTable(entries, () => null)]),
-						]),
-					);
-				}
-
-				const filter = el("input", { type: "text", value: resourceQuery, placeholder: t("res_filter") });
-				filter.addEventListener("input", () => {
-					resourceQuery = filter.value;
-					renderResources();
-					const next = document.getElementById("resource-filter");
-					next.focus();
-					next.setSelectionRange(next.value.length, next.value.length);
-				});
-				filter.id = "resource-filter";
-				body.insertBefore(el("div", { class: "row" }, [filter]), body.firstChild);
-			}
-
-			function resourceTable(entries, actionFor) {
-				if (entries.length === 0) return el("p", { class: "muted small" }, t("res_none"));
-				const table = el("table", {}, [
-					el("thead", {}, [
-						el("tr", {}, [el("th", { text: t("f_name") }), el("th", { text: "path" }), el("th", { text: "" })]),
-					]),
-				]);
-				const tbody = el("tbody");
-				for (const entry of entries) {
-					tbody.appendChild(
-						el("tr", {}, [
-							el("td", {}, [
-								el("div", { text: entry.name }),
-								entry.description ? el("div", { class: "small muted", text: entry.description }) : null,
-							]),
-							el("td", { class: "path mono", text: entry.path }),
-							el("td", {}, [actionFor(entry)]),
-						]),
-					);
-				}
-				table.appendChild(tbody);
-				return table;
-			}
-
-			async function addResourcePath(key, value) {
-				const path = value.trim();
-				if (!path) return;
-				const current = Array.isArray(state.settings[key]) ? state.settings[key] : [];
-				if (current.includes(path)) {
-					toast(t("toast_already"));
-					return;
-				}
-				const doc = { ...state.settings, [key]: [...current, path] };
-				try {
-					await putSettings(doc);
-					toast(t("toast_added", { key }));
-				} catch (error) {
-					toast(error.message, true);
-				}
-			}
-
-			async function removeResourcePath(key, path) {
-				const current = Array.isArray(state.settings[key]) ? state.settings[key] : [];
-				const doc = { ...state.settings, [key]: current.filter((entry) => entry !== path) };
-				try {
-					await putSettings(doc);
-					toast(t("toast_removed", { key }));
-				} catch (error) {
-					toast(error.message, true);
-				}
-			}
-
-			// ── F2 / Host settings tab ───────────────────────────────────
-			function isScalar(value) {
-				return ["boolean", "number", "string"].includes(typeof value);
-			}
-
-			function hostRow(entry) {
-				const ui = state.host.ui || {};
-				const current = ui[entry.key] !== undefined ? ui[entry.key] : entry.default;
-				let control;
-				if (typeof current === "boolean" || entry.kind === "bool") {
-					control = el("input", { type: "checkbox" });
-					control.checked = current === true;
-					control.onchange = () => putHostUi(entry.key, control.checked, entry.restartRequired);
-				} else if (typeof current === "number") {
-					control = el("input", { type: "number", value: String(current) });
-					control.onchange = () => {
-						const value = Number(control.value);
-						if (!Number.isFinite(value)) {
-							toast(`${entry.key}: ${t("toast_valid")}`, true);
-							return;
-						}
-						putHostUi(entry.key, value, entry.restartRequired);
-					};
-				} else {
-					control = el("input", { type: "text", value: current === undefined ? "" : String(current) });
-					control.onchange = () => putHostUi(entry.key, control.value, entry.restartRequired);
-				}
-				return el("div", { class: "host-row" }, [
-					el("div", {}, [
-						el("div", { text: entry.label || entry.key }),
-						entry.description ? el("div", { class: "small muted", text: entry.description }) : null,
-						el("div", { class: "row wrap", style: "margin-top:4px" }, [
-							el("span", { class: "badge mono", text: entry.key }),
-							entry.restartRequired ? el("span", { class: "badge warn", text: t("host_restart") }) : null,
-							entry.source ? el("span", { class: "badge", text: entry.source.split("/")[1] || entry.source }) : null,
-						]),
-					]),
-					el("div", { class: "host-value" }, [control]),
-				]);
-			}
-
-			function renderHost() {
-				const host = state.host || { ui: {}, uiTables: {}, catalog: [] };
-				renderBanner("host-banner", host.error ? t("host_error_banner", { error: host.error }) : null);
-				const body = document.getElementById("host-body");
-				body.textContent = "";
-
-				const query = hostQuery.trim().toLowerCase();
-				const matchesHost = (entry) =>
-					!query ||
-					[entry.key, entry.label, entry.description, entry.section]
-						.some((text) => (text || "").toLowerCase().includes(query));
-
-				const catalog = (host.catalog || []).filter(matchesHost);
-				const covered = new Set((host.catalog || []).map((entry) => entry.key));
-				const extras = Object.entries(host.ui || {})
-					.filter(([key, value]) => !covered.has(key) && isScalar(value))
-					.filter(([key]) => !query || key.toLowerCase().includes(query))
-					.sort(([a], [b]) => a.localeCompare(b))
-					.map(([key, value]) => ({ key, default: value }));
-
-				const sections = new Map();
-				for (const entry of catalog) {
-					const section = entry.section || t("host_section_other");
-					if (!sections.has(section)) sections.set(section, []);
-					sections.get(section).push(entry);
-				}
-				if (extras.length > 0) sections.set(t("host_section_other"), extras);
-
-				for (const [section, entries] of sections) {
-					body.appendChild(
-						el("div", { class: "card" }, [
-							el("div", { class: "card-head" }, [
-								el("h2", { text: section }),
-								el("span", { class: "small muted mono", text: host.configPath }),
-							]),
-							el("div", { class: "card-body" }, [
-								el("div", {}, entries.map((entry) => hostRow(entry))),
-							]),
-						]),
-					);
-				}
-
-				const tables = host.uiTables || {};
-				const tableKeys = Object.keys(tables).filter(
-					(key) => !query || key.toLowerCase().includes(query),
-				);
-				if (tableKeys.length > 0) {
-					body.appendChild(
-						el("div", { class: "card" }, [
-							el("div", { class: "card-head" }, [el("h2", { text: t("host_readonly_tables") })]),
-							el("div", { class: "card-body stack" }, tableKeys.map((key) =>
-								el("div", {}, [
-									el("div", { class: "badge mono", text: `ui.${key}` }),
-									el("pre", { class: "small mono muted", text: JSON.stringify(tables[key], null, 2) }),
-								]),
-							)),
-						]),
-					);
-				}
-
-				const filter = el("input", { type: "text", value: hostQuery, placeholder: t("host_filter") });
-				filter.addEventListener("input", () => {
-					hostQuery = filter.value;
-					renderHost();
-					const next = document.getElementById("host-filter");
-					next.focus();
-					next.setSelectionRange(next.value.length, next.value.length);
-				});
-				filter.id = "host-filter";
-				body.insertBefore(el("div", { class: "row" }, [filter]), body.firstChild);
-
-				if (sections.size === 0 && tableKeys.length === 0) {
-					body.appendChild(el("p", { class: "muted small", text: t("res_none") }));
-				}
-			}
-
-			// ── Settings tab ─────────────────────────────────────────────
-			const TOGGLES = [
-				["hideThinkingBlock", "Hide thinking blocks", "隐藏思考块"],
-				["enableSkillCommands", "Skills as commands", "Skills 注册为命令"],
-				["quietStartup", "Quiet startup", "安静启动"],
-				["collapseChangelog", "Collapse changelog", "折叠更新日志"],
-				["enableInstallTelemetry", "Install telemetry", "安装遥测"],
-				["enableAnalytics", "Analytics", "分析统计"],
-			];
-
-			function renderSettings() {
-				renderBanner(
-					"settings-banner",
-					state.settingsError ? t("banner_settings", { error: state.settingsError }) : null,
-				);
-				document.getElementById("settings-path").textContent = state.paths.settings;
-				const area = document.getElementById("settings-json");
-				if (!settingsDirty) area.value = JSON.stringify(state.settings, null, 2);
-				area.oninput = () => {
-					settingsDirty = true;
-					markSettingsState();
-				};
-
-				const toggles = document.getElementById("settings-toggles");
-				toggles.textContent = "";
-				for (const [key, en, zh] of TOGGLES) {
-					const input = el("input", { type: "checkbox" });
-					input.checked = state.settings[key] === true;
-					input.onchange = () => toggleSetting(key, input.checked);
-					toggles.appendChild(el("label", { class: "check" }, [input, lang === "zh" ? zh : en]));
-				}
-				markSettingsState();
-			}
-
-			function markSettingsState() {
-				const node = document.getElementById("settings-state");
-				node.textContent = settingsDirty ? t("settings_unsaved") : t("settings_saved");
-				node.classList.toggle("warn", settingsDirty);
-			}
-
-			async function toggleSetting(key, value) {
-				try {
-					const doc = parseSettingsArea();
-					doc[key] = value;
-					await putSettings(doc);
-					settingsDirty = false;
-					toast(t("toast_key_set", { key, value }));
-				} catch (error) {
-					toast(error.message, true);
-					await refresh();
-				}
-			}
-
-			function parseSettingsArea() {
-				const text = document.getElementById("settings-json").value;
-				if (!text.trim()) throw new Error(t("err_settings_empty"));
-				const parsed = JSON.parse(text);
-				if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-					throw new Error(t("banner_settings", { error: "not an object" }));
-				}
-				return parsed;
-			}
-
-			// ── Wiring ───────────────────────────────────────────────────
-			function showTab(name) {
-				tab = name;
-				history.replaceState(null, "", `#${name}`);
-				for (const button of document.querySelectorAll(".tab")) {
-					button.classList.toggle("active", button.dataset.tab === name);
-				}
-				for (const panel of document.querySelectorAll(".panel")) {
-					panel.classList.toggle("hidden", panel.id !== `panel-${name}`);
-				}
-			}
-
-			document.getElementById("tabs").addEventListener("click", (event) => {
-				const button = event.target.closest(".tab");
-				if (button) showTab(button.dataset.tab);
-			});
-			document.getElementById("btn-lang").addEventListener("click", () => {
-				lang = lang === "zh" ? "en" : "zh";
-				localStorage.setItem("piWebLang", lang);
-				renderAll();
-			});
-			document.getElementById("model-search").addEventListener("input", renderModels);
-			document.getElementById("btn-add-provider").addEventListener("click", () => editProvider(null));
-			document.getElementById("btn-refresh").addEventListener("click", () => {
-				refresh().then(() => toast(t("toast_refreshed"))).catch((error) => toast(error.message, true));
-			});
-			document.getElementById("btn-reload").addEventListener("click", () => {
-				api("/api/reload", { method: "POST" })
-					.then(() => refresh())
-					.then(() => toast(t("toast_pi_reloaded")))
-					.catch((error) => toast(error.message, true));
-			});
-			document.getElementById("btn-stop").addEventListener("click", () => {
-				api("/api/shutdown", { method: "POST" })
-					.then(() => showFatal(t("stopped")))
-					.catch((error) => toast(error.message, true));
-			});
-			document.getElementById("btn-settings-validate").addEventListener("click", () => {
-				try {
-					parseSettingsArea();
-					toast(t("toast_valid"));
-				} catch (error) {
-					toast(error.message, true);
-				}
-			});
-			document.getElementById("btn-settings-save").addEventListener("click", () => {
-				try {
-					const doc = parseSettingsArea();
-					putSettings(doc)
-						.then(() => {
-							settingsDirty = false;
-							toast(t("toast_settings_saved"));
-						})
-						.catch((error) => toast(error.message, true));
-				} catch (error) {
-					toast(error.message, true);
-				}
-			});
-
-			applyI18n();
-			showTab(tab);
-			refresh()
-				.then(() => {
-					renderAll();
-					showTab(tab);
-					if (!selectedProvider) {
-						const ids = providerIds();
-						selectedProvider = ids[0] || null;
-						renderModels();
-					}
-				})
-				.catch((error) => showFatal(t("fatal_load", { error: error.message })));
-		</script>
+					<button class="icon-button" type="button" id="editor-close" aria-label="Close">×</button>
+				</header>
+				<div class="dialog-body" id="editor-fields"></div>
+				<p class="dialog-error hidden" id="editor-error" role="alert"></p>
+				<footer class="dialog-footer">
+					<button class="btn" type="button" id="editor-cancel" data-i18n="cancel"></button>
+					<button class="btn primary" type="submit" id="editor-submit" data-i18n="save"></button>
+				</footer>
+			</form>
+		</dialog>
+
+		<datalist id="api-options">
+			<option value="openai-completions"></option>
+			<option value="openai-responses"></option>
+			<option value="anthropic-messages"></option>
+			<option value="azure-openai-responses"></option>
+			<option value="bedrock-converse-stream"></option>
+		</datalist>
+
+		<script>__PI_GROK_WEB_CONFIG_APP__</script>
 	</body>
 </html>

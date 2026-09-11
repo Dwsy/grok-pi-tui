@@ -6,6 +6,7 @@
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
 	createServer,
 	type IncomingMessage,
@@ -19,7 +20,7 @@ export interface WebConfigServerDeps {
 	host: string;
 	/** 0 picks a random free port. */
 	port: number;
-	/** Absolute path of the injected single-page UI. */
+	/** Absolute path of the injected HTML template; sibling CSS/JS/JSON are assembled at startup. */
 	uiHtmlPath: string;
 	loadState: () => Promise<unknown>;
 	saveModels: (doc: unknown) => void | Promise<void>;
@@ -97,7 +98,58 @@ function readBody(req: IncomingMessage): Promise<unknown> {
 
 export async function startWebConfigServer(deps: WebConfigServerDeps): Promise<WebConfigServer> {
 	const token = randomBytes(24).toString("hex");
+	const uiDir = dirname(deps.uiHtmlPath);
+	const styleMarker = "__PI_GROK_WEB_CONFIG_STYLES__";
+	const appMarker = "__PI_GROK_WEB_CONFIG_APP__";
+	const jsonAssets = [
+		["__PI_GROK_WEB_CONFIG_UI_CONFIG__", "ui-config.json"],
+		["__PI_GROK_WEB_CONFIG_I18N__", "i18n.json"],
+	] as const;
+	const appFragments = [
+		["__PI_GROK_WEB_CONFIG_MODELS__", "models.js"],
+		["__PI_GROK_WEB_CONFIG_RESOURCES__", "resources.js"],
+		["__PI_GROK_WEB_CONFIG_HOST__", "host.js"],
+		["__PI_GROK_WEB_CONFIG_SETTINGS__", "settings.js"],
+	] as const;
+
 	let html = readFileSync(deps.uiHtmlPath, "utf8");
+	if (!html.includes(styleMarker) || !html.includes(appMarker)) {
+		throw new Error("Pi web config UI template is missing CSS/JS assembly markers");
+	}
+
+	const styles = readFileSync(join(uiDir, "styles.css"), "utf8");
+	if (styles.toLowerCase().includes("</style>")) {
+		throw new Error("Pi web config styles must not contain a closing style tag");
+	}
+	let app = readFileSync(join(uiDir, "app.js"), "utf8");
+	for (const [marker, filename] of jsonAssets) {
+		if (!app.includes(marker)) {
+			throw new Error(`Pi web config app is missing JSON marker ${marker}`);
+		}
+		const source = readFileSync(join(uiDir, filename), "utf8");
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(source);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			throw new Error(`Pi web config ${filename} is invalid JSON: ${message}`);
+		}
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error(`Pi web config ${filename} must contain a JSON object`);
+		}
+		app = app.replace(marker, JSON.stringify(parsed).replaceAll("<", "\\u003c"));
+	}
+	for (const [marker, filename] of appFragments) {
+		if (!app.includes(marker)) {
+			throw new Error(`Pi web config app is missing fragment marker ${marker}`);
+		}
+		app = app.replace(marker, readFileSync(join(uiDir, filename), "utf8"));
+	}
+	if (app.toLowerCase().includes("</script>")) {
+		throw new Error("Pi web config app fragments must not contain a closing script tag");
+	}
+
+	html = html.replace(styleMarker, styles).replace(appMarker, app);
 	if (html.includes("__PI_GROK_WEB_CONFIG_TOKEN__")) {
 		html = html.replaceAll("__PI_GROK_WEB_CONFIG_TOKEN__", token);
 	}
