@@ -124,11 +124,18 @@ def self_test(changelog: Path) -> int:
     ver0 = release_sections[0][0]
     one = extract_section(text, ver0)
     assert one is not None and one.startswith(f"## [{ver0}]")
-    # Range: from second-newest exclusive lower bound if possible.
-    older = release_sections[1][0]
-    ranged = extract_range(text, ver0, older)
-    # since older exclusive → only ver0 when they are adjacent
-    assert ranged is not None and f"## [{ver0}]" in ranged
+    # Range smoke test: choose the first strictly older numeric core.
+    # Consecutive prereleases such as beta.2 / beta.1 intentionally collapse
+    # to the same core in parse_semver_tuple(), so they cannot form an
+    # exclusive lower/upper range by themselves.
+    head_core = parse_semver_tuple(ver0)
+    older = next(
+        (version for version, _ in release_sections[1:] if parse_semver_tuple(version) < head_core),
+        None,
+    )
+    if older is not None:
+        ranged = extract_range(text, ver0, older)
+        assert ranged is not None and f"## [{ver0}]" in ranged
     miss = extract_section(text, "9.9.9.9")
     assert miss is None
     print(f"self-test ok: {len(sections)} sections, head={ver0}", file=sys.stderr)

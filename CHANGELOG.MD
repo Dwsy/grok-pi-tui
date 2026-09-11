@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.10-beta.3] - 2026-09-11
+
+### Fixed
+
+- Release changelog self-validation now handles consecutive prerelease sections that share the same core semver (for example `0.1.10-beta.2` / `0.1.10-beta.1`), so beta tag validation no longer fails before the build matrix.
+
 ## [0.1.10-beta.2] - 2026-09-11
 
 ### Changed

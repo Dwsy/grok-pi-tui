@@ -9,6 +9,12 @@
 
 ## [Unreleased]
 
+## [0.1.10-beta.3] - 2026-09-11
+
+### 修复
+
+- Release changelog 自检现在可正确处理共享相同 core semver 的连续 prerelease 小节（例如 `0.1.10-beta.2` / `0.1.10-beta.1`），beta tag 不再在构建矩阵开始前因 range 自检断言而失败。
+
 ## [0.1.10-beta.2] - 2026-09-11
 
 ### 变更
