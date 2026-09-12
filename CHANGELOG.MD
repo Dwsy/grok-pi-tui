@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.10-beta.4] - 2026-09-12
+
+### Changed
+
+- Synced grok-pi with upstream Grok `37949780`, including the latest Pager, Shell, sampler, workspace, protocol, auth/login, and terminal architecture updates while preserving grok-pi external-agent integration seams.
+- Preserved grok-pi workflow backends, External/Pi session routing, `.grok-pi` project isolation, compact instruction/context forwarding, nested subagent routing, and compaction timeline behavior across the upstream merge.
+
+### Fixed
+
+- Restored the grok-pi tool-hook rendering module that was incorrectly removed during the upstream merge, including hook status data, inline summaries, expanded details, stop-hook summaries, and tests.
+- Fixed Settings row merge regressions from the upstream `RowStyle` refactor and restored the expected restart/chevron styles.
+- Preserved hook-count suffixes on narrow collapsed tool-group rows after the upstream renderer refactor.
+
 ## [0.1.10-beta.3] - 2026-09-11
 
 ### Fixed

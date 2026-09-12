@@ -9,6 +9,19 @@
 
 ## [Unreleased]
 
+## [0.1.10-beta.4] - 2026-09-12
+
+### 变更
+
+- 同步上游 Grok `37949780`，整合最新 Pager、Shell、sampler、workspace、protocol、auth/login 与 terminal 架构更新，同时保留 grok-pi 的 external-agent 集成接缝。
+- 在上游合并中继续保留 grok-pi workflow backend、External/Pi session 路由、`.grok-pi` 项目隔离、compact instruction/context 双字段转发、嵌套子代理路由与 compaction timeline 行为。
+
+### 修复
+
+- 恢复上游合并时被错误删除的 grok-pi tool-hook 渲染模块，包括 hook 状态数据、行内汇总、展开详情、stop-hook 汇总和对应测试。
+- 修复 upstream `RowStyle` 重构合并后 Settings row 残留旧变量/缺失样式初始化的问题，并恢复 restart/chevron 预期样式。
+- 在 upstream renderer 重构后继续保留窄终端 collapsed tool-group 的 hook 计数尾缀。
+
 ## [0.1.10-beta.3] - 2026-09-11
 
 ### 修复
