@@ -247,12 +247,34 @@ impl<'a> EntryRenderer<'a> {
             // Diamond chrome in BOTH states, same family as the "N more" headers.
             // The selection caret (the expandable indicator in scrollback_pane.rs) overdraws the diamond on the selected row
             // It flips `›`/`⌄` with the group's fold state
+            use unicode_width::UnicodeWidthStr;
+
             let prefix = group_header_chrome_prefix();
             let mut spans = vec![ratatui::text::Span::styled(
-                prefix,
+                prefix.clone(),
                 Style::default().fg(glyph_color),
             )];
-            spans.extend(vg.line.spans.iter().cloned());
+            // Keep hook metadata visible on narrow terminals: truncate the
+            // descriptive label first and reserve the suffix width.
+            let hook_start = vg
+                .line
+                .spans
+                .iter()
+                .position(|span| span.content.starts_with("  [hooks: "));
+            if let Some(hook_start) = hook_start {
+                let suffix_width: usize = vg.line.spans[hook_start..]
+                    .iter()
+                    .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+                    .sum();
+                let label_budget = usize::from(content_area.width)
+                    .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
+                    .saturating_sub(suffix_width);
+                let label = ratatui::text::Line::from(vg.line.spans[..hook_start].to_vec());
+                spans.extend(crate::render::line_utils::truncate_line(label, label_budget).spans);
+                spans.extend(vg.line.spans[hook_start..].iter().cloned());
+            } else {
+                spans.extend(vg.line.spans.iter().cloned());
+            }
             let line = ratatui::text::Line::from(spans);
             // Group-header content is registered selectable (GROUP_HEADER_RANGE_ID)
             // Its selection maps visual columns, so it must paint visual too
@@ -666,15 +688,6 @@ impl Renderable for EntryRenderer<'_> {
             }
             other => other,
         };
-        let has_hook_lines = self
-            .entry
-            .hook_data
-            .as_ref()
-            .is_some_and(|hd| hd.has_content());
-        let use_collapsed_accent =
-            self.groupable && self.entry.display_mode == DisplayMode::Collapsed && !has_hook_lines;
-        let display_cfg = &self.appearance().scrollback.display;
-
         // The column stays reserved either way, so nothing reflows
         // Clear it or a previous frame bleeds through
         if accent.is_none() {

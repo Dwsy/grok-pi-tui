@@ -2353,7 +2353,7 @@ pub(super) fn render_setting_row(
     // Reset palettes: reverse-video selection/hover cue. Applied before the
     // spans, which patch fg/bg and keep the modifier — so it covers every
     // layout branch below.
-    if let Some(ov) = settings_row_overlay(theme, is_selected, is_hovered) {
+    if let Some(ov) = settings_row_overlay(theme, row.selected, row.hovered) {
         buf.set_style(area, ov);
     }
 
@@ -2402,9 +2402,14 @@ pub(super) fn render_setting_row(
         " ".repeat(ROW_CURSOR_W as usize)
     };
     let value_w = value_text.width() as u16;
+    let chevron_style = Style::default().fg(theme.gray).bg(bg);
+    let restart_style = Style::default()
+        .fg(theme.gray_dim)
+        .bg(bg)
+        .add_modifier(Modifier::ITALIC);
 
     // Pill only while expanded: change-time feedback is the toast's job, and a collapsed non-default row would misread as "restart pending" forever
-    let show_restart_pill = meta.restart_required && is_expanded;
+    let show_restart_pill = meta.restart_required && row.expanded;
     let restart_pill_text = " \u{00B7} restart";
     let restart_w = if show_restart_pill {
         restart_pill_text.width() as u16
@@ -2413,7 +2418,7 @@ pub(super) fn render_setting_row(
     };
 
     // Triangle prefix: "▸" collapsed, "▾" expanded.
-    let triangle = if is_expanded { "\u{25BE}" } else { "\u{25B8}" };
+    let triangle = if row.expanded { "\u{25BE}" } else { "\u{25B8}" };
     debug_assert_eq!(
         triangle.width(),
         (ROW_TRIANGLE_PREFIX_W - 1) as usize,
@@ -2485,9 +2490,6 @@ pub(super) fn render_setting_row(
                     restart_w,
                 );
             }
-
-            let _ = desc_style;
-            let _ = is_selected;
 
             // Hit-rect for the value column: spans the value text plus the (always-reserved) chevron column
             // Clicking the chevron column on a Bool row is a no-op (no glyph there) but still routes to the row, matching chevron rows
@@ -2569,9 +2571,6 @@ pub(super) fn render_setting_row(
                     chevron_w,
                 );
             }
-
-            let _ = desc_style;
-            let _ = is_selected;
 
             // Hit-rect for the value column: covers the value text and the always-reserved chevron column on LINE 2 only
             // Width is `value_w + ROW_CHEVRON_COL_W` (not `value_w + chevron_w`) so the hit-rect spans the empty chevron column on Bool rows too
