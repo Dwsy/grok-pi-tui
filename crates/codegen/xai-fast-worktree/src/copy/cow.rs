@@ -7,11 +7,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-/// Clone a file using CoW if supported, falling back to regular copy.
-///
-/// On filesystems that support it (APFS on macOS, Btrfs/XFS on Linux),
-/// this creates a reflink which shares data blocks until modified.
-/// On other filesystems, it performs a regular copy.
+/// Reflink (APFS/Btrfs/XFS) when the filesystem supports it; otherwise a regular copy.
 pub(crate) fn clone_file(src: &Path, dest: &Path) -> Result<()> {
     reflink_copy::reflink_or_copy(src, dest)?;
     // reflink (FICLONE) only clones data blocks, creating the dest with
@@ -22,11 +18,8 @@ pub(crate) fn clone_file(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Recreate `dst` as a symlink pointing at `target`, replacing any existing
-/// entry at `dst`.
-///
-/// `symlink()` refuses to overwrite an existing path, so we remove `dst` first
-/// (a missing `dst` is not an error).
+/// Point `dst` at `target`, replacing any existing entry. `symlink()` will not
+/// overwrite, so remove `dst` first (a missing path is not an error).
 pub(crate) fn replace_symlink(target: &Path, dst: &Path) -> std::io::Result<()> {
     let _ = std::fs::remove_file(dst);
     symlink_to(target, dst)

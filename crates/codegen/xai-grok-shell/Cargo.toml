@@ -1,20 +1,16 @@
 [package]
 license = "Apache-2.0"
 name = "xai-grok-shell"
-version = "1.0.8"
+version = "1.0.24"
 edition.workspace = true
 
 [features]
 default = []
 dhat-heap = ["dep:dhat"]
-# Loom model-checking for src/auth/manager/lock/flock_wait.rs; test-only
-# (compile_error!-guarded). Run in release (debug overflows loom's stacks):
-#   cargo test --release --features loom -p xai-grok-shell --lib flock_wait::loom -- --test-threads=1
-loom = ["dep:loom"]
 # Session synthesis + in-process e2e harness (`session::testkit`) for soak,
 # load, and bench tests. Off by default; the tests/benches that use it declare
-# it via `required-features`.
-test-support = []
+# it via `required-features`. Forwards `xai-grok-login/test-support` for downstream test builds.
+test-support = ["xai-grok-login/test-support"]
 test-util = []
 # Local Computer Hub workspace_server (own/attach + crash-restart). Requires
 local-workspace = []
@@ -30,7 +26,6 @@ default-bazel = [
 
 [dependencies]
 dunce = { workspace = true }
-tonic-prost = { workspace = true, optional = true }
 agent-client-protocol = { workspace = true }
 anyhow = { workspace = true }
 xai-grok-announcements = { workspace = true }
@@ -50,7 +45,6 @@ futures = { workspace = true }
 glob = { workspace = true }
 globset = { workspace = true }
 kanal = "0.1"
-loom = { workspace = true, optional = true }
 regex = { workspace = true }
 # rmcp 2.1 + reqwest 0.13 are quarantined inside `xai-grok-mcp`. The remaining
 # MCP code in this crate (extensions/mcp.rs, mcp_doctor.rs) reaches rmcp model
@@ -63,12 +57,8 @@ reqwest-middleware = { workspace = true }
 serde = { workspace = true }
 serde_ignored = "0.1"
 serde_json = { workspace = true, features = ["preserve_order"] }
-similar = { workspace = true }
 thiserror = { workspace = true }
 clap = { workspace = true }
-dirs = "6"
-tokio-stream = { workspace = true }
-tower-http = { workspace = true, features = ["cors"] }
 toml = { workspace = true, features = ["preserve_order"] }
 toml_edit = { workspace = true }
 tokio = { workspace = true, features = [
@@ -123,18 +113,15 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp"] }
 moka = { workspace = true, features = ["future"] }
 dhat = { workspace = true, optional = true }
 base64 = { workspace = true }
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+hmac = { workspace = true }
 sha2 = { workspace = true }
-rand = { workspace = true }
-shlex = { workspace = true }
 strum = { workspace = true }
 xai-fast-worktree = { path = "../xai-fast-worktree", features = ["metadata"] }
 
-tonic = { workspace = true, optional = true }
-prost = { workspace = true, optional = true }
 xai-grok-paths = { path = "../xai-grok-paths" }
 xai-grok-shell-base = { workspace = true }
 xai-grok-shell-session-support = { workspace = true }
+xai-grok-shell-terminal = { workspace = true }
 xai-grok-shared = { workspace = true }
 xai-grok-status-line = { workspace = true }
 xai-tracing-macros = { path = "../xai-tracing-macros" }
@@ -143,6 +130,7 @@ xai-codebase-graph = { path = "../xai-codebase-graph" }
 xai-hunk-tracker = { path = "../xai-hunk-tracker" }
 xai-agent-lifecycle = { workspace = true }
 xai-interjection-core = { workspace = true }
+xai-message-delivery-core = { workspace = true }
 xai-grok-sandbox = { path = "../xai-grok-sandbox", default-features = false }
 xai-chat-state = { path = "../xai-chat-state" }
 # Segment markdown rendering + the `compaction/` store path convention.
@@ -157,7 +145,6 @@ xai-grok-sampling-types = { path = "../xai-grok-sampling-types" }
 xai-grok-tools = { path = "../xai-grok-tools" }
 xai-tty-utils = { workspace = true }
 xai-workflow = { path = "../xai-workflow" }
-xai-system-power = { workspace = true }
 xai-grok-workspace = { workspace = true }
 # Backs the compatibility-only `xai_grok_shell::foreign_sessions` re-export.
 xai-grok-foreign-sessions = { workspace = true }
@@ -165,16 +152,21 @@ xai-grok-subagent-resolution = { path = "../xai-grok-subagent-resolution" }
 xai-grok-agent = { path = "../xai-grok-agent" }
 xai-grok-bundle = { workspace = true }
 xai-grok-config = { workspace = true }
+xai-grok-feedback = { workspace = true }
 xai-grok-config-types = { workspace = true }
+xai-grok-env = { workspace = true }
+xai-dirs = { workspace = true }
 xai-grok-memory = { workspace = true }
 xai-grok-hooks = { path = "../xai-grok-hooks" }
 xai-hooks-plugins-types = { path = "../xai-hooks-plugins-types" }
 xai-grok-plugin-marketplace = { path = "../xai-grok-plugin-marketplace" }
 xai-file-utils = { path = "../xai-file-utils" }
+xai-grok-otel = { workspace = true }
 xai-grok-session-events = { workspace = true }
 xai-grok-auth = { workspace = true, features = ["middleware"] }
 xai-grok-telemetry = { workspace = true }
 xai-grok-http = { workspace = true }
+xai-grok-login = { workspace = true }
 xai-grok-models = { workspace = true }
 prod-mc-cli-chat-proxy-types = { path = "../../../prod/mc/cli-chat-proxy-types" }
 flate2 = { workspace = true }
@@ -185,8 +177,6 @@ url = { workspace = true }
 walkdir = { workspace = true }
 tdigests = "1.0"
 semver = { workspace = true }
-process-wrap = { version = "9.0.0", features = ["tokio1", "job-object", "creation-flags"] }
-portable-pty = "0.9"
 parking_lot.workspace = true
 dashmap.workspace = true
 
@@ -206,7 +196,7 @@ siphasher = { workspace = true }
 windows = { workspace = true }
 
 [dev-dependencies]
-# The fixture that builds a `[ui.status_line]` section field by field.
+xai-dirs = { workspace = true }
 xai-grok-status-line = { workspace = true, features = ["test-support"] }
 criterion = { workspace = true }
 # Pre-main unified-log redirect (`test_support::redirect_unified_log_for_tests`).
@@ -218,17 +208,20 @@ tempfile = { workspace = true }
 # is `#[cfg(test)]`-only inside xai-grok-bundle without this feature.
 xai-grok-bundle = { workspace = true, features = ["test-support"] }
 xai-grok-memory = { workspace = true, features = ["test-support"] }
-xai-grok-workspace = { workspace = true, features = ["test-support"] }
+# sandbox-enforce: keep tests running against the enforcing sandbox build.
+xai-grok-workspace = { workspace = true, features = ["test-support", "sandbox-enforce"] }
 xai-grok-config = { workspace = true, features = [] }
 ring = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
-rsa = { workspace = true }
 semver = { workspace = true }
 serial_test = { workspace = true }
 # Test-only builds expose `env::EnvVarGuard` and the cpu_profile test seams to
 # this crate's test targets.
 xai-grok-shell-base = { workspace = true, features = ["test-support"] }
+# Exposes the login crate's `#[cfg(test)]`-only auth-provider helpers
+# (`test_counting_provider`, `test_backdate_provider_mint`) to shell tests.
+xai-grok-login = { workspace = true, features = ["test-support"] }
 xai-grok-test-support = { workspace = true, features = [] }
 xai-test-utils = { workspace = true }
 # `test-util` enables `#[tokio::test(start_paused = true)]` (paused virtual
@@ -256,28 +249,28 @@ harness = false
 name = "child_replay_lookup"
 harness = false
 
+# Ordinary integration tests live in `tests/all.rs` (`mod suite`) so cargo
+# links one binary. The test name is `xai-grok-shell-all` (Bazel `//pkg:all`
+# is the package wildcard). Process-isolated suites stay as implicit
+# `tests/*.rs` binaries.
 [[test]]
-name = "test_leader_soak"
+name = "test_startup_prefetch_fallback"
 required-features = ["test-support"]
 
 [[test]]
-name = "test_session_load_memory"
+name = "test_startup_prefetch_overlap"
 required-features = ["test-support"]
 
 [[test]]
-name = "test_fork_copy_memory"
+name = "test_startup_prefetch_policy"
 required-features = ["test-support"]
 
 [[test]]
-name = "session_fork_replay_memory"
+name = "test_startup_prefetch_repair_skip"
 required-features = ["test-support"]
 
 [[test]]
-name = "session_load_perf"
-required-features = ["test-support"]
-
-[[test]]
-name = "testkit_synth_roundtrip"
+name = "test_startup_prefetch_shared"
 required-features = ["test-support"]
 
 [lints]
@@ -288,6 +281,7 @@ workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 flate2 = { workspace = true }
 tar = { workspace = true }
+
 [[bin]]
 name = "chat-history-downgrade"
 path = "src/bin/chat-history-downgrade.rs"

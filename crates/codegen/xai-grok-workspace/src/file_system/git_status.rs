@@ -1,21 +1,16 @@
 //! Generates a compact git status for the system prompt.
 //!
-//! Uses the git CLI for performance — libgit2's status is 5-10x slower than
-//! the native git binary on large repos due to inefficient index refresh.
+//! Uses the git CLI for performance: libgit2's status is 5-10x slower than the native git binary on large repos due to inefficient index refresh.
 //! Output is prioritized by change type and limited to ~1k characters.
 
 use crate::file_system::FsError;
+use crate::file_system::fsmonitor::FsmonitorOverride;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 /// Gets a compact git status for the system prompt using the git CLI.
-///
-/// Output includes:
-/// 1. Branch name
-/// 2. Upstream ahead/behind status
-/// 3. Staged files (if any)
-///
 /// Total output is capped at ~1k characters.
+#[tracing::instrument(skip_all)]
 pub async fn git_status(working_directory: impl Into<PathBuf>) -> Result<String, FsError> {
     let working_directory = working_directory.into();
     let permit = crate::git_odb::try_acquire_odb();
@@ -28,29 +23,16 @@ pub async fn git_status(working_directory: impl Into<PathBuf>) -> Result<String,
     .map_err(|e| FsError::Other(format!("git status task failed: {e}")))?
 }
 
-/// Matches Node's default `execFile` `maxBuffer` (1 MiB). This cap is
-/// load-bearing: `git status` output at or above it makes the spawn throw, so
-/// the repo is dropped from `<git_status>` entirely (never truncated).
-/// Oversized output is treated as an error -- the caller maps `Err` to a
-/// dropped section.
+/// Matches Node's default `execFile` `maxBuffer` (1 MiB).
+/// `git status` output at or above the cap is treated as an error, so the repo is dropped from `<git_status>` entirely (never truncated).
 const GIT_STATUS_BUFFER_LIMIT: usize = 1024 * 1024;
 
-/// Whether `git status` stdout is large enough that the repo is dropped
-/// (`>= 1 MiB`). Extracted as a pure predicate so it is unit-testable
-/// without spawning git.
+/// Whether `git status` stdout is large enough that the repo is dropped (`>= 1 MiB`).
 fn git_status_exceeds_buffer(stdout_len: usize) -> bool {
     stdout_len >= GIT_STATUS_BUFFER_LIMIT
 }
 
-/// Collapse runs of 2+ spaces to a single space.
-///
-/// The `<git_status>` body collapses consecutive spaces, so the
-/// porcelain two-column status renders with a single separator: `A  staged.txt`
-/// (index-added, clean worktree) becomes `A staged.txt`, `M  mod.txt` becomes
-/// `M mod.txt`, `R  old -> new` becomes `R old -> new`. A single leading space
-/// (e.g. ` M file`, worktree-modified) and the rename ` -> ` separator are
-/// preserved because they are runs of length one.
-/// Newlines are never touched.
+/// Collapse runs of two or more spaces to one (porcelain two-column status); newlines untouched.
 fn collapse_status_spaces(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_space = false;
@@ -68,64 +50,72 @@ fn collapse_status_spaces(s: &str) -> String {
     out
 }
 
-pub async fn git_status_short(working_directory: impl Into<PathBuf>) -> Result<String, FsError> {
+#[tracing::instrument(skip_all)]
+pub async fn git_status_short_pinned(
+    working_directory: impl Into<PathBuf>,
+    fsmonitor: FsmonitorOverride,
+) -> Result<String, FsError> {
     let working_directory = working_directory.into();
-    let permit = crate::git_odb::try_acquire_odb();
+    // Held for the whole run to bound ODB contention.
+    let _permit = crate::git_odb::try_acquire_odb();
 
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let output = xai_tty_utils::git_command()
-            .args(["status", "--short", "--branch", "--untracked-files=normal"])
-            .current_dir(&working_directory)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .map_err(|e| {
-                FsError::Other(format!(
-                    "git status --short --branch --untracked-files=normal failed: {}",
-                    e
-                ))
-            })?;
-
-        if !output.status.success() {
-            return Err(FsError::Other(format!(
-                "git status --short --branch exited with code {:?}",
-                output.status.code()
-            )));
-        }
-
-        // Output >= 1 MiB is dropped entirely, not truncated. Render-time
-        // truncation handles the < 1 MiB case.
-        if git_status_exceeds_buffer(output.stdout.len()) {
-            return Err(FsError::Other(
-                "git status --short --branch output exceeded 1 MiB buffer".to_string(),
-            ));
-        }
-
-        // Consecutive spaces in the status body are collapsed so staged
-        // entries (`A  file` -> `A file`) match the wire format.
-        Ok(collapse_status_spaces(&String::from_utf8_lossy(
-            &output.stdout,
-        )))
+    // libgit2 config walk is blocking; keep it off the async scheduler.
+    let pin_cwd = working_directory.clone();
+    let filter_pins = tokio::task::spawn_blocking(move || {
+        crate::git_content_filters::content_filter_config_pins(&pin_cwd)
     })
     .await
-    .map_err(|e| FsError::Other(format!("git status --short --branch task failed: {}", e)))?
+    .map_err(|e| FsError::Other(format!("git config pin task failed: {e}")))?
+    .ok_or_else(|| FsError::Other("unreadable git config".to_string()))?;
+
+    let mut cmd = xai_tty_utils::git_command();
+    for pin in &filter_pins {
+        cmd.args(["-c", pin.as_str()]);
+    }
+    cmd.args(["-c", fsmonitor.git_config_arg()]);
+    cmd.args(["status", "--short", "--branch", "--untracked-files=normal"])
+        .current_dir(&working_directory)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    // GIT_OPTIONAL_LOCKS=0: a session-triggered status must not fight the user's git on index.lock.
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+
+    let output = super::process::output_killing_group_on_drop(cmd)
+        .await
+        .map_err(|e| {
+            FsError::Other(format!(
+                "git status --short --branch --untracked-files=normal failed: {}",
+                e
+            ))
+        })?;
+
+    if !output.status.success() {
+        return Err(FsError::Other(format!(
+            "git status --short --branch exited with code {:?}",
+            output.status.code()
+        )));
+    }
+
+    if git_status_exceeds_buffer(output.stdout.len()) {
+        return Err(FsError::Other(
+            "git status --short --branch output exceeded 1 MiB buffer".to_string(),
+        ));
+    }
+
+    Ok(collapse_status_spaces(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
 }
 
+#[tracing::instrument(skip_all)]
 fn git_status_impl(working_directory: &Path) -> Result<String, FsError> {
-    let _timer = /* instrumentation_timer */ () ; // dev macro; noop stub ("git_status.impl")
     let max_status_chars = 1000;
     let mut output = String::with_capacity(max_status_chars);
 
-    // Get branch name
-    let branch_name = {
-        let _timer = /* instrumentation_timer */ () ; // dev macro; noop stub ("git_status.branch_info")
-        run_git(working_directory, &["rev-parse", "--abbrev-ref", "HEAD"])
-    };
+    let branch_name = { run_git(working_directory, &["rev-parse", "--abbrev-ref", "HEAD"]) };
 
     match &branch_name {
         Some(branch) if branch == "HEAD" => {
-            // Detached HEAD — get short commit hash
             if let Some(hash) = run_git(working_directory, &["rev-parse", "--short", "HEAD"]) {
                 let _ = writeln!(output, "HEAD detached at {}", hash);
             }
@@ -138,9 +128,7 @@ fn git_status_impl(working_directory: &Path) -> Result<String, FsError> {
         }
     }
 
-    // Get upstream ahead/behind
     {
-        let _timer = (); // instrumentation_timer noop stub
         if let Some(upstream_name) = run_git(
             working_directory,
             &["rev-parse", "--abbrev-ref", "@{upstream}"],
@@ -179,9 +167,7 @@ fn git_status_impl(working_directory: &Path) -> Result<String, FsError> {
         }
     }
 
-    // Get staged changes (index vs HEAD) — fast, no workdir scan
     let staged_output = {
-        let _timer = /* instrumentation_timer */ () ; // dev macro; noop stub ("git_status.staged")
         run_git(
             working_directory,
             &["diff", "--cached", "--name-status", "HEAD"],
@@ -208,17 +194,14 @@ fn git_status_impl(working_directory: &Path) -> Result<String, FsError> {
         }
     }
 
-    // Check if clean
     if staged.is_empty() {
         let _ = writeln!(output, "\nnothing to commit, working tree clean");
         return Ok(output);
     }
 
-    // Reserve space for truncation message
     let reserve_for_truncation = 50;
     let char_budget = max_status_chars - reserve_for_truncation;
 
-    // Write staged files
     if !staged.is_empty() && output.len() < char_budget {
         let _ = writeln!(output, "\nChanges to be committed:");
         for (shown, line) in staged.iter().enumerate() {
@@ -236,14 +219,17 @@ fn git_status_impl(working_directory: &Path) -> Result<String, FsError> {
     Ok(output)
 }
 
-/// Run a read-only git command and return its stdout, trimmed.
-/// Returns None on failure.
-///
-/// Uses `--no-optional-locks` to avoid creating `index.lock` for stat-cache
-/// refreshes.  This function is called from background tasks (system prompt
-/// generation) and must never contend with foreground git operations.
+/// Run a read-only git command and return trimmed stdout, or `None` on failure.
+/// `--no-optional-locks` avoids `index.lock`: this runs from background tasks and must not contend with foreground git.
+#[tracing::instrument(level = "debug", skip(cwd))]
 fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
-    let output = xai_tty_utils::git_command()
+    // Caller is already on a blocking pool (`git_status_impl`); do not nest spawn_blocking.
+    let filter_pins = crate::git_content_filters::content_filter_config_pins(cwd)?;
+    let mut cmd = xai_tty_utils::git_command();
+    for pin in &filter_pins {
+        cmd.args(["-c", pin.as_str()]);
+    }
+    let output = cmd
         .args(args)
         .current_dir(cwd)
         .stdout(std::process::Stdio::piped())
@@ -271,24 +257,94 @@ mod tests {
     fn git_status_buffer_cap_matches_spec() {
         assert!(!git_status_exceeds_buffer(0));
         assert!(!git_status_exceeds_buffer(GIT_STATUS_BUFFER_LIMIT - 1));
-        // At or above 1 MiB -> dropped.
         assert!(git_status_exceeds_buffer(GIT_STATUS_BUFFER_LIMIT));
         assert!(git_status_exceeds_buffer(GIT_STATUS_BUFFER_LIMIT + 1));
     }
 
-    /// Staged entries collapse the porcelain double space, while leading
-    /// single spaces and ` -> ` are preserved.
+    #[cfg(unix)]
+    fn init_attributed_repo(tmp: &Path) -> git2::Repository {
+        let repo = git2::Repository::init(tmp).unwrap();
+        std::fs::write(tmp.join(".gitattributes"), "data.txt filter=Pwn\n").unwrap();
+        std::fs::write(tmp.join("data.txt"), "hello\n").unwrap();
+        // Commit before installing the filter so commit itself does not run it.
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(".gitattributes")).unwrap();
+        index.add_path(Path::new("data.txt")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        drop(tree);
+        repo
+    }
+
+    #[cfg(unix)]
+    fn write_filter_script(tmp: &Path, marker: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = tmp.join("pwn.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\nexec cat\n", marker.display()),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        script
+    }
+
+    // Same length as the committed body plus index mtime: status re-hashes via clean.
+    #[cfg(unix)]
+    fn dirty_for_clean_filter(tmp: &Path) {
+        std::fs::write(tmp.join("data.txt"), "HELLO\n").unwrap();
+        let data = std::fs::File::open(tmp.join("data.txt")).unwrap();
+        let index = std::fs::File::open(tmp.join(".git/index")).unwrap();
+        let mtime = index.metadata().unwrap().modified().unwrap();
+        data.set_modified(mtime).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_status_short_does_not_run_content_filters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _repo = init_attributed_repo(tmp.path());
+        let marker = tmp.path().join("pwned");
+        let script = write_filter_script(tmp.path(), &marker);
+        let cfg_path = tmp.path().join(".git/config");
+        let mut cfg = std::fs::read_to_string(&cfg_path).unwrap();
+        cfg.push_str(&format!(
+            "\n[filter \"Pwn\"]\n\tclean = {}\n",
+            script.display()
+        ));
+        std::fs::write(&cfg_path, cfg).unwrap();
+        dirty_for_clean_filter(tmp.path());
+
+        let _ = std::fs::remove_file(&marker);
+        xai_tty_utils::git_command()
+            .args(["status", "--short"])
+            .current_dir(tmp.path())
+            .output()
+            .expect("unpinned status");
+        assert!(marker.exists(), "unpinned status must run the filter");
+        std::fs::remove_file(&marker).unwrap();
+
+        git_status_short_pinned(tmp.path(), FsmonitorOverride::Disabled)
+            .await
+            .expect("pinned status");
+        assert!(!marker.exists(), "pinned status must not run the filter");
+    }
+
+    /// Staged entries collapse the porcelain double space, while leading single spaces and ` -> ` are preserved.
     #[test]
     fn collapse_status_spaces_matches_spec() {
         let raw = "## main...origin/main\n M committed.txt\nA  staged.txt\nM  mod.txt\nR  old.txt -> new.txt\n?? untracked.txt\n";
         let want = "## main...origin/main\n M committed.txt\nA staged.txt\nM mod.txt\nR old.txt -> new.txt\n?? untracked.txt\n";
         assert_eq!(collapse_status_spaces(raw), want);
-    }
 
-    /// Newlines are never collapsed (blank lines preserved).
-    #[test]
-    fn collapse_status_spaces_preserves_newlines() {
-        assert_eq!(collapse_status_spaces("a\n\n\nb"), "a\n\n\nb");
+        // Newlines are never touched (empty input and runs of blank lines survive).
         assert_eq!(collapse_status_spaces(""), "");
+        assert_eq!(collapse_status_spaces("a\n\n\nb"), "a\n\n\nb");
     }
 }

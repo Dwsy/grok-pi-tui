@@ -1,14 +1,13 @@
-//! HTTP client for backend CRUD operations.
-use crate::auth::{GrokAuth, GrokComConfig};
 use crate::session::export::{ExportedMessage, ExportedMetadata, ExportedSession};
 use indexmap::IndexMap;
 use prod_mc_cli_chat_proxy_types::SubagentBundle;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use xai_grok_login::backend::{ActiveAuthBackend, AuthBackend};
+use xai_grok_login::{GrokAuth, GrokComConfig};
 const GROK_CODE_BACKEND_URL: &str = "https://code.grok.com";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const GROK_CODE_WEB_URL: &str = "https://grok.com";
-/// Build a share URL from a permission ID
 pub fn share_url(permission_id: &str) -> String {
     let web_url =
         std::env::var("GROK_CODE_WEB_URL").unwrap_or_else(|_| GROK_CODE_WEB_URL.to_string());
@@ -47,14 +46,14 @@ async fn parse_json_response<T: serde::de::DeserializeOwned>(
 }
 async fn add_bundle_fetch_headers(
     builder: reqwest::RequestBuilder,
-    auth_manager: Option<&std::sync::Arc<crate::auth::AuthManager>>,
+    auth_manager: Option<&std::sync::Arc<xai_grok_login::AuthManager>>,
     deployment_key: Option<&str>,
     alpha_test_key: Option<&str>,
     url: &str,
 ) -> reqwest::RequestBuilder {
     let resolved_auth = match auth_manager {
-        Some(am) => am.auth().await.ok(),
-        None => None,
+        Some(am) if ActiveAuthBackend::default().is_xai_authority() => am.auth().await.ok(),
+        _ => None,
     };
     let mut credentials = crate::util::grok_auth_credentials::GrokAuthCredentials::new(
         resolved_auth.as_ref().map(|auth| auth.key.clone()),
@@ -81,15 +80,14 @@ async fn add_bundle_fetch_headers(
             crate::http::CLIENT_MODE_HEADER,
             crate::http::process_client_mode(),
         );
-    xai_file_utils::trace_context::inject_trace_context_into_request(builder)
+    xai_grok_otel::inject_trace_context_into_request(builder)
 }
 /// Fetch the bundled subagent cache payload from cli-chat-proxy `GET /v1/subagents/bundle`.
 ///
-/// Uses the shell's standard proxy-backed auth model: deployment key auth takes
-/// precedence when configured; otherwise user-session token auth is used.
+/// Uses the shell's standard auth for proxy requests: a configured deployment key takes precedence; otherwise the user-session token is used.
 pub async fn fetch_subagent_bundle(
     cli_chat_proxy_base_url: &str,
-    auth_manager: Option<&std::sync::Arc<crate::auth::AuthManager>>,
+    auth_manager: Option<&std::sync::Arc<xai_grok_login::AuthManager>>,
     deployment_key: Option<&str>,
     alpha_test_key: Option<&str>,
 ) -> Result<SubagentBundle, BackendError> {
@@ -121,18 +119,16 @@ pub async fn fetch_subagent_bundle(
     );
     Ok(bundle)
 }
-/// The result of fetching a bundle: either raw tar.gz bytes from the new
-/// archive endpoint, or a parsed JSON bundle from the legacy endpoint.
+/// The result of fetching a bundle: either raw tar.gz bytes from the new archive endpoint, or a parsed JSON bundle from the legacy endpoint.
 #[derive(Debug)]
 pub enum FetchedBundle {
     Archive(Vec<u8>),
     Legacy(SubagentBundle),
 }
-/// Fetch a bundle, trying the archive endpoint first and falling back to
-/// legacy JSON on any non-success HTTP status.
+/// Fetch a bundle, trying the archive endpoint first and falling back to legacy JSON on any non-success HTTP status.
 pub async fn fetch_bundle(
     cli_chat_proxy_base_url: &str,
-    auth_manager: Option<&std::sync::Arc<crate::auth::AuthManager>>,
+    auth_manager: Option<&std::sync::Arc<xai_grok_login::AuthManager>>,
     deployment_key: Option<&str>,
     alpha_test_key: Option<&str>,
 ) -> Result<FetchedBundle, BackendError> {
@@ -146,21 +142,21 @@ pub async fn fetch_bundle(
 }
 async fn fetch_bundle_inner(
     cli_chat_proxy_base_url: &str,
-    auth_manager: Option<&std::sync::Arc<crate::auth::AuthManager>>,
+    auth_manager: Option<&std::sync::Arc<xai_grok_login::AuthManager>>,
     deployment_key: Option<&str>,
     alpha_test_key: Option<&str>,
 ) -> Result<FetchedBundle, BackendError> {
     let archive_url = format!("{}/bundle/archive", cli_chat_proxy_base_url);
     let raw_client = crate::http::shared_client();
     let client: reqwest_middleware::ClientWithMiddleware = if let Some(am) = auth_manager {
-        let provider: std::sync::Arc<dyn xai_grok_auth::AuthCredentialProvider> =
-            std::sync::Arc::new(
-                crate::auth::credential_provider::ShellAuthCredentialProvider::new(
-                    am.clone(),
-                    deployment_key.map(str::to_owned),
-                    alpha_test_key.map(str::to_owned),
-                ),
-            );
+        let provider: std::sync::Arc<dyn xai_grok_auth::AuthCredentialProvider> = std::sync::Arc::new(
+            xai_grok_login::credential_provider::ShellAuthCredentialProvider::with_deployment_id_resolver(
+                am.clone(),
+                deployment_key.map(str::to_owned),
+                alpha_test_key.map(str::to_owned),
+                std::sync::Arc::new(crate::managed_config::resolve_deployment_id),
+            ),
+        );
         crate::http::with_auth_retry(raw_client, provider)
     } else {
         reqwest_middleware::ClientBuilder::new(raw_client).build()
@@ -281,7 +277,7 @@ pub struct BackendClient {
     reqwest_client: reqwest::Client,
     client: reqwest_middleware::ClientWithMiddleware,
     base_url: String,
-    pub(crate) auth_manager: Option<std::sync::Arc<crate::auth::AuthManager>>,
+    pub(crate) auth_manager: Option<std::sync::Arc<xai_grok_login::AuthManager>>,
 }
 impl Default for BackendClient {
     fn default() -> Self {
@@ -317,15 +313,14 @@ impl BackendClient {
             auth_manager: None,
         }
     }
-    /// Attach a live `AuthManager` so every request resolves a fresh token
-    /// instead of requiring the caller to pass `&GrokAuth`.
+    /// Attach a live `AuthManager` so every request resolves a fresh token instead of requiring the caller to pass `&GrokAuth`.
     pub(crate) fn with_auth_manager(
         mut self,
-        manager: std::sync::Arc<crate::auth::AuthManager>,
+        manager: std::sync::Arc<xai_grok_login::AuthManager>,
     ) -> Self {
         let credentials: std::sync::Arc<dyn xai_grok_auth::AuthCredentialProvider> =
             std::sync::Arc::new(
-                crate::auth::credential_provider::ShellAuthCredentialProvider::new(
+                xai_grok_login::credential_provider::ShellAuthCredentialProvider::new(
                     manager.clone(),
                     None,
                     None,
@@ -335,7 +330,6 @@ impl BackendClient {
         self.auth_manager = Some(manager);
         self
     }
-    /// Resolve auth from the attached `AuthManager`.
     async fn resolve_auth(&self) -> Result<GrokAuth, BackendError> {
         let manager = self
             .auth_manager
@@ -349,13 +343,9 @@ impl BackendClient {
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
-    /// Upload session and create share link.
-    ///
     /// The session data (`save_session_data`) is sent inline to the backend.
-    /// If the backend responds with 413 (payload too large), the error is
-    /// logged as a warning and the share continues — the caller is expected
-    /// to have already uploaded the data to GCS via a signed URL as a
-    /// fallback.
+    /// If the backend responds with 413 (payload too large), the error is logged as a warning and the share continues.
+    /// The caller is expected to have already uploaded the data to GCS via a signed URL as a fallback.
     pub async fn share_session(
         &self,
         session: &ExportedSession,
@@ -384,7 +374,6 @@ impl BackendClient {
         let share_response = self.create_share_link(&session.session_id).await?;
         Ok(share_url(&share_response.permission_id))
     }
-    /// Build auth + identity headers.
     /// Must include X-XAI-Token-Auth so nginx auth subrequest routes to OAuth.
     /// See: crates/codegen/xai-grok-shell/src/agent/app.rs:run_headless
     async fn auth_header_map(&self) -> Result<reqwest::header::HeaderMap, BackendError> {
@@ -423,7 +412,7 @@ impl BackendClient {
         builder: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, BackendError> {
         let headers = self.auth_header_map().await?;
-        let builder = xai_file_utils::trace_context::inject_trace_context_into_request(
+        let builder = xai_grok_otel::inject_trace_context_into_request(
             builder.timeout(DEFAULT_TIMEOUT).headers(headers),
         );
         let request = builder.build()?;
@@ -479,7 +468,6 @@ impl BackendClient {
         }
         Ok(())
     }
-    /// List all sessions for the authenticated user. `GET /sessions`
     pub async fn list_sessions(&self) -> Result<Vec<SessionInfo>, BackendError> {
         let url = format!("{}/sessions", self.base_url);
         let response = self.send_with_auth(self.reqwest_client.get(&url)).await?;
@@ -541,20 +529,18 @@ impl BackendClient {
         Ok(())
     }
 }
-/// Outcome of a blocking settings fetch. Distinguishes the three cases the
-/// external-OTEL gate cares about (see [`crate::agent::mvp_agent`]).
-#[derive(Debug)]
+/// Distinguishes the three cases the external-OTEL gate cares about (see [`crate::agent::mvp_agent`]).
+#[derive(Debug, Clone)]
 #[must_use]
 #[non_exhaustive]
 pub enum SettingsFetch {
     /// Settings fetched and parsed; carries the policy that resolves the gate.
     /// Boxed because `RemoteSettings` is large and the other variants are unit-sized.
     Fetched(Box<crate::util::config::RemoteSettings>),
-    /// Credential unambiguously rejected (401): the remote policy will never reach
-    /// this leader, so the gate may open without waiting.
+    /// Credential unambiguously rejected (401): the remote policy will never reach this leader, so the gate may open without waiting.
     Rejected,
-    /// Transient/ambiguous (network, 5xx exhausted, 403/429/other 4xx, unparseable
-    /// 2xx): outcome unknown. Leave the gate closed (fail-closed), retry later.
+    /// Transient/ambiguous (network, 5xx exhausted, 403/429/other 4xx, unparseable 2xx): outcome unknown.
+    /// A completed fetch that failed: the gate may open on local policy.
     Retry,
 }
 impl SettingsFetch {
@@ -566,8 +552,7 @@ impl SettingsFetch {
         }
     }
 }
-/// Blocking settings fetch; makes up to
-/// [`crate::http::SETTINGS_FETCH_MAX_ATTEMPTS`] attempts on transient failures.
+/// Makes up to [`crate::http::SETTINGS_FETCH_MAX_ATTEMPTS`] attempts on transient failures.
 pub fn fetch_settings_blocking(
     cli_chat_proxy_base_url: &str,
     auth: &GrokAuth,
@@ -580,9 +565,7 @@ pub fn fetch_settings_blocking(
         crate::http::SETTINGS_FETCH_MAX_ATTEMPTS,
     )
 }
-/// Settings-fetch core with a caller-chosen attempt budget. Private so the
-/// attempt count stays out of the public API; tests use it to skip retry
-/// backoff on the transient-failure paths.
+/// Private so the attempt count stays out of the public API; tests use it to skip retry backoff on the transient-failure paths.
 fn fetch_settings_blocking_with_attempts(
     cli_chat_proxy_base_url: &str,
     auth: &GrokAuth,
@@ -594,7 +577,7 @@ fn fetch_settings_blocking_with_attempts(
     let max_attempts = max_attempts.max(1);
     for attempt in 0u32..max_attempts {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(500 * u64::from(attempt)));
+            std::thread::sleep(crate::http::SETTINGS_RETRY_BACKOFF_STEP * attempt);
         }
         let request =
             add_cli_chat_proxy_headers_blocking(client.get(&url), auth, alpha_test_key, &url);
@@ -640,189 +623,11 @@ fn fetch_settings_blocking_with_attempts(
     tracing::error!(max_attempts, "Settings fetch failed");
     SettingsFetch::Retry
 }
-#[derive(Deserialize)]
-struct LoginConfigResponse {
-    /// Tri-state: `Some` forces a transport; `None`/absent → client default.
-    #[serde(default)]
-    device_flow: Option<bool>,
-}
-/// Fetch `grok_build_login_device_flow` from cli-chat-proxy `GET /v1/login-config`.
-///
-/// Unauthenticated (pre-login); `x-grok-agent-id` is the per-install bucketing key.
-/// Best-effort: any error or unset flag returns `None` so the caller keeps the
-/// loopback default. Caps at 1.5s with no retries since it's on the login path;
-/// `agent_id()` runs on the blocking pool so the fetch never stalls the executor.
-pub async fn fetch_login_device_flow(cli_chat_proxy_base_url: &str) -> Option<bool> {
-    let agent_id = tokio::task::spawn_blocking(xai_grok_telemetry::id::agent_id)
-        .await
-        .ok()?;
-    let client = crate::http::shared_client();
-    let url = format!("{}/login-config", cli_chat_proxy_base_url);
-    let response = client
-        .get(&url)
-        .timeout(std::time::Duration::from_millis(1500))
-        .header("x-grok-agent-id", agent_id)
-        .header("x-grok-client-version", xai_grok_version::VERSION)
-        .header(
-            "x-grok-client-identifier",
-            crate::http::process_client_identifier(),
-        )
-        .header(
-            crate::http::CLIENT_MODE_HEADER,
-            crate::http::process_client_mode(),
-        )
-        .send()
-        .await;
-    let resp = match response {
-        Ok(resp) if resp.status().is_success() => resp,
-        Ok(resp) => {
-            tracing::debug!(status = resp.status().as_u16(), "login-config fetch failed");
-            return None;
-        }
-        Err(e) => {
-            tracing::debug!("login-config fetch error: {e}");
-            return None;
-        }
-    };
-    match resp.json::<LoginConfigResponse>().await {
-        Ok(cfg) => {
-            tracing::debug!(device_flow = ?cfg.device_flow, "Fetched remote login-config");
-            cfg.device_flow
-        }
-        Err(e) => {
-            tracing::debug!("Failed to parse login-config response: {e}");
-            None
-        }
-    }
-}
-/// Default context window (256k) when the remote endpoint doesn't provide one.
+/// Default context window when the remote endpoint doesn't provide one.
 pub(crate) const DEFAULT_CONTEXT_WINDOW: u64 = 256_000;
-#[derive(Debug, Deserialize)]
-struct ModelsResponse {
-    data: Vec<serde_json::Value>,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EndpointAuth {
-    ApiKey,
-    Session,
-}
-struct ListModelsEndpoint {
-    url: String,
-    auth: EndpointAuth,
-}
-/// The `/v1/models` URL [`fetch_models_blocking`] hits for this
-/// endpoints/auth shape. Doubles as the models disk-cache origin key: cached
-/// entries embed absolute `base_url`s from the backend that served them, so a
-/// catalog fetched from one backend (env override, another deployment, a
-/// test's mock server) must be a cache miss for any other backend.
-pub(crate) fn models_list_url(
-    endpoints: &crate::agent::config::EndpointsConfig,
-    fetch_auth: crate::agent::models::ModelFetchAuth,
-) -> String {
-    ListModelsEndpoint::from_endpoints(endpoints, fetch_auth).url
-}
-impl ListModelsEndpoint {
-    fn from_endpoints(
-        endpoints: &crate::agent::config::EndpointsConfig,
-        fetch_auth: crate::agent::models::ModelFetchAuth,
-    ) -> Self {
-        if endpoints.has_custom_endpoint() {
-            Self {
-                url: endpoints.resolve_models_list_url(),
-                auth: EndpointAuth::ApiKey,
-            }
-        } else if fetch_auth == crate::agent::models::ModelFetchAuth::ApiKey {
-            Self {
-                url: format!("{}/models", endpoints.xai_api_base_url),
-                auth: EndpointAuth::ApiKey,
-            }
-        } else {
-            Self {
-                url: endpoints.resolve_models_list_url(),
-                auth: EndpointAuth::Session,
-            }
-        }
-    }
-}
-/// Fetch models from an OpenAI-compatible `/v1/models` endpoint.
-/// Fetch result: model entries + optional etag from response.
 pub struct FetchModelsResult {
     pub models: Vec<crate::agent::config::ModelEntryConfig>,
     pub etag: Option<String>,
-}
-pub(crate) fn fetch_models_blocking(
-    endpoints: &crate::agent::config::EndpointsConfig,
-    auth: Option<&GrokAuth>,
-    fetch_auth: crate::agent::models::ModelFetchAuth,
-) -> Result<FetchModelsResult, BackendError> {
-    let client = crate::http::shared_startup_blocking_client();
-    let source = ListModelsEndpoint::from_endpoints(endpoints, fetch_auth);
-    let inference_base_url = endpoints.resolve_inference_base_url();
-    tracing::info!("Fetching models from {}", source.url);
-    let mut request = client.get(&source.url);
-    match source.auth {
-        EndpointAuth::ApiKey => {
-            let api_key = crate::agent::auth_method::read_xai_api_key_env()
-                .or_else(|_| {
-                    auth.map(|a| a.key.clone())
-                        .ok_or(std::env::VarError::NotPresent)
-                })
-                .map_err(|_| {
-                    BackendError::Auth(
-                        "No API key for custom models endpoint. Set XAI_API_KEY.".into(),
-                    )
-                })?;
-            request = request.header("Authorization", format!("Bearer {}", api_key));
-        }
-        EndpointAuth::Session => {
-            let auth = auth.ok_or_else(|| {
-                BackendError::Auth("No auth credentials for cli-chat-proxy".into())
-            })?;
-            request = request
-                .header("Authorization", format!("Bearer {}", &auth.key))
-                .header("X-XAI-Token-Auth", "xai-grok-cli")
-                .header("x-userid", &auth.user_id)
-                .header("x-grok-client-version", xai_grok_version::VERSION)
-                .header(
-                    crate::http::CLIENT_MODE_HEADER,
-                    crate::http::process_client_mode(),
-                );
-            if let Some(email) = &auth.email {
-                request = request.header("x-email", email);
-            }
-        }
-    }
-    let response = request.send()?;
-    if !response.status().is_success() {
-        let status = response.status().as_u16();
-        let body = response.text().unwrap_or_default();
-        tracing::warn!("Failed to fetch models: {} - {}", status, body);
-        return Err(BackendError::RequestFailed { status, body });
-    }
-    let etag = response
-        .headers()
-        .get("etag")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    let models_response: ModelsResponse = response.json()?;
-    tracing::info!(
-        "Fetched {} models from {}",
-        models_response.data.len(),
-        source.url
-    );
-    let mut models = Vec::with_capacity(models_response.data.len());
-    for (idx, value) in models_response.data.into_iter().enumerate() {
-        match parse_remote_model_value(&value, &inference_base_url) {
-            Some(model) => models.push(model),
-            None => {
-                tracing::warn!(
-                    "Skipping model at index {}: missing required field ('model' or 'context_window') or invalid types",
-                    idx
-                )
-            }
-        }
-    }
-    Ok(FetchModelsResult { models, etag })
 }
 /// Parse a single model entry from the /models-v2 response.
 /// Used by both initial model fetch and session-resume metadata refresh.
@@ -904,6 +709,9 @@ pub(crate) fn parse_remote_model_value(
         max_retries: get_u64(obj, "maxRetries")
             .or_else(|| get_u64(obj, "max_retries"))
             .and_then(|v| u32::try_from(v).ok()),
+        rate_limit_retry_threshold: get_u64(obj, "rateLimitRetryThreshold")
+            .or_else(|| get_u64(obj, "rate_limit_retry_threshold"))
+            .and_then(|v| u32::try_from(v).ok()),
         subagent_rate_limit_max_attempts: get_u64(obj, "subagentRateLimitMaxAttempts")
             .or_else(|| get_u64(obj, "subagent_rate_limit_max_attempts"))
             .and_then(|v| u32::try_from(v).ok()),
@@ -935,6 +743,22 @@ pub(crate) fn parse_remote_model_value(
             .or_else(|| meta.and_then(|m| m.get("reasoningEfforts")))
             .and_then(|v| v.as_array())
             .map(|arr| xai_grok_sampling_types::parse_reasoning_effort_options(arr))
+            .unwrap_or_default(),
+        variants: obj
+            .get("variants")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr
+                    .iter()
+                    .filter_map(|value| match serde_json::from_value(value.clone()) {
+                        Ok(variant) => Some(variant),
+                        Err(e) => {
+                            tracing::warn!("Dropping a model variant this build cannot read: {e}");
+                            None
+                        }
+                    })
+                    .collect()
+            })
             .unwrap_or_default(),
         supports_backend_search: obj
             .get("supportsBackendSearch")

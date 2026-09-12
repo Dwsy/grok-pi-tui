@@ -65,13 +65,8 @@ pub struct MutationResult {
     pub line_delta: isize,
 }
 
-/// Apply a mutation to a mutable vec of owned lines.
-///
-/// Returns metadata about what was affected, for benchmark analysis.
-///
-/// # Panics
-///
-/// Panics if indices are out of range for the current `lines` vec.
+/// Apply a mutation to a mutable vec of owned lines. Returns metadata about what was affected, for
+/// benchmark analysis. Panics if indices are out of range for the current `lines` vec.
 pub fn apply_mutation(lines: &mut Vec<String>, mutation: &Mutation) -> MutationResult {
     let orig_len = lines.len();
 

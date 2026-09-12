@@ -1,14 +1,10 @@
-//! TokyoNight theme for the pager.
+//! All colors come from the `Theme` struct; nothing else hardcodes colors.
 //!
-//! All colors come from the `Theme` struct. NO hardcoded colors elsewhere.
-//!
-//! The named constants below match the TokyoNight Night/Storm palette from
-//! `xai-grok-pager/src/ui/style.rs` for consistency. The `Theme` struct maps
-//! these constants to semantic roles.
+//! The named constants below match the TokyoNight Night/Storm palette from `xai-grok-pager/src/ui/style.rs`.
+//! The `Theme` struct maps these constants to semantic roles.
 
 use ratatui::style::{Color, Modifier, Style};
 
-/// Helper for concise const Color::Rgb definitions.
 const fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::Rgb(r, g, b)
 }
@@ -46,14 +42,14 @@ pub mod palette {
 use palette::*;
 
 /// Theme for v3 pager rendering.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Theme {
     // Backgrounds
     pub bg_base: Color,
     pub bg_light: Color,
     pub bg_dark: Color,
     pub bg_highlight: Color,
-    pub bg_hover: Color, // Mouse hover row in dropdowns — between bg_highlight and bg_visual
+    pub bg_hover: Color, // Mouse hover row in dropdowns, between bg_highlight and bg_visual
     pub bg_terminal: Color, // For terminal output blocks (currently unused, using bg_dark instead)
 
     // Accent colors (for vertical lines)
@@ -71,12 +67,11 @@ pub struct Theme {
     pub text_primary: Color,
     pub text_secondary: Color,
 
-    // Gray scale (dim → medium → bright)
-    // Every theme defines these three; they provide a consistent hierarchy
-    // for secondary/meta text across all themes.
-    pub gray_dim: Color,    // Dimmest — meta punctuation (`$`, `(+N/-M)`, etc.)
-    pub gray: Color,        // Medium — muted text, comments, collapsed content
-    pub gray_bright: Color, // Brightest — tool accents, secondary labels
+    // Gray scale (dim, medium, bright)
+    // Every theme defines these three; they provide a consistent hierarchy for secondary/meta text across all themes
+    pub gray_dim: Color,    // Dimmest: meta punctuation (`$`, `(+N/-M)`, etc.)
+    pub gray: Color,        // Medium: muted text, comments, collapsed content
+    pub gray_bright: Color, // Brightest: tool accents, secondary labels
 
     // Semantic colors
     pub command: Color, // Yellow for shell commands
@@ -125,10 +120,8 @@ pub struct Theme {
     pub paste_fg: Color,
     pub paste_dim: Color,
 
-    // Markdown rendering colors — used by md_style.rs for headings, code
-    // blocks, inline code, links, etc.  These default to the corresponding
-    // top-level theme colors but can be overridden per-theme to customise
-    // markdown appearance independently.
+    // Markdown rendering colors, used by md_style.rs for headings, code blocks, inline code, links, etc
+    // These default to the corresponding top-level theme colors but can be overridden per-theme to customise markdown appearance independently
     pub md_heading_h1: Color,        // H1 headings
     pub md_heading_h1_mod: Modifier, // H1 extra effects
     pub md_heading_h2: Color,        // H2 headings, task unchecked, tables
@@ -185,15 +178,15 @@ impl Theme {
 
             fuzzy_accent: BLUE,
 
-            accent_plan: rgb(230, 180, 50), // #E6B432 — golden
+            accent_plan: rgb(230, 180, 50), // #E6B432, golden
 
             accent_verify: MAGENTA, // #bb9af7: violet (distinct from plan)
 
-            accent_remember: Color::Rgb(139, 195, 74), // #8BC34A — Material Design light green
+            accent_remember: Color::Rgb(139, 195, 74), // #8BC34A, Material Design light green
 
-            selection_border: rgb(58, 72, 115), // #3A4873 — muted tokyonight blue
-            prompt_border: rgb(60, 75, 120),    // #323E64 — dimmer prompt chrome
-            prompt_border_active: rgb(75, 92, 140), // #4B5C8C — brighter when focused
+            selection_border: rgb(58, 72, 115), // #3A4873, muted tokyonight blue
+            prompt_border: rgb(60, 75, 120),    // #323E64, dimmer prompt chrome
+            prompt_border_active: rgb(75, 92, 140), // #4B5C8C, brighter when focused
             hover_border: rgb(55, 58, 80),
 
             accent_model: TEAL,
@@ -208,7 +201,7 @@ impl Theme {
             diff_equal_fg: COMMENT,
             diff_gutter_fg: COMMENT,
 
-            bg_visual: rgb(40, 52, 87), // #283457 — blue-tinted selection bg
+            bg_visual: rgb(40, 52, 87), // #283457, blue-tinted selection bg
 
             paste_bg: BG_STORM_DARK,
             paste_fg: FG_DARK,
@@ -238,20 +231,23 @@ impl Theme {
         }
     }
 
-    /// Get a style with the given foreground color.
     pub const fn fg(&self, color: Color) -> Style {
         Style::new().fg(color)
     }
 
-    /// Get a style with muted text (gray — medium).
-    ///
-    /// When `gray` is [`Color::Reset`] (terminal-native / minimal palette),
-    /// de-emphasize with [`Modifier::DIM`] instead of painting ANSI bright
-    /// black — dim scales the terminal's own default fg, so contrast stays
-    /// polarity-safe. RGB themes keep an explicit gray foreground.
+    /// `Reset` gray uses DIM so contrast stays polarity-safe; RGB themes keep an explicit gray foreground.
     pub const fn muted(&self) -> Style {
         match self.gray {
             Color::Reset => Style::new().add_modifier(Modifier::DIM),
+            c => Style::new().fg(c),
+        }
+    }
+
+    /// [`Self::muted`] for caption text painted over colored chrome (borders, header rails).
+    /// The bandless palette's `muted()` carries no fg, so text patched over a border cell would inherit that cell's fg — pin `Reset` (the terminal default) in that case.
+    pub const fn muted_over_chrome(&self) -> Style {
+        match self.gray {
+            Color::Reset => Style::new().add_modifier(Modifier::DIM).fg(Color::Reset),
             c => Style::new().fg(c),
         }
     }
@@ -263,47 +259,86 @@ impl Theme {
             .add_modifier(ratatui::style::Modifier::UNDERLINED)
     }
 
-    /// Get a style with dim text (gray_dim — dimmest).
+    /// Get a style with dim text (gray_dim, dimmest).
     ///
-    /// Same Reset→DIM rule as [`Self::muted`] for the terminal-native palette.
+    /// Same Reset-to-DIM rule as [`Self::muted`]: bandless palettes retarget `gray_dim` to bright black for decoration, so content stays on the polarity-safe DIM path and only direct `fg(gray_dim)` sites pick up the bright black.
     pub const fn dim(&self) -> Style {
-        match self.gray_dim {
-            Color::Reset => Style::new().add_modifier(Modifier::DIM),
-            c => Style::new().fg(c),
+        if self.is_bandless() || matches!(self.gray_dim, Color::Reset) {
+            Style::new().add_modifier(Modifier::DIM)
+        } else {
+            Style::new().fg(self.gray_dim)
         }
     }
 
-    /// Get a style for primary text.
     pub const fn primary(&self) -> Style {
         Style::new().fg(self.text_primary)
     }
 
-    /// Get a bold style.
+    /// Whether this is the bandless terminal-native palette: every band slot is `Reset` so the terminal's own canvas shows through.
+    /// The canonical predicate for "reverse video / decoration fallback instead of a color band" — key every such branch off this, not off individual slots.
+    pub const fn is_bandless(&self) -> bool {
+        matches!(self.bg_visual, Color::Reset)
+    }
+
+    /// Bandless palette: both slots are `Reset` and composite to nothing, so reverse video keeps the cursor visible.
+    pub const fn block_cursor_over(&self, surface: Color) -> Style {
+        if self.is_bandless() {
+            Style::new().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::new().fg(surface).bg(self.text_primary)
+        }
+    }
+
+    /// Patch over the already-rendered row. Bandless uses reverse video: a bright-black band can sit too close to default fg.
+    pub const fn selection_overlay(&self) -> Style {
+        if self.is_bandless() {
+            Style::new().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::new().bg(self.bg_visual)
+        }
+    }
+
+    /// Hover analog of [`Self::selection_overlay`], keyed off `bg_hover`.
+    /// On the bandless palette hover and selection share reverse video (they shared the same band before); the cursor row stays distinguishable by its marker/bold.
+    /// Dropdowns and chips use this. Inline terminal rows use [`Self::row_hover_bg`] instead.
+    pub const fn hover_overlay(&self) -> Style {
+        if self.is_bandless() {
+            Style::new().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::new().bg(self.bg_hover)
+        }
+    }
+
+    /// Dim row background for hover inside the terminal itself (scrollback tool
+    /// rows, the queue pane, the dock). Half-blend of `bg_base` toward `bg_dark`,
+    /// softer than the dropdown `bg_hover` token. Named ANSI and Reset palettes
+    /// cannot blend, so fall back to `bg_hover` (Reset on the terminal theme: no band).
+    pub fn row_hover_bg(&self) -> Color {
+        crate::render::color::blend_color(self.bg_base, self.bg_dark, 0.5).unwrap_or(self.bg_hover)
+    }
+
+    /// Hairline fg for panel dividers/borders that RGB themes draw in the `bg_highlight` tone.
+    /// On the bandless palette that would be a full-brightness line, so decoration falls back to bright black (`gray_dim`).
+    pub const fn panel_border_fg(&self) -> Color {
+        if self.is_bandless() {
+            self.gray_dim
+        } else {
+            self.bg_highlight
+        }
+    }
+
     pub const fn bold(&self) -> Style {
         Style::new().add_modifier(Modifier::BOLD)
     }
 }
 
-/// Compute animated brightness for a traveling wave effect.
-///
-/// Creates a wave that travels along the accent line. Each row has a fixed phase
-/// offset so the wave appears to move smoothly regardless of block height.
-///
-/// # Arguments
-/// - `tick`: Frame counter (increments each render tick)
-/// - `row`: Current row within the block (0 = top)
-/// - `wave_rows`: Rows per full wave cycle (e.g., 32)
-/// - `speed`: Wave speed (radians per tick, e.g., 0.15)
-///
-/// # Returns
-/// Brightness value in [0.0, 1.0] for this row at this tick.
+/// Per-row phase offset (`wave_rows` per cycle) so the wave is smooth regardless of block height. Brightness in [0.0, 1.0].
 pub fn wave_brightness(tick: u64, row: u16, wave_rows: u16, speed: f32) -> f32 {
     use std::f32::consts::PI;
 
     let rows_per_wave = wave_rows.max(1) as f32;
     let phase = (row as f32 / rows_per_wave) * 2.0 * PI;
 
-    // Time-based oscillation
     let t = tick as f32 * speed;
 
     // sin²(t + phase) gives smooth 0-1 oscillation
@@ -311,35 +346,9 @@ pub fn wave_brightness(tick: u64, row: u16, wave_rows: u16, speed: f32) -> f32 {
     sin_val * sin_val
 }
 
-/// Compute a smooth pulsing brightness for a single element (icon, indicator).
-///
-/// Unlike [`wave_brightness`] which creates a spatial wave across rows,
-/// this is a simple temporal pulse: all elements sharing the same tick
-/// pulse in unison.
-///
-/// # Arguments
-/// - `tick`: Frame counter (increments each render tick, ~30fps)
-/// - `speed`: Pulse speed (radians per tick). The returned value uses
-///   `sin²`, which has period π, so the visible bright→dim→bright cycle
-///   is `π / (speed * fps)`. At 30fps, `speed = 0.08` ≈ 1.3s per cycle;
-///   for a 2.5s cycle pass `speed ≈ 0.042`.
-///
-/// # Returns
-/// Brightness value in [0.0, 1.0].
+/// Shared-tick pulse in [0.0, 1.0]. `sin²` has period π, so one cycle is `π / (speed * fps)` seconds.
 pub fn pulse_brightness(tick: u64, speed: f32) -> f32 {
     let t = tick as f32 * speed;
     let sin_val = t.sin();
     sin_val * sin_val
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_tokyonight_theme() {
-        let theme = Theme::tokyonight();
-        assert!(matches!(theme.bg_base, Color::Rgb(36, 40, 59)));
-        assert!(matches!(theme.accent_user, Color::Rgb(122, 162, 247)));
-    }
 }

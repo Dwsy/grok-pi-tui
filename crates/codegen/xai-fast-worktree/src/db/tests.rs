@@ -393,7 +393,7 @@ fn kind_str_roundtrip() {
         WorktreeKind::Manual,
         WorktreeKind::Subagent,
     ] {
-        assert_eq!(WorktreeKind::from_str_lossy(kind.as_str()), kind);
+        assert_eq!(WorktreeKind::from_str_lossy(kind.as_ref()), kind);
     }
     assert_eq!(
         WorktreeKind::from_str_lossy("garbage"),
@@ -555,11 +555,9 @@ fn get_by_label_returns_most_recent_on_duplicate_labels() {
 
 #[test]
 fn concurrent_open_at_survives_wal_conversion_race() {
-    // Many openers hitting a FRESH db at once race the one-time WAL conversion
-    // (which ignores busy_timeout). set_journal_mode's retry must make every
-    // open succeed rather than intermittently returning Err (which callers
-    // swallow, silently dropping worktree tracking). Without the retry this
-    // flakes.
+    // Fresh-db openers race the one-time WAL conversion (ignores busy_timeout).
+    // set_journal_mode's retry must make every open succeed; an Err is swallowed
+    // and silently drops worktree tracking. Without the retry this flakes.
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("worktrees.db");
 

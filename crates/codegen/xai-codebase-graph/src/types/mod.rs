@@ -67,9 +67,7 @@ impl SymbolAlias {
 }
 
 /// File metadata for staleness detection.
-///
-/// Stores size and modification time to quickly detect if a file has changed
-/// without reading its contents.
+/// Size and mtime detect change without reading contents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileMeta {
     /// File size in bytes

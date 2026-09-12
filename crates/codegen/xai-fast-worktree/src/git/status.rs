@@ -18,15 +18,8 @@ pub(crate) struct ModifiedFilesResult {
     pub report: DirtyFilesReport,
 }
 
-/// Get modified files from the source repository.
-///
-/// This uses `gix`'s `index_worktree_iter` which compares the **index** to the
-/// **worktree**. It reports which files have been modified/added/deleted relative
-/// to what's staged, but does **not** expose the two-column staged-vs-worktree
-/// status (`XY` in porcelain output). For full `XY` semantics (needed by
-/// `sync::WorktreeSync`), see the CLI-based parser in `sync.rs`.
-///
-/// This is a blocking operation.
+/// Index-vs-worktree changes via `gix` (blocking). Does not expose porcelain
+/// `XY` staged-vs-worktree status; `sync::WorktreeSync` uses the CLI parser.
 pub(crate) fn get_modified_files(source: &Path) -> Result<ModifiedFilesResult> {
     let repo = gix::discover(source).context("failed to discover git repository")?;
     let modified: DashSet<PathBuf> = DashSet::new();

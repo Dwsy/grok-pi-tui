@@ -12,7 +12,13 @@ static DHAT_ALLOC: dhat::Alloc = dhat::Alloc;
 pub(crate) use xai_grok_telemetry::unified_log;
 pub use xai_tracing_macros::{teprintln, timed, tprintln};
 pub mod agent;
-pub mod auth;
+pub mod auth {
+    pub use crate::agent::init::run_cli_logout;
+    pub use crate::credential_factory::{
+        build_bootstrap_otel_credentials, build_storage_client_for_proxy,
+    };
+    pub use xai_grok_login::*;
+}
 pub mod builtin;
 pub use xai_grok_bundle as bundle;
 pub mod claude_import;
@@ -21,6 +27,7 @@ pub mod cli_models;
 pub mod config;
 #[cfg(all(test, feature = "config-docs"))]
 pub mod config_docs;
+pub mod credential_factory;
 pub use xai_grok_shell_base::cpu_profile;
 pub use xai_grok_shell_base::env;
 pub mod extensions;
@@ -39,7 +46,7 @@ pub mod relay;
 pub mod remote;
 pub mod sampling;
 pub mod session;
-pub mod terminal;
+pub use xai_grok_shell_terminal as terminal;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod tier;

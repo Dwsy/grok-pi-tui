@@ -1,8 +1,5 @@
-//! SessionEventBlock — typed session-level events displayed in scrollback.
-//!
-//! Unlike [`super::SystemMessageBlock`] (which renders arbitrary text),
-//! `SessionEventBlock` uses a [`SessionEvent`] enum so each event variant
-//! carries structured data (e.g., elapsed time, error messages, token counts).
+//! Unlike [`super::SystemMessageBlock`] (which renders arbitrary text), `SessionEventBlock` uses a [`SessionEvent`] enum.
+//! Each event variant carries structured data (e.g., elapsed time, error messages, token counts).
 //! This enables variant-specific rendering and future styling differentiation.
 
 use std::time::Duration;
@@ -12,6 +9,7 @@ use ratatui::text::{Line, Span};
 
 use super::markdown_content::MarkdownContent;
 use super::tool::HookRunEntry;
+use crate::app::actions::PermissionLabel;
 use crate::appearance::AppearanceConfig;
 use crate::render::wrapping::word_wrap_lines;
 use crate::scrollback::block::BlockContent;
@@ -20,22 +18,20 @@ use crate::scrollback::types::{
 };
 use crate::theme::Theme;
 use crate::util::format_duration;
+use crate::views::plan_approval_view::PlanReviewOutcome;
 
 /// Shared text-selection range id for recap body lines (header is excluded).
 const RECAP_BODY_RANGE: u16 = 0;
 
 /// A session-level event with structured data.
-///
-/// Each variant carries the information needed to render a concise,
-/// informational message in the scrollback. These are non-interactive:
-/// unselectable, unfoldable, no accent.
+/// Each variant carries the information needed to render a concise, informational message in the scrollback.
+/// These are non-interactive: unselectable, unfoldable, no accent.
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
     /// Agent turn completed normally.
     TurnCompleted {
-        /// Wall-clock elapsed time for the turn. `None` when unknown — a
-        /// wake turn whose deltas carried no `turnStartMs` (old shells)
-        /// renders without a duration rather than lying with "0.0s".
+        /// Wall-clock elapsed time for the turn.
+        /// `None` when unknown: a wake turn whose deltas carried no `turnStartMs` (old shells) renders without a duration instead of a fake "0.0s".
         elapsed: Option<Duration>,
     },
     /// Agent turn was cancelled by the user.
@@ -43,11 +39,9 @@ pub enum SessionEvent {
         /// Wall-clock elapsed time before cancellation.
         elapsed: Duration,
     },
-    /// Agent turn ended because a hook denied it — today only a
-    /// `UserPromptSubmit` block (a `PreToolUse` deny feeds back and the turn
-    /// continues). Distinct from [`SessionEvent::TurnCancelled`] so the
-    /// marker never claims the USER cancelled a policy block; the warning
-    /// annotation above the marker attributes the hook and reason.
+    /// Agent turn ended because a hook denied it, today only a `UserPromptSubmit` block (a `PreToolUse` deny feeds back and the turn continues).
+    /// Distinct from [`SessionEvent::TurnCancelled`] so the marker never claims the USER cancelled a policy block.
+    /// The warning annotation above the marker attributes the hook and reason.
     TurnBlockedByHook {
         /// Wall-clock elapsed time before the block.
         elapsed: Duration,
@@ -87,10 +81,9 @@ pub enum SessionEvent {
     },
     /// Auto-compaction was cancelled (turn was cancelled mid-compact).
     CompactionCancelled,
-    /// Retry failed — all retries exhausted or a non-retryable error.
+    /// Retry failed: all retries exhausted or a non-retryable error.
     ///
-    /// Covers both `RetryState::Exhausted` (tried N times, all failed) and
-    /// `RetryState::Failed` (non-retryable error like auth or 413).
+    /// Covers both `RetryState::Exhausted` (tried N times, all failed) and `RetryState::Failed` (non-retryable error like auth or 413).
     RetryFailed {
         /// Human-readable error description.
         error: String,
@@ -99,8 +92,7 @@ pub enum SessionEvent {
         error_type: Option<String>,
     },
     /// A non-success API / HTTP response (or similar terminal request error).
-    /// Rendered like [`SessionEvent::ReAuthRequired`]: warning color + accent,
-    /// no JSON dump.
+    /// Rendered like [`SessionEvent::ReAuthRequired`]: warning color and accent, no JSON dump.
     RequestFailed {
         /// HTTP status when known. `None` for transport / idle-timeout / etc.
         status: Option<u16>,
@@ -109,29 +101,30 @@ pub enum SessionEvent {
         /// Sanitized one-line detail (server message or fallback guidance).
         detail: String,
     },
-    /// The server rejected the credentials (401 / auth error) and automatic
-    /// recovery was exhausted. Rendered as a prominent call-to-action that
-    /// points the user at `/login` to re-authenticate, replacing the raw
-    /// "Retry failed: Unauthorized (401) …" dump.
+    /// The server rejected the credentials (401 / auth error) and automatic recovery was exhausted.
+    /// Rendered as a prominent call-to-action that points the user at `/login` to re-authenticate.
+    /// It replaces the raw "Retry failed: Unauthorized (401) …" dump.
     ReAuthRequired,
-    /// Terminal context overflow — ideally unreachable, since auto-compaction should
-    /// shrink the conversation first; a safeguard for when it didn't (estimate drift
-    /// vs the server's max_prompt_length, or compaction suppressed/failed). One actionable
-    /// prompt, replacing the CompactionFailed + RetryFailed + TurnFailed stack.
+    /// Terminal context overflow, ideally unreachable since auto-compaction should shrink the conversation first.
+    /// A safeguard for when it didn't (estimate drift vs the server's max_prompt_length, or compaction suppressed/failed).
+    /// One actionable prompt, replacing the stacked CompactionFailed, RetryFailed, and TurnFailed banners.
     ContextTooLarge,
     /// Session disk is full.
     DiskFull,
+    /// Manual `/compact` command started. The invocation marker that pairs each `/compact` with its own outcome line.
+    /// Without it, back-to-back failures render as adjacent identical lines that read as one duplicated flow.
+    /// Local scrollback block only: like the manual outcome lines it is not persisted, so a resumed session replays neither.
+    CompactStarted,
     /// Manual `/compact` command completed.
     CompactCompleted {
         /// Wall-clock elapsed time for the command.
         elapsed: Duration,
     },
-    /// Hook annotation — displayed inline after a tool call.
-    /// Message comes from agent via XaiSessionUpdate::HookAnnotation.
-    HookAnnotation {
-        /// The hook message
-        message: String,
-    },
+    /// Hook annotation, displayed inline after a tool call.
+    /// The message comes from the agent via `XaiSessionUpdate::HookAnnotation`.
+    HookAnnotation { message: String },
+    /// A hook's verdict on the tool call above it (deny, failure, timeout); this block draws the tool-row bullet.
+    HookOutcome { message: String },
     /// The session's persisted model is no longer available after re-auth.
     /// Both IDs are empty when re-shown on blocked prompt attempts.
     ModelUnavailable {
@@ -146,21 +139,25 @@ pub enum SessionEvent {
         /// What triggered the save: "session-end", "flush", or "dream".
         trigger: String,
     },
-    /// A `/goal` finished (status → Complete). Carries the goal's total
-    /// elapsed time across all its turns, distinct from the per-turn
-    /// "Worked for" marker.
+    /// A `/goal` finished (status reached Complete).
+    /// Carries the goal's total elapsed time across all its turns, distinct from the per-turn "Worked for" marker.
     GoalCompleted {
         /// Goal end-to-end elapsed time (`GoalUpdated.elapsed_ms`).
         elapsed: Duration,
     },
-    /// A session recap — a short "where was I" summary of the session so far.
-    /// Surfaced on demand via `/recap` (`auto = false`) or automatically when
-    /// the user returns to the terminal after being away (`auto = true`).
+    /// A session recap: a short "where was I" summary of the session so far.
+    /// Shown on demand via `/recap` (`auto = false`) or automatically when the user returns to the terminal after being away (`auto = true`).
     Recap {
         /// The one-line recap text.
         summary: String,
         /// `true` for the automatic return-from-away recap, `false` for `/recap`.
         auto: bool,
+    },
+    /// Not persisted: a resumed session shows only the `Plan: Enter` tool row.
+    PlanModeEnteredByAgent { permission: PermissionLabel },
+    PlanReviewClosed {
+        outcome: PlanReviewOutcome,
+        permission: PermissionLabel,
     },
 }
 
@@ -168,7 +165,7 @@ impl SessionEvent {
     /// Format the event as a human-readable string.
     pub fn message(&self) -> String {
         match self {
-            // Deliberately period-less — don't re-punctuate.
+            // Deliberately period-less: don't re-punctuate
             SessionEvent::TurnCompleted {
                 elapsed: Some(elapsed),
             } => {
@@ -208,7 +205,7 @@ impl SessionEvent {
                 elapsed_ms,
             } => {
                 let after = format_tokens(*tokens_after);
-                // Older shells don't send tokens_before — keep the legacy format.
+                // Older shells don't send tokens_before; keep the legacy format
                 let body = match tokens_before {
                     Some(before) if *before > 0 => {
                         format!(
@@ -229,7 +226,8 @@ impl SessionEvent {
                 if error.trim().is_empty() {
                     "Compaction failed.".to_string()
                 } else {
-                    format!("Compaction failed: {error}")
+                    // Multi-line errors (guidance and detail) split in `output`; old one-line replays render unchanged
+                    format!("Compaction failed - {error}")
                 }
             }
             SessionEvent::CompactionCancelled => "Compaction cancelled.".to_string(),
@@ -262,10 +260,14 @@ impl SessionEvent {
             SessionEvent::DiskFull => {
                 xai_grok_shell::extensions::notification::DISK_FULL_USER_MESSAGE.to_string()
             }
+            // No "Context N% full." prefix; that phrasing is the auto marker's
+            SessionEvent::CompactStarted => "Compacting conversation…".to_string(),
             SessionEvent::CompactCompleted { elapsed } => {
                 format!("Compaction completed in {}.", format_duration(*elapsed))
             }
-            SessionEvent::HookAnnotation { message } => message.clone(),
+            SessionEvent::HookAnnotation { message } | SessionEvent::HookOutcome { message } => {
+                message.clone()
+            }
             SessionEvent::ModelUnavailable {
                 new_model_id,
                 reason,
@@ -291,6 +293,21 @@ impl SessionEvent {
                 // Always "Recap:" (manual `/recap` and auto return-from-away).
                 format!("Recap: {summary}")
             }
+            SessionEvent::PlanModeEnteredByAgent { permission } => {
+                format!(
+                    "Agent entered plan mode · active permission mode: {permission} · file edits outside session plan.md blocked until plan mode exits"
+                )
+            }
+            SessionEvent::PlanReviewClosed {
+                outcome,
+                permission,
+            } => {
+                let verdict = match outcome {
+                    PlanReviewOutcome::Approved => "approved",
+                    PlanReviewOutcome::Abandoned => "abandoned",
+                };
+                format!("Plan {verdict} · plan mode off · active permission mode: {permission}")
+            }
         }
     }
 
@@ -305,7 +322,7 @@ impl SessionEvent {
         }
     }
 
-    /// Failures and actionable prompts stand out (warning color + accent bar).
+    /// Failures and actionable prompts stand out (warning color and accent bar).
     fn is_warning_banner(&self) -> bool {
         matches!(
             self,
@@ -319,15 +336,8 @@ impl SessionEvent {
         )
     }
 
-    /// Whether this event marks the end of an agent turn (the "Turn
-    /// completed/cancelled/failed" markers). These are the only events that
-    /// can carry the turn's stop-family hook runs inline.
-    ///
-    /// [`SessionEvent::RequestFailed`] is intentionally excluded — same as
-    /// [`SessionEvent::ReAuthRequired`]. RetryState may push it before
-    /// PromptResponse; treating it as terminal would change stop-hook
-    /// attribution. Dedicated banners skip the TurnFailed marker and flush
-    /// hooks standalone.
+    /// Whether this event ends an agent turn. [`SessionEvent::RequestFailed`] and [`SessionEvent::ReAuthRequired`] are
+    /// excluded: RetryState may push them before PromptResponse, and dedicated banners skip the TurnFailed marker.
     pub fn is_turn_terminal(&self) -> bool {
         matches!(
             self,
@@ -349,11 +359,8 @@ fn format_tokens(tokens: u64) -> String {
     }
 }
 
-/// Block that renders a [`SessionEvent`] in scrollback.
-///
-/// Visually identical to [`super::SystemMessageBlock`] (muted text, compact,
-/// unselectable). The structured `event` field is available for future
-/// styling differentiation (e.g., red text for failures).
+/// Visually identical to [`super::SystemMessageBlock`] (muted text, compact, unselectable).
+/// The structured `event` field is available for future styling differentiation (e.g., red text for failures).
 #[derive(Debug, Clone)]
 pub struct SessionEventBlock {
     /// The typed event data.
@@ -513,7 +520,7 @@ impl SessionEventBlock {
         let muted_collapsed =
             ctx.mute_when_collapsed(ctx.appearance.scrollback.blocks.tool.muted_collapsed);
 
-        // "Recap" header — bold, neutral primary text (like a tool-call header).
+        // "Recap" header: bold, neutral primary text (like a tool-call header)
         // Dimmed to muted gray while collapsed-and-unselected.
         let header_text_style = if muted_collapsed {
             theme.muted()
@@ -543,8 +550,8 @@ impl SessionEventBlock {
                     Line::from(spans),
                     ctx.content_width(),
                 );
-                // Only the preview span is copyable — never the "Recap" label.
-                // No preview (empty after trim) → fully non-selectable.
+                // Only the preview span is copyable, never the "Recap" label
+                // No preview (empty after trim) means fully non-selectable
                 let selectable = if preview.is_empty() {
                     Selectable::None
                 } else {
@@ -586,8 +593,7 @@ impl BlockContent for SessionEventBlock {
         }
 
         let theme = Theme::current();
-        // Failures and re-auth / context-overflow prompts are actionable, not
-        // informational — render them in the warning color, not muted noise.
+        // Failures and re-auth / context-overflow prompts are actionable, not informational; render them in the warning color rather than muted
         let style = if self.event.is_warning_banner() {
             ratatui::style::Style::default().fg(theme.warning)
         } else {
@@ -640,10 +646,12 @@ impl BlockContent for SessionEventBlock {
 
     fn bullet(&self, ctx: &BlockContext) -> Option<AccentStyle> {
         // Recap: animated dot while loading; default gray dot when collapsed-idle;
-        // accent color when expanded. Other events never show a bullet.
-        if self.event.summary_body().is_some()
-            && !ctx.is_running
-            && ctx.mode == DisplayMode::Collapsed
+        // accent color when expanded. A hook outcome keeps the default gray,
+        // matching its muted text; other events never show a bullet.
+        if matches!(self.event, SessionEvent::HookOutcome { .. })
+            || (self.event.summary_body().is_some()
+                && !ctx.is_running
+                && ctx.mode == DisplayMode::Collapsed)
         {
             return None;
         }
@@ -681,9 +689,10 @@ impl BlockContent for SessionEventBlock {
     }
 
     fn has_bullet(&self, ctx: &BlockContext) -> bool {
-        // Recap only, and only when the shared tool bullet is configured — so it
-        // tracks the same appearance setting as real tool calls.
-        self.event.summary_body().is_some()
+        // Recap and hook outcomes only, gated on the shared tool bullet so they
+        // track the same appearance setting as real tool calls.
+        (self.event.summary_body().is_some()
+            || matches!(self.event, SessionEvent::HookOutcome { .. }))
             && ctx
                 .appearance
                 .scrollback
@@ -917,7 +926,31 @@ mod tests {
         };
         assert_eq!(
             event.message(),
-            "Compaction failed: out of credits or over your spending limit. Add credits and retry."
+            "Compaction failed - out of credits or over your spending limit. Add credits and retry."
+        );
+    }
+
+    #[test]
+    fn compaction_failed_two_line_error_renders_headline_then_detail() {
+        // A guidance headline and a detail line, as the shell composes them
+        let block = SessionEventBlock::new(SessionEvent::CompactionFailed {
+            error: "it'll retry on the next turn, or start a new session using /new.\n\
+                    API error (status 400 Bad Request): invalid_image: too big"
+                .into(),
+        });
+        // Wide enough that word-wrap cannot split the two logical lines.
+        let out = block.output(&BlockContext {
+            width: 200,
+            ..ctx()
+        });
+        assert_eq!(out.lines.len(), 2, "one block line per message line");
+        assert_eq!(
+            plain(&out.lines[0]),
+            "Compaction failed - it'll retry on the next turn, or start a new session using /new."
+        );
+        assert_eq!(
+            plain(&out.lines[1]),
+            "API error (status 400 Bad Request): invalid_image: too big"
         );
     }
 
@@ -956,6 +989,35 @@ mod tests {
         let msg = event.message();
         assert!(msg.starts_with("Memory saved (flush)"));
         assert!(msg.contains("/memory to view"));
+    }
+
+    #[test]
+    fn plan_mode_row_messages() {
+        let cases = [
+            (
+                SessionEvent::PlanModeEnteredByAgent {
+                    permission: PermissionLabel::Ask,
+                },
+                "Agent entered plan mode · active permission mode: ask · file edits outside session plan.md blocked until plan mode exits",
+            ),
+            (
+                SessionEvent::PlanReviewClosed {
+                    outcome: PlanReviewOutcome::Approved,
+                    permission: PermissionLabel::Auto,
+                },
+                "Plan approved · plan mode off · active permission mode: auto",
+            ),
+            (
+                SessionEvent::PlanReviewClosed {
+                    outcome: PlanReviewOutcome::Abandoned,
+                    permission: PermissionLabel::AlwaysApprove,
+                },
+                "Plan abandoned · plan mode off · active permission mode: always-approve",
+            ),
+        ];
+        for (event, expected) in cases {
+            assert_eq!(event.message(), expected);
+        }
     }
 
     #[test]
@@ -1010,6 +1072,35 @@ mod tests {
         assert!(
             body.contains("Refactored the parser and added tests."),
             "summary is shown as body text: {body}"
+        );
+    }
+
+    /// The deny / failure line takes the tool rows' bullet (config-gated like theirs); a plain hook note stays unbulleted.
+    #[test]
+    fn hook_outcome_takes_the_tool_bullet_and_a_note_does_not() {
+        let outcome = SessionEventBlock::new(SessionEvent::HookOutcome {
+            message: "`web_fetch` blocked by global/qa: no".into(),
+        });
+        let note = SessionEventBlock::new(SessionEvent::HookAnnotation {
+            message: "`web_fetch` blocked by global/qa: no".into(),
+        });
+        assert!(outcome.has_bullet(&ctx()));
+        assert!(!note.has_bullet(&ctx()));
+        assert!(
+            outcome.bullet(&ctx()).is_none(),
+            "default gray, matching the muted text"
+        );
+
+        let mut no_bullet = ctx();
+        no_bullet.appearance.scrollback.blocks.tool.bullet = crate::appearance::ToolBullet::None;
+        assert!(
+            !outcome.has_bullet(&no_bullet),
+            "a user who turned tool bullets off gets none on hook lines either"
+        );
+        assert_eq!(
+            outcome.output(&ctx()).lines[0].content.to_string(),
+            "`web_fetch` blocked by global/qa: no",
+            "the message itself carries no glyph"
         );
     }
 
@@ -1085,7 +1176,7 @@ mod tests {
 
     #[test]
     fn recap_loading_shows_header_only_with_animated_sidebar() {
-        // Empty summary + running entry = the in-flight loading state.
+        // An empty summary on a running entry is the in-flight loading state
         let block = SessionEventBlock::new(SessionEvent::Recap {
             summary: String::new(),
             auto: false,
@@ -1093,13 +1184,12 @@ mod tests {
         let theme = Theme::current();
         let rc = recap_running_ctx();
 
-        // Header only — no blank line or body while still generating.
+        // Header only: no blank line or body while still generating
         let out = block.output(&rc);
         assert_eq!(out.lines.len(), 1, "loading recap is just the header");
         assert_eq!(plain(&out.lines[0]), "Recap");
 
-        // The sidebar + bullet animate in gray (the feedback) — not the magenta
-        // running color used for active tool turns.
+        // The sidebar and bullet animate in gray (the feedback), not the magenta running color used for active tool turns
         let accent = block.accent(&rc).expect("loading recap has an accent bar");
         assert_eq!(accent.color, theme.gray);
         assert!(accent.animated, "loading sidebar animates");
@@ -1132,9 +1222,8 @@ mod tests {
 
     #[test]
     fn recap_loading_or_empty_is_not_selectable_or_foldable() {
-        // The in-flight spinner (empty summary) — and any stray empty recap —
-        // must not be selectable or foldable, so j/k never stops on a block
-        // that can't fold and offers no interaction (mirrors `is_foldable`).
+        // The in-flight spinner (empty summary) and any stray empty recap must not be selectable or foldable
+        // j/k must never stop on a block that can't fold and offers no interaction (mirrors `is_foldable`)
         for summary in ["", "   \n  "] {
             let block = SessionEventBlock::new(SessionEvent::Recap {
                 summary: summary.into(),
@@ -1213,226 +1302,5 @@ mod tests {
         assert!(!block.is_selectable());
         assert!(!block.has_bullet(&ctx()));
         assert_eq!(block.accent(&ctx()), None);
-    }
-
-    fn stop_group(name: &str) -> (String, Vec<HookRunEntry>) {
-        use super::super::tool::HookRunStatus;
-        (
-            name.to_string(),
-            vec![HookRunEntry {
-                name: "global/notify".into(),
-                status: HookRunStatus::Success {
-                    elapsed: Duration::from_millis(12),
-                },
-                output: None,
-            }],
-        )
-    }
-
-    fn completed_with_stop_hooks() -> SessionEventBlock {
-        SessionEventBlock::with_stop_hooks(
-            SessionEvent::TurnCompleted {
-                elapsed: Some(Duration::from_secs(5)),
-            },
-            vec![stop_group("stop")],
-            None,
-        )
-    }
-
-    #[test]
-    fn stop_hooks_summary_is_right_justified_on_marker_line() {
-        let block = completed_with_stop_hooks();
-        let out = block.output(&BlockContext {
-            mode: DisplayMode::Collapsed,
-            ..ctx()
-        });
-        assert_eq!(out.lines.len(), 1, "collapsed marker stays a single line");
-        let text = plain(&out.lines[0]);
-        assert!(
-            text.starts_with("Worked for 5.0s"),
-            "marker text keeps the left edge: {text}"
-        );
-        assert!(
-            text.ends_with("stop  [hooks: 1]"),
-            "summary sits at the right edge: {text}"
-        );
-        assert_eq!(
-            unicode_width::UnicodeWidthStr::width(text.as_str()),
-            80,
-            "padding right-justifies the summary to the content width"
-        );
-        // Drag-copy stays on the marker text, never the padding or counts.
-        assert!(
-            matches!(&out.lines[0].selectable, Selectable::Spans(r) if *r == (0..1)),
-            "only the marker text span is selectable: {:?}",
-            out.lines[0].selectable
-        );
-        assert_eq!(
-            out.lines[0].selection_text.as_deref(),
-            Some("Worked for 5.0s")
-        );
-    }
-
-    #[test]
-    fn stop_hooks_summary_wraps_to_own_line_when_narrow() {
-        let block = completed_with_stop_hooks();
-        // "Worked for 5.0s" is 15 cols; the summary is 16 — no room
-        // at width 30, so the summary right-justifies on its own line.
-        let out = block.output(&BlockContext {
-            mode: DisplayMode::Collapsed,
-            width: 30,
-            ..ctx()
-        });
-        assert_eq!(out.lines.len(), 2);
-        let summary_line = plain(&out.lines[1]);
-        assert!(summary_line.ends_with("stop  [hooks: 1]"));
-        assert_eq!(
-            unicode_width::UnicodeWidthStr::width(summary_line.as_str()),
-            30
-        );
-        assert!(
-            matches!(out.lines[1].selectable, Selectable::None),
-            "the overflow summary line is decoration"
-        );
-    }
-
-    #[test]
-    fn stop_hooks_summary_goes_below_wrapped_multi_line_marker() {
-        // A wrapped TurnFailed marker whose first line has room for the
-        // summary: attaching there would read mid-paragraph, so the summary
-        // right-justifies on its own line below the text instead.
-        let block = SessionEventBlock::with_stop_hooks(
-            SessionEvent::TurnFailed {
-                error: format!("boom {}", "x".repeat(70)),
-                elapsed: Some(Duration::from_secs(3)),
-            },
-            vec![stop_group("stop")],
-            None,
-        );
-        let out = block.output(&BlockContext {
-            mode: DisplayMode::Collapsed,
-            ..ctx()
-        });
-        assert_eq!(out.lines.len(), 3, "two wrapped text lines + summary line");
-        assert!(
-            !plain(&out.lines[0]).contains("[hooks:"),
-            "no summary interleaved with the wrapped text: {}",
-            plain(&out.lines[0])
-        );
-        let summary_line = plain(&out.lines[2]);
-        assert!(summary_line.ends_with("stop  [hooks: 1]"));
-        assert!(
-            matches!(out.lines[2].selectable, Selectable::None),
-            "the summary line is decoration"
-        );
-    }
-
-    #[test]
-    fn stop_hooks_detail_only_when_expanded() {
-        let block = completed_with_stop_hooks();
-        let collapsed = block.output(&BlockContext {
-            mode: DisplayMode::Collapsed,
-            ..ctx()
-        });
-        let collapsed_text = collapsed
-            .lines
-            .iter()
-            .map(plain)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            !collapsed_text.contains("global/notify"),
-            "collapsed marker hides per-hook detail: {collapsed_text}"
-        );
-
-        let expanded = block.output(&ctx());
-        let expanded_text = expanded
-            .lines
-            .iter()
-            .map(plain)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            expanded_text.contains("global/notify (12ms)"),
-            "expanded marker shows per-hook detail: {expanded_text}"
-        );
-    }
-
-    #[test]
-    fn marker_with_stop_hooks_is_interactive_and_starts_collapsed() {
-        let block = completed_with_stop_hooks();
-        assert!(block.is_foldable(), "fold reveals per-hook detail");
-        assert!(block.is_selectable(), "navigable so it can be folded");
-        assert_eq!(block.default_display_mode(), DisplayMode::Collapsed);
-
-        // All-skipped batches change nothing (mirrors has_content()).
-        use super::super::tool::HookRunStatus;
-        let skipped = SessionEventBlock::with_stop_hooks(
-            SessionEvent::TurnCompleted {
-                elapsed: Some(Duration::from_secs(5)),
-            },
-            vec![(
-                "stop".into(),
-                vec![HookRunEntry {
-                    name: "h".into(),
-                    status: HookRunStatus::Skipped,
-                    output: None,
-                }],
-            )],
-            None,
-        );
-        assert!(!skipped.is_foldable());
-        assert!(!skipped.is_selectable());
-        let out = skipped.output(&BlockContext {
-            mode: DisplayMode::Collapsed,
-            ..ctx()
-        });
-        assert_eq!(plain(&out.lines[0]), "Worked for 5.0s");
-    }
-
-    #[test]
-    fn stop_and_stop_failure_groups_render_labeled_sections() {
-        let block = SessionEventBlock::with_stop_hooks(
-            SessionEvent::TurnFailed {
-                error: "boom".into(),
-                elapsed: Some(Duration::from_secs(3)),
-            },
-            vec![stop_group("stop_failure"), stop_group("stop")],
-            None,
-        );
-        let out = block.output(&BlockContext {
-            mode: DisplayMode::Collapsed,
-            ..ctx()
-        });
-        let text = plain(&out.lines[0]);
-        assert!(
-            text.ends_with("stop_failure  [hooks: 1]  stop  [hooks: 1]"),
-            "both groups summarized: {text}"
-        );
-
-        let expanded = block.output(&ctx());
-        let expanded_text = expanded
-            .lines
-            .iter()
-            .map(plain)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            expanded_text.contains("stop_failure") && expanded_text.contains("global/notify"),
-            "multi-group detail keeps section headers: {expanded_text}"
-        );
-    }
-
-    #[test]
-    fn only_turn_terminal_events_accept_stop_hooks() {
-        let settled = SessionEventBlock::new(SessionEvent::TurnCompleted {
-            elapsed: Some(Duration::from_secs(24)),
-        });
-        assert!(settled.event.is_turn_terminal());
-        let recap = SessionEventBlock::new(SessionEvent::Recap {
-            summary: "did stuff".into(),
-            auto: false,
-        });
-        assert!(!recap.event.is_turn_terminal());
     }
 }

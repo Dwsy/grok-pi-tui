@@ -301,6 +301,47 @@ impl Drop for WaiterGuard<'_> {
         let _ = self.demux.take_response_waiter(self.request_id);
     }
 }
+/// Allocate a request id on `connection`, wrap `params` in a session-scoped
+/// request under `method`, and serialize to text. The id is returned for
+/// callers that park a response waiter; fire-and-forget callers discard it.
+/// The enqueue (async [`HubConnection::send_outbound`] vs sync
+/// [`HubConnection::try_send_outbound`]) stays with the caller.
+pub(crate) fn build_request_frame<P: serde::Serialize>(
+    connection: &HubConnection,
+    session_id: &SessionId,
+    method: Method,
+    params: P,
+) -> Result<(xai_tool_protocol::RequestId, String), ClientError> {
+    let request_id = connection.try_alloc_request_id()?;
+    let req = JsonRpcRequest {
+        jsonrpc: JsonRpcVersion,
+        id: JsonRpcId::from_request_id(&request_id),
+        session_id: Some(session_id.clone()),
+        method: method.as_wire_str().to_owned(),
+        params,
+    };
+    let text = serde_json::to_string(&req).map_err(ClientError::from)?;
+    Ok((request_id, text))
+}
+/// Best-effort, non-blocking request for drop paths that cannot `.await`.
+/// A full channel drops the frame and logs at debug; a closed one is the
+/// normal shutdown path (the actor closes outbound before exiting) and is
+/// silent. Nobody awaits the reply.
+pub(crate) fn try_send_request_on_drop<P: serde::Serialize>(
+    connection: &HubConnection,
+    session_id: &SessionId,
+    method: Method,
+    params: P,
+    what: &'static str,
+) {
+    let Ok((_request_id, text)) = build_request_frame(connection, session_id, method, params)
+    else {
+        return;
+    };
+    if let Err(ClientError::BackpressureError(_)) = connection.try_send_outbound(text) {
+        tracing::debug!(session_id = %session_id, "{what} dropped (outbound channel full)");
+    }
+}
 /// Process-wide default reconnect schedule, materialised once from
 /// [`RECONNECT_BACKOFF_MS`]. Connections that do not override
 /// [`ConnectionTuning::reconnect_backoff`] share this `Arc` (cheap clone,
@@ -596,6 +637,12 @@ struct HubConnectionInner {
     /// Refcounted bound-session set. Used by the reconnect path to
     /// re-issue `register_session` for every still-live session.
     bound_sessions: Arc<RefCountedSet<SessionId>>,
+    /// Serialises a session's refcount edge with the lifecycle frame that
+    /// edge emits. Without it a drop's "decrement to zero" and a concurrent
+    /// build's "increment from zero" can interleave so `session_detach` is
+    /// enqueued after the new borrower's `session_open`, and the hub unbinds
+    /// a session that has a live borrower.
+    session_lifecycle: parking_lot::Mutex<()>,
     /// Cached server-issued `connection_id`. Updated on every (re)connect.
     connection_id: Arc<Mutex<Option<ConnectionId>>>,
     /// Optional capabilities the server advertised in the most recent
@@ -739,6 +786,7 @@ impl HubConnection {
             outbound_tx,
             demux: demux.clone(),
             bound_sessions: bound_sessions.clone(),
+            session_lifecycle: parking_lot::Mutex::new(()),
             connection_id,
             hello_capabilities: parking_lot::RwLock::new(ack.capabilities),
             next_request_id: std::sync::atomic::AtomicU64::new(1),
@@ -850,7 +898,14 @@ impl HubConnection {
     /// Increment the refcount on `session_id`. The session is tracked
     /// locally for reconnect-replay; the server learns about it via
     /// `serve` (auto-registration on the server side).
+    ///
+    /// Taken under `session_lifecycle` so the increment cannot land between
+    /// a concurrent [`Self::untrack_session_and_detach`]'s decrement and its
+    /// `session_detach` enqueue. The caller's `session_open` may follow
+    /// outside the lock: while it holds a count no detach for the session
+    /// can be enqueued.
     pub fn track_session(&self, session_id: SessionId) {
+        let _lifecycle = self.inner.session_lifecycle.lock();
         self.inner.bound_sessions.increment(session_id);
     }
     /// Decrement the refcount on `session_id`. Removes tracking when
@@ -858,6 +913,33 @@ impl HubConnection {
     /// (`Some(0)` = last borrower; `None` = key was absent).
     pub fn untrack_session(&self, session_id: &SessionId) -> Option<u64> {
         self.inner.bound_sessions.decrement(session_id)
+    }
+    /// [`Self::untrack_session`] for a harness leaving a pooled connection
+    /// that stays open for other borrowers: when this was the last borrower,
+    /// enqueue a best-effort `session_detach` so the hub does not keep the
+    /// session bound until the socket closes. Returns `true` when this was
+    /// the last borrower.
+    ///
+    /// Runs on drop paths, so the frame is try-enqueued like the
+    /// cancel-on-drop hook and nobody awaits the reply (an unmatched response
+    /// is a demux no-op). Skipped when the hub advertises capabilities but not
+    /// `session_detach`: such a hub would count each frame as
+    /// `invalid_request`.
+    pub(crate) fn untrack_session_and_detach(&self, session_id: &SessionId) -> bool {
+        let _lifecycle = self.inner.session_lifecycle.lock();
+        if self.inner.bound_sessions.decrement(session_id) != Some(0) {
+            return false;
+        }
+        if self.supports(Method::SessionDetach.as_wire_str()) != Some(false) {
+            try_send_request_on_drop(
+                self,
+                session_id,
+                Method::SessionDetach,
+                xai_tool_protocol::SessionDetachParams {},
+                "session detach",
+            );
+        }
+        true
     }
     /// Send a JSON-RPC request and await the response.
     ///
@@ -1081,10 +1163,7 @@ async fn open_socket(
         );
     }
     let mut connect_url = url.clone();
-    let expected_role = match kind {
-        ConnectionKind::Harness => "harness",
-        ConnectionKind::ToolServer => "tool_server",
-    };
+    let expected_role = kind.as_wire_str();
     if let Some(existing) = connect_url
         .query_pairs()
         .find(|(k, _)| k == "role")

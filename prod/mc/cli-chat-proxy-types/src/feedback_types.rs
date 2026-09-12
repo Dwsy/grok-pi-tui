@@ -1666,130 +1666,265 @@ pub fn parse_feedback_mode_str(s: &str) -> FeedbackMode {
 // Session Turn Deltas — per-turn time-series data for regression tracking
 // ============================================================================
 
-/// Per-turn delta sent at the end of every turn.
+/// How a turn ended, as reported on [`SessionTurnDelta::turn_outcome`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnOutcome {
+    Completed,
+    Cancelled,
+    Error,
+    /// Any other label a client sent. Kept so an unrecognized label lands in the `other` metric
+    /// bucket instead of rejecting the whole delta.
+    #[serde(other)]
+    Other,
+}
+
+impl TurnOutcome {
+    /// The wire label, also the `outcome` metric label.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Error => "error",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Per-turn delta sent once per turn via `POST /v1/sessions/{session_id}/turn-deltas`: one
+/// time-series row per turn for regression detection and session-level analytics.
 ///
-/// Contains the *change* in session counters since the previous turn end,
-/// plus absolute values for contextual fields (latency, model, experiment info).
-/// This produces a time-series row per turn that can be used for regression
-/// detection and session-level analytics.
+/// Each field falls into one of four categories:
 ///
-/// POST /v1/sessions/{session_id}/turn-deltas
+/// - **Delta**: the change since the previous turn end, computed as `current_cumulative - previous_turn_snapshot`.
+///   For the first turn, the previous snapshot is zero.
+/// - **Turn-level**: an absolute value measured only for this turn, reset between turns.
+///   `None` when the event did not occur this turn.
+/// - **Accumulated**: a cumulative total since session start, monotonically increasing across turns.
+/// - **Context**: session and turn metadata that is neither a counter nor a measurement (e.g. IDs, timestamps, client type).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionTurnDelta {
+    // ── Context fields ──────────────────────────────────────────────────
+    /// **[context]** Which client produced this record (e.g. CLI, TUI).
     pub client_type: ClientType,
+
+    /// **[context]** 1-based turn number at the time of this snapshot.
+    /// Equals the cumulative `turn_count` from `SessionSignals`.
     pub turn_number: i64,
-    // Delta counters
+
+    // ── Delta counters ──────────────────────────────────────────────────
+    // Each is `current_cumulative - previous_turn_snapshot`.
+    /// **[delta]** Number of tool calls made during this turn.
     pub delta_tool_calls: i64,
+
+    /// **[delta]** Number of tool calls that failed during this turn.
     pub delta_tool_failures: i64,
+
+    /// **[delta]** Number of errors (including sampling errors) during this turn.
     pub delta_errors: i64,
+
+    /// **[delta]** Number of user cancellations (Ctrl+C) during this turn.
     pub delta_cancellations: i64,
+
+    /// **[delta]** Number of regeneration requests during this turn.
     pub delta_regenerations: i64,
+
+    /// **[delta]** Number of conversation compactions during this turn.
     pub delta_compactions: i64,
+
+    /// **[delta]** Number of edit-and-retry actions (user rewinds prompt) during this turn.
     pub delta_edit_and_retries: i64,
+
+    /// **[delta]** Number of positive ratings (thumbs-up) during this turn.
     pub delta_positive_ratings: i64,
+
+    /// **[delta]** Number of negative ratings (thumbs-down) during this turn.
     pub delta_negative_ratings: i64,
+
+    /// **[delta]** Number of assistant messages produced during this turn (more than one when tool-call rounds generate intermediate messages).
     pub delta_assistant_messages: i64,
+
+    /// **[delta]** Number of long idle pauses (over 60 s) that occurred during this turn.
     pub delta_long_pauses: i64,
+
+    /// **[delta]** Number of successful tool uses during this turn.
+    /// Derived as `delta_tool_calls − delta_tool_failures`.
     pub delta_successful_tool_uses: i64,
-    // Turn-level snapshot values
+
+    // ── Turn-level snapshot values ──────────────────────────────────────
+    /// **[turn-level]** Consecutive cancellation streak at turn end.
+    /// A point-in-time snapshot, not a diff; it resets to 0 when a turn completes normally.
     pub consecutive_cancellations: i64,
-    // Turn-level absolute values
+
+    // ── Turn-level latency ──────────────────────────────────────────────
+    // Absolute measurements for this turn's inference request only.
+    // `None` when no inference occurred during the turn.
+    /// **[turn-level]** Time-to-first-token for this turn's model response (milliseconds). `None` when no inference occurred.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_to_first_token_ms: Option<i64>,
+
+    /// **[turn-level]** Total wall-clock response time for this turn's model response (milliseconds). `None` when no inference occurred.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_response_time_ms: Option<i64>,
-    /// Inter-token latency p50 for this turn's response (ms)
+
+    /// **[turn-level]** Inter-token latency p50 for this turn (ms).
+    /// Computed from the token intervals collected during this turn only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub itl_p50_ms: Option<i64>,
-    /// Inter-token latency p99 for this turn's response (ms)
+
+    /// **[turn-level]** Inter-token latency p99 for this turn (ms).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub itl_p99_ms: Option<i64>,
-    /// Inter-token latency max for this turn's response (ms)
+
+    /// **[turn-level]** Inter-token latency maximum for this turn (ms).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub itl_max_ms: Option<i64>,
-    /// Inter-token latency mean for this turn's response (ms)
+
+    /// **[turn-level]** Inter-token latency mean for this turn (ms).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub itl_mean_ms: Option<i64>,
+
+    // ── Accumulated / snapshot session-level values ─────────────────────
+    /// **[accumulated]** Current context window usage as a percentage (0 to 100) at turn end.
+    /// Read from cumulative `SessionSignals.context_window_usage`.
     pub context_window_usage: i64,
+
+    /// **[accumulated]** Primary model ID (most recently used model).
+    /// Read from cumulative `SessionSignals.primary_model_id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
-    /// Whole-turn wall-clock duration (prompt→final response), ms.
+
+    // ── Turn-level outcome / served checkpoint ──────────────────────────
+    /// **[turn-level]** Whole-turn wall-clock ms, from the turn task's install to its terminal, on
+    /// the same clock for every outcome. One row per turn, so a multi-round turn spans all rounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_duration_ms: Option<i64>,
-    /// Terminal outcome: "completed" | "cancelled" | "error".
+
+    /// **[turn-level]** How the turn ended. `None` from clients that predate the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_outcome: Option<String>,
-    /// Served model fingerprint (provider `system_fingerprint`).
+    pub turn_outcome: Option<TurnOutcome>,
+
+    /// Served model fingerprint (upstream `system_fingerprint`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_fingerprint: Option<String>,
+
+    // ── Turn-level tool / error detail ──────────────────────────────────
+    /// **[turn-level]** Distinct tool names invoked during this turn (deduplicated, sorted, capped at 100 entries). Reset each turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools_used_this_turn: Vec<String>,
+
+    /// **[turn-level]** Error type strings that occurred during this turn (e.g. `"timeout"`, `"rate_limit"`, `"tool_error"`). Reset each turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub error_types_this_turn: Vec<String>,
-    /// Per-tool success/failure breakdown for this turn, JSON-serialized.
-    /// Each entry: `{"toolName":"bash","successes":2,"failures":1}`.
+
+    /// **[turn-level]** Per-tool success/failure breakdown for this turn, a JSON-serialized array of `{ tool_name, successes, failures }`.
+    /// Empty string when no tool calls occurred. Reset each turn.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tool_outcomes: String,
-    // Cumulative totals
+
+    // ── Accumulated totals ──────────────────────────────────────────────
+    /// **[accumulated]** Total tool calls since session start.
+    /// Read from cumulative `SessionSignals.tool_call_count`.
     pub cumulative_tool_calls: i64,
+
+    /// **[accumulated]** Total errors since session start.
+    /// Read from cumulative `SessionSignals.error_count`.
     pub cumulative_errors: i64,
+
+    /// **[accumulated]** Wall-clock seconds elapsed since session start.
+    /// Read from cumulative `SessionSignals.session_duration_seconds`.
     pub session_duration_seconds: i64,
-    /// Cumulative total tokens across all compactions
+
+    /// **[accumulated]** Sum of token counts across all compactions since session start.
+    /// Read from `SessionSignals.total_tokens_before_compaction`.
     #[serde(default)]
     pub total_tokens_before_compaction: i64,
+
+    /// **[context]** Arbitrary JSON metadata blob.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
-    /// Prompt/request ID for the turn (if available).
+
+    /// **[context]** Prompt/request ID that initiated this turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
-    /// Session start time — used for analytics ingestion. If not provided, defaults
-    /// to the server receipt time.
+
+    /// **[context]** Wall-clock time when the session was created. Used for
+    /// table partitioning in the analytics backend.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_start_at: Option<DateTime<Utc>>,
-    /// Number of feedback requests sent this session (cumulative).
+
+    // ── Feedback state ──────────────────────────────────────────────────
+    /// **[accumulated]** Total number of feedback requests sent this session.
+    /// Supplied by `FeedbackHeuristics`, not the signals actor.
     #[serde(default)]
     pub feedback_requests_sent: i64,
-    /// Wall-clock timestamp of the last feedback request sent this session.
+
+    /// **[accumulated]** Wall-clock timestamp of the most recent feedback request sent this session.
+    /// Supplied by `FeedbackHeuristics`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_feedback_request_at: Option<DateTime<Utc>>,
-    /// Number of response (completion - reasoning) tokens generated this turn.
-    /// `None` when not reported (old client or no inference this turn).
+
+    // ── Turn-level token counts ─────────────────────────────────────────
+    /// **[turn-level]** Number of response (completion minus reasoning) tokens generated during this turn. `None` when no inference occurred.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_tokens: Option<i64>,
-    /// Number of thinking (reasoning) tokens generated this turn.
-    /// `None` when not reported (old client or no inference this turn).
+
+    /// **[turn-level]** Number of thinking/reasoning tokens generated during this turn. `None` when no inference occurred.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_tokens: Option<i64>,
 
-    // === LOC Attribution Deltas ===
+    // ── LOC Attribution Deltas ──────────────────────────────────────────
+    // Each is `current_cumulative - previous_turn_snapshot`, same as the counter deltas above
+    // Tracks lines-of-code changes attributed to the agent or the human during this turn
+    /// **[delta]** Lines added by the agent during this turn.
     #[serde(default)]
     pub delta_agent_lines_added: i64,
+
+    /// **[delta]** Lines removed by the agent during this turn.
     #[serde(default)]
     pub delta_agent_lines_removed: i64,
+
+    /// **[delta]** Agent-added lines that were reverted during this turn.
     #[serde(default)]
     pub delta_agent_lines_added_reverted: i64,
+
+    /// **[delta]** Agent-removed lines that were reverted during this turn.
     #[serde(default)]
     pub delta_agent_lines_removed_reverted: i64,
+
+    /// **[delta]** Lines added by the human during this turn.
     #[serde(default)]
     pub delta_human_lines_added: i64,
+
+    /// **[delta]** Lines removed by the human during this turn.
     #[serde(default)]
     pub delta_human_lines_removed: i64,
+
+    /// **[delta]** Human-added lines that were reverted during this turn.
     #[serde(default)]
     pub delta_human_lines_added_reverted: i64,
+
+    /// **[delta]** Human-removed lines that were reverted during this turn.
     #[serde(default)]
     pub delta_human_lines_removed_reverted: i64,
+
+    /// **[delta]** New distinct files touched by the agent during this turn.
     #[serde(default)]
     pub delta_agent_files_touched: i64,
+
+    /// **[delta]** New distinct files touched by the human during this turn.
     #[serde(default)]
     pub delta_human_files_touched: i64,
+
+    /// **[delta]** New distinct files touched (union of agent and human) during this turn.
     #[serde(default)]
     pub delta_total_files_touched: i64,
-    /// Whether LOC tracking was enabled on the client for this session.
-    /// When `false`, all `delta_*` LOC fields are meaningless zeros (the
-    /// hunk tracker was never spawned). When `true`, zeros indicate the
-    /// tracker was active but no code changed during this turn.
-    /// Defaults to `false` for backwards-compat with old clients.
+
+    /// **[context]** Whether LOC (lines-of-code) attribution tracking was enabled for this session.
+    /// When `false`, all `delta_*` LOC fields above are meaningless zeros; the hunk tracker was never spawned.
+    /// When `true`, zeros mean "tracking was active but no code changed."
+    /// Defaults to `false` for backwards-compat with old clients that don't send this field.
     #[serde(default)]
     pub loc_tracking_enabled: bool,
 }
@@ -1902,7 +2037,7 @@ mod tests {
         }"#;
         let delta_new: SessionTurnDelta = serde_json::from_str(json_new).unwrap();
         assert_eq!(delta_new.turn_duration_ms, Some(4200));
-        assert_eq!(delta_new.turn_outcome.as_deref(), Some("completed"));
+        assert_eq!(delta_new.turn_outcome, Some(TurnOutcome::Completed));
         assert_eq!(delta_new.model_fingerprint.as_deref(), Some("fp_abc123"));
     }
 

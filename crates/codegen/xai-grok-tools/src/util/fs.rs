@@ -11,10 +11,9 @@ use std::time::Duration;
 
 pub(crate) const FS_SYSCALL_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Async symlink-resolved path or the input path on failure/timeout.
-///
-/// Windows-safe canonicalizer: the result is passed through
-/// `dunce::simplified` so Windows callers never see verbatim `\\?\` paths.
+/// Async symlink-resolved path or the input path on failure/timeout. Windows-safe canonicalizer:
+/// the result is passed through `dunce::simplified` so Windows callers never see verbatim `\\?\`
+/// paths.
 #[tracing::instrument(name = "fs.canonicalize", skip_all, fields(result))]
 pub async fn canonicalize_with_timeout(path: PathBuf) -> PathBuf {
     // dunce-simplified below — blessed wrapper
@@ -41,15 +40,9 @@ pub async fn canonicalize_with_timeout(path: PathBuf) -> PathBuf {
     }
 }
 
-/// Async symlink-resolved path, preserving the `io::Error` on failure.
-///
-/// Error-preserving sibling of [`canonicalize_with_timeout`] for call sites
-/// whose control flow branches on the `io::ErrorKind` (e.g. NotFound driving a
-/// unicode-filename fallback or new-file creation), which the error-swallowing
-/// helpers cannot express. Like the other blessed wrappers, the Ok result is
-/// passed through `dunce::simplified` so Windows callers never see verbatim
-/// `\\?\` paths. Deliberately no timeout: a synthetic TimedOut error would
-/// change the `ErrorKind`-matching semantics at call sites.
+/// Async symlink-resolved path, preserving the `io::Error` on failure. Error-preserving sibling of
+/// [`canonicalize_with_timeout`] for call sites whose control flow branches on the `io::ErrorKind` (e.g. NotFound
+/// driving a unicode-filename fallback or new-file creation), which the error-swallowing helpers cannot express.
 pub(crate) async fn try_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
     // dunce-simplified below — blessed wrapper
     #[allow(clippy::disallowed_methods)]
@@ -58,14 +51,9 @@ pub(crate) async fn try_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
         .map(|p| dunce::simplified(&p).to_path_buf())
 }
 
-/// OS-specific special characters that appear in generated filenames but that
-/// models will never produce. Each entry maps a Unicode character to its ASCII
-/// equivalent.
-///
-/// Separate from [`CONFUSABLE_MAP`] intentionally: CONFUSABLE_MAP is for file
-/// *content* matching in `search_replace`, where characters like U+202F may be
-/// legitimate. This map targets OS-generated filenames where the model can
-/// never produce the exact character.
+/// OS-specific special characters that appear in generated filenames but that models will never
+/// produce. Each entry maps a Unicode character to its ASCII equivalent. This map targets
+/// OS-generated filenames where the model can never produce the exact character.
 const FILENAME_SPECIAL_CHARACTER_MAP: &[(char, char)] = &[
     ('\u{202F}', ' '), // narrow no-break space (macOS screenshot/recording filenames)
     ('\u{00A0}', ' '), // no-break space
@@ -94,18 +82,9 @@ pub struct UnicodePathMatch {
     pub note: String,
 }
 
-/// When `path` does not exist, scan its parent directory for a file whose name
-/// matches after normalizing unicode whitespace (e.g. U+202F → ASCII space).
-///
-/// macOS uses U+202F (narrow no-break space) before AM/PM in screenshot and
-/// screen recording filenames. Models always produce regular U+0020 spaces,
-/// so direct path lookups fail. This fallback bridges the gap.
-///
-/// Returns `None` if:
-/// - the path already exists (caller should not have called this),
-/// - the parent directory cannot be read,
-/// - no entry matches after normalization,
-/// - multiple entries match (ambiguous).
+/// When `path` does not exist, scan its parent directory for a file whose name matches after
+/// normalizing unicode whitespace (e.g. U+202F → ASCII space). Models always produce regular U+0020
+/// spaces, so direct path lookups fail. This fallback bridges the gap.
 #[tracing::instrument(name = "fs.unicode_path_fallback", skip_all, fields(result))]
 pub async fn try_resolve_unicode_filename(path: &Path) -> Option<UnicodePathMatch> {
     tokio::time::timeout(FS_SYSCALL_TIMEOUT, try_resolve_unicode_filename_inner(path))

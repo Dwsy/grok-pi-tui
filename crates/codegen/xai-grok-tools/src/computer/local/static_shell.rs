@@ -77,6 +77,7 @@ impl StaticShellSnapshot {
                 .stderr(xai_tty_utils::null_stdio())
                 .kill_on_drop(true);
             crate::util::detach_command(&mut cmd);
+            xai_grok_sandbox::child_net::restrict_child_network(&mut cmd);
             cmd.envs(crate::util::pager_env());
             #[allow(clippy::disallowed_methods)] // probe killed on drop
             let mut child = cmd.spawn().ok()?;
@@ -114,10 +115,9 @@ impl StaticShellSnapshot {
         Self { snapshot, shell }
     }
 
-    /// Build the replay wrapper: read the snapshot from fd 3, eval it (alias
-    /// and function definitions), then eval the user command; the shell exits
-    /// with the user command's status. A failing snapshot replay does not
-    /// abort the command.
+    /// Build the replay wrapper: read the snapshot from fd 3, eval it (alias and function
+    /// definitions), then eval the user command; the shell exits with the user command's status. A
+    /// failing snapshot replay does not abort the command.
     pub fn prepare_command(
         &self,
         user_command: &str,
@@ -129,18 +129,9 @@ impl StaticShellSnapshot {
         let (state_in_read, state_in_write) = os_pipe()?;
         set_cloexec(&state_in_write)?;
 
-        // Copy $1 into a plain variable and clear the positional parameters
-        // (`builtin set --`) BEFORE eval'ing the user command: `source
-        // <script>` with no arguments makes the sourced script inherit the
-        // caller's positional parameters, so e.g. conda's `bin/activate`
-        // (which forwards "$@" to `conda activate`) would receive the entire
-        // wrapped command string as an environment name. Clearing them
-        // matches the plain `bash -c "<command>"` execution path, where $# is 0.
-        //
-        // The login snapshot can restore `allexport` (set -a), which would
-        // auto-export the temp variable into the user command's child
-        // processes — strip the export attribute post-assignment (inline
-        // `declare +x var=value` does NOT beat allexport).
+        // Copy $1 into a plain variable and clear the positional parameters (`builtin set --`) BEFORE eval'ing the user command: `source <script>`
+        // with no arguments makes the sourced script inherit the caller's positional parameters, so e.g. conda's `bin/activate` (which forwards "$@"
+        // to `conda activate`) would receive the entire wrapped command string as an environment name.
         let wrapper = match self.shell {
             UnixShellKind::Bash => format!(
                 "snap=$(command cat <&3); builtin shopt -s extglob 2>/dev/null; \
@@ -325,12 +316,9 @@ mod tests {
         );
     }
 
-    /// Regression test: a script sourced WITHOUT arguments by the user command
-    /// must not see the wrapper's positional parameters ($1 = the whole
-    /// command string). Conda's `bin/activate` forwards "$@" to `conda
-    /// activate`, so a leak makes every `activate_conda`-prefixed command fail
-    /// with `EnvironmentLocationNotFound: Not a conda environment: <cwd>/<the
-    /// entire command string>`.
+    /// Regression test: a script sourced WITHOUT arguments by the user command must not see the wrapper's positional parameters ($1 = the whole
+    /// command string). Conda's `bin/activate` forwards "$@" to `conda activate`, so a leak makes every `activate_conda`-prefixed command fail with
+    /// `EnvironmentLocationNotFound: Not a conda environment: <cwd>/<the entire command string>`.
     #[tokio::test]
     async fn sourced_script_does_not_inherit_wrapper_positional_args() {
         if !bash_available() {

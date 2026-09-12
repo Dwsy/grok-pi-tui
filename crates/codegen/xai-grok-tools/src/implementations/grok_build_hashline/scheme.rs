@@ -20,10 +20,8 @@ use std::fmt;
 
 use crate::util::hash::{self, DEFAULT_HASH_LEN};
 
-/// Trait for pluggable anchor generation and validation schemes.
-///
-/// Implementations generate anchors for file lines and validate anchors
-/// against current file content.
+/// Trait for pluggable anchor generation and validation schemes. Implementations generate anchors
+/// for file lines and validate anchors against current file content.
 pub trait AnchorScheme: fmt::Debug + Send + Sync {
     /// Machine-readable name for this scheme (e.g. `"content_only_v1"`).
     fn name(&self) -> &str;
@@ -31,33 +29,24 @@ pub trait AnchorScheme: fmt::Debug + Send + Sync {
     /// Number of lowercase letters in the local line hash component.
     fn hash_len(&self) -> usize;
 
-    /// Generate anchors for all lines in a file.
-    ///
-    /// `lines` is a slice of the file's lines (without trailing newlines).
-    /// Returns one `Anchor` per line, in order.
+    /// Generate anchors for all lines in a file. `lines` is a slice of the file's lines (without
+    /// trailing newlines). Returns one `Anchor` per line, in order.
     fn generate_anchors(&self, lines: &[&str]) -> Vec<Anchor>;
 
-    /// Validate a parsed anchor against current file content.
-    ///
-    /// `anchor` is the anchor to validate. `lines` is the current file
-    /// content split by line. Returns the validation result.
+    /// Validate a parsed anchor against current file content. `anchor` is the anchor to validate.
+    /// `lines` is the current file content split by line. Returns the validation result.
     fn validate(&self, anchor: &ParsedAnchor, lines: &[&str]) -> ValidationResult;
 
-    /// Estimated number of lines read to validate a single anchor at
-    /// `line_idx` (0-based) in a file of `total_lines` lines.
-    ///
-    /// Used by the benchmark harness for read-amplification measurement.
+    /// Estimated number of lines read to validate a single anchor at `line_idx` (0-based) in a file
+    /// of `total_lines` lines. Used by the benchmark harness for read-amplification measurement.
     /// Default: 1 (local line only).
     fn validation_window_lines(&self, _line_idx: usize, _total_lines: usize) -> usize {
         1
     }
 
-    /// Search for a shifted anchor within a bounded window around the
-    /// original line number.
-    ///
-    /// Returns `ShiftResult::Found` if exactly one nearby line validates
-    /// under this scheme, `ShiftResult::Ambiguous` if multiple candidates
-    /// match, and `ShiftResult::NotFound` if none match.
+    /// Search for a shifted anchor within a bounded window around the original line number. Returns `ShiftResult::Found` if
+    /// exactly one nearby line validates under this scheme, `ShiftResult::Ambiguous` if multiple candidates match, and
+    /// `ShiftResult::NotFound` if none match.
     fn find_shifted(
         &self,
         anchor: &ParsedAnchor,
@@ -107,14 +96,9 @@ pub struct ParsedAnchor {
 }
 
 impl ParsedAnchor {
-    /// Parse an anchor string into its components.
-    ///
-    /// Accepted formats:
-    /// - `"22:abc"` → line=22, local="abc", context=None
-    /// - `"22:abc:rst"` → line=22, local="abc", context=Some("rst")
-    ///
-    /// Returns `None` if the string is malformed (non-numeric line number,
-    /// missing components, etc.).
+    /// Parse an anchor string into its components. `"22:abc"` → line=22, local="abc", context=None
+    /// `"22:abc:rst"` → line=22, local="abc", context=Some("rst") Returns `None` if the string is
+    /// malformed (non-numeric line number, missing components, etc.).
     pub fn parse(s: &str) -> Option<Self> {
         let mut parts = s.splitn(3, ':');
         let line_str = parts.next()?;
@@ -189,11 +173,9 @@ pub enum ShiftResult {
 /// Default search radius for shifted-anchor recovery (±15 lines).
 pub const DEFAULT_SEARCH_RADIUS: usize = 15;
 
-/// Candidate A — content-only line hash.
-///
-/// Anchor format: `LINE:LOCAL` (e.g. `22:abc`).
-/// Validates only the normalized content of the specified line. Edits above
-/// the line do not invalidate its anchor. Weakest freshness semantics.
+/// Candidate A — content-only line hash. Anchor format: `LINE:LOCAL` (e.g. `22:abc`). Validates
+/// only the normalized content of the specified line. Edits above the line do not invalidate its
+/// anchor. Weakest freshness semantics.
 #[derive(Debug, Clone)]
 pub struct ContentOnly {
     hash_len: usize,
@@ -207,11 +189,7 @@ impl ContentOnly {
         }
     }
 
-    /// Create with a custom hash length.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `hash_len` is not in `1..=4`.
+    /// Create with a custom hash length. Panics if `hash_len` is not in `1..=4`.
     pub fn with_hash_len(hash_len: usize) -> Self {
         assert!(
             hash_len > 0 && hash_len <= 4,
@@ -278,12 +256,9 @@ impl AnchorScheme for ContentOnly {
 /// Default chunk size for Candidate B (16 lines).
 pub const DEFAULT_CHUNK_SIZE: usize = 16;
 
-/// Candidate B — chunk-fingerprinted line anchors.
-///
-/// Anchor format: `LINE:LOCAL:CHUNK` (e.g. `22:abc:rst`).
-/// `LOCAL` is the normalized line hash. `CHUNK` is a fingerprint of the
-/// fixed-size chunk containing this line. Edits invalidate anchors only
-/// within the affected chunk.
+/// Candidate B — chunk-fingerprinted line anchors. Anchor format: `LINE:LOCAL:CHUNK` (e.g.
+/// `22:abc:rst`). `LOCAL` is the normalized line hash. `CHUNK` is a fingerprint of the fixed-size
+/// chunk containing this line. Edits invalidate anchors only within the affected chunk.
 #[derive(Debug, Clone)]
 pub struct ChunkFingerprint {
     hash_len: usize,
@@ -299,11 +274,7 @@ impl ChunkFingerprint {
         }
     }
 
-    /// Create with custom parameters.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `hash_len` is not in `1..=4` or `chunk_size` is 0.
+    /// Create with custom parameters. Panics if `hash_len` is not in `1..=4` or `chunk_size` is 0.
     pub fn with_params(hash_len: usize, chunk_size: usize) -> Self {
         assert!(
             hash_len > 0 && hash_len <= 4,
@@ -423,12 +394,9 @@ impl AnchorScheme for ChunkFingerprint {
 /// Default checkpoint interval for Candidate C (32 lines).
 pub const DEFAULT_CHECKPOINT_INTERVAL: usize = 32;
 
-/// Candidate C — checkpoint-chained line anchors.
-///
-/// Anchor format: `LINE:LOCAL:CKPT` (e.g. `22:abc:rst`).
-/// `LOCAL` is the normalized line hash. `CKPT` is a fingerprint derived from
-/// chaining all line hashes from the nearest preceding checkpoint to this
-/// line. Strongest freshness detection but more anchor churn after edits.
+/// Candidate C — checkpoint-chained line anchors. Anchor format: `LINE:LOCAL:CKPT` (e.g. `22:abc:rst`). `LOCAL` is the
+/// normalized line hash. `CKPT` is a fingerprint derived from chaining all line hashes from the nearest preceding
+/// checkpoint to this line. Strongest freshness detection but more anchor churn after edits.
 #[derive(Debug, Clone)]
 pub struct CheckpointChain {
     hash_len: usize,
@@ -444,11 +412,8 @@ impl CheckpointChain {
         }
     }
 
-    /// Create with custom parameters.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `hash_len` is not in `1..=4` or `checkpoint_interval` is 0.
+    /// Create with custom parameters. Panics if `hash_len` is not in `1..=4` or
+    /// `checkpoint_interval` is 0.
     pub fn with_params(hash_len: usize, checkpoint_interval: usize) -> Self {
         assert!(
             hash_len > 0 && hash_len <= 4,
@@ -461,10 +426,8 @@ impl CheckpointChain {
         }
     }
 
-    /// Compute the checkpoint-chained fingerprint for `line_idx` (0-based).
-    ///
-    /// Chains line hashes from the nearest checkpoint boundary up to and
-    /// including `line_idx`.
+    /// Compute the checkpoint-chained fingerprint for `line_idx` (0-based). Chains line hashes from
+    /// the nearest checkpoint boundary up to and including `line_idx`.
     fn checkpoint_fingerprint(&self, lines: &[&str], line_idx: usize) -> String {
         let checkpoint_start = (line_idx / self.checkpoint_interval) * self.checkpoint_interval;
 
@@ -558,16 +521,9 @@ impl AnchorScheme for CheckpointChain {
     }
 }
 
-/// Generic shifted-anchor recovery used by all scheme implementations.
-///
-/// Searches `±search_radius` lines around the anchor's original position for
-/// a line whose local hash matches. For schemes with contextual components,
-/// the contextual fingerprint is recomputed at each candidate position and
-/// also compared.
-///
-/// This function avoids per-candidate allocations: it computes the local hash
-/// inline (no `ParsedAnchor` cloning) and only evaluates the contextual
-/// fingerprint when the cheap local-hash check passes.
+/// Generic shifted-anchor recovery used by all scheme implementations. Searches `±search_radius` lines around the anchor's original position
+/// for a line whose local hash matches. This function avoids per-candidate allocations: it computes the local hash inline (no `ParsedAnchor`
+/// cloning) and only evaluates the contextual fingerprint when the cheap local-hash check passes.
 fn find_shifted_generic(
     scheme: &dyn AnchorScheme,
     anchor: &ParsedAnchor,

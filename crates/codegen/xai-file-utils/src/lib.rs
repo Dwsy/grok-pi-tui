@@ -20,7 +20,6 @@ pub mod gcs;
 pub mod queue;
 pub mod s3;
 pub mod storage_client;
-pub mod trace_context;
 pub mod upload_config;
 pub mod workspace_classifier;
 pub use upload_config::*;

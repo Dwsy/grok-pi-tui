@@ -33,11 +33,9 @@ pub const REFRESH_SCAN_LOG_PREFIX: &str = "refresh_all_baselines: completed in";
 /// [`HunkTrackerActor::refresh_all_baselines`] (no scan ran).
 pub const REFRESH_SKIP_LOG_PREFIX: &str = "refresh_all_baselines: git state unchanged";
 
-/// Strip a single trailing newline (`\r\n` or `\n`) for equality comparison.
-///
-/// Git-stored content typically has exactly one trailing newline appended.
-/// We strip only one to avoid falsely treating files with meaningful trailing
-/// whitespace as clean. Bare `\r` (classic Mac) is intentionally out of scope.
+/// Strip a single trailing newline (`\r\n` or `\n`) for equality comparison. Git-stored content typically has exactly one
+/// trailing newline appended. We strip only one to avoid falsely treating files with meaningful trailing whitespace as
+/// clean. Bare `\r` (classic Mac) is intentionally out of scope.
 fn strip_single_trailing_newline(content: &str) -> &str {
     content
         .strip_suffix("\r\n")
@@ -47,15 +45,6 @@ fn strip_single_trailing_newline(content: &str) -> &str {
 
 impl HunkTrackerActor {
     /// Record that an agent tool wrote to a file.
-    ///
-    /// # Arguments
-    /// * `path` - Absolute path to the file
-    /// * `content` - New file content
-    /// * `prompt_index` - The prompt/turn index when this write occurred
-    /// * `previous_content` - Content of the file before this write (if known).
-    ///   Used as a fallback baseline when the file doesn't exist in git HEAD
-    ///   (e.g., in worktrees created from dirty state where uncommitted files
-    ///   were copied but aren't tracked by git).
     pub(super) async fn record_agent_write(
         &mut self,
         path: PathBuf,
@@ -192,10 +181,8 @@ impl HunkTrackerActor {
         }
     }
 
-    /// Shared implementation for processing a single file change.
-    ///
-    /// When `preloaded_baseline` is `Some`, uses the provided baseline.
-    /// When `None`, reads the baseline from git on demand.
+    /// Shared implementation for processing a single file change. When `preloaded_baseline` is `Some`, uses the provided
+    /// baseline. When `None`, reads the baseline from git on demand.
     async fn process_file_change(
         &mut self,
         path: PathBuf,
@@ -219,10 +206,8 @@ impl HunkTrackerActor {
                 missing_content()
             };
 
-            // No git baseline + not in dirty cache, gitignored; skip.
-            // But allow directory paths through; they are legitimate fsnotify
-            // entries used to discover files inside new directories
-            // (inotify recursive-watch race recovery).
+            // No git baseline + not in dirty cache, gitignored; skip. But allow directory paths through; they are legitimate
+            // fsnotify entries used to discover files inside new directories (inotify recursive-watch race recovery).
             if self.mode == TrackingMode::AllDirty
                 && matches!(baseline, FileContentState::Missing)
                 && !path.is_dir()
@@ -340,15 +325,9 @@ impl HunkTrackerActor {
         self.recompute_hunks(&path, Some(current_state), source);
     }
 
-    /// Handle a file deletion notification from fs_notify.
-    ///
-    /// Some git operations (e.g., `git restore .`) emit Remove events for
-    /// files that are immediately re-created with different content. To
-    /// avoid treating these as true deletions, we check whether the file
-    /// still exists on disk before marking it as deleted.
-    ///
-    /// # Arguments
-    /// * `path` - Absolute path to the deleted file
+    /// Handle a file deletion notification from fs_notify. Some git operations (e.g., `git restore.`) emit Remove events for
+    /// files that are immediately re-created with different content. To avoid treating these as true deletions, we check
+    /// whether the file still exists on disk before marking it as deleted.
     pub(super) async fn handle_file_deleted(&mut self, path: PathBuf) {
         if !self.file_states.contains_key(&path) {
             // File not tracked by hunk tracker.
@@ -447,15 +426,9 @@ impl HunkTrackerActor {
         }
     }
 
-    /// Refresh all baselines from the current git HEAD and re-read current
-    /// content from disk for every tracked file.
-    ///
-    /// This is called after a git HEAD/index change to reconcile stale
-    /// state. For each tracked file:
-    /// - Re-read baseline from the new HEAD
-    /// - Re-read current content from disk
-    /// - Recompute hunks
-    /// - Drop files that are now clean (baseline == current, not agent files)
+    /// Refresh all baselines from the current git HEAD and re-read current content from disk for every tracked file. This is
+    /// called after a git HEAD/index change to reconcile stale state. For each tracked file: Re-read baseline from the new
+    /// HEAD; Re-read current content from disk; Drop files that are now clean (baseline == current, not agent files).
     pub(super) async fn refresh_all_baselines(&mut self) {
         self.refresh_all_baselines_except(&HashSet::new()).await;
     }
@@ -463,10 +436,9 @@ impl HunkTrackerActor {
     /// Same as `refresh_all_baselines` but skips paths in `skip`. Returns
     /// immediately when AgentOnly has nothing tracked (no per-file work to do).
     pub(super) async fn refresh_all_baselines_except(&mut self, skip: &HashSet<PathBuf>) {
-        // AgentOnly with nothing tracked has no work: it never auto-discovers,
-        // and the dirty/staged caches are read only for tracked files. Skipping
-        // avoids a full-worktree gix scan per git change. AllDirty must still
-        // scan — that is how it discovers newly-dirty files.
+        // AgentOnly with nothing tracked has no work: it never auto-discovers, and the dirty/staged caches are read only for
+        // tracked files. Skipping avoids a full-worktree gix scan per git change. AllDirty must still scan — that is how it
+        // discovers newly-dirty files.
         if self.mode == TrackingMode::AgentOnly && self.file_states.is_empty() {
             return;
         }
@@ -481,15 +453,9 @@ impl HunkTrackerActor {
             self.repo_sync_state = repo_sync_state;
         }
 
-        // Refresh git dirty/staged caches BEFORE the main loop so the
-        // is_clean check can consult them for non-diffable files (LFS,
-        // binary, tooLarge). In AllDirty mode this also picks up newly
-        // dirty files on the new branch, so it must scan the full worktree.
-        // AgentOnly never auto-discovers and only consults the caches for
-        // tracked paths, so the scan is scoped to them. Paths that can't be
-        // made working-dir-relative are dropped: the caches are keyed
-        // working-dir-relative, so such paths could never match a cache
-        // entry anyway.
+        // AgentOnly never auto-discovers and only consults the caches for tracked paths, so the scan is scoped to them. Paths
+        // that can't be made working-dir-relative are dropped: the caches are keyed working-dir-relative, so such paths could
+        // never match a cache entry anyway.
         let scope: Option<Vec<PathBuf>> = match self.mode {
             TrackingMode::AllDirty => None,
             TrackingMode::AgentOnly => Some(
@@ -501,15 +467,9 @@ impl HunkTrackerActor {
             ),
         };
         match scope {
-            // Every tracked path fell outside working_dir: nothing in scope
-            // can ever hit the caches, and an empty pathspec list would mean
-            // a FULL worktree scan in gix — the inversion of the intent — so
-            // skip the scan. Clear the caches rather than keep them: their
-            // entries predate the HEAD/index move that brought us here, and
-            // the repo_sync_state committed above would short-circuit every
-            // later refresh into serving those stale entries (get_staged_files,
-            // staged flags). Consistent-empty matches the scope: the caches
-            // describe nothing we track.
+            // Clear the caches rather than keep them: their entries predate the HEAD/index move that brought us here, and the
+            // repo_sync_state committed above would short-circuit every later refresh into serving those stale entries
+            // (get_staged_files, staged flags). Consistent-empty matches the scope: the caches describe nothing we track.
             Some(rels) if rels.is_empty() => {
                 self.git_dirty_cache.clear();
                 self.git_staged_cache.clear();
@@ -572,12 +532,9 @@ impl HunkTrackerActor {
             state.current_content = new_current;
             state.baseline_accepted = false;
 
-            // Check if file is now clean (baseline == current).
-            // For Full states, compare text (ignoring trailing newline).
-            // For non-diffable states (Binary/TooLarge/LFS): consult the git
-            // dirty cache (refreshed above) — if git says the file is clean,
-            // drop it from tracking to avoid phantom entries.
-            // For Missing state: clean only if file doesn't exist.
+            // Check if file is now clean (baseline == current). For Full states, compare text (ignoring trailing newline). For
+            // non-diffable states (Binary/TooLarge/LFS): consult the git dirty cache (refreshed above) — if git says the file is
+            // clean, drop it from tracking to avoid phantom entries. For Missing state: clean only if file doesn't exist.
             let is_clean = match (&state.baseline, &state.current_content) {
                 (FileContentState::Full(b), FileContentState::Full(c)) => {
                     strip_single_trailing_newline(b) == strip_single_trailing_newline(c)

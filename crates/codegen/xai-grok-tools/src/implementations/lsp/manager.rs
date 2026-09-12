@@ -22,17 +22,14 @@ pub struct DiagnosticsSummary {
     pub diagnostic_count: usize,
 }
 
-/// How many diagnostics one file may contribute to a summary.
-///
-/// A file with forty errors is usually one mistake seen forty times, and the
-/// fortieth line teaches the reader nothing the first ten did not.
+/// How many diagnostics one file may contribute to a summary. A file with forty errors is usually
+/// one mistake seen forty times, and the fortieth line teaches the reader nothing the first ten did
+/// not.
 const MAX_PER_FILE: usize = 10;
 
-/// How many a whole summary may carry.
-///
-/// A refresh re-opens every document at once, so without a ceiling the first
-/// one on a large solution could put every problem in the workspace into a
-/// single tool result.
+/// How many a whole summary may carry. A refresh re-opens every document at once, so without a
+/// ceiling the first one on a large solution could put every problem in the workspace into a single
+/// tool result.
 const MAX_PER_SUMMARY: usize = 30;
 
 /// What a drain found: the lines to show, and the counts that go with them.
@@ -55,13 +52,9 @@ struct Reopened {
 }
 
 impl CollectedDiagnostics {
-    /// Add the reportable diagnostics for one file. A file with nothing worth
-    /// showing — clean, or only hints and information — adds no header.
-    ///
-    /// Errors come before warnings, and both are capped, so what survives a
-    /// trim is the part worth reading. The line each was reported on breaks
-    /// ties, so the order does not depend on how the server happened to sort
-    /// them.
+    /// Add the reportable diagnostics for one file. A file with nothing worth showing — clean, or only hints and information — adds no header.
+    /// Errors come before warnings, and both are capped, so what survives a trim is the part worth reading. The line each was reported on breaks
+    /// ties, so the order does not depend on how the server happened to sort them.
     fn append_file(&mut self, uri: &str, items: Vec<Diagnostic>) {
         let mut reportable: Vec<(&str, &Diagnostic)> = items
             .iter()
@@ -98,11 +91,9 @@ impl CollectedDiagnostics {
         }
     }
 
-    /// The line that tells the reader something was left out, if anything was.
-    ///
-    /// Silently truncating would be worse than not reporting at all: the reader
-    /// would take a partial list for the whole truth and conclude the rest of
-    /// the file was fine.
+    /// The line that tells the reader something was left out, if anything was. Silently truncating
+    /// would be worse than not reporting at all: the reader would take a partial list for the whole
+    /// truth and conclude the rest of the file was fine.
     fn trimmed_note(&self) -> Option<String> {
         let hidden = self.diagnostic_count.saturating_sub(self.shown);
         (hidden > 0).then(|| format!("… and {hidden} more not shown"))
@@ -182,11 +173,9 @@ impl LspManager {
         lifecycle_id
     }
 
-    /// Start waiting for the server's verdict on `uri`.
-    ///
-    /// `version` is the document version the change was sent as — a verdict on
-    /// that version or a later one settles it, and one on an earlier version
-    /// does not. See [`PendingEdits`].
+    /// Start waiting for the server's verdict on `uri`. `version` is the document version the
+    /// change was sent as — a verdict on that version or a later one settles it, and one on an
+    /// earlier version does not. See [`PendingEdits`].
     pub fn mark_uri_pending_diagnostics(
         &mut self,
         server_name: &str,
@@ -230,11 +219,9 @@ impl LspManager {
             {
                 Ok(mut client) => {
                     if !client.enroll(self.process_scope.as_ref()) {
-                        // Session teardown raced this start: the closed scope
-                        // killed the child at registration. Installing the
-                        // client would advertise a dead server and feed the
-                        // restart monitor respawn churn, so stop starting
-                        // servers for this manager instead.
+                        // Session teardown raced this start: the closed scope killed the child at registration. Installing the client would
+                        // advertise a dead server and feed the restart monitor respawn churn, so stop starting servers for this manager
+                        // instead.
                         tracing::info!(server = %name, "session scope closed during LSP start; discarding server");
                         self.shutting_down = true;
                         return;
@@ -287,9 +274,36 @@ impl LspManager {
             .collect()
     }
 
-    /// Only called after `search_replace`; other mutations (bash, git) are not tracked.
+    /// A structured edit we ourselves made (search_replace / apply_patch).
     pub fn notify_file_changed(&mut self, path: &Path, content: &str) {
-        let (server_name, lang_id) = match super::config::resolve_server(&self.servers, path) {
+        self.notify_file_event(path, Some(content), super::DiskChangeKind::Changed);
+    }
+
+    pub fn notify_file_event(
+        &mut self,
+        path: &Path,
+        content: Option<&str>,
+        kind: super::DiskChangeKind,
+    ) {
+        let typ = kind.to_lsp();
+        // A `.csproj` must still reach the C# server even though only `.cs` is
+        // mapped — but only if that server registered a matching watcher.
+        for client in self.clients.values_mut() {
+            client.notify_watched_path_event(path, typ);
+        }
+        let owner = super::config::resolve_server(&self.servers, path);
+        if kind == super::DiskChangeKind::Deleted {
+            if let Some((server_name, _)) = owner
+                && let Some(client) = self.clients.get_mut(&server_name)
+            {
+                client.close_document(path);
+            }
+            return;
+        }
+        let Some(content) = content else {
+            return;
+        };
+        let (server_name, lang_id) = match owner {
             Some(pair) => pair,
             None => return,
         };
@@ -315,10 +329,9 @@ impl LspManager {
             .any(|pending| !pending.is_empty())
     }
 
-    /// Whether any pending server is still expected to answer. False once every
-    /// server owing us one has been silent for longer than
-    /// [`super::pending::SERVER_PATIENCE`], which lets the drain return immediately
-    /// instead of blocking for its whole timeout.
+    /// Whether any pending server is still expected to answer. False once every server owing us one
+    /// has been silent for longer than [`super::pending::SERVER_PATIENCE`], which lets the drain
+    /// return immediately instead of blocking for its whole timeout.
     fn worth_blocking_for_diagnostics(&self) -> bool {
         let now = Instant::now();
         self.pending_diagnostics_by_server
@@ -326,14 +339,9 @@ impl LspManager {
             .any(|pending| pending.worth_blocking(now))
     }
 
-    /// Ask again about every open document of any server that has told us its
-    /// answers are out of date.
-    ///
-    /// The re-pull is already under way — [`super::refresh`] starts it — but a
-    /// document nobody is waiting on has nowhere to report to, so the questions
-    /// have to be re-opened as well. Without this, the truth a server arrives
-    /// at *after* answering too early would sit in the store until the next
-    /// time that file happened to be edited.
+    /// Ask again about every open document of any server that has told us its answers are out of date. The re-pull is
+    /// already under way — [`super::refresh`] starts it — but a document nobody is waiting on has nowhere to report to, so
+    /// the questions have to be re-opened as well.
     fn reopen_refreshed_questions(&mut self) {
         let mut reopened = Vec::new();
         for (name, client) in &self.clients {
@@ -398,13 +406,9 @@ impl LspManager {
             .unwrap_or(false)
     }
 
-    /// Take the verdicts the servers have given on the files we are waiting on,
-    /// and report the problems among them.
-    ///
-    /// Every file this settles leaves the pending set, whether or not it
-    /// produced a line to show: "no problems" is a verdict, and a file that
-    /// keeps waiting for one it has already had is what makes the set grow
-    /// without bound.
+    /// Take the verdicts the servers have given on the files we are waiting on, and report the problems among them. Every
+    /// file this settles leaves the pending set, whether or not it produced a line to show: "no problems" is a verdict, and
+    /// a file that keeps waiting for one it has already had is what makes the set grow without bound.
     fn take_answered_diagnostics(&mut self) -> Option<DiagnosticsSummary> {
         let now = Instant::now();
         let mut collected = CollectedDiagnostics::default();
@@ -588,20 +592,18 @@ impl LspManager {
     }
 }
 
-/// Wait, up to `timeout`, for the servers to say something about the files we
-/// have told them about, and report whatever they said.
-///
-/// Drops the lock across the wait so `notify_file_changed` isn't blocked.
+/// Wait, up to `timeout`, for the servers to say something about the files we have told them about,
+/// and report whatever they said. Drops the lock across the wait so `notify_file_changed` isn't
+/// blocked.
 pub async fn drain_lsp_diagnostics(
     lsp_manager: &tokio::sync::Mutex<LspManager>,
     timeout: std::time::Duration,
 ) -> Option<DiagnosticsSummary> {
     let deadline = tokio::time::Instant::now() + timeout;
     let mut lsp = lsp_manager.lock().await;
-    // Set once the budget is spent. Checked only *after* collecting, so the
-    // store is always read one final time before we conclude there was nothing:
-    // a report can land between the wait's last poll and our re-taking the
-    // lock, and it would otherwise sit unread.
+    // Set once the budget is spent. Checked only *after* collecting, so the store is always read
+    // one final time before we conclude there was nothing: a report can land between the wait's
+    // last poll and our re-taking the lock, and it would otherwise sit unread.
     let mut out_of_time = false;
 
     loop {
@@ -638,10 +640,9 @@ pub async fn drain_lsp_diagnostics(
         notified.as_mut().enable();
         drop(lsp);
 
-        // Every document shares this notification, so being woken is not proof
-        // that *our* files were answered — a publish for some other file wakes
-        // us just the same. Go back and look, and if it was not for us, keep
-        // waiting until it is or the budget runs out.
+        // Every document shares this notification, so being woken is not proof that *our* files
+        // were answered — a publish for some other file wakes us just the same. Go back and look,
+        // and if it was not for us, keep waiting until it is or the budget runs out.
         out_of_time = tokio::time::timeout_at(deadline, notified).await.is_err();
         lsp = lsp_manager.lock().await;
     }

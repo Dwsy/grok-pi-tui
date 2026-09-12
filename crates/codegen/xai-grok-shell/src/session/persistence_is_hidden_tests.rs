@@ -51,6 +51,17 @@ fn not_hidden_for_regular_sessions() {
 }
 
 #[test]
+fn headless_is_listable_but_flagged() {
+    let headless = summary_with_kind(Some("headless"));
+    assert!(!headless.is_hidden(), "headless must stay listable");
+    assert!(headless.is_headless());
+
+    assert!(!summary_with_kind(None).is_headless());
+    assert!(!summary_with_kind(Some("fork")).is_headless());
+    assert!(!summary_with_kind(Some("subagent")).is_headless());
+}
+
+#[test]
 fn explicit_hidden_overrides_session_kind() {
     let mut s = summary_with_kind(Some("subagent"));
     s.hidden = Some(false);
@@ -59,4 +70,36 @@ fn explicit_hidden_overrides_session_kind() {
     let mut s = summary_with_kind(None);
     s.hidden = Some(true);
     assert!(s.is_hidden(), "explicit hidden=true overrides kind");
+}
+
+#[test]
+fn unused_husk_includes_worktree_stamped_empty() {
+    let mut s = summary_with_kind(Some("worktree"));
+    s.worktree_label = Some("fix-bug".into());
+    assert!(
+        s.is_unused_optimistic_husk(),
+        "0-message untitled worktree stamp is still a husk"
+    );
+}
+
+#[test]
+fn unused_husk_excludes_fork_and_titled_or_used() {
+    assert!(!summary_with_kind(Some("fork")).is_unused_optimistic_husk());
+
+    let mut worktree_fork = summary_with_kind(Some("worktree"));
+    worktree_fork.worktree_label = Some("fix-bug".into());
+    worktree_fork.parent_session_id = Some("parent-session".into());
+    worktree_fork.forked_at = Some(Utc::now());
+    assert!(
+        !worktree_fork.is_unused_optimistic_husk(),
+        "worktree fork provenance must stay visible"
+    );
+
+    let mut titled = summary_with_kind(Some("worktree"));
+    titled.generated_title = Some("named".into());
+    assert!(!titled.is_unused_optimistic_husk());
+
+    let mut used = summary_with_kind(None);
+    used.num_messages = 1;
+    assert!(!used.is_unused_optimistic_husk());
 }

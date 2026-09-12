@@ -64,15 +64,9 @@ impl<B: Backend + Write> TerminalLike for Terminal<B> {
     }
 }
 
-/// Execute a function with synchronized terminal output to prevent flicker
-///
-/// This wraps the provided function with terminal synchronized output mode,
-/// making all terminal operations within the function atomic.
-/// Supported by most modern terminals (iTerm2, kitty, WezTerm, Windows Terminal, etc.)
-/// Gracefully ignored by terminals that don't support it.
-///
-/// IMPORTANT: if the closure panics, it is responsibility of the caller to clean
-/// this up, otherwise the terminal may hang forever (depends on the terminal / mux).
+/// Execute a function with synchronized terminal output to prevent flicker. Gracefully ignored by terminals that don't
+/// support it. IMPORTANT: if the closure panics, it is responsibility of the caller to clean this up, otherwise the
+/// terminal may hang forever (depends on the terminal / mux).
 pub fn with_synchronized_output<T, F, R>(terminal: &mut T, f: F) -> io::Result<R>
 where
     T: TerminalLike,

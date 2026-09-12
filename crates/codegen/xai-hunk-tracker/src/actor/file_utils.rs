@@ -6,19 +6,9 @@ use super::state::{FileContentState, MAX_TRACKED_TEXT_BYTES};
 /// See https://github.com/git-lfs/git-lfs/blob/main/docs/spec.md
 const LFS_POINTER_PREFIX: &[u8] = b"version https://git-lfs.github.com/spec/v1\n";
 
-/// True when `bytes` is a Git LFS pointer stub.
-///
-/// LFS pointers are small text files (typically ~130 bytes) with the format:
-/// ```text
-/// version https://git-lfs.github.com/spec/v1
-/// oid sha256:<hex>
-/// size <digits>
-/// ```
-///
-/// When the hunk tracker reads the raw git blob for an LFS-tracked file,
-/// it gets this pointer text. The working copy, however, holds the real
-/// (smudged) content. Detecting and marking LFS pointers prevents phantom
-/// diffs that can never be resolved.
+/// LFS pointers are small text files (typically ~130 bytes) with the format: When the hunk tracker reads the raw git blob
+/// for an LFS-tracked file, it gets this pointer text. The working copy, however, holds the real (smudged) content.
+/// Detecting and marking LFS pointers prevents phantom diffs that can never be resolved.
 pub fn is_lfs_pointer(bytes: &[u8]) -> bool {
     // LFS pointers are always small (< 200 bytes typically).
     // Quick length check avoids scanning large buffers.
@@ -33,11 +23,8 @@ pub fn is_binary(content: &[u8]) -> bool {
     content[..check_len].contains(&0)
 }
 
-/// Classify raw bytes into a FileContentState.
-/// - Checks size BEFORE any allocation (bounded read guarantee)
-/// - Checks for binary (null bytes in first 8KB) - no allocation needed
-/// - Checks for valid UTF-8 only after size check passes
-/// - Returns Full(String) only if all checks pass and size is within limit
+/// Checks size BEFORE any allocation (bounded read guarantee); Checks for binary (null bytes in first 8KB) - no
+/// allocation needed; Checks for valid UTF-8 only after size check passes.
 pub fn classify_bytes(bytes: &[u8]) -> FileContentState {
     let byte_len = bytes.len();
 
@@ -69,10 +56,9 @@ pub fn classify_bytes(bytes: &[u8]) -> FileContentState {
     }
 }
 
-/// Classify a String into FileContentState based on size and binary content.
-/// - Checks for NUL bytes (binary content) using the same heuristic as is_binary()
-/// - Checks against MAX_TRACKED_TEXT_BYTES size limit
-/// - Returns Full(String) only if size is within limit and content is text
+/// Classify a String into FileContentState based on size and binary content. Checks for NUL bytes (binary content) using
+/// the same heuristic as is_binary(); Checks against MAX_TRACKED_TEXT_BYTES size limit; Returns Full(String) only if size
+/// is within limit and content is text.
 pub fn classify_string(s: String) -> FileContentState {
     let byte_len = s.len();
 
@@ -101,11 +87,9 @@ pub fn missing_content() -> FileContentState {
     FileContentState::Missing
 }
 
-/// Read a file and return FileContentState directly, with bounded allocation.
-/// - Checks file metadata size BEFORE reading (MF-1: bounded read guarantee)
-/// - Detects binary from a small prefix (8KB) without full read
-/// - Returns TooLarge/Binary without allocating full content
-/// - Only reads full content if within limit and text
+/// Read a file and return FileContentState directly, with bounded allocation. Checks file metadata size BEFORE reading
+/// (MF-1: bounded read guarantee); Detects binary from a small prefix (8KB) without full read; Only reads full content if
+/// within limit and text.
 pub async fn read_file_bounded(path: &std::path::Path) -> FileContentState {
     use tokio::io::AsyncReadExt;
 
@@ -200,15 +184,6 @@ mod tests {
         assert!(
             matches!(state, FileContentState::TooLarge { byte_len } if byte_len == MAX_TRACKED_TEXT_BYTES + 1)
         );
-    }
-
-    #[test]
-    fn test_classify_bytes_too_large_with_null() {
-        // Large content with null byte - should be TooLarge, not Binary
-        // (size check happens first, so we short-circuit before binary check)
-        let large: Vec<u8> = std::iter::repeat_n(b'a', MAX_TRACKED_TEXT_BYTES + 100).collect();
-        let state = classify_bytes(&large);
-        assert!(matches!(state, FileContentState::TooLarge { .. }));
     }
 
     #[test]

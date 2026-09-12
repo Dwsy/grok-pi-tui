@@ -1,6 +1,3 @@
-//! Compacts the current conversation and generates a summary of the conversation which
-//! gets passed to the next turn of the model
-
 use crate::sampling::{
     ApiBackend, ChatCompletionRequest, ChatRequestMessage, Client as OaiCompatClient,
     ConversationRequest, ConversationToolChoice, HostedTool, SamplingError, ToolChoice,
@@ -12,21 +9,15 @@ use futures_util::StreamExt;
 use reqwest::StatusCode;
 use xai_grok_sampler::SamplerConfig as SamplingConfig;
 
-// Re-export compaction utilities from xai-chat-state so existing callers
-// that import from this module continue to work.
+// Re-export compaction utilities from xai-chat-state so existing callers that import from this module continue to work
 pub use xai_chat_state::compaction_utils::{
     AUTO_CONTINUE_PROMPT, extract_last_real_user_query, extract_last_user_query,
     extract_messages_since_last_user, extract_real_user_queries, is_synthetic_extracted_query,
 };
 
-/// Short, self-narrating compaction prompt used by the short-prompt harness only.
-/// Frames the call as "summarize for a successor assistant who only sees
-/// the user's original query plus this summary." Wrapped in
-/// `<summary_request>` only -- the surrounding `<user_query>` is implicit
-/// because we push this as a `ConversationItem::user`.
-///
-/// All other agents (grok-build, etc.) continue to use the detailed
-/// structured prompt built inline in `generate_session_compact`.
+/// Short compaction prompt used by the short-prompt harness only.
+/// Frames the call as "summarize for a successor assistant who only sees the user's original query plus this summary.".
+/// Wrapped in `<summary_request>` only; the surrounding `<user_query>` is implicit because we push this as a `ConversationItem::user`.
 pub(crate) const SELF_SUMMARIZATION_PROMPT: &str = r#"<summary_request>
 Please summarize the conversation so far. This summary (everything after your
 thinking) will be provided to another AI assistant to continue working on the
@@ -40,14 +31,16 @@ they were resolved, and what remains to be done. DO NOT call any tools in
 your response.
 </summary_request>"#;
 
-/// Outcome of a failed `generate_session_compact` call, classified at the
-/// point of the typed upstream error so the caller can short-circuit
-/// retries without re-parsing free-form error strings.
+/// Outcome of a failed `generate_session_compact` call, classified at the point of the typed upstream error.
+/// The caller can short-circuit retries without re-parsing free-form error strings.
 #[derive(Debug)]
 pub(crate) enum CompactFailure {
-    /// Retrying the same payload will hit the same failure. The retry loop
-    /// in `run_compact_inner` should bail without sleeping or re-issuing.
+    /// Retrying the same payload will hit the same failure.
+    /// The retry loop in `run_compact_inner` should bail without sleeping or re-issuing.
     Deterministic(acp::Error),
+    /// Deterministic size overflow: the same payload cannot help, but a
+    /// smaller one can — the caller steps down its input ladder.
+    Overflow(acp::Error),
     /// Failure may resolve on retry. The caller follows its existing
     /// N-attempt + backoff loop.
     Transient(acp::Error),
@@ -55,41 +48,96 @@ pub(crate) enum CompactFailure {
     Cancelled,
 }
 
-/// Stable error payload for a user-cancelled compact (pager + retry loop).
-pub(crate) const COMPACT_CANCELLED_MSG: &str = "compact cancelled";
+/// Stable cancel payload; the pager matches it to route manual `/compact` to "Compaction cancelled." instead of a failure.
+pub const COMPACT_CANCELLED_MSG: &str = "compact cancelled";
 
-impl CompactFailure {
-    pub(crate) fn cancelled_error() -> acp::Error {
-        acp::Error::internal_error().data(COMPACT_CANCELLED_MSG)
+/// Stamped on every compaction failure payload; the user-facing normalizer strips it.
+pub(crate) const COMPACT_FAILED_PREFIX: &str = "compact failed: ";
+
+/// Cancel-vs-failure discriminator in the compact RPC error's `data` (`{"kind": …, "message": …}`).
+/// The pager routes on this, never the message text (upstream bodies can echo the cancel phrase).
+/// The protocol's `RequestCancelled` code is feature-gated unstable and cancel-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactErrorKind {
+    Cancelled,
+    Failed,
+}
+
+impl CompactErrorKind {
+    fn wire(self) -> &'static str {
+        match self {
+            CompactErrorKind::Cancelled => "compact_cancelled",
+            CompactErrorKind::Failed => "compact_failed",
+        }
+    }
+
+    fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "compact_cancelled" => Some(Self::Cancelled),
+            "compact_failed" => Some(Self::Failed),
+            _ => None,
+        }
     }
 }
 
-// Single definition in the sampling layer so the sampler's turn-request retry and
-// compaction's retry loop agree on size detection.
-pub(crate) use xai_grok_sampling_types::is_context_length_error;
+/// Byte cap (truncation marker included) on the user-facing compaction error detail.
+pub(crate) const COMPACT_ERROR_DETAIL_MAX_BYTES: usize = 300;
+
+/// The one normalize sequence for user-facing compaction error details: single-line, scrub service names, cap.
+/// Idempotent, so the wire chokepoint below can re-run it on pre-normalized text.
+/// URLs stay: for custom-endpoint users the URL is the diagnosis.
+pub(crate) fn normalize_compact_detail(raw: &str) -> String {
+    let single_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let scrubbed = crate::sampling::error::rewrite_service_names(&single_line);
+    xai_grok_tools::util::truncate_str_with_marker(&scrubbed, COMPACT_ERROR_DETAIL_MAX_BYTES)
+        .into_owned()
+}
+
+/// Typed compact-error `data` payload.
+/// `message` is the key [`crate::sampling::error::error_detail_from_data`] reads first, so text-only consumers see the plain detail.
+/// Normalized here at the wire boundary: typed-kind pagers render it verbatim, so no producer can ship raw upstream text.
+pub fn compact_error_data(kind: CompactErrorKind, message: &str) -> serde_json::Value {
+    serde_json::json!({ "kind": kind.wire(), "message": normalize_compact_detail(message) })
+}
+
+/// Read the typed discriminator back.
+/// `None` for payloads from shells that predate it (bare strings) or for foreign shapes.
+pub fn compact_error_kind(err: &acp::Error) -> Option<CompactErrorKind> {
+    CompactErrorKind::from_wire(err.data.as_ref()?.get("kind")?.as_str()?)
+}
+
+impl CompactFailure {
+    pub(crate) fn cancelled_error() -> acp::Error {
+        acp::Error::internal_error().data(compact_error_data(
+            CompactErrorKind::Cancelled,
+            COMPACT_CANCELLED_MSG,
+        ))
+    }
+}
+
+// Single definition so turn-path and compaction size detection can't drift.
+pub(crate) use xai_grok_compaction::is_context_length_error;
 
 /// Classify an upstream `SamplingError` for the compaction retry loop.
-///
-/// `Auth`, `InvalidConfiguration`, `Serialization` and
-/// `IdleTimeout` are all deterministic by construction (re-issuing the same
-/// request cannot change the outcome — auth state, config, payload shape,
-/// and stuck-model conditions all persist). 4xx API responses other than
-/// 408 (timeout) and 429 (rate limit) are likewise deterministic. Network
-/// transport errors, stream-level blips, and 5xx responses are transient.
+/// Size overflows (HTTP 413 by status, or size-worded error text) classify as [`CompactFailure::Overflow`] so the caller's input ladder engages.
+/// Re-issuing the same request cannot change the outcome: auth state, config, payload shape, and stuck-model conditions all persist.
 fn classify_sampling_error(err: SamplingError) -> CompactFailure {
-    let acp_err = acp::Error::internal_error().data(format!("compact failed: {err}"));
+    let acp_err = acp::Error::internal_error().data(format!("{COMPACT_FAILED_PREFIX}{err}"));
+    // Size beats the generic 4xx rule so the input ladder sees it; 413 matches by status because proxies send it with generic body text.
+    // Deliberately not laddering on `is_likely_body_rejected()`: the same signal fires on real network resets.
+    if err.is_payload_too_large() || err.is_context_length_error() {
+        return CompactFailure::Overflow(acp_err);
+    }
     let deterministic = match &err {
         SamplingError::Auth { .. }
         | SamplingError::InvalidConfiguration(_)
+        | SamplingError::MtlsConfiguration(_)
         | SamplingError::Serialization(_)
         | SamplingError::IdleTimeout { .. } => true,
-        SamplingError::Api {
-            status, message, ..
-        } => {
-            is_context_length_error(message)
-                || (status.is_client_error()
-                    && *status != StatusCode::REQUEST_TIMEOUT
-                    && *status != StatusCode::TOO_MANY_REQUESTS)
+        SamplingError::Api { status, .. } => {
+            status.is_client_error()
+                && *status != StatusCode::REQUEST_TIMEOUT
+                && *status != StatusCode::TOO_MANY_REQUESTS
         }
         SamplingError::MaxTokensTruncation => true,
         // Loops are stochastic at sampling temperature; a retry may differ.
@@ -106,22 +154,22 @@ fn classify_sampling_error(err: SamplingError) -> CompactFailure {
     }
 }
 
-/// Classify a Anthropic-style stream error event (`ResponseError` /
-/// `ResponseFailed.error`) for the compaction retry loop.
-///
-/// `code` is the structured `code` field on the event (typically a numeric
-/// HTTP status as a string, but Anthropic also uses error-type strings like
-/// `"invalid_request_error"`). `message` is the human-readable detail.
-///
-/// Numeric codes are classified by HTTP-status range. The Anthropic
-/// `invalid_request_error` marker, which can appear in either field, always
-/// maps to `Deterministic` (schema violations cannot be fixed by re-sending
-/// the same payload).
+/// Classify a provider-style stream error event (`ResponseError` / `ResponseFailed.error`) for the compaction retry loop.
+/// `code` is the structured `code` field on the event (typically a numeric HTTP status as a string, or an error-type string like `"invalid_request_error"`).
+/// `message` is the human-readable detail.
 fn classify_response_event_error(code: Option<&str>, message: &str) -> CompactFailure {
     let acp_err = acp::Error::internal_error().data(match code {
-        Some(c) => format!("compact failed: {c}: {message}"),
-        None => format!("compact failed: {message}"),
+        Some(c) => format!("{COMPACT_FAILED_PREFIX}{c}: {message}"),
+        None => format!("{COMPACT_FAILED_PREFIX}{message}"),
     });
+
+    // Size intentionally outranks the `invalid_request_error` marker below: real overflows wear that marker WITH size text, so letting the marker veto the text would strand them off the ladder.
+    // Residual echo risk is accepted — sticky Size is recoverable via manual /compact or rewind.
+    if code.is_some_and(xai_grok_sampling_types::is_size_overflow_error_code)
+        || is_context_length_error(message)
+    {
+        return CompactFailure::Overflow(acp_err);
+    }
 
     if matches!(code, Some("invalid_request_error")) || message.contains("invalid_request_error") {
         return CompactFailure::Deterministic(acp_err);
@@ -135,12 +183,6 @@ fn classify_response_event_error(code: Option<&str>, message: &str) -> CompactFa
         return CompactFailure::Deterministic(acp_err);
     }
 
-    // Size overflow arrives here with no parseable code (`code="none"`); the
-    // message is the only signal that re-sending cannot help.
-    if is_context_length_error(message) {
-        return CompactFailure::Deterministic(acp_err);
-    }
-
     CompactFailure::Transient(acp_err)
 }
 
@@ -150,9 +192,7 @@ pub(crate) fn build_compaction_prompt(
     use_short_prompt: bool,
 ) -> String {
     if use_short_prompt {
-        // Compat harness: short self-summarization prompt. Manual
-        // `/compact <text>` still appends the user-provided context as
-        // a sibling tag so the model can incorporate it.
+        // Manual `/compact <text>` still appends the user-provided context as a sibling tag so the model can incorporate it
         match user_context {
             Some(ctx) => format!(
                 "{SELF_SUMMARIZATION_PROMPT}\n\n\
@@ -162,9 +202,8 @@ pub(crate) fn build_compaction_prompt(
             None => SELF_SUMMARIZATION_PROMPT.to_string(),
         }
     } else {
-        // Default (grok-build, codex, ...): the concise summarize prompt the
-        // grok-build models are RL-trained on. `/compact <text>` is spliced
-        // into the `{user_context_section}` slot.
+        // Default (grok-build, codex, ...): the concise summarize prompt the grok-build models are RL-trained on
+        // `/compact <text>` is spliced into the `{user_context_section}` slot
         let user_context_section = match user_context {
             Some(context) => format!(
                 "\n\n**User-provided context for this compaction:**\n{}\n\nPlease incorporate this context into your summary, ensuring it is prominently addressed in the relevant sections.\n\n",
@@ -197,11 +236,9 @@ If the prior conversation contains a note about files at /tmp/compaction/segment
     }
 }
 
-/// Five-section compaction instruction for **two-pass** prefire/pass2 (matches the
-/// "slim + special" eval arm). Same framing as [`build_compaction_prompt`]'s stock
-/// path, but omits Files and Code Sections, All User Messages, Pending Tasks, and
-/// Current Work — those are covered by the prefix history (pass1) or the recent
-/// tail (pass2) without asking the summarizer to re-emit them as dedicated sections.
+/// Five-section compaction instruction for **two-pass** prefire/pass2 (matches the "slim + special" eval arm).
+/// Same framing as [`build_compaction_prompt`]'s stock path, but omits Files and Code Sections, All User Messages, Pending Tasks, and Current Work.
+/// Those are covered by the prefix history (pass1) or the recent tail (pass2) without asking the summarizer to re-emit them as dedicated sections.
 pub(crate) fn build_two_pass_compaction_prompt(user_context: Option<&str>) -> String {
     let user_context_section = match user_context {
         Some(context) => format!(
@@ -230,11 +267,9 @@ If the prior conversation contains a note about files at /tmp/compaction/segment
     )
 }
 
-/// Output of a successful `generate_session_compact`: the summary plus the
-/// streaming signals the caller records onto the compaction span. `truncated`
-/// is derived from the backend's typed stop reason; `stop_reason` is kept as
-/// the raw provider string for drill-down. Latency is captured online (no
-/// per-token buffer) — fleet percentiles are computed at query time.
+/// Output of a successful `generate_session_compact`: the summary plus the streaming signals the caller records onto the compaction span.
+/// `truncated` is derived from the backend's typed stop reason; `stop_reason` is kept as the raw provider string for drill-down.
+/// Latency is captured online (no per-token buffer); fleet percentiles are computed at query time.
 pub(crate) struct CompactOutput {
     pub content: String,
     pub stop_reason: Option<String>,
@@ -254,9 +289,9 @@ impl CompactOutput {
     }
 }
 
-/// Structured compaction outcome. Converted to a stable string only at the
-/// tracing boundary (tracing can't record a custom type directly).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Converted to a stable string only at the tracing boundary (tracing can't record a custom type directly).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub(crate) enum CompactionOutcome {
     Success,
     Truncated,
@@ -265,23 +300,9 @@ pub(crate) enum CompactionOutcome {
     Degenerate,
     Failed,
 }
-
-impl CompactionOutcome {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Success => "success",
-            Self::Truncated => "truncated",
-            Self::Deterministic => "deterministic",
-            Self::Transient => "transient",
-            Self::Degenerate => "degenerate",
-            Self::Failed => "failed",
-        }
-    }
-}
-
-/// O(1) streaming-latency accumulator: time-to-first-token, total stream span,
-/// delta count, and worst inter-token gap, computed online so we never buffer
-/// per-token timestamps. Fleet percentiles are computed at query time in log analytics.
+/// O(1) streaming-latency accumulator: time-to-first-token, total stream span, delta count, and worst inter-token gap.
+/// Everything is computed online so we never buffer per-token timestamps.
+/// Fleet percentiles are computed at query time in log analytics.
 struct StreamTiming {
     start: std::time::Instant,
     first: Option<std::time::Instant>,
@@ -336,8 +357,7 @@ impl StreamTiming {
         }
     }
 
-    /// Wall-clock seconds since the stream started — drives the compaction
-    /// wall-clock budget (the reasoning-runaway backstop).
+    /// Wall-clock seconds since the stream started; drives the compaction wall-clock budget (the backstop against runaway reasoning).
     fn elapsed_secs(&self) -> u64 {
         self.start.elapsed().as_secs()
     }
@@ -387,26 +407,9 @@ where
 #[path = "session_compact_compact_cancel_await_tests.rs"]
 mod compact_cancel_await_tests;
 
-/// Generates a summary of the conversation for compaction.
-/// Accepts raw or already-budgeted history so direct callers are guarded while
-/// single-pass sampling and artifact reconstruction share one transformation.
-///
-/// `chat_history` must already include the summarization prompt as its final
-/// user message. The split lets callers persist the exact request payload
-/// before issuing it.
-///
-/// `tools` / `hosted_tools` are the SAME effective definitions the turn loop
-/// attaches to normal requests. Tool definitions are serialized into the
-/// prompt prefix by every backend, so omitting them would shift the entire
-/// prefix and force a full prefill on the summarizer call — attaching them
-/// keeps the request prefix byte-identical to the turn requests so the
-/// engine reuses the session's KV cache (the whole point of the verbatim
-/// input path).
-///
-/// Errors carry a [`CompactFailure`] classification so the caller can
-/// short-circuit retries on deterministic failures (4xx schema violations,
-/// auth errors) while still retrying transient ones (5xx,
-/// network blips, rate limits).
+/// `chat_history` must already include the summarization prompt as its final user message.
+/// The split lets callers persist the exact request payload before issuing it.
+/// Omitting them would shift the entire prefix and force a full prefill on the summarizer call.
 pub(crate) async fn generate_session_compact(
     chat_history: impl Into<
         crate::session::helpers::prepared_compaction_history::CompactionHistoryInput,
@@ -456,8 +459,8 @@ pub(crate) async fn generate_session_compact(
             let mut message =
                 ChatCompletionRequest::new(sampling_config.model.to_owned(), chat_messages)
                     .with_temperature(1.0);
-            // Prefix-cache alignment (see doc comment). `tool_choice` only
-            // when tools are present — Chat Completions rejects it otherwise.
+            // Prefix-cache alignment (see doc comment)
+            // `tool_choice` is set only when tools are present; Chat Completions rejects it otherwise
             if !tools.is_empty() {
                 message = message
                     .with_tools(
@@ -503,18 +506,17 @@ pub(crate) async fn generate_session_compact(
                     StreamStep::IdleTimeout => {
                         return Err(CompactFailure::Transient(
                             acp::Error::internal_error().data(format!(
-                                "compact failed: stream idle timeout after {idle_timeout:?} ({} chars received)",
+                                "{COMPACT_FAILED_PREFIX}stream idle timeout after {idle_timeout:?} ({} chars received)",
                                 content.chars().count()
                             )),
                         ));
                     }
                 };
-                // Wall-clock backstop (0 = disabled): cut a runaway — incl. a
-                // reasoning spiral that token limits miss — and let it retry.
+                // Wall-clock backstop (0 disables it): cut a runaway, including a reasoning spiral that token limits miss, and let it retry
                 if wall_clock_budget_secs > 0 && timing.elapsed_secs() >= wall_clock_budget_secs {
                     return Err(CompactFailure::Transient(
                         acp::Error::internal_error().data(format!(
-                            "compact failed: exceeded wall-clock budget {wall_clock_budget_secs}s (runaway generation)"
+                            "{COMPACT_FAILED_PREFIX}exceeded wall-clock budget {wall_clock_budget_secs}s (runaway generation)"
                         )),
                     ));
                 }
@@ -540,7 +542,7 @@ pub(crate) async fn generate_session_compact(
                                 let sr = xai_grok_sampling_types::StopReason::from(fr);
                                 truncated =
                                     matches!(sr, xai_grok_sampling_types::StopReason::Length);
-                                stop_reason = Some(sr.as_str().to_string());
+                                stop_reason = Some(sr.as_ref().to_string());
                             }
                         }
                     }
@@ -558,7 +560,7 @@ pub(crate) async fn generate_session_compact(
             }
         }
         ApiBackend::Responses => {
-            // ConversationItem directly — preserves encrypted reasoning.
+            // Send `ConversationItem`s directly; this preserves encrypted reasoning
             let request = ConversationRequest {
                 items: chat_history,
                 tool_choice: (!tools.is_empty()).then_some(conversation_tool_choice),
@@ -594,18 +596,17 @@ pub(crate) async fn generate_session_compact(
                     StreamStep::IdleTimeout => {
                         return Err(CompactFailure::Transient(
                             acp::Error::internal_error().data(format!(
-                                "compact failed: stream idle timeout after {idle_timeout:?} ({} chars received)",
+                                "{COMPACT_FAILED_PREFIX}stream idle timeout after {idle_timeout:?} ({} chars received)",
                                 content.chars().count()
                             )),
                         ));
                     }
                 };
-                // Wall-clock backstop (0 = disabled): cut a runaway — incl. a
-                // reasoning spiral that token limits miss — and let it retry.
+                // Wall-clock backstop (0 disables it): cut a runaway, including a reasoning spiral that token limits miss, and let it retry
                 if wall_clock_budget_secs > 0 && timing.elapsed_secs() >= wall_clock_budget_secs {
                     return Err(CompactFailure::Transient(
                         acp::Error::internal_error().data(format!(
-                            "compact failed: exceeded wall-clock budget {wall_clock_budget_secs}s (runaway generation)"
+                            "{COMPACT_FAILED_PREFIX}exceeded wall-clock budget {wall_clock_budget_secs}s (runaway generation)"
                         )),
                     ));
                 }
@@ -719,18 +720,17 @@ pub(crate) async fn generate_session_compact(
                     StreamStep::IdleTimeout => {
                         return Err(CompactFailure::Transient(
                             acp::Error::internal_error().data(format!(
-                                "compact failed: stream idle timeout after {idle_timeout:?} ({} chars received)",
+                                "{COMPACT_FAILED_PREFIX}stream idle timeout after {idle_timeout:?} ({} chars received)",
                                 content.chars().count()
                             )),
                         ));
                     }
                 };
-                // Wall-clock backstop (0 = disabled): cut a runaway — incl. a
-                // reasoning spiral that token limits miss — and let it retry.
+                // Wall-clock backstop (0 disables it): cut a runaway, including a reasoning spiral that token limits miss, and let it retry
                 if wall_clock_budget_secs > 0 && timing.elapsed_secs() >= wall_clock_budget_secs {
                     return Err(CompactFailure::Transient(
                         acp::Error::internal_error().data(format!(
-                            "compact failed: exceeded wall-clock budget {wall_clock_budget_secs}s (runaway generation)"
+                            "{COMPACT_FAILED_PREFIX}exceeded wall-clock budget {wall_clock_budget_secs}s (runaway generation)"
                         )),
                     ));
                 }
@@ -757,19 +757,7 @@ pub(crate) async fn generate_session_compact(
                                     xai_grok_sampling_types::messages::StopReason::MaxTokens
                                         | xai_grok_sampling_types::messages::StopReason::ModelContextWindowExceeded
                                 );
-                                stop_reason = Some(
-                                    match sr {
-                                        xai_grok_sampling_types::messages::StopReason::EndTurn => "end_turn".to_string(),
-                                        xai_grok_sampling_types::messages::StopReason::MaxTokens => "max_tokens".to_string(),
-                                        xai_grok_sampling_types::messages::StopReason::ToolUse => "tool_use".to_string(),
-                                        xai_grok_sampling_types::messages::StopReason::StopSequence => "stop_sequence".to_string(),
-                                        xai_grok_sampling_types::messages::StopReason::Refusal => "refusal".to_string(),
-                                        xai_grok_sampling_types::messages::StopReason::PauseTurn => "pause_turn".to_string(),
-                                        xai_grok_sampling_types::messages::StopReason::ModelContextWindowExceeded => "model_context_window_exceeded".to_string(),
-                                        // Record the wire value, not a fabricated sentinel.
-                                        xai_grok_sampling_types::messages::StopReason::Unknown(s) => s,
-                                    },
-                                );
+                                stop_reason = Some(sr.wire_str());
                             }
                         }
                         _ => {}
@@ -791,15 +779,13 @@ pub(crate) async fn generate_session_compact(
     };
 
     if output.content.is_empty() {
-        // Empty response is treated as transient: sampling variance and
-        // mid-stream drops are both plausible and may resolve on retry.
-        // Content-filter refusals (provider returns 200 with no body) are a
-        // known counterexample but are not currently distinguishable from
-        // stream blips at this layer; revisit if stop_reason / finish_reason
-        // gets threaded through. After max_retries the caller still surfaces
-        // the error to the user.
+        // Empty response is treated as transient: sampling variance and mid-stream drops are both plausible and may resolve on retry.
+        // Content-filter refusals (provider returns 200 with no body) are a known counterexample.
+        // They are not currently distinguishable from stream blips at this layer; revisit if stop_reason or finish_reason gets threaded through.
         Err(CompactFailure::Transient(
-            acp::Error::internal_error().data("compact failed: model returned empty response"),
+            acp::Error::internal_error().data(format!(
+                "{COMPACT_FAILED_PREFIX}model returned empty response"
+            )),
         ))
     } else {
         Ok(output)
@@ -807,23 +793,15 @@ pub(crate) async fn generate_session_compact(
 }
 
 /// Tests for `classify_sampling_error` and `classify_response_event_error`.
-/// Pin the deterministic-vs-transient mapping for every `SamplingError`
-/// variant and for the meaningful branches of the response-event classifier
-/// (numeric code, `invalid_request_error` marker in code or message, and
-/// the default-to-transient fallback for unknown / missing codes).
+/// Pin the deterministic-vs-transient mapping for every `SamplingError` variant and for the meaningful branches of the response-event classifier.
 /// Also covers `StreamTiming` boundaries and `CompactionOutcome::as_str`.
 #[cfg(test)]
 #[path = "session_compact_classify_tests.rs"]
 mod classify_tests;
 
-/// Tests that reconstruct the compacted conversation history exactly as
-/// `run_compact` in `acp_session.rs` assembles it, so we can inspect the
-/// raw strings of every user message and verify the formatting.
-///
-/// The compaction summary is wrapped in `<user_query>` tags (consistent with
-/// normal user messages), and `<system-reminder>` state context is placed
-/// outside, matching the standard format:
-///   `<user_query>...summary...</user_query>\n\n<system-reminder>...</system-reminder>`
+/// Tests that reconstruct the compacted conversation history exactly as `run_compact` in `acp_session.rs` assembles it.
+/// The compaction summary is wrapped in `<user_query>` tags (consistent with normal user messages).
+/// `<system-reminder>` state context is placed outside, matching the standard format: `<user_query>...summary...</user_query>\n\n<system-reminder>...</system-reminder>`.
 #[cfg(test)]
 #[path = "session_compact_compacted_history_shape_tests.rs"]
 mod compacted_history_shape_tests;

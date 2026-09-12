@@ -27,6 +27,13 @@ use xai_tool_types::{SubagentCapabilityMode, SubagentIsolationMode, WaitMode};
 
 use crate::register_resource;
 
+pub use super::active_message::{
+    ActiveAgentMessage, ActiveAgentMessageDelivery, ActiveAgentMessageOperation,
+    ActiveAgentMessageOutcome, ActiveAgentMessageRequest, ActiveAgentMessageSource,
+    ActiveMessageTarget, AgentAddress, MAX_ACTIVE_AGENT_MESSAGE_BYTES,
+    SubagentActiveMessageRequest,
+};
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum SubagentOwner {
     #[default]
@@ -60,16 +67,14 @@ impl SubagentOwner {
 /// Plain spawn request emitted by `TaskTool`.
 #[derive(Debug, Clone)]
 pub struct SubagentRequest {
-    /// Subagent ID (UUID v7). Same as `TaskToolInput.task_id`; becomes the child session ID.
+    /// Local agent identity (UUIDv7). Model-facing as `subagent_id` and used as the child session ID.
     pub id: String,
     pub prompt: String,
     pub description: String,
     pub subagent_type: String,
     pub parent_session_id: String,
-    /// Parent turn/prompt ID that launched this subagent.
-    ///
-    /// Used to cancel only the subagents spawned by the currently-cancelled turn,
-    /// without affecting background subagents from earlier turns.
+    /// Parent turn/prompt ID that launched this subagent. Used to cancel only the subagents spawned
+    /// by the currently-cancelled turn, without affecting background subagents from earlier turns.
     pub parent_prompt_id: Option<String>,
     /// Resume from a previously completed subagent's conversation.
     /// Inherits raw transcript, tool state, and model. System prompt is
@@ -80,13 +85,9 @@ pub struct SubagentRequest {
     pub cwd: Option<String>,
     /// Runtime overrides for the child agent.
     pub runtime_overrides: SubagentRuntimeOverrides,
-    /// Whether this subagent was launched with `run_in_background: true`.
-    ///
-    /// Controls immediate handle delivery and completion surfacing. A
-    /// background child still auto-surfaces its completion to the model
-    /// (buffered reminder / auto-wake) when `surface_completion` is set —
-    /// background does not mean fire-and-forget. Prompt cancellation still
-    /// cancels every child owned by that prompt.
+    /// Whether this subagent was launched with `run_in_background: true`. Controls immediate handle delivery and completion surfacing. A background
+    /// child still auto-surfaces its completion to the model (buffered reminder / auto-wake) when `surface_completion` is set — background does not
+    /// mean fire-and-forget. Prompt cancellation still cancels every child owned by that prompt.
     pub run_in_background: bool,
     /// When false, the subagent's completion is NOT buffered for the
     /// between-turn "idle completion" reminder — used by harness-internal
@@ -98,6 +99,40 @@ pub struct SubagentRequest {
     pub fork_context: bool,
     pub owner: SubagentOwner,
     pub cancel_token: CancellationToken,
+    pub spawn_root: SpawnRootSpan,
+}
+
+#[derive(Debug, Default)]
+pub struct SpawnRootSpan {
+    span: Option<tracing::Span>,
+    traceparent: Option<String>,
+}
+
+impl Clone for SpawnRootSpan {
+    fn clone(&self) -> Self {
+        Self {
+            span: None,
+            traceparent: self.traceparent.clone(),
+        }
+    }
+}
+
+impl SpawnRootSpan {
+    pub fn new(span: tracing::Span) -> Self {
+        let traceparent = xai_grok_otel::span_traceparent(&span);
+        Self {
+            span: Some(span),
+            traceparent,
+        }
+    }
+
+    pub fn take_span(&mut self) -> Option<tracing::Span> {
+        self.span.take()
+    }
+
+    pub fn traceparent(&self) -> Option<&str> {
+        self.traceparent.as_deref()
+    }
 }
 
 impl SubagentRequest {
@@ -119,6 +154,11 @@ pub struct SubagentSpawnRequest {
     pub request: Box<SubagentRequest>,
     #[educe(Debug(ignore))]
     pub result_tx: oneshot::Sender<SubagentResult>,
+    /// Fired once when the child is recorded pending or queued. Independent of [`Self::result_tx`],
+    /// which stays the terminal completion or a definite pre-start reject. Only Task background
+    /// mode attaches this; scheduler-loop fires leave it `None`.
+    #[educe(Debug(ignore))]
+    pub registered_tx: Option<oneshot::Sender<()>>,
 }
 
 impl std::ops::Deref for SubagentSpawnRequest {
@@ -130,10 +170,9 @@ impl std::ops::Deref for SubagentSpawnRequest {
 }
 
 impl SubagentSpawnRequest {
-    /// Build and send a reply while the plain request remains borrowable.
-    ///
-    /// Primarily useful for channel adapters and deterministic test harnesses;
-    /// production lifecycle replies are owned by `SubagentCoordinator`.
+    /// Build and send a reply while the plain request remains borrowable. Primarily useful for
+    /// channel adapters and deterministic test harnesses; production lifecycle replies are owned by
+    /// `SubagentCoordinator`.
     pub fn respond_with(
         self,
         build: impl FnOnce(&SubagentRequest) -> SubagentResult,
@@ -141,12 +180,17 @@ impl SubagentSpawnRequest {
         let result = build(&self.request);
         self.result_tx.send(result)
     }
+
+    /// Signal that the child was recorded pending or queued.
+    pub fn notify_registered(&mut self) {
+        if let Some(tx) = self.registered_tx.take() {
+            let _ = tx.send(());
+        }
+    }
 }
 
-/// Per-spawn dynamic runtime overrides for a subagent.
-///
-/// Optional values inherit from the parent or role default. Explicit values take
-/// precedence over role defaults.
+/// Per-spawn dynamic runtime overrides for a subagent. Optional values inherit from the parent or
+/// role default. Explicit values take precedence over role defaults.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ModelOverrideProvenance {
     /// Internal harness, role, persona, or config resolution.
@@ -171,14 +215,9 @@ pub struct SubagentRuntimeOverrides {
     /// Isolation mode for child execution environment.
     /// `None` means "use role/persona default" (which itself defaults to `None`/shared workspace).
     pub isolation: Option<SubagentIsolationMode>,
-    /// `/goal`-only harness override: the `agent_type` (e.g. `"cursor"`,
-    /// `"grok-build-plan"`) whose `AgentDefinition` decides the child's harness
-    /// flavor — system prompt + toolset — applied
-    /// REGARDLESS of the parent agent (so a session can pin a
-    /// compat-harness verifier and vice versa).
-    /// Orthogonal to `subagent_type`, which still selects the toolset-role
-    /// (implementer vs explorer). `None` for every non-goal spawn ⇒ the parent
-    /// agent decides the flavor (unchanged behavior).
+    /// `/goal`-only harness override: the `agent_type` (e.g. `"cursor"`, `"grok-build-plan"`) whose `AgentDefinition` decides the child's harness
+    /// flavor — system prompt + toolset — applied REGARDLESS of the parent agent (so a session can pin a compat-harness verifier and vice versa).
+    /// Orthogonal to `subagent_type`, which still selects the toolset-role (implementer vs explorer).
     pub harness_agent_type: Option<String>,
     pub completion_output_cap: Option<usize>,
     pub spawn_depth: Option<u32>,
@@ -190,15 +229,9 @@ pub struct SubagentRuntimeOverrides {
 /// Re-export of [`xai_tool_types::is_not_sentinel`] for existing call sites.
 pub use xai_tool_types::is_not_sentinel;
 
-/// Sanitize a model-emitted `cwd` argument for the `task` tool.
-///
-/// Strips stray surrounding quote/backtick characters (matched or unmatched),
-/// trims whitespace, expands a leading `~` to the user's home directory, and
-/// rejects sentinel placeholders (`""`, `"null"`, `"none"`, `"undefined"`).
-///
-/// Returns `Some(cleaned)` for a usable path, `None` if the value should be
-/// treated as absent. Shared by the tool layer (`task::mod`) and the
-/// defense-in-depth check in `xai-grok-shell`'s subagent coordinator.
+/// Sanitize a model-emitted `cwd` argument for the `task` tool. Strips stray surrounding quote/backtick characters (matched or unmatched),
+/// trims whitespace, expands a leading `~` to the user's home directory, and rejects sentinel placeholders (`""`, `"null"`, `"none"`,
+/// `"undefined"`). Returns `Some(cleaned)` for a usable path, `None` if the value should be treated as absent.
 pub fn sanitize_cwd_value(s: &str) -> Option<String> {
     let unquoted = s.trim().trim_matches(['"', '\'', '`']);
     // Re-trim after stripping quotes: this trim flows into the returned
@@ -210,21 +243,12 @@ pub fn sanitize_cwd_value(s: &str) -> Option<String> {
     Some(shellexpand::tilde(cleaned).into_owned())
 }
 
-/// Returns `true` if the string looks like a real subagent ID rather than a
-/// model-emitted placeholder (`""`, `"null"`, `"none"`, `"undefined"`, whitespace).
-pub fn is_valid_resume_id(s: &str) -> bool {
-    is_not_sentinel(s)
-}
-
 /// Extension methods for [`SubagentCapabilityMode`] that depend on this crate's
 /// tool-config internals (`ToolKind` / `ToolServerConfig`).
 pub trait SubagentCapabilityModeExt {
-    /// Filter a tool config to only include tools allowed by this mode.
-    ///
-    /// Uses the `kind` field on each `ToolConfig`, populated automatically
-    /// by `for_tool::<T>()` / `From<&T: Tool>` at toolset construction time.
-    /// Tools without a `kind` (e.g. MCP/custom tools via
-    /// `ToolConfig::from_id()`) are preserved unconditionally.
+    /// Filter a tool config to only include tools allowed by this mode. Uses the `kind` field on each `ToolConfig`,
+    /// populated automatically by `for_tool::<T>()` / `From<&T: Tool>` at toolset construction time. Tools without a `kind`
+    /// (e.g. MCP/custom tools via `ToolConfig::from_id()`) are preserved unconditionally.
     fn filter_tool_config(self, config: &mut crate::registry::types::ToolServerConfig);
 
     /// Return the set of `ToolKind`s allowed under this capability mode.
@@ -312,6 +336,7 @@ impl SubagentCapabilityModeExt for SubagentCapabilityMode {
                 ToolKind::Write,
                 ToolKind::Delete,
                 ToolKind::Move,
+                ToolKind::Feedback,
                 ToolKind::Plan,
                 ToolKind::MemorySearch,
                 ToolKind::MemoryGet,
@@ -359,6 +384,7 @@ impl SubagentCapabilityModeExt for SubagentCapabilityMode {
                 ToolKind::Write,
                 ToolKind::Delete,
                 ToolKind::Move,
+                ToolKind::Feedback,
                 ToolKind::Execute,
                 ToolKind::Plan,
                 ToolKind::MemorySearch,
@@ -385,12 +411,9 @@ impl SubagentCapabilityModeExt for SubagentCapabilityMode {
 #[derive(Debug, Clone)]
 pub struct SubagentResult {
     pub success: bool,
-    /// The subagent's final output text.
-    ///
-    /// Stored as `Arc<str>` so cloning into per-consumer summaries
-    /// (`SubagentCompletionSummary`, snapshot status, etc.) is a refcount
-    /// bump rather than a full copy. Subagent outputs can be arbitrarily
-    /// large (entire transcript), so this matters at scale.
+    /// The subagent's final output text. Stored as `Arc<str>` so cloning into per-consumer summaries
+    /// (`SubagentCompletionSummary`, snapshot status, etc.) is a refcount bump rather than a full copy. Subagent outputs
+    /// can be arbitrarily large (entire transcript), so this matters at scale.
     pub output: Arc<str>,
     /// Error message if the subagent failed.
     pub error: Option<String>,
@@ -409,10 +432,9 @@ pub struct SubagentResult {
     pub output_usage_incomplete: bool,
     /// Path to the isolated worktree if one was created.
     pub worktree_path: Option<String>,
-    /// Set when a blocking subagent exceeded its await budget and was
-    /// auto-backgrounded: the child is still running (result via auto-wake /
-    /// `get_command_or_subagent_output`), so the tool returns a `task_id` notice
-    /// instead of a completion. Never set for natively backgrounded subagents.
+    /// Set when a blocking caller was handed a still-running child after the foreground await budget (queued or in-flight
+    /// auto-background). Not a completion — `success` stays false so `status()` is not `"completed"`; branch on this before
+    /// `success`. Task `run_in_background` start is a separate registration signal, not this flag on `spawn()`.
     pub backgrounded: bool,
 }
 
@@ -439,6 +461,45 @@ impl Default for SubagentResult {
 }
 
 impl SubagentResult {
+    #[must_use]
+    pub fn failed(
+        subagent_id: impl Into<String>,
+        child_session_id: impl Into<String>,
+        error: impl Into<String>,
+    ) -> Self {
+        SubagentResult {
+            error: Some(error.into()),
+            subagent_id: subagent_id.into(),
+            child_session_id: child_session_id.into(),
+            ..SubagentResult::default()
+        }
+    }
+
+    #[must_use]
+    pub fn cancelled(
+        subagent_id: impl Into<String>,
+        child_session_id: impl Into<String>,
+        error: impl Into<String>,
+    ) -> Self {
+        SubagentResult {
+            cancelled: true,
+            ..SubagentResult::failed(subagent_id, child_session_id, error)
+        }
+    }
+
+    #[must_use]
+    pub fn backgrounded(
+        subagent_id: impl Into<String>,
+        child_session_id: impl Into<String>,
+    ) -> Self {
+        SubagentResult {
+            backgrounded: true,
+            subagent_id: subagent_id.into(),
+            child_session_id: child_session_id.into(),
+            ..SubagentResult::default()
+        }
+    }
+
     /// Terminal status string: `"cancelled"`, `"completed"`, or `"failed"`.
     pub fn status(&self) -> &'static str {
         if self.cancelled {
@@ -585,34 +646,35 @@ pub struct SubagentCancelRequest {
     pub respond_to: oneshot::Sender<SubagentCancelOutcome>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubagentCancelOutcome {
     Cancelled,
     AlreadyFinished { status: String },
     NotFound,
 }
 
-/// Summary of a completed subagent, used for between-turn delivery.
+/// Summary of a finished subagent, used for between-turn delivery and the auto-wake prompt.
 /// Session ownership lives on the coordinator's `BufferedCompletion` wrapper;
 /// drains are scoped there, so delivered summaries carry no owner field.
 #[derive(Debug, Clone)]
 pub struct SubagentCompletionSummary {
-    pub subagent_id: String,
-    pub subagent_type: String,
-    pub description: String,
-    pub success: bool,
-    pub duration_ms: u64,
+    /// The tool's view of the child, except `Completed.output` is empty; the text lives in `output`.
+    pub snapshot: SubagentSnapshot,
+    /// Scheduled task that launched this child, when applicable.
+    pub loop_task_id: Option<String>,
+    /// For the digest bullet; the snapshot carries it only when completed.
     pub tool_calls: u32,
-    pub turns: u32,
-    /// The subagent's final output text. Refcount-shared with
-    /// `SubagentResult.output` (no allocation on the path from coordinator
-    /// to between-turn drain).
-    ///
-    /// Surfaced inline in completion notifications when the parent agent's
-    /// toolset has no `BackgroundTaskAction` tool. Toolsets
-    /// that DO have a polling tool keep the existing metadata-only line +
-    /// "Use get_task_output(...)" pointer.
+    /// The final text, or its head when `completion_output_cap` or the buffered cap applies;
+    /// refcount-shared with `SubagentResult.output` when uncut.
     pub output: Arc<str>,
+    /// `SubagentResult.output.len()` before any cap; `output.len()` below it means a poll has more.
+    pub full_output_bytes: usize,
+}
+
+impl SubagentCompletionSummary {
+    pub fn subagent_id(&self) -> &str {
+        &self.snapshot.subagent_id
+    }
 }
 
 /// Multi-wait request: block until one or all of the listed subagents finish.
@@ -631,6 +693,7 @@ pub struct SubagentMultiWaitRequest {
 #[educe(Debug)]
 pub struct SubagentCompletionsRequest {
     pub parent_session_id: Option<String>,
+    /// Left buffered rather than returned: the requester delivers these itself and a later ledger-filtered drain discards the copies.
     pub suppress_ids: Vec<String>,
     #[educe(Debug(ignore))]
     pub respond_to: oneshot::Sender<Vec<SubagentCompletionSummary>>,
@@ -650,6 +713,15 @@ pub struct SubagentOutstandingReply {
 #[derive(Educe)]
 #[educe(Debug)]
 pub struct SubagentOutstandingRequest {
+    pub parent_session_id: String,
+    pub prompt_id: String,
+    #[educe(Debug(ignore))]
+    pub respond_to: oneshot::Sender<SubagentOutstandingReply>,
+}
+
+#[derive(Educe)]
+#[educe(Debug)]
+pub struct SubagentWaitPromptDrainedRequest {
     pub parent_session_id: String,
     pub prompt_id: String,
     #[educe(Debug(ignore))]
@@ -753,7 +825,8 @@ pub struct SubagentResumeSource {
 #[derive(Debug, Clone)]
 pub enum SubagentResumeLookup {
     Active,
-    Completed(SubagentResumeSource),
+    /// Boxed so the unit variants stay small (`clippy::large_enum_variant`).
+    Completed(Box<SubagentResumeSource>),
     Missing,
 }
 
@@ -771,8 +844,13 @@ pub enum SubagentValidateTypeOutcome {
     NotAllowed {
         allowed: Vec<String>,
     },
-    /// Coordinator unreachable; distinct from `Unknown` (the type may be valid).
+    /// Coordinator produced no verdict (busy past the timeout, dropped the
+    /// responder, or an internal resolution fault); distinct from `Unknown`
+    /// (the type may be valid) — a retry can succeed.
     ValidationUnavailable,
+    /// The coordinator channel is closed — it has shut down, so retries fail
+    /// instantly.
+    CoordinatorGone,
 }
 
 #[derive(Educe)]
@@ -786,14 +864,9 @@ pub struct SubagentValidateTypeRequest {
 
 // Describe-type protocol
 
-/// Outcome of a `describe_subagent_type` round-trip.
-///
-/// Mirrors [`SubagentValidateTypeOutcome`] but, on success, additionally
-/// carries the resolved toolset summary (tool names + capability flags)
-/// so the parent can gate per-role capability and render per-role prompts
-/// WITHOUT spawning the toolset. The non-`Ok` variants are 1:1 with the
-/// validate outcomes (config-bug cases) plus `Unavailable` (infra
-/// flakiness), so a caller maps every variant to a fail-open reason.
+/// Outcome of a `describe_subagent_type` round-trip. Mirrors [`SubagentValidateTypeOutcome`] but, on success,
+/// additionally carries the resolved toolset summary (tool names + capability flags) so the parent can gate per-role
+/// capability and render per-role prompts WITHOUT spawning the toolset.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum SubagentDescribeOutcome {
@@ -815,21 +888,14 @@ pub enum SubagentDescribeOutcome {
     Unavailable,
 }
 
-/// Resolved toolset summary for a subagent type.
-///
-/// Built by the coordinator from the type's `AgentDefinition` AFTER the
-/// same parent-dependent toolset re-selection a real spawn applies, so a
-/// parent's described tool names match what the child would
-/// actually get. The capability booleans key on the exact `ToolKind`
-/// variants used by the per-role gates (`Search` for grep, `Execute` for
-/// terminal/bash — there is no `Grep`/`Bash` variant).
+/// Resolved toolset summary for a subagent type. Built by the coordinator from the type's
+/// `AgentDefinition` AFTER the same parent-dependent toolset re-selection a real spawn applies, so
+/// a parent's described tool names match what the child would actually get.
 #[derive(Debug, Clone, Default)]
 pub struct SubagentTypeSummary {
-    /// Client-facing tool name per [`ToolKind`](crate::types::tool::ToolKind),
-    /// derived exactly like the finalize-time `kind_to_name` map:
-    /// `ToolConfig::resolve_client_name(&entry.id)` (the `name_override`
-    /// when set, else the unqualified tool id). First tool per kind wins,
-    /// matching `FinalizedToolset`.
+    /// Client-facing tool name per [`ToolKind`](crate::types::tool::ToolKind), derived exactly like the finalize-time
+    /// `kind_to_name` map: `ToolConfig::resolve_client_name(&entry.id)` (the `name_override` when set, else the unqualified
+    /// tool id). First tool per kind wins, matching `FinalizedToolset`.
     pub tool_names: std::collections::HashMap<crate::types::tool::ToolKind, String>,
     /// The toolset has a [`ToolKind::Read`](crate::types::tool::ToolKind::Read) tool.
     pub can_read: bool,
@@ -845,12 +911,9 @@ pub struct SubagentTypeSummary {
 #[educe(Debug)]
 pub struct SubagentDescribeRequest {
     pub subagent_type: String,
-    /// `/goal`-only harness override mirrored from
-    /// [`SubagentRuntimeOverrides::harness_agent_type`]: the coordinator
-    /// resolves the toolset for `(subagent_type, harness_agent_type)` so the
-    /// per-role capability gate + prompt tool names reflect the harness the
-    /// spawn will actually run on. `None` ⇒ the parent agent decides the flavor
-    /// (unchanged behavior).
+    /// `/goal`-only harness override mirrored from [`SubagentRuntimeOverrides::harness_agent_type`]: the coordinator resolves the toolset for
+    /// `(subagent_type, harness_agent_type)` so the per-role capability gate + prompt tool names reflect the harness the spawn will actually run
+    /// on. `None` ⇒ the parent agent decides the flavor (unchanged behavior).
     pub harness_agent_type: Option<String>,
     pub parent_session_id: String,
     #[educe(Debug(ignore))]
@@ -865,6 +928,8 @@ pub enum SubagentEvent {
     ListActive(SubagentListActiveRequest),
     ListRunning(SubagentListRunningRequest),
     Completions(SubagentCompletionsRequest),
+    /// `Completions` without draining; the requester's ledger discards the copies at a later drain. `suppress_ids` is ignored.
+    PeekCompletions(SubagentCompletionsRequest),
     /// Cancel children of `parent_session_id` and drop its buffered completions.
     /// `respond_to`, if set, resolves when no children remain (caller should
     /// time-bound the wait).
@@ -879,6 +944,7 @@ pub enum SubagentEvent {
         parent_session_id: String,
     },
     Outstanding(SubagentOutstandingRequest),
+    WaitPromptDrained(SubagentWaitPromptDrainedRequest),
     ClearUsageNotApplied(SubagentClearUsageNotAppliedRequest),
     MarkUsageNotApplied(SubagentMarkUsageNotAppliedRequest),
     RegistryCounts(SubagentRegistryCountsRequest),
@@ -896,14 +962,24 @@ pub enum SubagentEvent {
 #[educe(Debug)]
 pub struct SubagentEventSender(#[educe(Debug(ignore))] pub mpsc::UnboundedSender<SubagentEvent>);
 
+impl SubagentEventSender {
+    pub fn send(&self, event: SubagentEvent) -> Result<(), mpsc::error::SendError<SubagentEvent>> {
+        self.0.send(event)
+    }
+}
+
+impl From<mpsc::UnboundedSender<SubagentEvent>> for SubagentEventSender {
+    fn from(tx: mpsc::UnboundedSender<SubagentEvent>) -> Self {
+        Self(tx)
+    }
+}
+
 register_resource!("grok_build", "SubagentEventSender", SubagentEventSender);
 
 // Active subagent listing (compaction)
 
-/// Lightweight summary of a running subagent.
-///
-/// The shared coordinator produces this through the channel protocol, and the
-/// compaction pipeline consumes it through `RunningSubagentSummary`.
+/// Lightweight summary of a running subagent. The shared coordinator produces this through the
+/// channel protocol, and the compaction pipeline consumes it through `RunningSubagentSummary`.
 #[derive(Debug, Clone)]
 pub struct ActiveSubagentSummary {
     /// The subagent's unique ID (same ID used by `get_task_output` / `kill_task`).
@@ -916,10 +992,9 @@ pub struct ActiveSubagentSummary {
     pub elapsed_ms: u64,
 }
 
-/// Request to list currently-running subagents for a specific parent session.
-///
-/// Sent by the compaction pipeline in `SessionActor::run_compact_inner()`.
-/// Handled by the shared coordinator actor.
+/// Request to list currently-running subagents for a specific parent session. Sent by the
+/// compaction pipeline in `SessionActor::run_compact_inner()`. Handled by the shared coordinator
+/// actor.
 #[derive(Educe)]
 #[educe(Debug)]
 pub struct SubagentListActiveRequest {
@@ -940,11 +1015,9 @@ pub struct MaxSubagentDepth(pub u32);
 
 register_resource!("grok_build", "MaxSubagentDepth", MaxSubagentDepth);
 
-/// Session-scoped validator for model-facing `Task.model` arguments.
-///
-/// Returns an error message for an invalid slug and `None` for a valid slug.
-/// The closure reads the live model catalog so refreshes apply without rebuilding
-/// the tool bridge.
+/// Session-scoped validator for model-facing `Task.model` arguments. Returns an error message for
+/// an invalid slug and `None` for a valid slug. The closure reads the live model catalog so
+/// refreshes apply without rebuilding the tool bridge.
 type TaskModelValidationFn = dyn Fn(&str) -> Option<String> + Send + Sync;
 
 #[derive(Clone)]
@@ -1008,11 +1081,9 @@ register_resource!(
     SubagentForegroundWait
 );
 
-/// Carries the current parent prompt/turn ID for TaskTool subagent scoping.
-///
-/// Set by xai-grok-shell immediately before a prompt turn begins executing so
-/// subagents launched during that turn can be cancelled together if the user
-/// aborts the turn.
+/// Carries the current parent prompt/turn ID for TaskTool subagent scoping. Set by xai-grok-shell
+/// immediately before a prompt turn begins executing so subagents launched during that turn can be
+/// cancelled together if the user aborts the turn.
 #[derive(Debug, Clone)]
 pub struct CurrentPromptIdResource(pub String);
 
@@ -1022,11 +1093,9 @@ register_resource!(
     CurrentPromptIdResource
 );
 
-/// True while a `/goal` loop is active. Set by xai-grok-shell at turn start.
-/// When true, `TaskCompletionReminder` suppresses bg-task completion
-/// reminders (marking them reported) so async "task completed" nudges don't
-/// pull a weak model off the goal continuation (e.g. relaunching a killed
-/// dev server).
+/// True while a `/goal` loop is active. Set by xai-grok-shell at turn start. When true, `TaskCompletionReminder`
+/// suppresses bg-task completion reminders (marking them reported) so async "task completed" nudges don't pull a weak
+/// model off the goal continuation (e.g. relaunching a killed dev server).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GoalLoopActive(pub bool);
 
@@ -1112,7 +1181,6 @@ mod tests {
 
     use super::SubagentCapabilityMode;
     use super::SubagentCapabilityModeExt;
-    use super::is_valid_resume_id;
 
     /// Create a `ToolConfig` with the given id and kind set.
     fn tc(id: &str, kind: ToolKind) -> ToolConfig {
@@ -1216,31 +1284,6 @@ mod tests {
             config.tools.is_empty(),
             "execute tools should still be filtered out"
         );
-    }
-
-    #[test]
-    fn is_valid_resume_id_rejects_sentinels() {
-        for bad in [
-            "",
-            "  ",
-            "null",
-            "Null",
-            "NULL",
-            "none",
-            "None",
-            "NONE",
-            "undefined",
-            "  null  ",
-        ] {
-            assert!(!is_valid_resume_id(bad), "{bad:?} should be invalid");
-        }
-    }
-
-    #[test]
-    fn is_valid_resume_id_accepts_real_ids() {
-        for good in ["019e0000-0000-7000-8000-0000000000bb", "abc-123", "prev-id"] {
-            assert!(is_valid_resume_id(good), "{good:?} should be valid");
-        }
     }
 
     #[test]
@@ -1448,24 +1491,36 @@ mod tests {
         assert_eq!(req.suppress_ids, vec!["id-1", "id-2"]);
 
         let summaries = vec![super::SubagentCompletionSummary {
-            subagent_id: "sub-1".into(),
-            subagent_type: "general-purpose".into(),
-            description: "test task".into(),
-            success: true,
-            duration_ms: 1500,
+            snapshot: super::SubagentSnapshot {
+                subagent_id: "sub-1".into(),
+                description: "test task".into(),
+                subagent_type: "general-purpose".into(),
+                status: super::SubagentSnapshotStatus::Completed {
+                    output: String::new(),
+                    tool_calls: 7,
+                    turns: 3,
+                    worktree_path: None,
+                },
+                started_at_epoch_ms: 0,
+                duration_ms: 1500,
+                persona: None,
+            },
+            loop_task_id: None,
             tool_calls: 7,
-            turns: 3,
             output: std::sync::Arc::from("subagent answer"),
+            full_output_bytes: "subagent answer".len(),
         }];
         req.respond_to.send(summaries).unwrap();
 
         let result = response_rx.try_recv().unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].subagent_id, "sub-1");
-        assert!(result[0].success);
-        assert_eq!(result[0].duration_ms, 1500);
+        assert_eq!(result[0].subagent_id(), "sub-1");
+        assert_eq!(result[0].snapshot.duration_ms, 1500);
         assert_eq!(result[0].tool_calls, 7);
-        assert_eq!(result[0].turns, 3);
+        assert!(matches!(
+            result[0].snapshot.status,
+            super::SubagentSnapshotStatus::Completed { turns: 3, .. }
+        ));
     }
 
     #[test]
@@ -1524,7 +1579,6 @@ mod tests {
 
         let (respond_to, mut response_rx) = oneshot::channel();
         sender
-            .0
             .send(super::SubagentEvent::Completions(
                 super::SubagentCompletionsRequest {
                     parent_session_id: None,
@@ -1553,10 +1607,8 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel::<super::SubagentEvent>();
         let sender = super::SubagentEventSender(tx);
         let cloned = sender.clone();
-        // Both clones should be able to send
         let (respond_to, _) = tokio::sync::oneshot::channel();
         cloned
-            .0
             .send(super::SubagentEvent::Completions(
                 super::SubagentCompletionsRequest {
                     parent_session_id: None,

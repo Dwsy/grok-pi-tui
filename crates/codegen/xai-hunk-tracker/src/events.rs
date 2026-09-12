@@ -44,17 +44,9 @@ pub enum HunkEvent {
         new_line_info: HunkLineInfo,
     },
 
-    /// A hunk's content changed in place (overlapping region, same hunk ID).
-    /// Emitted when an edit modifies a hunk without fully removing/recreating it.
-    ///
-    /// `trigger_source` is the source of the *edit that triggered* this change
-    /// (before source-preservation logic). This lets LOC tracking attribute
-    /// the change correctly even when the hunk's own `source` field was
-    /// preserved from a prior agent edit.
-    ///
-    /// `prev_lines_added` / `prev_lines_removed` are the line counts from the
-    /// previous version of this hunk, so the LOC sink can compute the delta
-    /// (new - prev) and attribute only the incremental change.
+    /// `trigger_source` is the source of the *edit that triggered* this change (before source-preservation logic).
+    /// `prev_lines_added` / `prev_lines_removed` are the line counts from the previous version of this hunk, so the LOC sink
+    /// can compute the delta (new - prev) and attribute only the incremental change.
     HunkContentChanged {
         path: PathBuf,
         hunk: Arc<Hunk>,

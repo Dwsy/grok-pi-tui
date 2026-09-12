@@ -1,11 +1,9 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-/// Cap on entries walked in one `find_missing_file` scan. A fully-covered store
-/// is the worst case (it walks everything before answering `None`); on a large
-/// LFS/submodule tree that is a syscall storm inside the gate's time budget. On
-/// exhaustion we return an error, which every caller reads as "couldn't tell"
-/// and biases to keep — never a delete.
+/// Cap one `find_missing_file` scan. A fully-covered store walks everything;
+/// exhausting the cap returns an error, which callers treat as "couldn't tell"
+/// and keep — never a delete.
 const MAX_ENTRIES_SCANNED: usize = 100_000;
 
 /// The first file under `ours` (recursively) that `theirs` does not also hold at

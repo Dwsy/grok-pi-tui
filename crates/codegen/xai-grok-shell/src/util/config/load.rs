@@ -1,9 +1,6 @@
 use super::mcp::*;
 use toml::Value as TomlValue;
-/// Resolve a bool from an optional env var > config.toml `[section] key` > false.
-///
-/// Uses [`crate::agent::config::env_bool`] for consistent env var parsing
-/// (`1/true/yes/on/enabled` and their negations).
+/// Resolve a bool from an optional env var, then config.toml `[section] key`, then false.
 fn toml_bool_sync(env_var: Option<&str>, section: &str, key: &str) -> bool {
     if let Some(var) = env_var
         && let Some(val) = crate::agent::config::env_bool(var)
@@ -25,12 +22,8 @@ fn toml_bool_sync(env_var: Option<&str>, section: &str, key: &str) -> bool {
 pub(crate) fn load_relay_sync_enabled_sync() -> bool {
     toml_bool_sync(Some("GROK_RELAY_SYNC_ENABLED"), "relay", "enabled")
 }
-/// `[harness]` blocking-upload settings from ONE effective-config parse:
-/// `block_for_upload` (default false — prompt handling waits for turn-end
-/// uploads when set) and `upload_flush_timeout_secs` (default 60 — budget for
-/// that wait).
-pub(crate) fn load_blocking_upload_config_sync() -> (bool, std::time::Duration) {
-    const DEFAULT_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const DEFAULT_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+pub(crate) fn load_upload_wait_config_sync() -> (bool, std::time::Duration) {
     let root: TomlValue = match crate::config::load_effective_config() {
         Ok(r) => r,
         Err(_) => return (false, DEFAULT_FLUSH_TIMEOUT),
@@ -39,8 +32,11 @@ pub(crate) fn load_blocking_upload_config_sync() -> (bool, std::time::Duration) 
         TomlValue::Table(table) => table.get("harness"),
         _ => None,
     };
-    let block_for_upload = harness
-        .and_then(|h| h.get("block_for_upload"))
+    let wait_for_uploads = harness
+        .and_then(|h| {
+            h.get("wait_for_uploads")
+                .or_else(|| h.get("block_for_upload"))
+        })
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let flush_timeout = harness
@@ -49,7 +45,7 @@ pub(crate) fn load_blocking_upload_config_sync() -> (bool, std::time::Duration) 
         .and_then(|v| u64::try_from(v).ok())
         .map(std::time::Duration::from_secs)
         .unwrap_or(DEFAULT_FLUSH_TIMEOUT);
-    (block_for_upload, flush_timeout)
+    (wait_for_uploads, flush_timeout)
 }
 pub async fn load_config() -> Config {
     let root: TomlValue = match crate::config::load_effective_config() {
@@ -58,7 +54,7 @@ pub async fn load_config() -> Config {
     };
     load_config_from_toml(&root)
 }
-/// Parse `Config` from a pre-loaded TOML value. Used by both async and sync paths.
+/// Both the async and sync load paths call this.
 pub fn load_config_from_toml(root: &TomlValue) -> Config {
     let table = match root.as_table() {
         Some(t) => t,
@@ -94,8 +90,8 @@ pub fn load_config_from_toml(root: &TomlValue) -> Config {
         models: section(table, "models"),
         ui: section(table, "ui"),
         harness: {
-            #[allow(unused_mut)]
             let mut harness: crate::agent::config::HarnessConfig = section(table, "harness");
+            harness.merge_deprecated_keys();
             harness
         },
         skills: section(table, "skills"),

@@ -60,6 +60,10 @@ fn run_report(json_output: bool, writer: &mut impl Write) -> Result<()> {
 }
 
 pub fn collect_report() -> DiagnosticReport {
+    // Standalone path: pager startup never ran, so seed the terminal-theme rollout gate from the local tiers (no remote settings here) before the theme listing.
+    crate::theme::cache::set_terminal_theme_enabled(crate::app::resolve_terminal_theme_enabled(
+        None,
+    ));
     let terminal = crate::terminal::standalone_terminal_context();
     let report = collect_report_with(crate::diagnostics::probes::collect_standalone(&terminal));
     configured_report_for_terminal(report, &terminal)
@@ -197,8 +201,7 @@ fn write_fix_preview(plan: &FixPlan, writer: &mut impl Write) -> std::io::Result
 }
 
 fn shell_home_and_kind() -> Option<(std::path::PathBuf, ShellKind)> {
-    #[allow(deprecated)]
-    let home = std::env::home_dir()?;
+    let home = xai_dirs::home_dir()?;
     let shell = std::env::var_os("SHELL")?;
     let kind = ShellKind::from_shell_path(Path::new(&shell))?;
     Some((home, kind))

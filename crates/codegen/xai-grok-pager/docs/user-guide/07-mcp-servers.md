@@ -18,7 +18,7 @@ See the [MCP specification](https://modelcontextprotocol.io) for protocol detail
 
 MCP servers are configured in `~/.grok/config.toml` under `[mcp_servers.<name>]` sections.
 
-To distribute MCP servers to a team, or to restrict which servers users may run, see [Distribute across an organization](09-plugins.md#distribute-across-an-organization) in the Plugins guide.
+To distribute MCP servers to a team, or to restrict which servers users may run (`allowedMcpServers` / `deniedMcpServers` in `requirements.toml` / `managed_config.toml`, with Claude `managed-settings.json` advisory for foreign-defined servers), see [Distribute across an organization](09-plugins.md#distribute-across-an-organization) in the Plugins guide.
 
 ### stdio Transport (Local Process)
 
@@ -364,6 +364,10 @@ For stdio servers, Grok captures the process's standard error to `~/.grok/logs/m
 ```bash
 tail -f ~/.grok/logs/mcp/filesystem.stderr.log
 ```
+
+### Blocked by organization policy
+
+If native TOML policy or Claude `managed-settings.json` sets `deniedMcpServers`, a nonempty `allowedMcpServers`, or `allowManagedMcpServersOnly`, Grok drops non-matching servers at merge time and logs `MCP server blocked by managed settings policy`. Native grok layers bind every server; the Claude file binds foreign-defined servers only. `grok inspect` shows the lists, lockdown scope, and each remaining server. Details and examples: [Restrict which MCP servers can run](09-plugins.md#restrict-which-mcp-servers-can-run).
 
 ### Viewing Server Status
 

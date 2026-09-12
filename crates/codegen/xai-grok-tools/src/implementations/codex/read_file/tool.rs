@@ -180,12 +180,9 @@ impl xai_tool_runtime::Tool for CodexReadFileTool {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
-        // 1. Validate. Codex raises here, but we surface these as a structured
-        // `FileReadError` (a model-facing error) instead of a hard `Err`, so
-        // otherwise-benign validation failures (empty/short files, relative
-        // paths) do not surface as tool-execution failures.
-        // `FileReadError` rides the structured-output path and maps cleanly to
-        // `ReadFileErrorTypes::FILE_READ_ERROR`.
+        // Validate. Codex raises here, but we surface these as a structured `FileReadError` (a model-facing error) instead of a hard `Err`, so
+        // otherwise-benign validation failures (empty/short files, relative paths) do not surface as tool-execution failures. `FileReadError` rides
+        // the structured-output path and maps cleanly to `ReadFileErrorTypes::FILE_READ_ERROR`.
         if input.offset == 0 {
             return Ok(ReadFileOutput::FileReadError(
                 "offset must be a 1-indexed line number".to_string(),

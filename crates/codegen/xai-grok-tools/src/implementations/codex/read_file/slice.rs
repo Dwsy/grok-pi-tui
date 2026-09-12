@@ -7,10 +7,8 @@
 /// Maximum number of characters per line before truncation.
 pub(crate) const MAX_LINE_LENGTH: usize = 500;
 
-/// Read a contiguous range of lines from file bytes in slice mode.
-///
-/// Returns formatted lines as `L{n}: {content}`, or an error string if
-/// `offset` exceeds the number of lines in the file.
+/// Read a contiguous range of lines from file bytes in slice mode. Returns formatted lines as
+/// `L{n}: {content}`, or an error string if `offset` exceeds the number of lines in the file.
 pub(crate) fn read_slice(
     file_bytes: &[u8],
     offset: usize,
@@ -50,11 +48,9 @@ fn format_line(bytes: &[u8]) -> String {
     super::text_utils::format_display(bytes)
 }
 
-/// Split raw bytes into lines, stripping `\n` and `\r\n` line endings.
-///
-/// Every byte sequence separated by `\n` becomes a line. Trailing `\r`
-/// on each line is also stripped. A final `\n` produces an empty trailing
-/// entry (matching codex `BufReader::read_until(b'\n')` behavior).
+/// Split raw bytes into lines, stripping `\n` and `\r\n` line endings. Every byte sequence
+/// separated by `\n` becomes a line. Trailing `\r` on each line is also stripped. A final `\n`
+/// produces an empty trailing entry (matching codex `BufReader::read_until(b'\n')` behavior).
 fn split_lines(bytes: &[u8]) -> Vec<&[u8]> {
     if bytes.is_empty() {
         return vec![];
@@ -83,12 +79,9 @@ fn split_lines(bytes: &[u8]) -> Vec<&[u8]> {
         }
         lines.push(&bytes[start..end]);
     } else if start == bytes.len() && !bytes.is_empty() && bytes[bytes.len() - 1] == b'\n' {
-        // File ends with \n — BufReader::read_until would NOT produce an
-        // empty trailing line for this case. The codex implementation reads
-        // until EOF and each read_until(b'\n') call consumes the delimiter.
-        // A trailing \n means the last read produces the line before it;
-        // no additional empty line is generated.
-        // So we do NOT push an empty trailing entry here.
+        // File ends with \n — BufReader::read_until would NOT produce an empty trailing line for this case. The codex implementation reads until EOF
+        // and each read_until(b'\n') call consumes the delimiter. A trailing \n means the last read produces the line before it; no additional empty
+        // line is generated. So we do NOT push an empty trailing entry here.
     }
 
     lines

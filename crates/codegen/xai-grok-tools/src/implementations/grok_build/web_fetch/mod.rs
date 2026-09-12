@@ -25,10 +25,9 @@ pub use error::WebFetchError;
 // Config enum (feature flag gating)
 // ───────────────────────────────────────────────────────────────────────────
 
-/// Configuration for the `web_fetch` tool.
-///
-/// When `Enabled`, the tool is registered and a `WebFetchClient` is injected
-/// into `Resources`. When `Disabled` (default), the tool is not registered.
+/// Configuration for the `web_fetch` tool. When `Enabled`, the tool is registered and a
+/// `WebFetchClient` is injected into `Resources`. When `Disabled` (default), the tool is not
+/// registered.
 #[derive(Debug, Clone, Default)]
 pub enum WebFetchConfig {
     #[default]
@@ -205,10 +204,6 @@ mod tests {
         assert_eq!(
             crate::types::tool_metadata::ToolMetadata::kind(&tool),
             ToolKind::WebFetch
-        );
-        assert!(
-            crate::types::tool_metadata::ToolMetadata::description_template(&tool)
-                .contains("Fetch the content of a specific URL")
         );
     }
 

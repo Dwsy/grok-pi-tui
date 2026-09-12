@@ -156,7 +156,7 @@ pub fn build_workflow_updated(
         revision: state.revision,
         name: state.name.clone(),
         objective: state.objective.clone(),
-        status: state.status.as_str().to_string(),
+        status: state.status.as_ref().to_string(),
         foreground: false,
         phases,
         current_phase: state.current_phase.clone(),

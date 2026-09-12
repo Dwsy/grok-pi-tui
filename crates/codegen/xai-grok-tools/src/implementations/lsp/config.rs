@@ -9,13 +9,9 @@ pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 15_000;
 pub const DEFAULT_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
 pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Load LSP servers from user/project config, merge plugin-provided configs, and
-/// return the [`ConfigSource`](crate::types::config_source::ConfigSource) of each.
-///
-/// Plugin configs fill gaps (new server names) but never override user/project config.
-/// This is the canonical merge function — both session startup and `grok inspect` call it.
-/// Accepts both file-based `.lsp.json` paths and inline `lspServers` JSON values
-/// from plugin manifests (`plugin.json`).
+/// Load LSP servers from user/project config, merge plugin-provided configs, and return the
+/// [`ConfigSource`](crate::types::config_source::ConfigSource) of each. Plugin configs fill gaps (new server names) but never override
+/// user/project config. This is the canonical merge function — both session startup and `grok inspect` call it.
 pub fn load_servers_with_plugins_sourced(
     cwd: &Path,
     plugin_lsp_paths: &[PathBuf],
@@ -104,12 +100,9 @@ pub fn load_servers_with_plugins_sourced(
     servers
 }
 
-/// Drop repo-local (project-scoped) LSP servers from a sourced map when the
-/// workspace is untrusted; keep user/plugin. Warns per drop. The trust verdict is
-/// passed in (the folder-trust engine lives in the shell, out of this crate).
-///
-/// Single source of truth for the folder-trust LSP load gate, shared by the
-/// workspace build path and the shell's per-session gate.
+/// Drop repo-local (project-scoped) LSP servers from a sourced map when the workspace is untrusted; keep user/plugin. Warns per drop. The trust
+/// verdict is passed in (the folder-trust engine lives in the shell, out of this crate). Single source of truth for the folder-trust LSP load
+/// gate, shared by the workspace build path and the shell's per-session gate.
 pub fn filter_project_lsp_when_untrusted(
     sourced: BTreeMap<String, (LspServerConfig, crate::types::config_source::ConfigSource)>,
     project_trusted: bool,
@@ -226,16 +219,9 @@ pub enum LspTransport {
     Socket,
 }
 
-/// Which solution or projects the server should load once it is running.
-///
-/// Some servers do not derive their workspace from `rootUri`/`workspaceFolders`
-/// and instead load it through a protocol extension. Roslyn is the notable one:
-/// left alone it treats every file as a loose "miscellaneous file" and reports
-/// no project-level diagnostics at all, until it is sent `solution/open` or
-/// `project/open`. Wrappers such as `roslyn-language-server` do this for you; a
-/// bare `Microsoft.CodeAnalysis.LanguageServer` does not.
-///
-/// Paths may be absolute or relative to the workspace root.
+/// Which solution or projects the server should load once it is running. Some servers do not derive their workspace from
+/// `rootUri`/`workspaceFolders` and instead load it through a protocol extension. Roslyn is the notable one: left alone it treats every file as
+/// a loose "miscellaneous file" and reports no project-level diagnostics at all, until it is sent `solution/open` or `project/open`.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceOpen {
@@ -299,10 +285,9 @@ impl LspServerConfig {
         self.max_restarts.unwrap_or(3)
     }
 
-    /// The directory this server should treat as its workspace: the per-server
-    /// override if there is one, otherwise the session cwd. Everything that
-    /// needs to name the server's root — `rootUri`, `workspaceFolders`,
-    /// `workspaceOpen` — resolves it here so they cannot drift apart.
+    /// The directory this server should treat as its workspace: the per-server override if there is
+    /// one, otherwise the session cwd. Everything that needs to name the server's root — `rootUri`,
+    /// `workspaceFolders`, `workspaceOpen` — resolves it here so they cannot drift apart.
     pub fn effective_root<'a>(
         &'a self,
         workspace_root: &'a std::path::Path,

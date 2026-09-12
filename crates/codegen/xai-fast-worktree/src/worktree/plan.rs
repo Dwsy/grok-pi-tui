@@ -6,12 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 /// Same scheme as [`crate::db::id_from_path`]: `<basename>-<hash of full path>`.
-/// Derived pre-dispatch so it can double as the NFS IPC idempotency key.
-///
-/// The hashed path is lexical (no dest/parent symlink follow). On macOS,
-/// `/tmp` and `/var` are rewritten to `/private/{tmp,var}` so the two
-/// system names of the same prefix stay one id; attacker dest/parent
-/// symlinks do not collapse.
+/// Derived pre-dispatch as the NFS IPC idempotency key. Lexical hash (no
+/// symlink follow); macOS `/tmp` `/var` rewrite so the two names stay one id.
 pub(crate) fn worktree_id_from_path(path: &Path) -> String {
     let path = canonicalize_for_id(path);
     let name = path
@@ -47,13 +43,9 @@ fn sanitize_worktree_id_base(base: &str) -> String {
     }
     out
 }
-/// Lexical absolute dest for id + IPC. Does **not** `stat` dest or parent.
-/// `dunce::canonicalize` blocks forever on a wedged NFS mount — the failure
-/// mode `create` must still diagnose via the mount-table probe / InFlight path.
-///
-/// Relative dests are joined to `cwd` first so a not-yet-created `./wt` and
-/// the post-create absolute path hash to the same id. macOS `/tmp` `/var`
-/// `/etc` are rewritten to `/private/…` so the two system names stay one id.
+/// Lexical absolute dest for id + IPC. Does not `stat` dest or parent —
+/// `dunce::canonicalize` blocks forever on a wedged NFS mount. Relative dests
+/// join `cwd` first so pre- and post-create paths hash to the same id.
 pub(crate) fn canonicalize_for_id(path: &Path) -> PathBuf {
     {
         let abs = if path.is_absolute() {

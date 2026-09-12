@@ -1,12 +1,9 @@
-//! Selection and folding for [`ScrollbackState`]: selected-entry tracking,
-//! fold/expand operations, group expansion, and view-mode visibility.
+//! Selection and folding for [`ScrollbackState`]: selected-entry tracking, fold/expand operations, group expansion, and view-mode visibility.
 
 use super::*;
 
-/// Scroll/follow state captured before a fold-shaped layout change (entry
-/// fold or group expansion), restored by
-/// [`ScrollbackState::rebuild_with_fold_anchor`] so the change doesn't move
-/// the viewport.
+/// Scroll/follow state captured before a fold-shaped layout change (entry fold or group expansion).
+/// [`ScrollbackState::rebuild_with_fold_anchor`] restores it so the change doesn't move the viewport.
 struct FoldAnchor {
     vy_before: Option<usize>,
     scroll_before: usize,
@@ -17,13 +14,28 @@ struct FoldAnchor {
 impl ScrollbackState {
     // View Mode
 
-    /// Get current view mode.
     pub fn view_mode(&self) -> ViewMode {
         self.view_mode
     }
 
     pub(crate) fn set_view_mode(&mut self, mode: ViewMode) {
+        if self.view_mode == mode {
+            return;
+        }
         self.view_mode = mode;
+        self.release_pin_reserve_outside_view();
+        if self.pin_reserve_active {
+            self.reset_pin_reserve_target();
+            self.compute_total_height_from_cache();
+            if self.follow_mode
+                && self.follow_preserve_scroll
+                && let Some(target) = self.pin_reserve_target
+            {
+                self.scroll_offset = target;
+            } else {
+                self.scroll_offset = self.scroll_offset.min(self.max_scroll_offset());
+            }
+        }
     }
 
     /// Get the range of entry indices visible in the current view mode.
@@ -37,36 +49,32 @@ impl ScrollbackState {
                     return turn.prompt_index..turn.end_index;
                 }
 
-                // current_turn is None - check for pre-turn
-                // Pre-turn = entries 0..first_prompt_index (if any exist before first prompt)
+                // current_turn is None, so check for a pre-turn
+                // The pre-turn is entries 0..first_prompt_index, when any exist before the first prompt
                 if let Some(first_turn) = self.turns.first() {
                     if first_turn.prompt_index > 0 {
-                        // Pre-turn exists: entries before first prompt
                         return 0..first_turn.prompt_index;
                     }
-                    // No pre-turn, default to first turn
+                    // No pre-turn, so default to the first turn
                     return first_turn.prompt_index..first_turn.end_index;
                 }
 
-                // No turns at all - show all entries
+                // No turns at all, so show all entries
                 0..self.entries.len()
             }
         }
     }
 
-    /// Check if an entry index is visible in the current view mode.
     pub fn is_entry_visible(&self, index: usize) -> bool {
         self.visible_entry_range().contains(&index)
     }
 
     // Selection
 
-    /// Get selected index.
     pub fn selected(&self) -> Option<usize> {
         self.selected
     }
 
-    /// Set selected index.
     pub fn set_selected(&mut self, index: Option<usize>) {
         self.selected = index.filter(|&i| i < self.entries.len());
         if let Some(sel) = self.selected {
@@ -76,8 +84,7 @@ impl ScrollbackState {
 
     /// Get the selection box computed during the last render.
     ///
-    /// This is set by ScrollbackPane and should be rendered by the frame
-    /// after the scrollback pane has been rendered.
+    /// This is set by ScrollbackPane and should be rendered by the frame after the scrollback pane has been rendered.
     pub fn selection_box(&self) -> Option<&SelectionBox> {
         self.selection_box.as_ref()
     }
@@ -87,14 +94,13 @@ impl ScrollbackState {
         self.selection_box = selection_box;
     }
 
-    /// Take the selection box (consumes it).
     pub fn take_selection_box(&mut self) -> Option<SelectionBox> {
         self.selection_box.take()
     }
 
     /// Select next selectable entry (j key).
     /// Skips entries where block.is_selectable() returns false.
-    /// If already at the last entry, overscroll → follow (like list_pane one-past).
+    /// If already at the last entry, overscroll turns on follow (like list_pane's one-past).
     pub fn select_next(&mut self) {
         let range = self.visible_entry_range();
         if range.is_empty() {
@@ -123,10 +129,9 @@ impl ScrollbackState {
             }
         }
 
-        // No selectable entry found after current — we're at the last entry.
-        // Single j at the bottom engages follow immediately. Unlike list_pane's
-        // one-past pattern, scrollback entries can be multi-screen, so requiring
-        // two presses would be confusing.
+        // No selectable entry found after current; we're at the last entry
+        // A single j at the bottom engages follow immediately
+        // Unlike list_pane's one-past pattern, scrollback entries can be multi-screen, so requiring two presses would be confusing
         if self.appearance.scrollback.scroll.follow_by_overscroll {
             self.follow_mode = true;
             self.goto_bottom();
@@ -166,15 +171,14 @@ impl ScrollbackState {
                 return;
             }
         }
-        // No selectable entry found before current - stay where we are
+        // No selectable entry found before current, so stay where we are
     }
 
-    /// Clear selection.
     pub fn clear_selection(&mut self) {
         self.selected = None;
     }
 
-    /// Called when pane is activated - auto-select last selectable entry.
+    /// Called when the pane is activated: auto-select the last selectable entry.
     pub fn on_activate(&mut self) {
         let range = self.visible_entry_range();
         if range.is_empty() {
@@ -182,7 +186,6 @@ impl ScrollbackState {
             return;
         }
 
-        // Find last selectable entry in range
         self.selected = self.find_last_selectable_in_range(range);
     }
 
@@ -193,7 +196,6 @@ impl ScrollbackState {
         }
     }
 
-    /// Find the first selectable entry in a range.
     pub(super) fn find_first_selectable_in_range(&self, range: Range<usize>) -> Option<usize> {
         for idx in range {
             if let Some(entry) = self.entries.get_index(idx).map(|(_, v)| v)
@@ -205,7 +207,6 @@ impl ScrollbackState {
         None
     }
 
-    /// Find the last selectable entry in a range.
     pub(super) fn find_last_selectable_in_range(&self, range: Range<usize>) -> Option<usize> {
         for idx in range.rev() {
             if let Some(entry) = self.entries.get_index(idx).map(|(_, v)| v)
@@ -218,9 +219,8 @@ impl ScrollbackState {
     }
 
     /// Collapse selected entry (no-op if already at minimum fold mode or not foldable).
-    ///
-    /// Uses the block's `collapse_mode` to determine the target mode, which may be
-    /// `Truncated` for running blocks (e.g., execute) instead of `Collapsed`.
+    /// Uses the block's `collapse_mode` to determine the target mode.
+    /// The target may be `Truncated` for running blocks (e.g., execute) instead of `Collapsed`.
     pub fn collapse_selected(&mut self) {
         if let Some(i) = self.selected
             && let Some((_, entry)) = self.entries.get_index(i)
@@ -247,7 +247,6 @@ impl ScrollbackState {
         }
     }
 
-    /// Toggle fold on selected entry.
     pub fn toggle_fold_selected(&mut self) {
         if let Some(i) = self.selected
             && let Some((_, entry)) = self.entries.get_index(i)
@@ -259,8 +258,7 @@ impl ScrollbackState {
 
     /// Shared implementation for fold operations with scroll anchoring.
     ///
-    /// Captures virtual_y before the fold, applies the mutation, rebuilds
-    /// layout, then either anchors scroll or falls back to ensure_visible.
+    /// Captures virtual_y before the fold, applies the mutation, rebuilds layout, then either anchors scroll or falls back to ensure_visible.
     fn fold_selected_impl(&mut self, mutate: impl FnOnce(&mut ScrollbackEntry)) {
         let Some(i) = self.selected else { return };
 
@@ -295,21 +293,16 @@ impl ScrollbackState {
         self.bump_generation();
     }
 
-    /// A display-mode flip on entry `i` can move the verb run's anchor
-    /// (opening the head entry drops it to transparent, so the run
-    /// re-anchors on the next member; closing it takes the anchor back).
-    /// Migrate a
-    /// manual expansion keyed on the flipped entry or a former anchor onto
-    /// the run's CURRENT first entry, so the group stays expanded across
-    /// member open/close instead of snapping into a fresh collapsed fold.
+    /// Opening the head entry drops it to transparent, so the run re-anchors on the next member. Migrate a manual
+    /// expansion keyed on the flipped entry or a former anchor onto the run's CURRENT first entry. The group then stays
+    /// expanded across member open/close instead of snapping into a fresh collapsed fold.
     pub(super) fn rekey_verb_group_expansion(&mut self, i: usize) {
         if !crate::appearance::cache::load_group_tool_verbs() {
             return;
         }
         let show_thinking = crate::appearance::cache::load_show_thinking_blocks();
-        // The run `i` belongs to after the flip: `i` itself when it
-        // (re)joined, else the run past the transparent entries it opened
-        // out of (a Break wall means there is no adjacent run to migrate).
+        // The run `i` belongs to after the flip: `i` itself when it (re)joined, else the run past the transparent entries it opened out of
+        // Hitting a `Break` means there is no adjacent run to migrate
         let mut j = i;
         let range = loop {
             if let Some(range) = self.verb_group_range_of(j) {
@@ -332,9 +325,8 @@ impl ScrollbackState {
         if self.expanded_groups.contains(&first_id) {
             return;
         }
-        // A stale key sits on the flipped entry (it just opened out of the
-        // head) or on an interior entry (the head just rejoined in front of
-        // the interim anchor); move it onto the current anchor.
+        // A stale key sits on the flipped entry (it just opened out of the head) or on an interior entry
+        // An interior key means the head just rejoined in front of the interim anchor. Move the key onto the current anchor.
         let stale = std::iter::once(i)
             .chain(range.start + 1..range.end)
             .filter(|&k| k != range.start)
@@ -349,8 +341,7 @@ impl ScrollbackState {
     }
 
     /// Capture the scroll/follow state a fold-shaped change must not disturb.
-    /// Pass to [`Self::rebuild_with_fold_anchor`] after mutating the entry or
-    /// the group-expansion set.
+    /// Pass to [`Self::rebuild_with_fold_anchor`] after mutating the entry or the group-expansion set.
     fn capture_fold_anchor(&self, i: usize) -> FoldAnchor {
         FoldAnchor {
             vy_before: self
@@ -363,24 +354,22 @@ impl ScrollbackState {
         }
     }
 
-    /// Rebuild the layout after a fold-shaped change to entry `i` (display
-    /// mode or group expansion) and restore the captured scroll/follow state
-    /// so the change doesn't move the viewport. `grew` = the change made the
-    /// entry/group taller (reading intent).
+    /// Rebuild the layout after a fold-shaped change to entry `i` (display mode or group expansion).
+    /// Restore the captured scroll/follow state so the change doesn't move the viewport.
+    /// `grew` means the change made the entry/group taller (reading intent).
     fn rebuild_with_fold_anchor(&mut self, i: usize, grew: bool, anchor: FoldAnchor) {
         let drop_follow =
             self.appearance.scrollback.scroll.respect_manual_folds && grew && anchor.follow_before;
 
-        // Rebuild the cache (estimates). Measure the folded entry's region
-        // exactly when anchoring so the anchor delta below reads exact offsets.
+        // Rebuild the cache (estimates)
+        // Measure the folded entry's region exactly when anchoring so the anchor delta below reads exact offsets
         let anchor_on_fold = self.appearance.scrollback.scroll.anchor_on_fold;
         self.rebuild_layout();
         if anchor_on_fold && self.last_width > 0 {
             self.measure_around_entry(i, self.last_width);
         }
-        // Clear dirty_heights — we just did a full rebuild so heights are fresh.
-        // Without this, the leftover dirty entry triggers prepare_layout Case 2
-        // on the next frame, which calls handle_follow_mode and could snap to bottom.
+        // Clear dirty_heights: the full rebuild just made heights fresh
+        // A leftover dirty entry would trigger prepare_layout Case 2 on the next frame, which calls handle_follow_mode and could snap to bottom
         self.dirty_heights.clear();
 
         // Anchor scroll or ensure visible
@@ -392,8 +381,7 @@ impl ScrollbackState {
                 let delta = vy_after as i64 - vy_before as i64;
                 let new_scroll = (anchor.scroll_before as i64 + delta).max(0) as usize;
                 // Only clamp to max_offset if not in preserve mode.
-                // During preserve, scroll_offset can be above max_offset
-                // (prompt pinned at a position with content below fitting in viewport).
+                // During preserve, scroll_offset can be above max_offset (prompt pinned at a position with content below fitting in viewport)
                 if anchor.preserve_before {
                     self.scroll_offset = new_scroll;
                 } else {
@@ -404,11 +392,9 @@ impl ScrollbackState {
                 }
             }
 
-            // Folding is a display change, not navigation, so follow/preserve
-            // state is restored as it was — EXCEPT when the fold GREW the
-            // entry's display mode while following: that's reading intent, so
-            // follow (and preserve) are dropped and the viewport stays where
-            // the user put it. Follow resumes via the existing explicit gestures.
+            // Folding is a display change, not navigation, so follow/preserve state is restored as it was
+            // EXCEPT when the fold GREW the entry's display mode while following: that's reading intent, so follow (and preserve) are dropped
+            // The viewport stays where the user put it; follow resumes via the existing explicit gestures
             self.follow_mode = anchor.follow_before && !drop_follow;
             self.follow_preserve_scroll = self.follow_mode && anchor.preserve_before;
         } else {
@@ -419,11 +405,9 @@ impl ScrollbackState {
             }
         }
 
-        // Preserve-pinned page flip + fold growth: the next follow pass would
-        // read the overflow as streaming fill and snap to the bottom
-        // (`follow_scroll_to_bottom` consumes the pin once max_offset passes
-        // it). A fold is reading intent, not new content — drop follow and
-        // leave the viewport pinned where the user was looking.
+        // When a fold grows the entry while follow is preserve-pinned, the next follow pass would read the overflow as streaming fill
+        // It would snap to the bottom (`follow_scroll_to_bottom` consumes the pin once max_offset passes it)
+        // A fold is reading intent, not new content: drop follow and leave the viewport pinned where the user was looking
         if grew && self.follow_mode && self.follow_preserve_scroll {
             let max_offset = self
                 .total_height
@@ -435,7 +419,6 @@ impl ScrollbackState {
         }
     }
 
-    /// Toggle raw mode on selected entry.
     pub fn toggle_raw_selected(&mut self) {
         // Invisible on a group header (content hidden); skip the rebuild.
         if self.is_selected_group_header() {
@@ -545,13 +528,8 @@ impl ScrollbackState {
         self.bump_generation();
     }
 
-    /// Toggle expand/collapse for all thinking blocks only.
-    ///
-    /// If ANY thinking block is collapsed, expand all thinking blocks.
-    /// Otherwise collapse all thinking blocks.
-    ///
-    /// Also sets `thinking_display_mode` so that future thinking blocks
-    /// adopt the chosen mode when they finish running.
+    /// Toggle expand/collapse for all thinking blocks only. Otherwise collapse all thinking blocks. Also sets
+    /// `thinking_display_mode` so that future thinking blocks adopt the chosen mode when they finish running.
     pub fn expand_all_thinking(&mut self) {
         let any_collapsed = self.entries.values().any(|entry| {
             matches!(entry.block, RenderBlock::Thinking(_))
@@ -569,9 +547,8 @@ impl ScrollbackState {
 
         let mut changed_ids = Vec::new();
         for (id, entry) in &mut self.entries {
-            // Only expand/collapse thinking blocks — tool calls stay
-            // collapsed as one-liners. Group truncation is handled
-            // separately below (all hidden entries become visible).
+            // Only expand/collapse thinking blocks; tool calls stay collapsed as one-liners
+            // Group truncation is handled separately below (all hidden entries become visible)
             if matches!(entry.block, RenderBlock::Thinking(_)) && entry.block.is_foldable() {
                 entry.display_mode = target_mode;
                 entry.display_mode_pinned = false;
@@ -582,11 +559,10 @@ impl ScrollbackState {
         for &id in &changed_ids {
             self.dirty_heights.insert(id);
         }
-        // When expanding: also expand all truncated groups so everything
-        // is visible. When collapsing: clear expansions so groups re-truncate.
+        // When expanding, also expand all truncated groups so everything is visible
+        // When collapsing, clear expansions so groups re-truncate
         if target_mode == DisplayMode::Expanded {
-            // Opened thoughts go transparent, so a keyed thought-anchored
-            // run re-anchors on its first tool; migrate the keys.
+            // Opened thoughts go transparent, so a keyed thought-anchored run re-anchors on its first tool; migrate the keys
             for id in &changed_ids {
                 if let Some(idx) = self.entries.get_index_of(id) {
                     self.rekey_verb_group_expansion(idx);
@@ -601,12 +577,46 @@ impl ScrollbackState {
         self.bump_generation();
     }
 
-    /// Expand all truncated groups (add every group-start ID to
-    /// expanded_groups). Runs are walked with the shared
-    /// `joins_dense_run` predicate, so the inserted ids agree with the
-    /// truncation pass's claimed-entry breaks (leading hidden thinking can
-    /// still skew the keyed id off the truncation header — same pre-existing
-    /// divergence as `group_range_of`).
+    /// Minimal mode's print-once commit pass stamps thinking entries `Expanded` directly into the shared state
+    /// (`minimal_commit_display_mode` in `xai-grok-pager-minimal`), so a fullscreen → minimal → fullscreen round trip
+    /// would otherwise come back with every previously-folded thought sprung open.
+    pub fn reapply_thinking_fold_policy(&mut self) {
+        let target_mode = self.thinking_display_mode;
+        let respect_manual_folds = self.appearance.scrollback.scroll.respect_manual_folds;
+        let mut changed_ids = Vec::new();
+        for (id, entry) in &mut self.entries {
+            if !matches!(entry.block, RenderBlock::Thinking(_))
+                || !entry.block.is_foldable()
+                || entry.is_running
+                || (respect_manual_folds && entry.display_mode_pinned)
+                || entry.display_mode == target_mode
+            {
+                continue;
+            }
+            entry.display_mode = target_mode;
+            entry.invalidate_cache();
+            changed_ids.push(*id);
+        }
+        if changed_ids.is_empty() {
+            return;
+        }
+        for &id in &changed_ids {
+            self.dirty_heights.insert(id);
+        }
+        // Do not clear `expanded_groups`: those keys are user-expanded tool-call
+        // groups and were never stamped by minimal.
+        for id in &changed_ids {
+            if let Some(idx) = self.entries.get_index_of(id) {
+                self.rekey_verb_group_expansion(idx);
+            }
+        }
+        self.gaps_may_be_dirty = true;
+        self.bump_generation();
+    }
+
+    /// Expand all truncated groups (add every group-start ID to expanded_groups).
+    /// Runs are walked with the shared `joins_dense_run` predicate, so the inserted ids agree with the truncation pass's breaks on claimed entries and turn-terminal markers.
+    /// Leading hidden thinking can still skew the keyed id off the truncation header, the same pre-existing divergence as `group_range_of`.
     fn expand_all_groups(&mut self) {
         let max_visible = self.appearance.scrollback.display.group_max_visible as usize;
         if max_visible == 0 {
@@ -630,10 +640,9 @@ impl ScrollbackState {
             }
             let group_len = j - group_start;
             if group_len > max_visible + 1 && self.expanded_groups.insert(first_id) {
-                // Members still carry the fold-forced height 0; the Case 2
-                // refold never raises stale heights (fold passes only force
-                // heights down), so re-measure them for the reveal. The
-                // header at `group_start` stays fold-owned.
+                // Members still carry the fold-forced height 0
+                // The Case 2 refold never raises stale heights (fold passes only force heights down), so re-measure them for the reveal
+                // The header at `group_start` stays owned by the fold pass
                 for k in (group_start + 1)..j {
                     if let Some((&member_id, _)) = self.entries.get_index(k) {
                         self.dirty_heights.insert(member_id);
@@ -645,9 +654,8 @@ impl ScrollbackState {
     }
 
     /// Returns "expand thinking" or "collapse thinking" based on current state.
-    ///
-    /// Uses the same logic as `expand_all_thinking`: if ANY thinking block is
-    /// collapsed the next toggle will expand, so the label is "expand thinking".
+    /// Uses the same logic as `expand_all_thinking`.
+    /// If ANY thinking block is collapsed the next toggle will expand, so the label is "expand thinking".
     pub fn thinking_fold_label(&self) -> &'static str {
         let any_collapsed = self.entries.values().any(|entry| {
             matches!(entry.block, RenderBlock::Thinking(_))
@@ -661,14 +669,8 @@ impl ScrollbackState {
         }
     }
 
-    /// Whether the selected entry is any kind of group header.
-    ///
-    /// Returns true for both expand headers ("N more", content replaced)
-    /// and collapse headers ("▾ N tool calls", standalone header entry).
-    /// An EXPANDED verb-group header is deliberately excluded: its slot also
-    /// hosts member 0's own row, so the selected entry acts as that member
-    /// (fold/Enter/raw operate on the block); group re-collapse stays on
-    /// Left / the header-row mouse path.
+    /// Whether the selected entry is any kind of group header. An EXPANDED verb-group header is deliberately excluded:
+    /// its slot also hosts member 0's own row, so the selected entry acts as that member.
     pub fn is_selected_group_header(&self) -> bool {
         let Some(sel) = self.selected else {
             return false;
@@ -679,16 +681,14 @@ impl ScrollbackState {
             .is_some_and(|e| e.is_group_header() && !e.is_expanded_verb_header())
     }
 
-    /// "expand" / "collapse" when the selected entry is a group header, else
-    /// `None`. Distinct from the entry-level fold label: a collapse header's
-    /// entry stays `DisplayMode::Collapsed` (expansion lives in
-    /// `expanded_groups`), which would mislabel it "expand".
+    /// "expand" / "collapse" when the selected entry is a group header, else `None`.
+    /// Distinct from the entry-level fold label: a collapse header's entry stays `DisplayMode::Collapsed` (expansion lives in `expanded_groups`).
+    /// The entry-level label would therefore read "expand" and mislabel the header.
     pub fn selected_group_header_fold_label(&self) -> Option<&'static str> {
         let sel = self.selected?;
         let info = self.layout_cache.as_ref()?.entries.get(sel)?;
         if info.is_expanded_verb_header() {
-            // Expanded verb slot: the selection acts as member 0, so the
-            // footer advertises the member's own fold, not the group's.
+            // Expanded verb slot: the selection acts as member 0, so the footer advertises the member's own fold, not the group's
             None
         } else if info.group_collapse_header {
             Some("collapse")
@@ -699,13 +699,9 @@ impl ScrollbackState {
         }
     }
 
-    /// Toggle expansion of the group whose header is the currently selected entry.
-    ///
-    /// If the selected entry is a group header (`is_group_header`), toggles
-    /// its EntryId in `expanded_groups` (adds if absent, removes if present)
-    /// and triggers a layout rebuild so truncation is recomputed.
-    ///
-    /// Returns `true` if a group was toggled (caller should skip normal expand).
+    /// Toggle expansion of the group whose header is the currently selected entry. If the selected entry is a group
+    /// header (`is_group_header`), toggles its EntryId in `expanded_groups` (adds if absent, removes if present).
+    /// Triggers a layout rebuild so truncation is recomputed.
     pub fn toggle_group_expansion(&mut self) -> bool {
         let Some(sel) = self.selected else {
             return false;
@@ -717,9 +713,8 @@ impl ScrollbackState {
         if !info.is_group_header() {
             return false;
         }
-        // Expanded verb slot: don't re-toggle — fall through so Expand /
-        // ToggleFold / Enter act on member 0's own block. Collapse stays on
-        // Left (`collapse_group_if_expanded`) and the header-row mouse path.
+        // Expanded verb slot: don't re-toggle; fall through so Expand, ToggleFold, and Enter act on member 0's own block
+        // Collapse stays on Left (`collapse_group_if_expanded`) and the header-row mouse path
         if is_verb_header && info.group_collapse_header {
             return false;
         }
@@ -733,14 +728,10 @@ impl ScrollbackState {
         } else {
             self.expanded_groups.remove(&id);
         }
-        // Rebuild so truncation is recomputed, keeping the header's screen
-        // row put (same anchor discipline as entry-level folds).
+        // Rebuild so truncation is recomputed, keeping the header's screen row put (same anchoring as entry-level folds)
         self.rebuild_with_fold_anchor(sel, expanding, anchor);
-        // When expanding an N-more group: clear selection so the first entry
-        // doesn't appear "active" with the collapse header; the user can
-        // navigate into the group with j/k. A verb-group header stays
-        // selected — it remains one synthetic header row while expanded, and
-        // keeping it selected lets an immediate Collapse re-fold the group.
+        // When expanding an N-more group, clear selection so the first entry doesn't appear "active" with the collapse
+        // header.
         if expanding && !is_verb_header {
             self.selected = None;
         }
@@ -748,29 +739,20 @@ impl ScrollbackState {
         true
     }
 
-    /// Drop every manual group expansion. Called on grouping-shape flips
-    /// (`group_tool_verbs`, `show_thinking_blocks`): the set is shared by
-    /// verb runs and N-more dense groups with no provenance, and a flip
-    /// re-shapes every grouped run (verb and dense runs share start ids and
-    /// their boundaries differ per flag value), so stale ids could reopen a
-    /// verb slot expanded or mark a coincident dense run expanded. The flip
-    /// is a global re-layout; expansion state resets with it.
+    /// Drop every manual group expansion. Called when a grouping flag flips (`group_tool_verbs`, `show_thinking_blocks`).
+    /// The set is shared by verb runs and N-more dense groups with no provenance, and a flip re-shapes every grouped run's boundaries.
+    /// Stale ids could reopen a verb slot expanded or mark a coincident dense run expanded, so expansion state resets with the global re-layout.
     pub fn clear_group_expansion(&mut self) {
         self.expanded_groups.clear();
     }
 
-    /// Collapse a group back if the selected entry is inside an expanded group.
-    ///
-    /// Finds the group range containing the selected entry, then checks if the
-    /// group's first entry's ID is in `expanded_groups`. If so, removes it and
+    /// Collapse a group back if the selected entry is inside an expanded group. Finds the group range containing the
+    /// selected entry, then checks if the group's first entry's ID is in `expanded_groups`. If so, removes it and
     /// triggers a layout rebuild to re-apply truncation.
-    ///
-    /// Returns `true` if a group was collapsed (caller should skip normal collapse).
     pub fn collapse_group_if_expanded(&mut self) -> bool {
         let Some(sel) = self.selected else {
             return false;
         };
-        // Find the group range containing the selected entry
         let group = self.group_range_of(sel, true);
         let Some((&first_id, _)) = self.entries.get_index(group.start) else {
             return false;
@@ -779,8 +761,7 @@ impl ScrollbackState {
         if !self.expanded_groups.remove(&first_id) {
             return false;
         }
-        // Rebuild so truncation is re-applied, keeping the header's screen
-        // row put (same anchor discipline as entry-level folds).
+        // Rebuild so truncation is re-applied, keeping the header's screen row put (same anchoring as entry-level folds)
         self.rebuild_with_fold_anchor(group.start, false, anchor);
         self.fixup_hidden_selection();
         self.bump_generation();

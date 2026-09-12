@@ -1,9 +1,17 @@
 #![cfg_attr(rustfmt, rustfmt::skip)]
 #![allow(unused_imports)]
-//! [`acp::Agent`] trait implementation for [`MvpAgent`].
-//! Co-located child of `mvp_agent` (`use super::*`).
 use super::*;
-use crate::auth::SilentRefresh;
+use super::turn_end::{
+    ErrorTurnArtifacts, TraceCaptures, TurnEndCapture, TurnEndOutcome, TurnResultArgs,
+    run_detached_turn_end, run_registry_turn_end, run_trace_completion,
+    upload_error_turn_artifacts,
+};
+use xai_grok_telemetry::instrument_task;
+use xai_grok_telemetry::region;
+use xai_grok_telemetry::region::Parent;
+use xai_grok_telemetry::startup;
+use tracing::Instrument;
+use xai_grok_login::{CachedTokenState, SilentRefresh};
 use crate::upload::trace::PromptMetadataParams;
 use crate::leader::protocol::InternalMethod;
 /// Which `x_search` sub-tools enforce the date cutoff, sent in `initialize`. `x_user_search` and
@@ -25,28 +33,72 @@ fn tool_overrides_capability() -> serde_json::Value {
     serde_json::to_value(TOOL_OVERRIDES_CAPABILITY)
         .expect("ToolOverridesCapability is always serializable")
 }
+impl MvpAgent {
+    pub(crate) async fn set_model_gated(
+        &self,
+        args: acp::SetSessionModelRequest,
+    ) -> Result<acp::SetSessionModelResponse, acp::Error> {
+        let model = match self.resolve_model_id(&args.model_id) {
+            Ok(model) => model,
+            Err(_) => {
+                self.models_manager.wait_for_first_catalog().await;
+                self.resolve_model_id(&args.model_id)?
+            }
+        };
+        if !model.info.user_selectable {
+            return Err(
+                acp::Error::invalid_params()
+                    .data(
+                        crate::agent::remote_config::allowlist_denied_message(
+                                &self.cfg.borrow(),
+                            )
+                            .to_string(),
+                    ),
+            );
+        }
+        let session_id = args.session_id.clone();
+        let switch_effort = match parse_reasoning_effort_meta(args.meta.as_ref()) {
+            Some(effort) => {
+                crate::agent::handlers::model_switch::SwitchEffort::Set(Some(effort))
+            }
+            None => crate::agent::handlers::model_switch::SwitchEffort::Preserve,
+        };
+        let res = crate::agent::handlers::model_switch::apply(
+                self,
+                args,
+                switch_effort,
+                crate::agent::handlers::model_switch::ConfigNotice::Send,
+            )
+            .await;
+        if res.is_ok()
+            && let Some(unavailable) = self
+                .session_registry
+                .take_unavailable_model(&session_id)
+        {
+            tracing::info!(
+                session_id = %session_id.0,
+                previously_unavailable_model = %unavailable.0,
+                "set_session_model: user model switch cleared the model-unavailable block"
+            );
+        }
+        res
+    }
+}
 #[async_trait::async_trait(?Send)]
 impl acp::Agent for MvpAgent {
-    /// In the meta, we provide
-    ///   - model_state: the model state, useful for the client to display available models and the default model.
-    ///
-    /// SINGLE-CALL INVARIANT: this method is the sole writer of
-    /// `self.auth_method_id` during initialization. It is called exactly once
-    /// per agent process by the ACP server before any session-creating
-    /// requests, while `auth_method_id` is still `None` (initialized at
-    /// `MvpAgent::new`). The auth-method block below relies on that
-    /// invariant when it unconditionally writes the default id returned by
-    /// `auth_method::build_auth_methods`. If you ever need to call
-    /// `initialize()` more than once, restore an `is_none()` guard around
-    /// the `auth_method_id` write at the call site so a re-init doesn't
-    /// silently downgrade an api-key user to a session-token user.
+    /// The response meta carries `model_state` so the client can display the available models and the default model. SINGLE-CALL INVARIANT: this method is the sole writer of `self.auth_method_id` during initialization.
+    /// It is called exactly once per agent process by the ACP server before any session-creating requests. At that point `auth_method_id` is still `None` (initialized at `MvpAgent::new`).
+    /// The auth-method block below relies on that invariant when it unconditionally writes the default id from `auth_method::build_auth_methods`.
     async fn initialize(
         &self,
         arguments: acp::InitializeRequest,
     ) -> Result<acp::InitializeResponse, acp::Error> {
         tracing::debug!(target: "sampling_log", "Received initialize request");
         xai_grok_telemetry::unified_log::info("agent initialized", None, None);
-        xai_grok_telemetry::startup::mark_agent_serving();
+        startup::mark_agent_serving();
+        let _t = xai_grok_telemetry::instrumentation::timer(
+            "startup.acp_initialize.handler",
+        );
         self.start_subagent_coordinator();
         if self.cfg.borrow().remote_settings.is_none() {
             self.spawn_settings_reapply();
@@ -101,11 +153,16 @@ impl acp::Agent for MvpAgent {
                 }),
                 ),
             );
-            if needs_user_info && let Err(e) = self.auth_manager.update(auth).await {
-                tracing::warn!(
-                    "Failed to refresh user info from proxy during new_session: {}",
-                    e
+            if needs_user_info {
+                let _t = xai_grok_telemetry::instrumentation::timer(
+                    "startup.acp_initialize.user_info",
                 );
+                if let Err(e) = self.auth_manager.update(auth).await {
+                    tracing::warn!(
+                        "Failed to refresh user info from proxy during new_session: {}",
+                        e
+                    );
+                }
             }
         }
         if !self.tier_allowed.get() {
@@ -128,13 +185,9 @@ impl acp::Agent for MvpAgent {
             tracing::info!("Client identifier set to: {}", id);
         }
         if client_type == ClientType::Generic {
-            match client_identifier.as_deref() {
-                Some("grok-web") => client_type = ClientType::GrokWeb,
-                Some("nebula") => client_type = ClientType::Nebula,
-                Some("grok-code-extension") => client_type = ClientType::Extension,
-                Some("grok-desktop") => client_type = ClientType::Desktop,
-                _ => {}
-            }
+            client_type = ClientType::from_client_identifier(
+                client_identifier.as_deref(),
+            );
         }
         *self.client_type.borrow_mut() = client_type;
         tracing::info!("Client type set to: {:?}", client_type);
@@ -191,7 +244,12 @@ impl acp::Agent for MvpAgent {
                     .as_deref()
                     .map(|t| xai_grok_auth::bearer_suffix(t).to_owned()),
             ));
-        self.auth_manager.force_reload_from_disk();
+        {
+            let _t = xai_grok_telemetry::instrumentation::timer(
+                "startup.acp_initialize.auth_reload",
+            );
+            self.auth_manager.force_reload_from_disk();
+        }
         let post = self
             .auth_manager
             .current()
@@ -228,7 +286,7 @@ impl acp::Agent for MvpAgent {
         );
         if !self.cfg.borrow().grok_com_config.api_key_auth_disabled()
             && auth_method::read_xai_api_key_env().is_err()
-            && let Some(api_key) = crate::auth::read_api_key(
+            && let Some(api_key) = xai_grok_login::read_api_key(
                 &crate::util::grok_home::grok_home(),
             )
         {
@@ -269,15 +327,15 @@ impl acp::Agent for MvpAgent {
             .models()
             .values()
             .any(crate::agent::config::ModelEntry::has_own_credentials);
-        let first_party_env_ok = if crate::auth::should_probe_first_party_env_key(
+        let first_party_env_ok = if xai_grok_login::should_probe_first_party_env_key(
             disable_api_key_auth,
             has_byok,
             auth_method::has_xai_api_key_env(),
             preferred_method_early.is_some(),
         ) {
-            crate::auth::first_party_env_key_allows_advertise(
+            xai_grok_login::first_party_env_key_allows_advertise(
                     &xai_api_base_url,
-                    crate::auth::DEFAULT_PROBE_TIMEOUT,
+                    xai_grok_login::DEFAULT_PROBE_TIMEOUT,
                 )
                 .await
         } else {
@@ -289,8 +347,9 @@ impl acp::Agent for MvpAgent {
             self.models_manager.models().values(),
             first_party_env_ok,
         );
-        let init_has_current = self.auth_manager.current().is_some();
-        let init_is_expired = self.auth_manager.is_expired();
+        let init_token_state = self.auth_manager.cached_token_state();
+        let init_has_current = matches!(init_token_state, CachedTokenState::Valid(_));
+        let init_is_expired = matches!(init_token_state, CachedTokenState::Expired);
         xai_grok_telemetry::unified_log::info(
             "auth init token state",
             None,
@@ -303,6 +362,9 @@ impl acp::Agent for MvpAgent {
         );
         let mut has_cached_token = init_has_current;
         if !init_has_current && init_is_expired {
+            let _t = xai_grok_telemetry::instrumentation::timer(
+                "startup.acp_initialize.silent_refresh",
+            );
             has_cached_token = match self.auth_manager.silent_refresh().await {
                 SilentRefresh::Renewed(_) => true,
                 SilentRefresh::Failed(remedy) => remedy.is_self_healing(),
@@ -347,22 +409,27 @@ impl acp::Agent for MvpAgent {
         }
         let preferred_method = preferred_method_early;
         let has_external_api_key = match preferred_method {
-            Some(crate::auth::PreferredAuthMethod::Oidc) => false,
+            Some(xai_grok_login::PreferredAuthMethod::Oidc) => false,
             _ => has_external_api_key,
         };
         let has_cached_token = match preferred_method {
-            Some(crate::auth::PreferredAuthMethod::ApiKey) => false,
+            Some(xai_grok_login::PreferredAuthMethod::ApiKey) => false,
             _ => has_cached_token,
         };
-        let built = auth_method::build_auth_methods(auth_method::AuthMethodsBuildInputs {
-            has_external_api_key,
-            has_cached_token,
-            has_enterprise_oidc,
-            enterprise_oidc_issuer: enterprise_oidc_issuer.as_deref(),
-            login_label: login_label.as_deref(),
-            has_auth_provider_command: has_auth_provider,
-            preferred_method,
-        });
+        let built = {
+            let _t = xai_grok_telemetry::instrumentation::timer(
+                "startup.acp_initialize.auth_methods",
+            );
+            auth_method::build_auth_methods(auth_method::AuthMethodsBuildInputs {
+                has_external_api_key,
+                has_cached_token,
+                has_enterprise_oidc,
+                enterprise_oidc_issuer: enterprise_oidc_issuer.as_deref(),
+                login_label: login_label.as_deref(),
+                has_auth_provider_command: has_auth_provider,
+                preferred_method,
+            })
+        };
         let auth_methods = built.methods;
         xai_grok_telemetry::unified_log::info(
             "auth: initialize() built auth_methods for ACP response",
@@ -431,10 +498,15 @@ impl acp::Agent for MvpAgent {
         }
         self.spawn_announcements_refresh();
         self.spawn_heap_profile_monitor();
-        let init_model_state = if crate::agent::chat_modes::process_chat_mode_enabled() {
-            self.chat_modes.model_state().await
-        } else {
-            self.model_state(None)
+        let init_model_state = {
+            let _t = xai_grok_telemetry::instrumentation::timer(
+                "startup.acp_initialize.model_state",
+            );
+            if crate::agent::chat_modes::process_chat_mode_enabled() {
+                self.chat_modes.model_state().await
+            } else {
+                self.model_state(None)
+            }
         };
         let session_capabilities = acp::SessionCapabilities::new()
             .close(acp::SessionCloseCapabilities::new());
@@ -453,8 +525,7 @@ impl acp::Agent for MvpAgent {
                         .meta(
                             serde_json::json!({
                     "x.ai/fs_notify": true,
-                    // Advertised so SDKs can warn when a registration depends on
-                    // hook behavior this agent doesn't honor.
+                    // Advertised so SDKs can warn when a registration depends on hook behavior this agent doesn't honor
                     "x.ai/hooks": {
                         "blockingEvents": crate::extensions::hooks::ADVERTISED_BLOCKING_EVENTS,
                         "decisions": crate::extensions::hooks::ADVERTISED_DECISIONS,
@@ -477,17 +548,18 @@ impl acp::Agent for MvpAgent {
                 )
                 .auth_methods(auth_methods)
                 .meta({
-                    let metadata = parse_json_object_env("GROK_AGENT_METADATA");
+                    let metadata = crate::util::parse_json_object_env(
+                        "GROK_AGENT_METADATA",
+                    );
                     serde_json::json!({
                     "grokShell": true,
-                    // Re-deriving this precedence client-side has regressed OIDC
-                    // refresh, so clients consume the agent's choice from here.
+                    // Re-deriving this precedence client-side has regressed OIDC refresh, so clients consume the agent's choice from here
                     "defaultAuthMethodId": default_auth_method_id_wire,
-                    // The agent can drive in-process SDK MCP servers over the ACP reverse
-                    // channel (`x.ai/mcp/sdk_call`); the SDK reads this to enable transport="acp".
+                    // The agent can drive in-process SDK MCP servers over the ACP reverse channel (`x.ai/mcp/sdk_call`)
+                    // The SDK reads this to enable transport="acp"
                     (xai_grok_mcp::wire::MCP_SDK): true,
-                    // `session/new` / `session/load` accept per-session plugin roots in
-                    // `_meta.pluginDirs`; the SDKs gate `GrokOptions.plugins` on this.
+                    // `session/new` / `session/load` accept per-session plugin roots in `_meta.pluginDirs`
+                    // The SDKs gate `GrokOptions.plugins` on this
                     (SESSION_PLUGIN_DIRS_CAPABILITY_KEY): true,
                     "currentWorkingDirectory": current_working_directory.to_string_lossy().to_string(),
                     "agentVersion": xai_grok_version::VERSION,
@@ -503,10 +575,9 @@ impl acp::Agent for MvpAgent {
                         .cfg
                         .borrow()
                         .is_feature_enabled(crate::agent::config::Feature::CancelRewind),
-                    // Resolved session-recap state (remote settings / config / env;
-                    // default ON). The client gates BOTH its automatic
-                    // away-recap poll and the manual `/recap` on this so a
-                    // disabled feature produces zero `x.ai/recap` traffic.
+                    // Resolved session-recap state (remote settings / config / env; default ON)
+                    // The client gates BOTH its automatic away-recap poll and the manual `/recap` on this
+                    // A disabled feature produces zero `x.ai/recap` traffic
                     "sessionRecap": self.cfg.borrow().is_session_recap_enabled(),
                     "feedbackTraceOffer": self.feedback_trace_offer(),
                     "voiceMode": self.cfg.borrow().is_voice_mode_enabled(),
@@ -529,15 +600,15 @@ impl acp::Agent for MvpAgent {
         if let Some(preferred) = self.cfg.borrow().grok_com_config.preferred_method {
             let kind = auth_method::AuthMethodKind::from_id(&arguments.method_id);
             let allowed = match preferred {
-                crate::auth::PreferredAuthMethod::ApiKey => kind.is_api_key(),
-                crate::auth::PreferredAuthMethod::Oidc => kind.is_session_based(),
+                xai_grok_login::PreferredAuthMethod::ApiKey => kind.is_api_key(),
+                xai_grok_login::PreferredAuthMethod::Oidc => kind.is_session_based(),
             };
             if !allowed {
                 let msg = match preferred {
-                    crate::auth::PreferredAuthMethod::ApiKey => {
+                    xai_grok_login::PreferredAuthMethod::ApiKey => {
                         auth_method::PREFERRED_API_KEY_UNAVAILABLE
                     }
-                    crate::auth::PreferredAuthMethod::Oidc => {
+                    xai_grok_login::PreferredAuthMethod::Oidc => {
                         "preferred_method=oidc; API-key auth is not allowed."
                     }
                 };
@@ -563,7 +634,7 @@ impl acp::Agent for MvpAgent {
                 if sampling_config.api_key.is_none() {
                     if let Ok(api_key) = auth_method::read_xai_api_key_env() {
                         sampling_config.api_key = Some(api_key.clone());
-                        if let Err(e) = crate::auth::store_api_key(
+                        if let Err(e) = xai_grok_login::store_api_key(
                             &crate::util::grok_home::grok_home(),
                             &api_key,
                         ) {
@@ -571,7 +642,7 @@ impl acp::Agent for MvpAgent {
                             xai_grok_telemetry::unified_log::warn(
                                 "failed to persist API key to auth.json",
                                 None,
-                                Some(serde_json::json!({ "error": e.to_string() })),
+                                Some(serde_json::json!({ "error" : e.to_string() })),
                             );
                         }
                     } else if !self
@@ -617,76 +688,25 @@ impl acp::Agent for MvpAgent {
                 let current_auth = self.auth_manager.current();
                 let has_current = current_auth.is_some();
                 let is_expired = self.auth_manager.is_expired();
-                let is_devbox = crate::auth::devbox_login::is_devbox_environment();
                 let is_legacy = current_auth
                     .as_ref()
-                    .is_some_and(|a| a.auth_mode == crate::auth::AuthMode::WebLogin);
+                    .is_some_and(|a| a.auth_mode == xai_grok_login::AuthMode::WebLogin);
+                let check_payload = serde_json::json!({
+                    "has_current": has_current,
+                    "is_expired": is_expired,
+                    "is_legacy": is_legacy,
+                });
                 xai_grok_telemetry::unified_log::info(
                     "auth cached_token check",
                     None,
-                    Some(
-                        serde_json::json!({
-                        "has_current": has_current,
-                        "is_expired": is_expired,
-                        "is_devbox": is_devbox,
-                        "is_legacy": is_legacy,
-                    }),
-                    ),
+                    Some(check_payload),
                 );
-                let pin_blocks_oidc_mint = matches!(
-                    self.cfg.borrow().grok_com_config.preferred_method,
-                    Some(crate::auth::PreferredAuthMethod::ApiKey)
-                );
-                if is_devbox && is_legacy && !pin_blocks_oidc_mint {
-                    xai_grok_telemetry::unified_log::info(
-                        "auth cached_token: devbox legacy migration starting",
-                        None,
-                        None,
-                    );
-                    match crate::auth::devbox_login::mint_devbox_auth(&self.auth_manager)
-                        .await
-                    {
-                        Ok(new_auth) => {
-                            match self
-                                .auth_manager
-                                .save_without_enrichment(new_auth)
-                                .await
-                            {
-                                Ok(_) => {
-                                    if let Err(e) = self
-                                        .auth_manager
-                                        .remove_scope(crate::auth::LEGACY_AUTH_SCOPE)
-                                    {
-                                        tracing::warn!(error = ?e, "auth: failed to remove legacy scope (non-fatal)");
-                                    }
-                                    xai_grok_telemetry::unified_log::info(
-                                        "auth cached_token: devbox legacy migration succeeded",
-                                        None,
-                                        None,
-                                    );
-                                }
-                                Err(e) => {
-                                    xai_grok_telemetry::unified_log::warn(
-                                        "auth cached_token: devbox migration save failed",
-                                        None,
-                                        Some(serde_json::json!({ "error": e.to_string() })),
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            xai_grok_telemetry::unified_log::warn(
-                                "auth cached_token: devbox mint failed, will reject legacy token",
-                                None,
-                                Some(serde_json::json!({ "error": format!("{e}") })),
-                            );
-                        }
-                    }
-                }
-                let resolved = match self.auth_manager.current() {
-                    Some(auth) => Some(auth),
-                    None if !self.auth_manager.is_expired() => None,
-                    None => {
+                let token_state = self.auth_manager.cached_token_state();
+                let was_expired = matches!(token_state, CachedTokenState::Expired);
+                let resolved = match token_state {
+                    CachedTokenState::Valid(auth) => Some(*auth),
+                    CachedTokenState::Missing => None,
+                    CachedTokenState::Expired => {
                         match self.auth_manager.silent_refresh().await {
                             SilentRefresh::Renewed(auth) => Some(*auth),
                             SilentRefresh::Failed(remedy) if remedy.is_self_healing() => {
@@ -697,7 +717,7 @@ impl acp::Agent for MvpAgent {
                     }
                 };
                 let Some(auth) = resolved else {
-                    let message = if self.auth_manager.is_expired() {
+                    let message = if was_expired {
                         "Session expired, re-authentication required"
                     } else {
                         "No cached auth token found"
@@ -712,7 +732,7 @@ impl acp::Agent for MvpAgent {
                         .authenticate_after_cached_token_unavailable(arguments)
                         .await;
                 };
-                if auth.auth_mode == crate::auth::AuthMode::WebLogin {
+                if auth.auth_mode == xai_grok_login::AuthMode::WebLogin {
                     tracing::info!("auth: rejecting legacy WebLogin token");
                     xai_grok_telemetry::unified_log::warn(
                         "auth cached_token legacy rejected",
@@ -724,7 +744,7 @@ impl acp::Agent for MvpAgent {
                     self.auth_manager.clear_in_memory();
                     if let Err(e) = self
                         .auth_manager
-                        .remove_scope(crate::auth::LEGACY_AUTH_SCOPE)
+                        .remove_scope(xai_grok_login::LEGACY_AUTH_SCOPE)
                     {
                         tracing::warn!(error = ?e, "auth: failed to remove legacy scope during WebLogin rejection (non-fatal)");
                     }
@@ -798,6 +818,7 @@ impl acp::Agent for MvpAgent {
                     ),
                 );
                 let login_override = auth_meta.login_override();
+                let config_device_flow = self.cfg.borrow().login_device_flow;
                 let mut cancelled = false;
                 let client_seq = auth_meta.request_seq;
                 let auth_result = if !auth_meta.headless {
@@ -807,7 +828,7 @@ impl acp::Agent for MvpAgent {
                         .interactive_auth
                         .begin(
                             Some(
-                                crate::auth::single_flight::AttemptChannels::new(
+                                xai_grok_login::single_flight::AttemptChannels::new(
                                     code_tx,
                                     url_rx,
                                 ),
@@ -820,10 +841,11 @@ impl acp::Agent for MvpAgent {
                             cancelled = true;
                             Err(anyhow::anyhow!("Authentication cancelled"))
                         }
-                        r = crate::auth::run_auth_flow_with_stderr_bridge(
+                        r = xai_grok_login::run_auth_flow_with_stderr_bridge(
                             &self.auth_manager,
                             grok_ctx,
-                            crate::auth::AuthChannels {
+                            config_device_flow,
+                            xai_grok_login::AuthChannels {
                                 url_tx: Some(url_tx),
                                 code_rx,
                             },
@@ -840,9 +862,10 @@ impl acp::Agent for MvpAgent {
                             cancelled = true;
                             Err(anyhow::anyhow!("Authentication cancelled"))
                         }
-                        r = crate::auth::run_auth_flow(
+                        r = xai_grok_login::run_auth_flow(
                             &self.auth_manager,
                             grok_ctx,
+                            config_device_flow,
                             auth_meta.reauth,
                             None,
                             None,
@@ -920,7 +943,14 @@ impl acp::Agent for MvpAgent {
         &self,
         arguments: acp::NewSessionRequest,
     ) -> Result<acp::NewSessionResponse, acp::Error> {
-        self.new_session_inner(arguments).await
+        let span = tracing::info_span!("agent.new_session");
+        if let Some(meta) = arguments.meta.as_ref() {
+            xai_grok_otel::link_span_to_meta(
+                &span,
+                &serde_json::Value::Object(meta.clone()),
+            );
+        }
+        self.new_session_inner(arguments).instrument(span).await
     }
     async fn load_session(
         &self,
@@ -958,10 +988,11 @@ impl acp::Agent for MvpAgent {
     ) -> Result<acp::PromptResponse, acp::Error> {
         use crate::session::plan_mode::PromptMode;
         if let Some(meta) = arguments.meta.as_ref() {
-            xai_file_utils::trace_context::link_current_span_to_meta(
+            xai_grok_otel::link_current_span_to_meta(
                 &serde_json::Value::Object(meta.clone()),
             );
         }
+        let preamble_span = region!("prompt.preamble", Parent::Inherit);
         tracing::debug!(
             target: "sampling_log",
             session_id = %arguments.session_id.0,
@@ -977,12 +1008,14 @@ impl acp::Agent for MvpAgent {
             .await
             .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?;
         if self.models_manager.allowlist_excludes_all() {
+            let deny = crate::agent::remote_config::allowlist_excludes_all_message(
+                &self.cfg.borrow(),
+            );
             self.send_model_auto_switched(
                     &arguments.session_id,
                     &acp::ModelId::new(String::new()),
                     &acp::ModelId::new(String::new()),
-                    "None of your models are allowed by allowed_models. \
-                 Broaden it or remove it from your config, then restart.",
+                    &deny,
                 )
                 .await;
             return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
@@ -1021,7 +1054,8 @@ impl acp::Agent for MvpAgent {
                             arguments.session_id.clone(),
                             restore_model_id.clone(),
                         ),
-                        None,
+                        crate::agent::handlers::model_switch::SwitchEffort::Preserve,
+                        crate::agent::handlers::model_switch::ConfigNotice::Send,
                     )
                     .await
                 {
@@ -1063,6 +1097,10 @@ impl acp::Agent for MvpAgent {
         }
         let dispatch_lock = self.dispatch_lock(&arguments.session_id);
         let dispatch_guard = dispatch_lock.lock().await;
+        crate::agent::mvp_agent::test_hooks::park_forever_if_blackholed(
+                &arguments.session_id,
+            )
+            .await;
         let meta_prompt_mode = arguments
             .meta
             .as_ref()
@@ -1092,9 +1130,15 @@ impl acp::Agent for MvpAgent {
         tracing::Span::current().record("turn_number", turn_number);
         tracing::info!("Setting up prompt tracing");
         let trace_context = self.get_trace_context(&handle.info, turn_number).await;
-        let (harness_block_for_upload, upload_flush_timeout) = crate::util::config::load_blocking_upload_config_sync();
-        let block_for_upload = self.cfg.borrow().mode == config::AgentMode::Headless
-            || harness_block_for_upload;
+        let (wait_for_uploads, upload_flush_timeout) = crate::util::config::load_upload_wait_config_sync();
+        crate::upload::drain::capture_flush_timeout_pre_exit(upload_flush_timeout);
+        let turn_end_uploads = if wait_for_uploads {
+            TurnEndUploads::Wait {
+                budget: upload_flush_timeout,
+            }
+        } else {
+            TurnEndUploads::Background
+        };
         let (model_tx, model_rx) = oneshot::channel();
         let _ = handle
             .cmd_tx
@@ -1117,6 +1161,7 @@ impl acp::Agent for MvpAgent {
             .and_then(|m| m.get("sendNow"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let mut before_upload_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
         if let Some(ctx) = trace_context.clone() {
             let (tx, parsed_prompt_rx) = oneshot::channel::<ParsedPromptInfo>();
             parsed_prompt_tx = Some(tx);
@@ -1169,7 +1214,7 @@ impl acp::Agent for MvpAgent {
                 reasoning_effort: ctx
                     .session_handle
                     .reasoning_effort
-                    .map(|e| e.as_str().to_string()),
+                    .map(|e| e.as_ref().to_string()),
                 experiment_id: None,
                 host_os: std::env::consts::OS.to_string(),
                 host_arch: std::env::consts::ARCH.to_string(),
@@ -1182,6 +1227,7 @@ impl acp::Agent for MvpAgent {
                 sandbox: local_sandbox_telemetry(),
                 ..Default::default()
             });
+            prompt_metadata.attempt_id = ctx.attempt_id.clone();
             let (session_copy_tx, session_copy_rx) = oneshot::channel();
             let copy_sent = ctx
                 .session_handle
@@ -1197,37 +1243,48 @@ impl acp::Agent for MvpAgent {
                     "Failed to send CopyFile command, skipping session state upload"
                 );
             }
-            tokio::spawn({
-                let ctx = ctx.clone();
-                async move {
-                    if let Ok(Ok(info)) = tokio::time::timeout(
-                            std::time::Duration::from_secs(120),
-                            parsed_prompt_rx,
-                        )
-                        .await && !info.text.is_empty()
-                    {
-                        prompt_metadata.prompt_was_truncated = Some(
-                            info.full_text.is_some(),
-                        );
-                        if let Some(full_text) = &info.full_text {
-                            upload_full_prompt_txt(&ctx, full_text).await;
-                        }
-                    }
-                    upload_metadata(&ctx, prompt_metadata).await;
-                }
-            });
-            spawn_upload_task(
-                "before_uploads",
-                async move {
-                    let before_workspace_fut = async {};
-                    futures::join!(
+            before_upload_handles
+                .push(
+                    spawn_upload_task(
+                        "prompt_metadata",
+                        {
+                            let ctx = ctx.clone();
+                            async move {
+                                if let Ok(Ok(info)) = tokio::time::timeout(
+                                        crate::session::commands::PARSED_PROMPT_WAIT,
+                                        parsed_prompt_rx,
+                                    )
+                                    .await && !info.text.is_empty()
+                                {
+                                    prompt_metadata.prompt_was_truncated = Some(
+                                        info.full_text.is_some(),
+                                    );
+                                    if let Some(full_text) = &info.full_text {
+                                        upload_full_prompt_txt(&ctx, full_text, UploadWait::Confirm)
+                                            .await;
+                                    }
+                                }
+                                upload_metadata(&ctx, prompt_metadata, UploadWait::Confirm)
+                                    .await;
+                            }
+                        },
+                    ),
+                );
+            before_upload_handles
+                .push(
+                    spawn_upload_task(
+                        "before_uploads",
+                        async move {
+                            let before_workspace_fut = async {};
+                            futures::join!(
                     upload_session_state(&ctx, "before", session_copy_rx, UploadWait::Confirm),
                     before_workspace_fut,
                     upload_images(&ctx, &prompt_images),
                     upload_plugin_state(&ctx, plugin_registry.as_deref()),
                 );
-                },
-            );
+                        },
+                    ),
+                );
         }
         let next_trace_turn = self
             .session_turn_number(&arguments.session_id)
@@ -1280,45 +1337,106 @@ impl acp::Agent for MvpAgent {
                 }
             }
         };
-        handle
-            .cmd_tx
-            .send(SessionCommand::Prompt {
-                prompt_id: prompt_id.clone(),
-                prompt_blocks: arguments.prompt.clone(),
-                prompt_mode,
-                artifact_upload_ctx: trace_context
-                    .as_ref()
-                    .map(|ctx| ctx.artifact_upload_context()),
-                client_identifier: prompt_client_identifier,
-                screen_mode: prompt_screen_mode,
-                verbatim,
-                traceparent: xai_file_utils::trace_context::current_traceparent(),
-                json_schema,
-                send_now,
-                admission: None,
-                tool_overrides_update,
-                respond_to: tx,
-                persist_ack: None,
-                parsed_prompt_tx,
-            })
-            .map_err(|e| {
-                acp::Error::internal_error()
-                    .data(format!("failed to dispatch prompt to session: {e}"))
-            })?;
+        let prompt_blocks = arguments.prompt.clone();
+        let artifact_upload_ctx = trace_context
+            .as_ref()
+            .map(|ctx| ctx.artifact_upload_context());
+        let traceparent = xai_grok_otel::current_traceparent();
+        let dispatch_result: Result<(), acp::Error> = if send_now {
+            handle
+                .cmd_tx
+                .send(SessionCommand::Prompt {
+                    prompt_id: prompt_id.clone(),
+                    prompt_blocks,
+                    prompt_mode,
+                    artifact_upload_ctx,
+                    client_identifier: prompt_client_identifier,
+                    screen_mode: prompt_screen_mode,
+                    verbatim,
+                    traceparent,
+                    json_schema,
+                    send_now: true,
+                    admission: None,
+                    tool_overrides_update,
+                    respond_to: tx,
+                    prompt_admitted: None,
+                    persist_ack: None,
+                    parsed_prompt_tx,
+                })
+                .map_err(|e| {
+                    acp::Error::internal_error()
+                        .data(format!("failed to dispatch prompt to session: {e}"))
+                })
+        } else {
+            let envelope = xai_message_delivery_core::DeliveryEnvelope::from_human(
+                xai_message_delivery_core::Operation::Queue,
+                crate::session::message_delivery::HumanPromptContent {
+                    prompt_blocks,
+                    prompt_mode,
+                    artifact_upload_ctx,
+                    client_identifier: prompt_client_identifier,
+                    screen_mode: prompt_screen_mode,
+                    verbatim,
+                    traceparent,
+                    json_schema,
+                    tool_overrides_update,
+                    respond_to: tx,
+                    parsed_prompt_tx,
+                },
+                crate::session::message_delivery::human_delivery_identity(
+                    prompt_id.clone(),
+                ),
+                crate::session::message_delivery::ResidentHumanGrant::new(
+                    handle.info.id.0.to_string(),
+                ),
+            );
+            handle
+                .message_delivery()
+                .send_human(envelope)
+                .map_err(|error| match error {
+                    crate::session::message_delivery::HumanDeliveryError::ChannelClosed(
+                        error,
+                    ) => {
+                        acp::Error::internal_error()
+                            .data(
+                                format!("failed to dispatch prompt to session: {error}"),
+                            )
+                    }
+                    crate::session::message_delivery::HumanDeliveryError::Rejected
+                    | crate::session::message_delivery::HumanDeliveryError::Unsupported => {
+                        unreachable!("resident human Queue is target-bound and supported")
+                    }
+                })
+        };
+        dispatch_result?;
         drop(dispatch_guard);
         self.push_roster_activity_delta(
             &arguments.session_id,
             crate::agent::roster::RosterActivity::Working,
         );
+        preamble_span.close();
+        let await_turn_span = region!("prompt.await_turn", Parent::Inherit);
         let stop_result = rx
             .await
             .map_err(|_| {
                 acp::Error::internal_error().data("session failed to respond")
             })?;
+        await_turn_span.close();
+        let removed_from_queue = matches!(
+            &stop_result,
+            Ok(ok) if matches!(ok.completion_kind, crate::session::commands::PromptCompletionKind::RemovedFromQueue)
+        );
+        let capture = trace_context.is_some() && !removed_from_queue
+            && stop_result.is_ok();
+        let turn_end_capture: Option<TurnEndCapture> = capture
+            .then(|| TurnEndCapture::begin(&handle, handle.info.cwd.clone()));
+        let finalize_span = region!("prompt.finalize", Parent::Inherit);
+        let turn_usage_span = region!("finalize.turn_usage", Parent::Explicit(finalize_span.span()));
         let last_turn_usage_for_meta = handle
             .chat_state_handle
             .get_last_turn_usage()
             .await;
+        turn_usage_span.close();
         let applied_tool_overrides = stop_result
             .as_ref()
             .ok()
@@ -1330,26 +1448,28 @@ impl acp::Agent for MvpAgent {
                 ..
             })
         ) {
+            let meta = build_prompt_response_meta(PromptResponseMetaArgs {
+                session_id: &arguments.session_id.to_string(),
+                prompt_id: &prompt_id,
+                total_tokens: 0,
+                model_id: &model,
+                last_turn_usage: None,
+                prompt_usage: None,
+                cancellation_category: None,
+                cancellation_context: None,
+                cancel_trigger: None,
+                structured_output: None,
+                tool_overrides: applied_tool_overrides.clone(),
+                completion_kind: Some(
+                    crate::session::commands::REMOVED_FROM_QUEUE_KIND.to_string(),
+                ),
+            });
             return Ok(
                 acp::PromptResponse::new(acp::StopReason::Cancelled)
-                    .meta(
-                        build_prompt_response_meta(PromptResponseMetaArgs {
-                                session_id: &arguments.session_id.to_string(),
-                                prompt_id: &prompt_id,
-                                total_tokens: 0,
-                                model_id: &model,
-                                last_turn_usage: None,
-                                prompt_usage: None,
-                                cancellation_category: None,
-                                cancel_trigger: None,
-                                structured_output: None,
-                                tool_overrides: applied_tool_overrides.clone(),
-                            })
-                            .as_object()
-                            .cloned(),
-                    ),
+                    .meta(meta.as_object().cloned()),
             );
         }
+        let resolved_model = handle.get_model_metadata().await.resolved_model_id;
         let cancel_trigger: Option<String> = stop_result
             .as_ref()
             .ok()
@@ -1364,25 +1484,25 @@ impl acp::Agent for MvpAgent {
             .as_ref()
             .ok()
             .and_then(|ok| ok.completion_kind.cancellation_category_meta());
+        let cancellation_context: Option<serde_json::Value> = stop_result
+            .as_ref()
+            .ok()
+            .and_then(|ok| ok.completion_kind.cancellation_context_meta());
         {
             let mapped = stop_result
                 .as_ref()
                 .map(|ok| ok.stop_reason)
                 .map_err(Clone::clone);
-            let (stop_reason_value, agent_result_value) = crate::sampling::error::prompt_complete_fields(
-                &mapped,
-            );
             let turn_id = arguments
                 .meta
                 .as_ref()
                 .and_then(|m| m.get("turnId"))
                 .and_then(|v| v.as_u64());
-            let mut payload = serde_json::json!({
-                "sessionId": arguments.session_id.to_string(),
-                "promptId": prompt_id.as_str(),
-                "stopReason": stop_reason_value,
-                "agentResult": agent_result_value,
-            });
+            let mut payload = crate::session::turn_completion::prompt_complete_payload(
+                &arguments.session_id,
+                prompt_id.as_str(),
+                &mapped,
+            );
             if let Some(tid) = turn_id {
                 payload["turnId"] = serde_json::json!(tid);
             }
@@ -1392,15 +1512,18 @@ impl acp::Agent for MvpAgent {
             if let Some(ref c) = cancellation_category {
                 payload["cancellationCategory"] = serde_json::json!(c);
             }
-            let params = serde_json::value::to_raw_value(&payload)
-                .expect("prompt_complete params serialization");
-            self.gateway
-                .forward_fire_and_forget(
-                    acp::ExtNotification::new(
-                        "x.ai/session/prompt_complete",
-                        params.into(),
-                    ),
-                );
+            if let Some(ref ctx) = cancellation_context {
+                payload["cancellationContext"] = ctx.clone();
+            }
+            if let Ok(params) = serde_json::value::to_raw_value(&payload) {
+                self.gateway
+                    .forward_fire_and_forget(
+                        acp::ExtNotification::new(
+                            "x.ai/session/prompt_complete",
+                            params.into(),
+                        ),
+                    );
+            }
         }
         {
             let end_activity = if handle
@@ -1415,7 +1538,6 @@ impl acp::Agent for MvpAgent {
             };
             self.push_roster_activity_delta(&arguments.session_id, end_activity);
         }
-        let resolved_model = handle.get_model_metadata().await.resolved_model_id;
         let harness_trace_turns = {
             let (tx, rx) = oneshot::channel();
             if handle
@@ -1476,7 +1598,7 @@ impl acp::Agent for MvpAgent {
                 let streaming_partial = crate::upload::turn::take_streaming_partial(
                         &handle.cmd_tx,
                         prompt_id.clone(),
-                        matches!(stop_reason, acp::StopReason::EndTurn),
+                        crate::upload::turn::stop_reason_commits_turn(stop_reason),
                         Some(model.clone()),
                     )
                     .await
@@ -1496,382 +1618,82 @@ impl acp::Agent for MvpAgent {
                             });
                         cap
                     });
-                let upload_deadline = block_for_upload
-                    .then(|| tokio::time::Instant::now() + upload_flush_timeout);
-                if let Some(ctx) = trace_context.clone() {
-                    let request_id = prompt_id.clone();
-                    let (input_tokens, cached_input_tokens, output_tokens) = turn_snapshot
-                        .as_ref()
-                        .map(|s| (
-                            Some(s.turn_input_tokens),
-                            Some(s.turn_cached_input_tokens),
-                            Some(s.turn_output_tokens),
-                        ))
-                        .unwrap_or((None, None, None));
-                    if let Some(deadline) = upload_deadline {
-                        let completed = matches!(stop_reason, acp::StopReason::EndTurn);
-                        let start_for_upload = turn_snapshot
-                            .as_ref()
-                            .and_then(|s| s.start_prompt_mode.clone())
-                            .or_else(|| Some(prompt_mode.to_string()));
-                        let end_for_upload = turn_snapshot
-                            .as_ref()
-                            .and_then(|s| s.end_prompt_mode.clone());
-                        let result = TurnResultMetadata {
-                            schema_version: GCS_SCHEMA_VERSION,
-                            request_id,
-                            completed,
-                            stop_reason: Some(format!("{stop_reason:?}")),
-                            total_tokens: Some(total_tokens),
-                            input_tokens,
-                            cached_input_tokens,
-                            output_tokens,
-                            error: None,
-                            finished_at: chrono::Utc::now().to_rfc3339(),
-                            signals: turn_snapshot.as_ref().map(|s| s.current.clone()),
-                            turn_delta: turn_snapshot.as_ref().map(|s| s.delta.clone()),
-                            start_prompt_mode: start_for_upload,
-                            end_prompt_mode: end_for_upload,
-                            resolved_model: resolved_model.clone(),
-                            subagents_spawned: subagent_refs.clone(),
-                        };
-                        upload_turn_result(&ctx, &result, UploadWait::Defer { deadline })
-                            .await;
-                    } else {
-                        let snapshot_clone = turn_snapshot.clone();
-                        let resolved_model = resolved_model.clone();
-                        tokio::spawn(async move {
-                            let completed = matches!(stop_reason, acp::StopReason::EndTurn);
-                            let start_for_upload = snapshot_clone
-                                .as_ref()
-                                .and_then(|s| s.start_prompt_mode.clone())
-                                .or_else(|| Some(prompt_mode.to_string()));
-                            let end_for_upload = snapshot_clone
-                                .as_ref()
-                                .and_then(|s| s.end_prompt_mode.clone());
-                            let result = TurnResultMetadata {
-                                schema_version: GCS_SCHEMA_VERSION,
-                                request_id,
-                                completed,
-                                stop_reason: Some(format!("{stop_reason:?}")),
-                                total_tokens: Some(total_tokens),
-                                input_tokens,
-                                cached_input_tokens,
-                                output_tokens,
-                                error: None,
-                                finished_at: chrono::Utc::now().to_rfc3339(),
-                                signals: snapshot_clone.as_ref().map(|s| s.current.clone()),
-                                turn_delta: snapshot_clone
-                                    .as_ref()
-                                    .map(|s| s.delta.clone()),
-                                start_prompt_mode: start_for_upload,
-                                end_prompt_mode: end_for_upload,
-                                resolved_model,
-                                subagents_spawned: subagent_refs.clone(),
-                            };
-                            upload_turn_result(&ctx, &result, UploadWait::Confirm).await;
-                        });
-                    }
-                }
-                if let Some(ctx) = trace_context {
-                    let (session_copy_tx, session_copy_rx) = oneshot::channel();
-                    let copy_sent = ctx
-                        .session_handle
-                        .cmd_tx
-                        .send(SessionCommand::CopyFile {
-                            respond_to: session_copy_tx,
-                        })
-                        .is_ok();
-                    if !copy_sent {
-                        tracing::warn!(
-                            session_id = %ctx.session_info.id.0,
-                            turn_number = ctx.turn_number,
-                            "Failed to send CopyFile command, skipping session state upload"
+                if let Some(ctx) = trace_context && let Some(cap) = turn_end_capture {
+                    let (head, head_branch, registry_claim, session_copy_rx) = cap
+                        .finish()
+                        .await;
+                    let turn_result = TurnResultArgs {
+                        request_id: prompt_id.clone(),
+                        completed: crate::upload::turn::stop_reason_commits_turn(
+                            stop_reason,
+                        ),
+                        stop_reason: format!("{stop_reason:?}"),
+                        total_tokens: Some(total_tokens),
+                        error: None,
+                        finished_at: chrono::Utc::now().to_rfc3339(),
+                        turn_snapshot,
+                        prompt_mode: prompt_mode.to_string(),
+                        subagents_spawned: subagent_refs,
+                    };
+                    let registry = self
+                        .build_registry_turn_end_args(
+                            &arguments.session_id,
+                            turn_number,
+                            &handle,
+                            &arguments.prompt,
+                            registry_claim,
+                            head,
+                            head_branch,
                         );
-                    }
-                    if turn_number == 0
-                        && let Some(client) = self.session_registry_client()
-                    {
-                        let cwd_str = handle.info.cwd.clone();
-                        let model = self.models_manager.current_model_id().0.to_string();
-                        let hostname = gethostname::gethostname()
-                            .to_string_lossy()
-                            .to_string();
-                        let suppress = self
-                            .auth_manager
-                            .current_or_expired()
-                            .is_some_and(|a| a.is_zdr_team());
-                        let device_id = if suppress { None } else { Some(agent_id()) };
-                        let first_prompt = if suppress {
-                            None
-                        } else {
-                            arguments
-                                    .prompt
-                                    .iter()
-                                    .find_map(|b| {
-                                        if let acp::ContentBlock::Text(t) = b {
-                                            Some(t.text.clone())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                        };
-                        let sid = arguments.session_id.to_string();
-                        tokio::spawn(async move {
-                            let git_out = |args: &[&str]| -> Option<String> {
-                                xai_tty_utils::git_command()
-                                    .current_dir(&cwd_str)
-                                    .args(args)
-                                    .output()
-                                    .ok()
-                                    .filter(|o| o.status.success())
-                                    .map(|o| {
-                                        String::from_utf8_lossy(&o.stdout).trim().to_string()
-                                    })
-                                    .filter(|s| !s.is_empty())
-                            };
-                            let repo_remote_url = git_out(
-                                &["remote", "get-url", "origin"],
-                            );
-                            let repo_branch = git_out(
-                                &["rev-parse", "--abbrev-ref", "HEAD"],
-                            );
-                            let repo_head_at_start = git_out(&["rev-parse", "HEAD"]);
-                            let reg_req = crate::agent::session_registry_client::RegisterRequest {
-                                session_id: sid.clone(),
-                                cwd: cwd_str,
-                                gcs_trace_prefix: sid,
-                                model_id: Some(model),
-                                repo_remote_url,
-                                repo_branch,
-                                repo_head_at_start,
-                                hostname: Some(hostname),
-                                device_id,
-                                parent_session_id: None,
-                                session_kind: None,
-                                subagent_type: None,
-                                subagent_persona: None,
-                                subagent_role: None,
-                                fork_context_source: None,
-                                subagent_depth: None,
-                            };
-                            if let Err(e) = client.register(&reg_req).await {
-                                tracing::warn!(
-                                    error = %e,
-                                    "session registry register failed (non-fatal)"
-                                );
+                    let captures = TraceCaptures {
+                        permission_events,
+                        session_copy_rx,
+                        turn_messages,
+                        streaming_partial,
+                    };
+                    match turn_end_uploads {
+                        TurnEndUploads::Wait { budget } => {
+                            let deadline = tokio::time::Instant::now() + budget;
+                            for handle in std::mem::take(&mut before_upload_handles) {
+                                let _ = tokio::time::timeout_at(deadline, handle).await;
                             }
-                            let info = crate::session::info::Info {
-                                id: agent_client_protocol::SessionId::new(
-                                    reg_req.session_id.clone(),
+                            let wait = UploadWait::Defer { deadline };
+                            let (archive_confirmed_tx, archive_confirmed_rx) = oneshot::channel();
+                            spawn_linked_upload_task(
+                                "turn_end.registry",
+                                &prompt_id,
+                                &arguments.session_id.0,
+                                run_registry_turn_end(registry, archive_confirmed_rx),
+                            );
+                            let result = turn_result.into_metadata(resolved_model);
+                            upload_turn_result(&ctx, &result, wait)
+                                .instrument(
+                                    tracing::debug_span!("turn_end.turn_result_upload"),
+                                )
+                                .await;
+                            let confirmed = run_trace_completion(&ctx, captures, wait)
+                                .instrument(
+                                    tracing::debug_span!("turn_end.trace_completion"),
+                                )
+                                .await;
+                            let _ = archive_confirmed_tx.send(confirmed);
+                        }
+                        TurnEndUploads::Background => {
+                            spawn_linked_upload_task(
+                                "turn_end.finalize_detached",
+                                &prompt_id,
+                                &arguments.session_id.0,
+                                run_detached_turn_end(
+                                    ctx,
+                                    turn_result,
+                                    resolved_model,
+                                    TurnEndOutcome::Completed {
+                                        captures,
+                                        registry: Box::new(registry),
+                                    },
                                 ),
-                                cwd: reg_req.cwd.clone(),
-                            };
-                            let summary_path = crate::session::persistence::session_dir(
-                                    &info,
-                                )
-                                .join("summary.json");
-                            let summary = if suppress {
-                                None
-                            } else {
-                                std::fs::read(&summary_path)
-                                        .ok()
-                                        .and_then(|bytes| {
-                                            serde_json::from_slice::<
-                                                crate::session::persistence::Summary,
-                                            >(&bytes)
-                                                .ok()
-                                        })
-                                        .map(|s| s.session_summary)
-                                        .filter(|s| !s.is_empty())
-                            };
-                            if first_prompt.is_some() || summary.is_some() {
-                                let upd_req = crate::agent::session_registry_client::UpdateRequest {
-                                    summary,
-                                    first_prompt,
-                                    last_turn_number: None,
-                                    repo_head_at_end: None,
-                                    restorable_turn_number: None,
-                                };
-                                tracing::debug!(
-                                    session_id = %reg_req.session_id,
-                                    has_summary = upd_req.summary.is_some(),
-                                    "session registry post-register update"
-                                );
-                                if let Err(e) = client
-                                    .update(&reg_req.session_id, &upd_req)
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "session registry first-prompt update failed (non-fatal)"
-                                    );
-                                }
-                            }
-                        });
-                    }
-                    let registry_turn = i32::try_from(turn_number).unwrap_or(i32::MAX);
-                    let cwd_for_git = handle.info.cwd.clone();
-                    /// Advances `last_turn_number` immediately after a turn completes.
-                    ///
-                    /// Fired right after the session turn finishes, before any artifact uploads.
-                    /// Sets `last_turn_number` with `repo_head_at_end` and does not wait for
-                    /// session-state uploads.
-                    async fn advance_last_turn(
-                        client: crate::agent::session_registry_client::SessionRegistryClient,
-                        session_id: String,
-                        turn: i32,
-                        cwd: String,
-                    ) {
-                        let repo_head_at_end = xai_tty_utils::git_command()
-                            .current_dir(&cwd)
-                            .args(["rev-parse", "HEAD"])
-                            .output()
-                            .ok()
-                            .filter(|o| o.status.success())
-                            .map(|o| {
-                                String::from_utf8_lossy(&o.stdout).trim().to_string()
-                            })
-                            .filter(|s| !s.is_empty());
-                        let req = crate::agent::session_registry_client::UpdateRequest {
-                            summary: None,
-                            first_prompt: None,
-                            last_turn_number: Some(turn),
-                            repo_head_at_end,
-                            restorable_turn_number: None,
-                        };
-                        if let Err(e) = client.update(&session_id, &req).await {
-                            tracing::warn!(
-                                error = %e,
-                                "session registry last_turn_number update failed (non-fatal)"
                             );
                         }
-                    }
-                    /// Advances `restorable_turn_number` after required restore artifacts are
-                    /// confirmed durable.
-                    ///
-                    /// Called after the post-turn session archive is confirmed in cloud storage.
-                    async fn advance_restorable_turn(
-                        client: crate::agent::session_registry_client::SessionRegistryClient,
-                        session_id: String,
-                        turn: i32,
-                    ) {
-                        let req = crate::agent::session_registry_client::UpdateRequest {
-                            summary: None,
-                            first_prompt: None,
-                            last_turn_number: None,
-                            repo_head_at_end: None,
-                            restorable_turn_number: Some(turn),
-                        };
-                        if let Err(e) = client.update(&session_id, &req).await {
-                            tracing::warn!(
-                                error = %e,
-                                "session registry restorable_turn_number update failed (non-fatal)"
-                            );
-                        }
-                    }
-                    if let Some(client) = self.session_registry_client() {
-                        let sid = arguments.session_id.to_string();
-                        let cwd = cwd_for_git.clone();
-                        tokio::spawn(async move {
-                            advance_last_turn(client, sid, registry_turn, cwd).await;
-                        });
-                    }
-                    {
-                        let cwd = cwd_for_git.clone();
-                        let cmd_tx = handle.cmd_tx.clone();
-                        tokio::spawn(async move {
-                            let head = xai_grok_workspace::session::git::get_current_commit(
-                                    std::path::Path::new(&cwd),
-                                )
-                                .await;
-                            let branch = xai_grok_workspace::session::git::get_branch(
-                                    std::path::Path::new(&cwd),
-                                )
-                                .await;
-                            let _ = cmd_tx
-                                .send(crate::session::SessionCommand::PersistGitHead {
-                                    commit: head,
-                                    branch,
-                                });
-                        });
-                    }
-                    let registry_client_for_restorable = self.session_registry_client();
-                    let registry_sid_for_restorable = arguments.session_id.to_string();
-                    let err_ctx = ctx.clone();
-                    if let Some(deadline) = upload_deadline {
-                        match complete_prompt_trace(
-                                ctx,
-                                permission_events,
-                                session_copy_rx,
-                                turn_messages,
-                                streaming_partial,
-                                UploadWait::Defer { deadline },
-                            )
-                            .await
-                        {
-                            Ok(true) => {
-                                if let Some(client) = registry_client_for_restorable {
-                                    advance_restorable_turn(
-                                            client,
-                                            registry_sid_for_restorable,
-                                            registry_turn,
-                                        )
-                                        .await;
-                                }
-                            }
-                            Ok(false) => {
-                                tracing::debug!(
-                                    "session state unconfirmed within the flush budget; \
-                                     skipping restorable_turn_number advance"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to complete prompt trace: {e:?}");
-                                crate::upload::trace::flush_then_write_error_manifest(
-                                        &err_ctx,
-                                        deadline,
-                                    )
-                                    .await;
-                            }
-                        }
-                    } else {
-                        spawn_upload_task(
-                            "after_uploads",
-                            async move {
-                                match complete_prompt_trace(
-                                        ctx,
-                                        permission_events,
-                                        session_copy_rx,
-                                        turn_messages,
-                                        streaming_partial,
-                                        UploadWait::Confirm,
-                                    )
-                                    .await
-                                {
-                                    Ok(true) => {
-                                        if let Some(client) = registry_client_for_restorable {
-                                            advance_restorable_turn(
-                                                    client,
-                                                    registry_sid_for_restorable,
-                                                    registry_turn,
-                                                )
-                                                .await;
-                                        }
-                                    }
-                                    Ok(false) => {
-                                        tracing::warn!(
-                                        "Session state upload failed; skipping registry \
-                                         restorable_turn_number advance"
-                                    );
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("Failed to complete prompt trace: {e:?}");
-                                        write_error_manifest(&err_ctx).await;
-                                    }
-                                }
-                            },
-                        );
                     }
                 }
                 let last_turn_usage = last_turn_usage_for_meta;
@@ -1886,9 +1708,11 @@ impl acp::Agent for MvpAgent {
                                     last_turn_usage: last_turn_usage.as_ref(),
                                     prompt_usage,
                                     cancellation_category,
+                                    cancellation_context,
                                     cancel_trigger,
                                     structured_output,
                                     tool_overrides: applied_tool_overrides,
+                                    completion_kind: None,
                                 })
                                 .as_object()
                                 .cloned(),
@@ -1928,102 +1752,57 @@ impl acp::Agent for MvpAgent {
                         cap.reason = Some(format!("sampler_error:{err_kind_str}"));
                         cap
                     });
-                if let Some(ctx) = trace_context.clone() {
-                    let request_id = prompt_id.clone();
-                    let err_str = format!("{err:?}");
-                    let stop_reason = crate::sampling::error::stop_reason_for_turn_error(
-                            &err,
-                        )
-                        .to_string();
-                    let upload_unified = matches!(
-                        crate::sampling::error::http_status_from_error(&err),
-                        Some(401 | 404),
-                    );
-                    let upload_deadline = block_for_upload
-                        .then(|| tokio::time::Instant::now() + upload_flush_timeout);
-                    if let Some(deadline) = upload_deadline {
-                        let result = TurnResultMetadata {
-                            schema_version: GCS_SCHEMA_VERSION,
-                            request_id,
-                            completed: false,
-                            stop_reason: Some(stop_reason),
-                            total_tokens: None,
-                            input_tokens: None,
-                            cached_input_tokens: None,
-                            output_tokens: None,
-                            error: Some(err_str),
-                            finished_at: chrono::Utc::now().to_rfc3339(),
-                            signals: None,
-                            turn_delta: None,
-                            start_prompt_mode: Some(prompt_mode.to_string()),
-                            end_prompt_mode: None,
-                            resolved_model: resolved_model.clone(),
-                            subagents_spawned: subagent_refs.clone(),
-                        };
-                        let wait = UploadWait::Defer { deadline };
-                        upload_turn_result(&ctx, &result, wait).await;
-                        if let Some(capture) = turn_messages {
-                            upload_turn_messages(&ctx, capture, wait).await;
-                        }
-                        if let Some(ref capture) = streaming_partial {
-                            crate::upload::trace::upload_streaming_partial(
+                if let Some(ctx) = trace_context {
+                    let turn_result = TurnResultArgs {
+                        request_id: prompt_id.clone(),
+                        completed: false,
+                        stop_reason: crate::sampling::error::stop_reason_for_turn_error(
+                                &err,
+                            )
+                            .to_string(),
+                        total_tokens: None,
+                        error: Some(format!("{err:?}")),
+                        finished_at: chrono::Utc::now().to_rfc3339(),
+                        turn_snapshot: None,
+                        prompt_mode: prompt_mode.to_string(),
+                        subagents_spawned: subagent_refs,
+                    };
+                    let artifacts = ErrorTurnArtifacts {
+                        turn_messages,
+                        streaming_partial,
+                        upload_unified: matches!(
+                            crate::sampling::error::http_status_from_error(&err),
+                            Some(401 | 404),
+                        ),
+                    };
+                    match turn_end_uploads {
+                        TurnEndUploads::Wait { budget } => {
+                            let deadline = tokio::time::Instant::now() + budget;
+                            for handle in std::mem::take(&mut before_upload_handles) {
+                                let _ = tokio::time::timeout_at(deadline, handle).await;
+                            }
+                            let result = turn_result.into_metadata(resolved_model);
+                            upload_error_turn_artifacts(
                                     &ctx,
-                                    capture,
-                                    wait,
+                                    &result,
+                                    artifacts,
+                                    UploadWait::Defer { deadline },
                                 )
                                 .await;
                         }
-                        if upload_unified {
-                            upload_unified_log(&ctx, wait).await;
-                        }
-                        crate::upload::trace::flush_then_write_error_manifest(
-                                &ctx,
-                                deadline,
-                            )
-                            .await;
-                    } else {
-                        let resolved_model = resolved_model.clone();
-                        spawn_upload_task(
-                            "error_turn_result",
-                            async move {
-                                let result = TurnResultMetadata {
-                                    schema_version: GCS_SCHEMA_VERSION,
-                                    request_id,
-                                    completed: false,
-                                    stop_reason: Some(stop_reason),
-                                    total_tokens: None,
-                                    input_tokens: None,
-                                    cached_input_tokens: None,
-                                    output_tokens: None,
-                                    error: Some(err_str),
-                                    finished_at: chrono::Utc::now().to_rfc3339(),
-                                    signals: None,
-                                    turn_delta: None,
-                                    start_prompt_mode: Some(prompt_mode.to_string()),
-                                    end_prompt_mode: None,
+                        TurnEndUploads::Background => {
+                            spawn_linked_upload_task(
+                                "turn_end.finalize_detached_error",
+                                &prompt_id,
+                                &arguments.session_id.0,
+                                run_detached_turn_end(
+                                    ctx,
+                                    turn_result,
                                     resolved_model,
-                                    subagents_spawned: subagent_refs.clone(),
-                                };
-                                upload_turn_result(&ctx, &result, UploadWait::Confirm)
-                                    .await;
-                                if let Some(capture) = turn_messages {
-                                    upload_turn_messages(&ctx, capture, UploadWait::Confirm)
-                                        .await;
-                                }
-                                if let Some(ref capture) = streaming_partial {
-                                    crate::upload::trace::upload_streaming_partial(
-                                            &ctx,
-                                            capture,
-                                            UploadWait::Confirm,
-                                        )
-                                        .await;
-                                }
-                                if upload_unified {
-                                    upload_unified_log(&ctx, UploadWait::Confirm).await;
-                                }
-                                write_error_manifest(&ctx).await;
-                            },
-                        );
+                                    TurnEndOutcome::Failed(artifacts),
+                                ),
+                            );
+                        }
                     }
                 }
                 let err = if crate::sampling::error::prompt_usage_from_error(&err)
@@ -2144,39 +1923,13 @@ impl acp::Agent for MvpAgent {
         &self,
         args: acp::SetSessionModelRequest,
     ) -> Result<acp::SetSessionModelResponse, acp::Error> {
-        let model = match self.resolve_model_id(&args.model_id) {
-            Ok(model) => model,
-            Err(_) => {
-                self.models_manager.wait_for_first_catalog().await;
-                self.resolve_model_id(&args.model_id)?
-            }
-        };
-        if !model.info.user_selectable {
-            return Err(
-                acp::Error::invalid_params()
-                    .data("This model isn't allowed by your allowed_models setting."),
-            );
-        }
-        let session_id = args.session_id.clone();
-        let effort_override = parse_reasoning_effort_meta(args.meta.as_ref());
-        let res = crate::agent::handlers::model_switch::apply(
-                self,
-                args,
-                effort_override,
-            )
-            .await;
-        if res.is_ok()
-            && let Some(unavailable) = self
-                .session_registry
-                .take_unavailable_model(&session_id)
-        {
-            tracing::info!(
-                session_id = %session_id.0,
-                previously_unavailable_model = %unavailable.0,
-                "set_session_model: user model switch cleared the model-unavailable block"
-            );
-        }
-        res
+        self.set_model_gated(args).await
+    }
+    async fn set_session_config_option(
+        &self,
+        args: acp::SetSessionConfigOptionRequest,
+    ) -> Result<acp::SetSessionConfigOptionResponse, acp::Error> {
+        crate::agent::handlers::config_option::apply(self, args).await
     }
     #[tracing::instrument(
         name = "agent.ext_method",
@@ -2191,7 +1944,7 @@ impl acp::Agent for MvpAgent {
             .ok()
             .and_then(|v| v.get("_meta").cloned());
         if let Some(meta) = &request_meta {
-            xai_file_utils::trace_context::link_current_span_to_meta(meta);
+            xai_grok_otel::link_current_span_to_meta(meta);
         }
         tracing::info!("Received extension method call: method={}", args.method);
         #[allow(unused_mut)]
@@ -2255,7 +2008,9 @@ impl acp::Agent for MvpAgent {
                 )
             }
             "x.ai/interject" => crate::extensions::interject::handle(self, &args).await,
-            "x.ai/feedback" | "x.ai/feedback/dismiss" | "x.ai/feedback/upload-trace"
+            "x.ai/feedback" | "x.ai/feedback/dismiss" | "x.ai/feedback/drafts/list"
+            | "x.ai/feedback/drafts/get" | "x.ai/feedback/drafts/delete"
+            | "x.ai/feedback/drafts/update" | "x.ai/feedback/upload-trace"
             | "x.ai/btw" => crate::extensions::feedback::handle(self, &args).await,
             "x.ai/recap" => crate::extensions::recap::handle(self, &args).await,
             "x.ai/cloud/terminate" => {

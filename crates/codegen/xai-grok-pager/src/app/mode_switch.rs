@@ -1,5 +1,5 @@
-//! In-process `/minimal` ⇄ `/fullscreen` switch: terminal transition plus
-//! re-seeding of every mode-derived piece of state startup decides once.
+//! In-process switch between `/minimal` and `/fullscreen`.
+//! It covers the terminal transition plus re-seeding of every mode-derived piece of state that startup decides once.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -12,16 +12,14 @@ use super::{PagerTerminal, ScreenMode};
 use crate::app::agent_view::AgentView;
 use crate::app::app_view::AppView;
 
-// Resolve the regular theme at most once: re-resolving on a later round-trip
-// would clobber an in-session /theme choice held in the cache.
+// Resolve the regular theme at most once: re-resolving on a later round-trip would clobber an in-session /theme choice held in the cache
 static THEME_RESOLVED_FOR_FULL_TUI: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn mark_theme_resolved() {
     THEME_RESOLVED_FOR_FULL_TUI.store(true, Ordering::Release);
 }
 
-/// Re-seed every mode-derived piece of app state (pure state, no terminal
-/// escapes); keep in lockstep with the startup seeding sites.
+/// Re-seed every mode-derived piece of app state (pure state, no terminal escapes); keep in lockstep with the startup seeding sites.
 pub(crate) fn reseed_screen_mode(app: &mut AppView, mode: ScreenMode) {
     super::apply_screen_mode_globals(mode);
 
@@ -40,6 +38,8 @@ pub(crate) fn reseed_screen_mode(app: &mut AppView, mode: ScreenMode) {
         super::mouse_reporting_toggle_enabled(),
     );
     app.welcome_prompt.set_screen_mode(mode);
+    // Minimal turns mouse capture off; without a motion event the last hover would stick.
+    app.last_mouse_pos = None;
     for agent in app.agents.values_mut() {
         reseed_agent_screen_mode(agent, mode);
     }
@@ -47,6 +47,10 @@ pub(crate) fn reseed_screen_mode(app: &mut AppView, mode: ScreenMode) {
 
 fn reseed_agent_screen_mode(agent: &mut AgentView, mode: ScreenMode) {
     agent.prompt.set_screen_mode(mode);
+    agent.clear_pointer_hover();
+    if !mode.is_minimal() {
+        agent.scrollback.reapply_thinking_fold_policy();
+    }
     for child in agent.subagent_views.values_mut() {
         reseed_agent_screen_mode(child, mode);
     }
@@ -55,16 +59,15 @@ fn reseed_agent_screen_mode(agent: &mut AgentView, mode: ScreenMode) {
 /// Result of [`transition_terminal`].
 #[derive(Debug)]
 pub(crate) enum ModeSwitchOutcome {
-    /// Terminal live in the target mode; caller must reseed + full repaint.
+    /// The terminal is live in the target mode; the caller must reseed and fully repaint.
     Switched,
-    /// Rolled back; terminal still in the previous mode, app state untouched.
+    /// Rolled back; the terminal stays in the previous mode and app state is untouched.
     Aborted(String),
-    /// Terminal state unknown; caller must fall back to the exec relaunch.
+    /// Terminal state is unknown; the caller must fall back to the exec relaunch.
     NeedsExecFallback(String),
 }
 
-/// Switch the live terminal between screen modes in place (escapes + viewport
-/// only; app state is the caller's `reseed_screen_mode`).
+/// Switch the live terminal between screen modes in place (escapes and viewport only; app state is the caller's `reseed_screen_mode`).
 pub(crate) fn transition_terminal(
     terminal: &mut PagerTerminal,
     from: ScreenMode,
@@ -99,7 +102,7 @@ pub(crate) fn transition_terminal(
 
     let outcome = perform_screen_transition(terminal, from, to, minimal_live_rows);
 
-    // Only the pre-park race can reach this channel; later input stays in the tty.
+    // Only input that raced in before the reader parked can reach this channel; later input stays in the tty
     while input_rx.try_recv().is_ok() {}
     input_paused.store(false, Ordering::Release);
     outcome
@@ -118,8 +121,7 @@ fn perform_screen_transition(
                 if mouse_was_captured {
                     let _ = execute!(stderr, event::DisableMouseCapture);
                 }
-                // JediTerm/Windows: DisableMouseCapture is winapi-only, so send
-                // the ANSI reset too (same self-heal as init_terminal).
+                // JediTerm/Windows: DisableMouseCapture is winapi-only, so send the ANSI reset too (init_terminal applies the same fix)
                 if crate::terminal::terminal_context().mouse_reporting_leaks_as_raw_text() {
                     use std::io::Write as _;
                     let _ = stderr.write_all(xai_crash_handler::terminal::MOUSE_TRACKING_RESET);
@@ -132,7 +134,7 @@ fn perform_screen_transition(
                     let _ = execute!(stderr, LeaveAlternateScreen);
                 });
             } else {
-                // Clear(All) only — Purge would destroy the user's real scrollback.
+                // Clear(All) only: Purge would destroy the user's real scrollback
                 xai_grok_shell::util::with_locked_stderr(|stderr| {
                     let _ = execute!(
                         stderr,
@@ -141,7 +143,7 @@ fn perform_screen_transition(
                     );
                 });
             }
-            // Teardown paths must track the screen the terminal is ACTUALLY on.
+            // Teardown paths must track the screen the terminal is actually on
             super::set_current_screen_mode(ScreenMode::Minimal);
             let rows = crossterm::terminal::size().map(|(_, r)| r).unwrap_or(24);
             let viewport_rows = minimal_live_rows.clamp(3, rows.saturating_sub(1).max(3));
@@ -183,8 +185,7 @@ fn perform_screen_transition(
                 let _ = execute!(stderr, event::EnableMouseCapture);
             });
             super::MOUSE_CAPTURE_ENABLED.store(true, Ordering::Release);
-            // Set before the fallible viewport swap: the exec-fallback teardown
-            // must leave the alt screen that is already live.
+            // Set before the fallible viewport swap: the exec-fallback teardown must leave the alt screen that is already live
             super::set_current_screen_mode(ScreenMode::Fullscreen);
             match terminal.set_viewport(ratatui::Viewport::Fullscreen) {
                 Ok(()) => ModeSwitchOutcome::Switched,
@@ -199,9 +200,9 @@ fn perform_screen_transition(
     }
 }
 
-/// Append `block` without landing after a live agent stream: a non-thinking
-/// sibling behind a streaming message trips minimal's print-once commit
-/// (`commit.rs::agent_message_stream_closed`), freezing the partial reply.
+/// Append `block` without landing after a live agent stream.
+/// A non-thinking entry behind a streaming message makes minimal treat the stream as closed (`commit.rs::agent_message_stream_closed`).
+/// The partial reply then commits early and freezes.
 pub(crate) fn push_block_behind_live_stream(
     sb: &mut crate::scrollback::state::ScrollbackState,
     block: crate::scrollback::block::RenderBlock,
@@ -220,28 +221,43 @@ pub(crate) fn push_block_behind_live_stream(
     }
 }
 
-/// Close user-opened surfaces minimal never paints (they would become
-/// invisible input owners); agent-initiated prompts are left alone.
+/// Close user-opened overlays minimal never paints (they would keep owning input while invisible); agent-initiated prompts are left alone.
 pub(crate) fn dismiss_fullscreen_only_surfaces(app: &mut AppView) {
+    let writer = app.escape_writer.clone();
     for agent in app.agents.values_mut() {
-        dismiss_agent_surfaces(agent);
+        dismiss_agent_surfaces(agent, &writer);
     }
 }
 
-fn dismiss_agent_surfaces(agent: &mut AgentView) {
+fn dismiss_agent_surfaces(agent: &mut AgentView, writer: &crate::render::draw::EscapeWriter) {
     if agent.gboom.take().is_some() {
         // Pop the game's kitty layer or later keys carry unexpected release events.
-        super::pop_gboom_keyboard_flags();
+        super::pop_gboom_keyboard_flags(writer);
     }
     agent.image_viewer = None;
     agent.video_viewer = None;
     agent.line_viewer = None;
-    agent.close_block_viewer();
+    // Upstream: dismiss the block viewer, keeping its resume state so the
+    // viewer can re-open where the user left off.
+    agent.dismiss_block_viewer();
+    // Fork seam: the dismissed viewer may have painted a Kitty overlay image.
+    // Clear it outside the draw path (mirrors `close_block_viewer`, whose
+    // `take()` no-ops once dismiss has consumed the viewer) or later keys
+    // carry unexpected release events.
+    if agent.block_viewer_image_active {
+        xai_grok_shell::util::with_locked_stderr(|stderr| {
+            let clear = crate::terminal::overlay::PostFlush::from(
+                crate::terminal::overlay::clear_kitty(),
+            );
+            let _ = clear.write_to(stderr);
+        });
+        agent.block_viewer_image_active = false;
+    }
     agent.persona_detail = None;
     agent.agents_modal = None;
     agent.show_goal_detail = false;
     for child in agent.subagent_views.values_mut() {
-        dismiss_agent_surfaces(child);
+        dismiss_agent_surfaces(child, writer);
     }
 }
 
@@ -300,6 +316,51 @@ mod tests {
 
         // Leave the fullscreen baseline other tests expect.
         reseed_screen_mode(&mut app, ScreenMode::Fullscreen);
+    }
+
+    /// GB-5502: after fullscreen → minimal → fullscreen, thinking folds must fold
+    /// back shut and the pre-switch pointer highlight must not stick.
+    #[test]
+    fn reseed_to_fullscreen_refolds_thinking_and_clears_hover() {
+        use crate::scrollback::block::RenderBlock;
+        use crate::scrollback::types::DisplayMode;
+
+        // Serializes process-global mutation with other theme-touching tests.
+        let _guard = crate::theme::cache::pin_theme();
+        mark_theme_resolved();
+
+        let mut app = crate::app::app_view::tests::test_app_with_agent();
+        let agent_id = *app.agents.keys().next().expect("agent present");
+        let agent = app.agents.get_mut(&agent_id).expect("agent present");
+
+        let thought = agent
+            .scrollback
+            .push_block(RenderBlock::thinking("reasoning body"));
+        agent
+            .scrollback
+            .get_by_id_mut(thought)
+            .expect("thinking entry")
+            .set_display_mode(DisplayMode::Expanded);
+        agent.hovered_entry = Some(0);
+        agent.hovered_prompt = true;
+        agent.hit_context.hovered = true;
+
+        reseed_screen_mode(&mut app, ScreenMode::Minimal);
+        reseed_screen_mode(&mut app, ScreenMode::Fullscreen);
+
+        let agent = &app.agents[&agent_id];
+        assert_eq!(
+            agent
+                .scrollback
+                .get_by_id(thought)
+                .expect("thinking entry")
+                .display_mode(),
+            DisplayMode::Collapsed,
+            "minimal's Expanded stamp must not survive the return to fullscreen"
+        );
+        assert_eq!(agent.hovered_entry, None, "entry hover cleared");
+        assert!(!agent.hovered_prompt, "prompt hover cleared");
+        assert!(!agent.hit_context.hovered, "hit-area hover cleared");
     }
 
     #[test]

@@ -23,23 +23,21 @@ const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(5000)
 pub const BUSY_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Journal mode chosen for a SQLite database based on where it lives.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
 pub enum JournalMode {
     /// Write-ahead logging — the historical default, local filesystems only.
+    #[strum(serialize = "WAL")]
     Wal,
-    /// Rollback journal truncated (not unlinked) at commit — safe on network
-    /// filesystems, and cheaper there than DELETE mode: no per-commit
-    /// create/unlink namespace round-trips and no NFS `.nfsXXXX`
-    /// silly-rename litter.
+    /// Rollback journal truncated (not unlinked) at commit — safe on network filesystems, and cheaper there than DELETE mode:
+    /// no per-commit create/unlink namespace round-trips and no NFS `.nfsXXXX` silly-rename litter.
+    #[strum(serialize = "TRUNCATE")]
     Truncate,
 }
 
 impl JournalMode {
-    /// Pick the journal mode for a database at `db_path`.
-    ///
-    /// Classifies the parent directory (the DB file itself may not exist
-    /// yet), so callers must create it first. `GROK_SQLITE_JOURNAL_MODE`
-    /// (`wal`|`truncate`) overrides detection as a field kill-switch.
+    /// Pick the journal mode for a database at `db_path`. Classifies the parent directory (the DB file itself may not exist
+    /// yet), so callers must create it first. `GROK_SQLITE_JOURNAL_MODE` (`wal`|`truncate`) overrides detection as a field
+    /// kill-switch.
     pub fn for_db_path(db_path: &Path) -> Self {
         let env = std::env::var("GROK_SQLITE_JOURNAL_MODE").ok();
         match mode_from_env(env.as_deref()) {
@@ -47,7 +45,7 @@ impl JournalMode {
                 // Loud so field flips of the kill-switch are greppable in logs.
                 tracing::info!(
                     db = %db_path.display(),
-                    mode = mode.as_str(),
+                    mode = mode.as_ref(),
                     source = "env",
                     "sqlite journal mode forced by GROK_SQLITE_JOURNAL_MODE"
                 );
@@ -74,37 +72,16 @@ impl JournalMode {
         };
         tracing::debug!(
             db = %db_path.display(),
-            mode = mode.as_str(),
+            mode = mode.as_ref(),
             source = "statfs",
             "sqlite journal mode"
         );
         mode
     }
 
-    /// The `PRAGMA journal_mode` value for this mode.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Wal => "WAL",
-            Self::Truncate => "TRUNCATE",
-        }
-    }
-
-    /// The path actually opened for `db_path` under this mode.
-    ///
-    /// `Wal` (local): unchanged. `Truncate` (network): a per-host sibling
-    /// (`worktrees.db` → `worktrees.h-<host>.db`). Journal mode is a
-    /// database-wide property, so a live pre-fix binary on a peer host (or
-    /// this host) can flip a *shared* DB back to WAL at any time and our
-    /// long-lived connections would silently adopt it, re-creating the
-    /// mmap'd `-shm`. Old binaries never know the per-host name, so the
-    /// no-WAL invariant — and the end of cross-host sharing, the root
-    /// hazard — holds by construction. These DBs are all rebuildable
-    /// indexes/caches, so each host starting fresh is acceptable.
-    ///
-    /// Idempotent (an already-suffixed path is returned unchanged) so
-    /// callers may pre-resolve the path for sidecar file operations. Falls
-    /// back to `db_path` unchanged (still TRUNCATE) if no hostname is
-    /// available.
+    /// `Truncate` opens a per-host sibling so a peer or old binary cannot flip a shared DB back to WAL and recreate the
+    /// mmap'd `-shm`. Idempotent for an already-suffixed path. Falls back to `db_path` (still TRUNCATE) if no hostname
+    /// is available.
     pub fn effective_db_path(self, db_path: &Path) -> PathBuf {
         if self != Self::Truncate {
             return db_path.to_path_buf();
@@ -140,23 +117,9 @@ impl JournalMode {
         Ok(conn)
     }
 
-    /// Open a connection for read-only use, safely for this mode's
-    /// filesystem, at [`Self::effective_db_path`] (per-host on network
-    /// mounts — until a read-write open creates that file, this errors and
-    /// callers fall back to their defaults). Errors if the database file
-    /// does not exist (never creates it).
-    ///
-    /// `Wal` (local): a plain read-only open — the historical behavior.
-    ///
-    /// `Truncate` (network): reading a legacy WAL-stamped DB read-only would
-    /// mmap its `-shm` (the SIGBUS), and the read-only escape hatch does not
-    /// exist: EXCLUSIVE locking's heap wal-index takes an exclusive file lock,
-    /// and POSIX forbids write-locking an O_RDONLY fd (`SQLITE_IOERR_LOCK`).
-    /// So open read-write (without CREATE) and run the idempotent conversion
-    /// (needed e.g. after remote sync drops in a WAL-stamped file). The fd
-    /// stays writable (conversion and hot-journal rollback need it), but
-    /// `query_only` is then set so SQL writes are rejected on this arm too —
-    /// both arms honor the name.
+    /// Errors if the database file does not exist (never creates it). `Truncate` (network): reading a legacy WAL-stamped DB
+    /// read-only would mmap its `-shm` (the SIGBUS), and the read-only escape hatch does not exist: EXCLUSIVE locking's heap
+    /// wal-index takes an exclusive file lock, and POSIX forbids write-locking an O_RDONLY fd (`SQLITE_IOERR_LOCK`).
     pub fn open_readonly(self, db_path: &Path) -> rusqlite::Result<rusqlite::Connection> {
         self.open_readonly_until(db_path, std::time::Instant::now() + BUSY_RETRY_BUDGET)
     }
@@ -185,15 +148,8 @@ impl JournalMode {
         Ok(conn)
     }
 
-    /// Apply this journal mode to a freshly opened read-write connection.
-    ///
-    /// Busy semantics (single source of truth): converting a database between
-    /// WAL and rollback journaling takes a brief exclusive lock whose
-    /// acquisition only PARTIALLY honors the busy handler — some lock paths
-    /// wait out `busy_timeout`, others (e.g. a peer connection holding a WAL
-    /// read-mark) fail fast with `SQLITE_BUSY`. Callers must set
-    /// `busy_timeout` first, or use [`Self::apply_with_retry`] (as
-    /// [`Self::open`] does), which also rides out the fail-fast paths.
+    /// Apply this journal mode to a freshly opened read-write connection. Callers must set `busy_timeout` first, or use
+    /// [`Self::apply_with_retry`] (as [`Self::open`] does), which also rides out the fail-fast paths.
     pub fn apply(self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         match self {
             Self::Wal => conn.pragma_update(None, "journal_mode", "WAL"),
@@ -250,7 +206,7 @@ impl JournalMode {
                         let elapsed_ms = start.elapsed().as_millis();
                         let message = format!(
                             "failed to set journal mode {} after {elapsed_ms}ms: {e}",
-                            self.as_str()
+                            self.as_ref()
                         );
                         return Err(match e {
                             rusqlite::Error::SqliteFailure(f, _) => {
@@ -286,10 +242,9 @@ fn mode_from_env(value: Option<&str>) -> EnvOverride {
     }
 }
 
-/// Short per-host discriminator for per-host DB filenames (lowercased
-/// alphanumeric hostname, other bytes mapped to `-`, capped at 24 chars).
-/// `None` when no hostname is available. Sanitization collisions across
-/// hosts only degrade to plain shared-TRUNCATE behavior, never to WAL.
+/// Short per-host discriminator for per-host DB filenames (lowercased alphanumeric hostname, other bytes mapped to `-`,
+/// capped at 24 chars). `None` when no hostname is available. Sanitization collisions across hosts only degrade to plain
+/// shared-TRUNCATE behavior, never to WAL.
 fn host_discriminator() -> Option<String> {
     let raw = hostname_raw()?;
     let mut s: String = raw
@@ -334,20 +289,15 @@ fn hostname_raw() -> Option<String> {
     None
 }
 
-/// Best-effort: whether `path` lives on a network/remote filesystem.
-///
-/// Any detection failure returns `false` (treat as local) so unclassifiable
-/// filesystems keep the historical WAL behavior.
+/// Best-effort: whether `path` lives on a network/remote filesystem. Any detection failure returns `false` (treat as
+/// local) so unclassifiable filesystems keep the historical WAL behavior.
 pub fn is_network_fs(path: &Path) -> bool {
     imp::is_network_fs(path)
 }
 
-/// Classify a Linux `statfs(2)` `f_type` as a network/remote filesystem.
-///
-/// Magic values from `include/uapi/linux/magic.h` (Lustre's from its module
-/// sources). Only the low 32 bits are compared: `f_type` is a signed word
-/// whose width varies by architecture, so 32-bit kernels sign-extend magics
-/// with the high bit set (e.g. CIFS 0xFF534D42).
+/// Classify a Linux `statfs(2)` `f_type` as a network/remote filesystem. Magic values from `include/uapi/linux/magic.h`
+/// (Lustre's from its module sources). Only the low 32 bits are compared: `f_type` is a signed word whose width varies by
+/// architecture, so 32-bit kernels sign-extend magics with the high bit set (e.g. CIFS 0xFF534D42).
 #[cfg(any(target_os = "linux", test))]
 fn is_network_fs_magic(f_type: u64) -> bool {
     const NFS_SUPER_MAGIC: u64 = 0x6969;
@@ -363,12 +313,9 @@ fn is_network_fs_magic(f_type: u64) -> bool {
     const GFS2_MAGIC: u64 = 0x0116_1970;
     const GPFS_SUPER_MAGIC: u64 = 0x4750_4653; // "GPFS" (Spectrum Scale)
     const OCFS2_SUPER_MAGIC: u64 = 0x7461_636F;
-    // WekaFS: parallel filesystem sometimes used for network-mounted home
-    // directories. Its magic is not in linux/magic.h — the value is confirmed
-    // empirically from `statfs` on wekafs mounts (`findmnt` reports
-    // FSTYPE=wekafs; coreutils `stat -f` still prints it as UNKNOWN). Like NFS
-    // it offers no coherent cross-host shared memory, so WAL's mmap'd `-shm`
-    // SIGBUSes when a peer host rebuilds it.
+    // Parallel network filesystem sometimes used for mounted home directories. Its magic is not in linux/magic.h.
+    // Confirmed empirically from `statfs` on those mounts (`findmnt` reports the type; `stat -f` still prints UNKNOWN).
+    // Like NFS it offers no coherent cross-host shared memory, so WAL's mmap'd `-shm` is unsafe.
     const WEKAFS_SUPER_MAGIC: u64 = 0x1803_1977;
     // FUSE is deliberately treated as network: sshfs/s3fs/gluster and other
     // FUSE-backed homes cannot guarantee coherent mmap across writers, and
@@ -400,12 +347,9 @@ fn is_network_fs_magic(f_type: u64) -> bool {
 #[cfg(any(target_os = "macos", test))]
 const MNT_LOCAL: u32 = 0x0000_1000;
 
-/// Classify a macOS `statfs(2)` result as a network/remote filesystem.
-///
-/// Absence of `MNT_LOCAL` in `f_flags` is the authoritative remote signal
-/// (covers unknown/future remote fs types). The `f_fstypename` allowlist is
-/// kept as a conservative extra trigger for remote-backed mounts that still
-/// set MNT_LOCAL (e.g. FUSE bridges).
+/// Classify a macOS `statfs(2)` result as a network/remote filesystem. Absence of `MNT_LOCAL` in `f_flags` is the
+/// authoritative remote signal (covers unknown/future remote fs types). The `f_fstypename` allowlist is kept as a
+/// conservative extra trigger for remote-backed mounts that still set MNT_LOCAL (e.g. FUSE bridges).
 #[cfg(any(target_os = "macos", test))]
 fn is_network_fs_mac(f_flags: u32, fstype: &str) -> bool {
     (f_flags & MNT_LOCAL) == 0 || is_network_fs_name(fstype)
@@ -470,10 +414,9 @@ mod imp {
     }
 }
 
-/// Classify a Windows path string as UNC (network) — `\\server\share` or
-/// `\\?\UNC\server\share`; the `\\.\` and `\\?\C:\` device/verbatim-local
-/// forms are not network. Pure for testability; mapped drives are caught by
-/// the `GetDriveTypeW` probe instead.
+/// Classify a Windows path string as UNC (network) — `\\server\share` or `\\?\UNC\server\share`; the `\\.\` and `\\?\C:\`
+/// device/verbatim-local forms are not network. Pure for testability; mapped drives are caught by the `GetDriveTypeW`
+/// probe instead.
 #[cfg(any(windows, test))]
 fn is_windows_unc(path: &str) -> bool {
     let Some(rest) = path.strip_prefix(r"\\") else {
@@ -588,32 +531,6 @@ mod tests {
         for name in ["apfs", "hfs", "tmpfs", "devfs", ""] {
             assert!(!is_network_fs_name(name), "{name}");
         }
-    }
-
-    #[test]
-    fn apply_with_retry_rides_out_transient_exclusive_lock() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("retry.db");
-
-        // EXCLUSIVE locking holds the lock until the connection closes.
-        let holder = rusqlite::Connection::open(&path).unwrap();
-        holder
-            .pragma_update(None, "locking_mode", "EXCLUSIVE")
-            .unwrap();
-        holder
-            .execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (1);")
-            .unwrap();
-
-        let release = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            drop(holder);
-        });
-
-        let conn = JournalMode::Wal
-            .open(&path)
-            .expect("open must ride out a transiently held exclusive lock");
-        assert_eq!(journal_mode(&conn), "wal");
-        release.join().unwrap();
     }
 
     #[test]

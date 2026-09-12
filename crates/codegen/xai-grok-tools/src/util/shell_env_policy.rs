@@ -33,11 +33,9 @@ pub enum ShellEnvironmentPolicyInherit {
     None,
 }
 
-/// How to build the environment for agent subprocesses. Applied in order: start
-/// from `inherit`; if `ignore_default_excludes` is false, drop the secret
-/// patterns `*KEY*`/`*SECRET*`/`*TOKEN*`; drop `exclude`; insert `set`; if
-/// `include_only` is non-empty, keep only those. Patterns are case-insensitive
-/// globs (`*`, `?`).
+/// How to build the environment for agent subprocesses. Applied in order: start from `inherit`; if
+/// `ignore_default_excludes` is false, drop the secret patterns `*KEY*`/`*SECRET*`/`*TOKEN*`; drop `exclude`; insert
+/// `set`; if `include_only` is non-empty, keep only those. Patterns are case-insensitive globs (`*`, `?`).
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ShellEnvironmentPolicy {
@@ -90,10 +88,9 @@ impl ShellEnvironmentPolicy {
         self.include_only.is_empty() || self.include_only.iter().any(|p| p.matches(name))
     }
 
-    /// Whether `name` survives the name filters (default excludes, `exclude`,
-    /// `include_only`), ignoring `inherit`/`set`. Used to filter variables layered
-    /// in after the policy base, e.g. login-shell capture. Shares its matchers
-    /// with [`create_env_from_vars`] so the two cannot drift.
+    /// Whether `name` survives the name filters (default excludes, `exclude`, `include_only`), ignoring `inherit`/`set`.
+    /// Used to filter variables layered in after the policy base, e.g. login-shell capture. Shares its matchers with
+    /// [`create_env_from_vars`] so the two cannot drift.
     pub fn allows(&self, name: &str) -> bool {
         !self.matches_default_exclude(name)
             && !self.matches_exclude(name)
@@ -208,10 +205,9 @@ where
     env
 }
 
-/// Clear the command's inherited env and install the policy-derived base env.
-/// `active` must already be noop-filtered; `None` leaves the command untouched.
-/// The one base-env code path, shared by the public entry point and the spawn
-/// sites.
+/// Clear the command's inherited env and install the policy-derived base env. `active` must already
+/// be noop-filtered; `None` leaves the command untouched. The one base-env code path, shared by the
+/// public entry point and the spawn sites.
 pub(crate) fn install_policy_base_env(
     cmd: &mut tokio::process::Command,
     active: Option<&ShellEnvironmentPolicy>,

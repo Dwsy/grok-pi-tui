@@ -1,12 +1,12 @@
-//! Slash command system -- prompt-centric inline completion and execution.
+//! Slash command system: prompt-centric inline completion and execution.
 //!
-//! Pager's synchronous dispatch model. Key components:
+//! This is the pager's synchronous dispatch model. Key components:
 //!
-//! - [`SlashController`] -- derives completion state from prompt text + cursor.
-//! - [`SlashState`] / [`SlashSnapshot`] -- snapshot holder for rendering.
-//! - [`parse_invocation()`] -- extracts command token + args from input.
-//! - [`is_command_complete()`] -- two-bit completeness model.
-//! - [`CommandRegistry`] -- maps names/aliases to command implementations.
+//! - [`SlashController`]: derives completion state from prompt text and cursor.
+//! - [`SlashState`] / [`SlashSnapshot`]: snapshot holder for rendering.
+//! - [`parse_invocation()`]: extracts the command token and args from input.
+//! - [`is_command_complete()`]: two-bit completeness model.
+//! - [`CommandRegistry`]: maps names/aliases to command implementations.
 
 pub mod acp_command;
 pub mod command;
@@ -146,8 +146,8 @@ pub struct SuggestionRow {
     pub insert_text: String,
     /// Character positions for fuzzy match highlighting.
     pub indices: Vec<u32>,
-    /// Free-form bracketed tag (e.g. "new") from the resolved tag map. `None`
-    /// for untagged command rows and always `None` for arg rows.
+    /// Free-form bracketed tag (e.g. "new") from the resolved tag map.
+    /// `None` for untagged command rows and always `None` for arg rows.
     pub tag: Option<String>,
     /// Provenance badge; `Some` only on rows in a builtin/skill name collision.
     pub provenance: Option<CommandProvenance>,
@@ -190,8 +190,7 @@ impl SuggestionRow {
     }
 }
 
-/// Prefix match aligned with nucleo `CaseMatching::Smart`: all-lowercase query
-/// is case-insensitive; any uppercase in the query requires exact prefix.
+/// Prefix match aligned with nucleo `CaseMatching::Smart`: all-lowercase query is case-insensitive; any uppercase in the query requires exact prefix.
 fn command_prefix_matches_smart(full_name: &str, query: &str) -> bool {
     if query.is_empty() {
         return false;
@@ -230,9 +229,8 @@ fn trigger_exact_query(trigger: &CommandTrigger, query: &str) -> bool {
     trigger.match_text == query
 }
 
-/// True when the trigger's displayed identity (not a bare-suffix sibling)
-/// is exactly `query`. Owns the cross-command exactness tiebreak so MRU
-/// cannot rank a colliding skill above a fully-typed builtin.
+/// True when the trigger's displayed identity (not a bare-suffix sibling) is exactly `query`.
+/// Owns the cross-command exactness tiebreak so MRU cannot rank a colliding skill above a fully-typed builtin.
 fn trigger_owns_typed_name(trigger: &CommandTrigger, query: &str) -> bool {
     trigger.alias.as_deref().unwrap_or(&trigger.canonical) == query
 }
@@ -279,9 +277,8 @@ fn sync_inline_ghost_to_selection(inner: &mut SlashSnapshot) {
 // ---------------------------------------------------------------------------
 
 /// Immutable snapshot of the slash completion state.
-///
-/// Produced by `SlashController::refresh()`, consumed by the dropdown
-/// renderer. Cloned on read (cheap -- small vecs).
+/// Produced by `SlashController::refresh()`, consumed by the dropdown renderer.
+/// Cloned on read (cheap: small vecs).
 #[derive(Debug, Clone, Default)]
 pub struct SlashSnapshot {
     /// Whether the input looks like a slash command (starts with `/`).
@@ -338,9 +335,8 @@ impl SlashSnapshot {
 }
 
 /// Mutable holder for [`SlashSnapshot`].
-///
-/// Uses `RefCell` for interior mutability -- the controller writes it,
-/// the renderer reads it. Not a trait, just a state container.
+/// Uses `RefCell` for interior mutability: the controller writes it, the renderer reads it.
+/// Not a trait, just a state container.
 #[derive(Debug, Default)]
 pub struct SlashState {
     inner: RefCell<SlashSnapshot>,
@@ -379,52 +375,45 @@ impl SlashState {
 // SlashController
 // ---------------------------------------------------------------------------
 
-/// Derives slash completion state from prompt text + cursor.
-///
+/// Derives slash completion state from prompt text and cursor.
 /// Owns a `CommandRegistry` (mutable for ACP sync) and a `FuzzyMatcher`.
 /// The prompt widget calls `refresh()` on every text change.
 pub struct SlashController {
     registry: CommandRegistry,
     matcher: FuzzyMatcher,
     cwd: std::path::PathBuf,
-    /// When `true`, commands whose [`SlashCommand::session_scoped`] is
-    /// `true` are suppressed from completion. Set on session-less
-    /// surfaces — the agent dashboard's dispatch input — so the dropdown
-    /// only offers pager-global commands. Defaults to `false`.
+    /// When `true`, commands whose [`SlashCommand::session_scoped`] is `true` are suppressed from completion.
+    /// Set on session-less surfaces (the agent dashboard's dispatch input) so the dropdown only offers pager-global commands.
+    /// Defaults to `false`.
     hide_session_scoped: bool,
     /// Offer `/announcements` when session announcements (critical or promo) exist.
     has_session_announcements: bool,
-    /// Consumer billing surface — gates `/usage` subcommands. Default `true`.
+    /// Consumer billing surface; gates `/usage` subcommands. Default `true`.
     billing_surface_visible: bool,
     /// Whether `/usage` is offered. Default `true`; cleared for external auth.
     usage_command_visible: bool,
     workflows_available: bool,
     /// Session run handles for `/workflow` manage-verb autocomplete.
     workflow_runs: Vec<crate::slash::command::WorkflowRunChoice>,
-    /// Effective render mode of this process (immutable after startup — it only
-    /// changes via a full `/minimal`-`/fullscreen` re-exec). Injected via
-    /// [`Self::set_screen_mode`] wherever prompts are created; gates the
-    /// screen-mode-switcher commands' visibility through [`AppCtx`]. Defaults
-    /// to `Fullscreen` (the process default) for tests and unwired surfaces.
+    /// Effective render mode of this process, immutable after startup (it only changes via a full `/minimal`-`/fullscreen` re-exec).
+    /// Injected via [`Self::set_screen_mode`] wherever prompts are created; gates the screen-mode-switcher commands' visibility through [`AppCtx`].
+    /// Defaults to `Fullscreen` (the process default) for tests and unwired surfaces.
     screen_mode: crate::app::ScreenMode,
-    /// Current session title for `/rename` ghost-prefill. Synced from the
-    /// agent view; `None` when the session has no title yet.
+    /// Current session title for `/rename` ghost-prefill.
+    /// Synced from the agent view; `None` when the session has no title yet.
     current_title: Option<String>,
-    /// MRU/recency store. Owned by `AppView` in production and injected via
-    /// [`Self::set_mru`] so agent prompts and the dashboard share one store;
-    /// defaults to an isolated in-memory store (no disk I/O) for tests and any
-    /// surface that has not been wired up.
+    /// MRU/recency store.
+    /// Owned by `AppView` in production and injected via [`Self::set_mru`] so agent prompts and the dashboard share one store.
+    /// Defaults to an isolated in-memory store (no disk I/O) for tests and any surface that has not been wired up.
     mru: std::rc::Rc<std::cell::RefCell<mru::SlashMru>>,
-    /// Resolved per-command tag map (canonical name → free-form tag). Owned by
-    /// `AppView` and injected via [`Self::set_command_tags`] so agent prompts
-    /// and the dashboard share one map; defaults to empty for tests and any
-    /// surface that has not been wired up.
+    /// Resolved per-command tag map, keyed by canonical name with a free-form tag value.
+    /// Owned by `AppView` and injected via [`Self::set_command_tags`] so agent prompts and the dashboard share one map.
+    /// Defaults to empty for tests and any surface that has not been wired up.
     command_tags: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, String>>>,
 }
 
 impl SlashController {
     /// Create a new controller with the given registry and working directory.
-    ///
     /// The MRU store defaults to an isolated, in-memory (non-persisting) store.
     /// Production injects the shared store via [`Self::set_mru`].
     pub fn new(registry: CommandRegistry, cwd: std::path::PathBuf) -> Self {
@@ -457,15 +446,14 @@ impl SlashController {
         }
     }
 
-    /// Replace the MRU store with a shared one. Used by `AppView` to inject the
-    /// process-wide store into agent prompts and the dashboard dispatch input.
+    /// Replace the MRU store with a shared one.
+    /// Used by `AppView` to inject the process-wide store into agent prompts and the dashboard dispatch input.
     pub fn set_mru(&mut self, mru: std::rc::Rc<std::cell::RefCell<mru::SlashMru>>) {
         self.mru = mru;
     }
 
-    /// Replace the per-command tag map with a shared one. Used by `AppView` to
-    /// inject the resolved (remote + local) tag map into agent prompts and the
-    /// dashboard dispatch input.
+    /// Replace the per-command tag map with a shared one.
+    /// Used by `AppView` to inject the resolved (remote and local) tag map into agent prompts and the dashboard dispatch input.
     pub fn set_command_tags(
         &mut self,
         command_tags: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, String>>>,
@@ -550,24 +538,22 @@ impl SlashController {
         }
     }
 
-    /// Last-used timestamp for a command (0 = never). Test diagnostics.
+    /// Last-used timestamp for a command (0 means never); used by test diagnostics.
     #[cfg(test)]
     fn mru_last_used(&mut self, prefix: &str, command_name: &str) -> u64 {
         self.mru.borrow_mut().last_used(prefix, command_name)
     }
 
-    /// Record accept/submit for MRU (canonical command only; typed prefix
-    /// ignored). Runs on the UI thread; the resulting snapshot (if any) is
-    /// handed to the off-thread serialized writer so the UI never blocks on
-    /// disk and writes can't reorder.
+    /// Record accept/submit for MRU (canonical command only; typed prefix ignored).
+    /// Runs on the UI thread; the resulting snapshot (if any) goes to the off-thread serialized writer.
+    /// The UI thus never blocks on disk, and writes can't reorder.
     pub fn record_command_use(&mut self, prefix: &str, command_name: &str) {
         let key = command_name.trim().trim_start_matches('/');
         if key.is_empty() {
             return;
         }
-        // Dispatch-tier lookup (menu-only hide; see
-        // `CommandRegistry::get_for_dispatch`) so menu-hidden submissions
-        // canonicalize (alias → name) for MRU like any other.
+        // Dispatch-tier lookup (menu-only hide; see `CommandRegistry::get_for_dispatch`)
+        // Menu-hidden submissions thus canonicalize (alias to name) for MRU like any other
         let canonical = self
             .registry
             .get_for_dispatch(key)
@@ -581,9 +567,8 @@ impl SlashController {
         if let Some(snapshot) = snapshot
             && !mru::persist_async(snapshot)
         {
-            // No write could be attempted (writer unavailable and the sync
-            // fallback failed): keep the changes dirty so the next record
-            // retries instead of silently dropping them.
+            // No write could be attempted (writer unavailable and the sync fallback failed)
+            // Keep the changes dirty so the next record retries instead of silently dropping them
             self.mru.borrow_mut().mark_dirty();
         }
     }
@@ -603,45 +588,38 @@ impl SlashController {
         &self.registry
     }
 
-    /// Gate `/auto` on the auto permission-mode feature. When unavailable,
-    /// `/auto` is hard-hidden. `/always-approve` is always offered; both
-    /// commands are true toggles (re-running the active mode turns it off).
+    /// Gate `/auto` on the auto permission-mode feature. When unavailable, `/auto` is hard-hidden.
+    /// `/always-approve` is always offered; both commands are true toggles (re-running the active mode turns it off).
     pub fn set_auto_mode_available(&mut self, available: bool) {
         self.registry.set_auto_mode_available(available);
     }
 
-    /// Suppress (or restore) session-scoped commands in completion.
-    ///
-    /// Called once on session-less surfaces (the agent dashboard's
-    /// dispatch input) so commands that act on a single session never
-    /// surface in the dropdown or inline ghost. See
-    /// [`SlashCommand::session_scoped`].
+    /// Suppress (or restore) session-scoped commands in completion. Commands that act on a single session then never
+    /// appear in the dropdown or inline ghost.
     pub fn set_hide_session_scoped(&mut self, hide: bool) {
         self.hide_session_scoped = hide;
     }
 
-    /// Whether session-scoped commands are suppressed on this surface
-    /// (see [`Self::set_hide_session_scoped`]).
+    /// Whether session-scoped commands are suppressed on this surface (see [`Self::set_hide_session_scoped`]).
     pub fn hide_session_scoped(&self) -> bool {
         self.hide_session_scoped
     }
 
-    /// Whether `command` should be offered for completion or execution
-    /// given this controller's session-scope policy and the command's
-    /// own visibility gates. See [`command_offered`].
+    /// Whether `command` should be offered for completion or execution.
+    /// Combines this controller's session-scope policy with the command's own visibility gates. See [`command_offered`].
     pub fn is_command_offered(&self, command: &dyn SlashCommand, models: &ModelState) -> bool {
         let ctx = self.app_ctx(models);
         command_offered(command, &ctx, self.hide_session_scoped)
     }
 
-    /// Recompute the snapshot from prompt text + cursor position.
+    /// Recompute the snapshot from prompt text and cursor position.
     pub fn refresh(&mut self, slash: &SlashState, text: &str, cursor: usize, models: &ModelState) {
         let previous = slash.snapshot();
         let inline_tokens = scan_inline_slash_tokens(text, cursor);
         let leading = analyze_input(text, cursor);
 
-        // Mid-text `/token` under the cursor, or args after that token (before the
-        // next `/token`). Uses token-local ranges instead of buffer-start spans.
+        // Mid-text `/token` under the cursor, or args after that token (before the next `/token`)
+        // Uses token-local ranges instead of buffer-start spans
         if let Some(phase) = mid_text_slash_context(text, cursor, &inline_tokens)
             && should_use_mid_text_refresh(&phase, leading.as_ref(), cursor)
         {
@@ -662,7 +640,7 @@ impl SlashController {
         }
 
         let Some(input) = leading else {
-            // Text doesn't start with `/` -- check for mid-text slash tokens.
+            // Text doesn't start with `/`, so check for mid-text slash tokens
             let inline = self.compute_inline_slash(text, models);
             slash.replace(inline);
             return;
@@ -689,12 +667,8 @@ impl SlashController {
             recognized_tokens: Vec::new(),
         };
 
-        // Cursor inside the command token opens the command menu even when
-        // args follow (e.g. `/` typed at the start of existing text via
-        // ctrl-a) — same as mid-text tokens. The query is cursor-clamped, so
-        // `/` before existing text shows the full list like an empty composer.
-        // The two branches partition: analyze_input sets args_range exactly
-        // when the cursor is past the command token.
+        // Cursor inside the command token opens the command menu even when args follow, same as mid-text tokens. The two
+        // branches partition: analyze_input sets args_range exactly when the cursor is past the command token.
         if input.cursor_in_command {
             let matches = self.command_suggestions(&input.query, models);
             snapshot.selected = Self::carry_selection(&previous, &matches, true, &input);
@@ -708,9 +682,8 @@ impl SlashController {
         }
 
         // Resolve the command for args placeholder and skill detection.
-        // Dispatch-tier lookup (menu-only hide; see
-        // `CommandRegistry::get_for_dispatch`): menu-hidden commands still
-        // execute on Enter, so the composer must render them as recognized.
+        // Dispatch-tier lookup (menu-only hide; see `CommandRegistry::get_for_dispatch`)
+        // Menu-hidden commands still execute on Enter, so the composer must render them as recognized
         if let Some(invocation) = parse_invocation(text)
             && let Some(command) = self.registry.get_for_dispatch(invocation.token)
         {
@@ -724,12 +697,9 @@ impl SlashController {
             }
         }
 
-        // Also scan for mid-text slash tokens (after the first one) so that
-        // prompts like "/model foo /comm" get ghost text and teal highlighting
-        // on the second and subsequent `/` tokens.
-        // compute_inline_slash only supplies recognized-token highlights now;
-        // the inline ghost is derived solely from the dropdown selection (one
-        // ranker, shared with Tab) via sync_inline_ghost_to_selection below.
+        // Also scan for mid-text slash tokens (after the first one). Prompts like "/model foo /comm" then get ghost text
+        // and teal highlighting on the second and subsequent `/` tokens compute_inline_slash only supplies
+        // recognized-token highlights now.
         let inline = self.compute_inline_slash(text, models);
         snapshot.recognized_tokens = inline.recognized_tokens;
         sync_inline_ghost_to_selection(&mut snapshot);
@@ -750,9 +720,8 @@ impl SlashController {
             previous,
         } = p;
         // Drop app_ctx before any &mut self call (it borrows self.cwd).
-        // Same gate as the leading-`/` path and recognized_token_ranges, so
-        // the under-cursor teal (command_recognized) can't disagree with the
-        // token-range highlight on scope-restricted surfaces.
+        // Same gate as the leading-`/` path and recognized_token_ranges
+        // The under-cursor teal (command_recognized) thus can't disagree with the token-range highlight on scope-restricted surfaces
         let is_recognized = {
             let ctx = self.app_ctx(models);
             self.registry
@@ -805,9 +774,8 @@ impl SlashController {
             snapshot.is_skill = command.is_skill();
         }
 
-        // Same membership rule as every other composer state (and the
-        // submit-time capture), so the highlight can't flicker with cursor
-        // position or diverge from the echo's ranges.
+        // Same membership rule as every other composer state (and the submit-time capture)
+        // The highlight thus can't flicker with cursor position or diverge from the echo's ranges
         snapshot.recognized_tokens = self.recognized_token_ranges(text, models);
 
         // Same invariant as leading `/` and arrow nav: ghost completes selected row only.
@@ -913,8 +881,8 @@ impl SlashController {
         snapshot
     }
 
-    /// Move the dropdown selection by `delta` (positive = down, negative = up),
-    /// wrapping around at the ends. Used for keyboard arrow / Ctrl-P/N nav.
+    /// Move the dropdown selection by `delta` (positive moves down, negative up), wrapping around at the ends.
+    /// Used for keyboard arrow / Ctrl-P/N nav.
     pub fn move_selection(&self, slash: &SlashState, delta: isize) {
         slash.update(|inner| {
             let len = inner.matches.len();
@@ -928,8 +896,8 @@ impl SlashController {
         });
     }
 
-    /// Move the dropdown selection by `delta`, clamping at the first/last item
-    /// (no wrap-around). Used for mouse-wheel scrolling.
+    /// Move the dropdown selection by `delta`, clamping at the first/last item (no wrap-around).
+    /// Used for mouse-wheel scrolling.
     pub fn scroll_selection(&self, slash: &SlashState, delta: isize) {
         slash.update(|inner| {
             let len = inner.matches.len();
@@ -977,12 +945,8 @@ impl SlashController {
         previous.selected.min(matches.len().saturating_sub(1))
     }
 
-    /// Byte ranges of recognized `/command` tokens anywhere in `text`.
-    ///
-    /// Single source of truth for the composer's teal token highlighting AND
-    /// the scrollback echo of submitted prompts: whitespace-preceded `/{word}`
-    /// tokens (see [`scan_inline_slash_tokens`]) whose name resolves to a
-    /// command that is offered on this surface ([`command_offered`]).
+    /// Byte ranges of recognized `/command` tokens anywhere in `text`. Both the composer's teal token highlighting and
+    /// the scrollback echo of submitted prompts read this. See [`scan_inline_slash_tokens`] and [`command_offered`].
     /// Cursor-independent. Empty when nothing is recognized.
     pub fn recognized_token_ranges(&self, text: &str, models: &ModelState) -> Vec<Range<usize>> {
         let tokens = scan_inline_slash_tokens(text, 0);
@@ -1003,10 +967,8 @@ impl SlashController {
     }
 
     /// Compute inline slash state for text that doesn't start with `/`.
-    ///
     /// Recognized-token highlights only ([`Self::recognized_token_ranges`]).
-    /// Ghost for partial commands comes solely from
-    /// [`sync_inline_ghost_to_selection`] (dropdown selection).
+    /// Ghost for partial commands comes solely from [`sync_inline_ghost_to_selection`] (dropdown selection).
     fn compute_inline_slash(&self, text: &str, models: &ModelState) -> SlashSnapshot {
         SlashSnapshot {
             recognized_tokens: self.recognized_token_ranges(text, models),
@@ -1029,7 +991,7 @@ impl SlashController {
             })
             .collect();
         let triggers = self.registry.triggers();
-        // Badge only visible skill ↔ non-skill collisions on the same bare name.
+        // Badge only collisions where a visible skill and a visible non-skill share the same bare name
         let mut skill_bares: HashSet<String> = HashSet::new();
         let mut other_bares: HashSet<String> = HashSet::new();
         for (_, trigger) in triggers
@@ -1048,8 +1010,8 @@ impl SlashController {
             .intersection(&other_bares)
             .map(String::as_str)
             .collect();
-        // Badge every visible trigger of a command that participates, including
-        // the canonical row when only an alias (e.g. `clear` → `/compact`) collides.
+        // Badge every visible trigger of a command that participates
+        // That includes the canonical row when only an alias (e.g. `clear` for `/compact`) collides.
         let colliding_command_indices: HashSet<usize> = triggers
             .iter()
             .enumerate()
@@ -1062,11 +1024,10 @@ impl SlashController {
         let trimmed = query.trim();
         if trimmed.is_empty() {
             // Show all unique commands (deduplicate by command_index).
-            // No cap here -- the dropdown renderer handles scrolling.
+            // No cap here; the dropdown renderer handles scrolling
             let mut seen = HashSet::new();
             let mut rows = Vec::new();
-            // Retain canonicals so tags are set in a second pass, keeping the
-            // `takes_args_now` command callback outside any tag-map borrow.
+            // Retain canonicals so tags are set in a second pass, keeping the `takes_args_now` command callback outside any tag-map borrow
             let mut canonicals: Vec<&str> = Vec::new();
             let mut groups: Vec<MenuGroup> = Vec::new();
             for (i, trigger) in triggers.iter().enumerate() {
@@ -1088,8 +1049,7 @@ impl SlashController {
                     groups.push(MenuGroup::of(&trigger.provenance));
                 }
             }
-            // Tag from the data map in one scoped borrow; key off canonical
-            // (never the alias/display).
+            // Tag from the data map in one scoped borrow; key off canonical (never the alias/display)
             {
                 let command_tags = self.command_tags.borrow();
                 for (row, canonical) in rows.iter_mut().zip(canonicals.iter()) {
@@ -1118,8 +1078,7 @@ impl SlashController {
             return Vec::new();
         }
 
-        // Restrict the matcher to the visible subset so hidden commands
-        // never show up in fuzzy results.
+        // Restrict the matcher to the visible subset so hidden commands never show up in fuzzy results
         let visible_triggers: Vec<&CommandTrigger> = triggers
             .iter()
             .enumerate()
@@ -1165,8 +1124,7 @@ impl SlashController {
         }
 
         let mut deduped: Vec<(u32, usize)> = best_per_command.into_values().collect();
-        // Re-borrow after rank so takes_args_now can see AppCtx without
-        // overlapping the matcher mut borrow.
+        // Re-borrow after rank so takes_args_now can see AppCtx without overlapping the matcher mut borrow
         let mut rows: Vec<SuggestionRow> = {
             let ctx = self.app_ctx(models);
             visible_triggers
@@ -1189,16 +1147,14 @@ impl SlashController {
             .iter()
             .map(|t| (t.canonical.clone(), t.source))
             .collect();
-        // Tag each candidate from the data map (canonical key); one shared
-        // borrow, dropped before the scoring borrow below.
+        // Tag each candidate from the data map (canonical key); one shared borrow, dropped before the scoring borrow below
         {
             let command_tags = self.command_tags.borrow();
             for (row, (canonical, _)) in rows.iter_mut().zip(sort_meta.iter()) {
                 row.tag = command_tags.get(canonical.as_str()).cloned();
             }
         }
-        // Resolve all recency scores under a single borrow (one keystroke =
-        // one borrow, not one per candidate).
+        // Resolve all recency scores under a single borrow (one keystroke means one borrow, not one per candidate)
         let mru_scores: Vec<u64> = {
             let mut m = self.mru.borrow_mut();
             sort_meta
@@ -1241,8 +1197,7 @@ impl SlashController {
         let Some(invocation) = parse_invocation(text) else {
             return Vec::new();
         };
-        // Clone the Arc to release the borrow on self.registry before
-        // calling arg_suggestions (which needs &mut self for the matcher).
+        // Clone the Arc to release the borrow on self.registry before calling arg_suggestions (which needs &mut self for the matcher)
         let Some(command) = self.registry.get(invocation.token).cloned() else {
             return Vec::new();
         };
@@ -1318,37 +1273,9 @@ impl SlashController {
     }
 }
 
-/// Whether `command` should be offered for completion **or execution** on
-/// the current surface.
-///
-/// Combines the command's own [`SlashCommand::visible`] gate with the
-/// controller's session-scope policy: when `hide_session_scoped` is set
-/// (session-less surfaces such as the agent dashboard's dispatch input),
-/// commands that act on a single session — `/compact`, `/fork`,
-/// `/rewind`, … — are suppressed because there is no "current session"
-/// for them to operate on.
-///
-/// Commands that opt in via [`SlashCommand::offered_when_session_less`]
-/// (`/model`, `/plan`, `/multiline`) are exempt from this suppression —
-/// they configure the next spawn or the dashboard input surface itself.
-///
-/// Conversely, [`SlashCommand::dashboard_only`] commands (`/cd`) are
-/// offered ONLY when `hide_session_scoped` is set (the dashboard surface)
-/// and suppressed on every session surface.
-///
-/// Commands are also filtered by the render mode they declare support for
-/// ([`SlashCommand::mode_support`]): a fullscreen-only command
-/// (`/find`, `/theme`, …) is not offered under `--minimal`, and a
-/// minimal-only command (`/expand`) is not offered in the full TUI. Note
-/// this gate is completion-only — [`registry::CommandRegistry::get_for_dispatch`]
-/// still resolves such a command so a fully-typed invocation reaches the
-/// central dispatch gate's [`ModeSupport::refusal`] instead of leaking to the
-/// model as a raw prompt.
-///
-/// Callers that execute slash commands on a session-less surface (e.g.
-/// `dispatch_dashboard_dispatch_slash`) must consult this before
-/// `command.run` so typed tokens that were filtered from the dropdown
-/// fall through as ordinary prompt text rather than running invisibly.
+/// Conversely, [`SlashCommand::dashboard_only`] commands (`/cd`) are offered only when `hide_session_scoped` is set
+/// (the dashboard surface). A fullscreen-only command (`/find`, `/theme`, …) is not offered under `--minimal`. A
+/// minimal-only command (`/expand`) is not offered in the full TUI.
 pub(crate) fn command_offered(
     command: &dyn SlashCommand,
     ctx: &AppCtx,
@@ -1359,11 +1286,9 @@ pub(crate) fn command_offered(
         && !(hide_session_scoped
             && command.session_scoped()
             && !command.offered_when_session_less())
-        // Dashboard-only commands (`/cd`) are the inverse of session-scoped:
-        // they only make sense on the session-less dashboard surface (where
-        // `hide_session_scoped` is set), so suppress them everywhere else —
-        // offered only when the command isn't dashboard-only or we're on the
-        // dashboard.
+        // Dashboard-only commands (`/cd`) are the inverse of session-scoped
+        // They only make sense on the session-less dashboard surface (where `hide_session_scoped` is set), so suppress them everywhere else
+        // Offered only when the command isn't dashboard-only or we're on the dashboard
         && (!command.dashboard_only() || hide_session_scoped)
 }
 
@@ -1495,49 +1420,33 @@ pub fn parse_invocation(line: &str) -> Option<SlashInvocation<'_>> {
 // Completeness check
 // ---------------------------------------------------------------------------
 
-/// Check if a slash command line is complete (ready to execute on Enter).
-///
-/// Uses the two-bit model: `takes_args()` + `args_required()`.
-///
-/// | `takes_args` | `args_required` | Enter with no args |
-/// |-------------|----------------|-------------------|
-/// | `false`     | `false`        | Executes          |
-/// | `true`      | `false`        | Executes          |
-/// | `true`      | `true`         | Blocks            |
-///
-/// Unknown commands (not in registry) are treated as complete -- they will
-/// pass through to the shell.
+/// Check if a slash command line is complete (ready to execute on Enter). | `takes_args` | `args_required` | Enter
+/// with no args |. | `false` | `false` | Executes |. | `true` | `false` | Executes |. | `true` | `true` | Blocks |.
+/// Unknown commands (not in registry) are treated as complete. they will pass through to the shell.
 pub fn is_command_complete(line: &str, registry: &CommandRegistry) -> bool {
     let Some(invocation) = parse_invocation(line) else {
         return false;
     };
-    // Dispatch-tier lookup (menu-only hide; see
-    // `CommandRegistry::get_for_dispatch`): menu-hidden commands still run
-    // on Enter, so their arg contract gates completeness the same way.
+    // Dispatch-tier lookup (menu-only hide; see `CommandRegistry::get_for_dispatch`)
+    // Menu-hidden commands still run on Enter, so their arg contract gates completeness the same way
     let Some(command) = registry.get_for_dispatch(invocation.token) else {
-        // Unknown command -- treat as complete (will PassThrough).
+        // Unknown command: treat as complete (will PassThrough)
         return true;
     };
     if !command.takes_args() {
-        // No args accepted -- always complete.
+        // No args accepted: always complete
         return true;
     }
     if !command.args_required() {
-        // Args accepted but optional -- always complete.
+        // Args accepted but optional: always complete
         return true;
     }
-    // Args required -- complete only if non-empty.
+    // Args required: complete only if non-empty
     !invocation.args.trim().is_empty()
 }
 
-/// True when `text` is a complete invocation of a pager BUILTIN, a name only this process honors.
-///
-/// The criterion is ownership, not outcome. A pager-owned name must never be sent to the model as
-/// text: the agent's `resolve()` reserves those names without handling them. ACP, skill, and
-/// unknown names belong to that `resolve()` and already round-trip correctly as queue text, so they
-/// are excluded. Restricted commands are excluded too: `get_for_dispatch` returns `None` for them.
-///
-/// Some builtins enqueue rather than execute (`/compact`, `/imagine`, `/loop`): dispatch re-adds
+/// A pager-owned name must never be sent to the model as text: the agent's `resolve()` reserves those names without
+/// handling them. Some builtins enqueue rather than execute (`/compact`, `/imagine`, `/loop`): dispatch re-adds
 /// those at the tail of the local queue, so the row's position is not preserved.
 pub(crate) fn is_complete_builtin_invocation(text: &str, registry: &CommandRegistry) -> bool {
     let trimmed = text.trim();
@@ -1550,9 +1459,8 @@ pub(crate) fn is_complete_builtin_invocation(text: &str, registry: &CommandRegis
 }
 
 /// True when Enter should send `text` unchanged.
-///
-/// Accept turns `/doctor` into `/doctor ` and opens the arg menu. Skip accept
-/// only when the highlighted row is the typed command (or an alias of it).
+/// Accept turns `/doctor` into `/doctor ` and opens the arg menu.
+/// Skip accept only when the highlighted row is the typed command (or an alias of it).
 pub(crate) fn is_typed_slash_selected(
     snap: &SlashSnapshot,
     text: &str,
@@ -1689,10 +1597,8 @@ fn should_use_mid_text_refresh(
 }
 
 /// Scan input for all `/word` tokens at any position.
-///
-/// A slash token is `/` followed by one or more non-whitespace chars, where
-/// the `/` is either at position 0 or preceded by whitespace (avoids matching
-/// file paths like `foo/bar`).
+/// A slash token is `/` followed by one or more non-whitespace chars.
+/// The `/` must be at position 0 or preceded by whitespace, which avoids matching file paths like `foo/bar`.
 pub fn scan_inline_slash_tokens(text: &str, cursor: usize) -> Vec<InlineSlashToken> {
     let cursor = cursor.min(text.len());
     let mut tokens = Vec::new();
@@ -1878,8 +1784,7 @@ mod tests {
 
     #[test]
     fn gboom_never_appears_in_suggestions() {
-        // The /gboom easter egg is executable but must stay out of the
-        // dropdown: not in the full list, not via prefix, not via exact name.
+        // The /gboom easter egg is executable but must stay out of the dropdown: not in the full list, not via prefix, not via exact name
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         let state = SlashState::default();
         let models = ModelState::default();
@@ -1905,11 +1810,9 @@ mod tests {
         assert_eq!(cmd.name(), "gboom");
     }
 
-    /// `/debug` lists via `visible()` = cfg!(debug_assertions); tests
-    /// compile with debug_assertions, so it must surface here. Release
-    /// builds flip the same constant to false (the /gboom hidden
-    /// mechanism), which is untestable from a debug test build — hence
-    /// the cfg gate rather than a release-side assertion.
+    /// `/debug` is listed because `visible()` is cfg!(debug_assertions) and tests compile with debug_assertions, so it must appear here.
+    /// Release builds flip the same constant to false (the /gboom hidden mechanism), which is untestable from a debug test build.
+    /// Hence the cfg gate rather than a release-side assertion.
     #[test]
     #[cfg(debug_assertions)]
     fn debug_appears_in_suggestions_on_debug_binaries() {
@@ -2023,9 +1926,8 @@ mod tests {
         assert!(snapshot.matches.is_empty());
     }
 
-    /// Ctrl-a then `/` in front of existing text must open the menu: the
-    /// query is cursor-clamped to "", so the full command list shows exactly
-    /// like `/` on an empty composer.
+    /// Ctrl-a then `/` in front of existing text must open the menu.
+    /// The query is cursor-clamped to "", so the full command list shows exactly like `/` on an empty composer.
     #[test]
     fn slash_typed_before_existing_text_opens_full_menu() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
@@ -2047,8 +1949,7 @@ mod tests {
         );
     }
 
-    /// Cursor mid-token while args follow: the menu opens filtered by the
-    /// cursor-clamped prefix instead of staying closed.
+    /// Cursor mid-token while args follow: the menu opens filtered by the cursor-clamped prefix instead of staying closed.
     #[test]
     fn cursor_inside_leading_command_with_args_filters_by_prefix() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
@@ -2066,9 +1967,8 @@ mod tests {
         );
     }
 
-    /// Cursor moved back inside an already-complete recognized command opens
-    /// the menu too (same as mid-text tokens today); recognition holds and no
-    /// inline ghost is drawn over the existing text.
+    /// Cursor moved back inside an already-complete recognized command opens the menu too (same as mid-text tokens today).
+    /// Recognition holds and no inline ghost is drawn over the existing text.
     #[test]
     fn cursor_inside_recognized_command_with_args_opens_menu() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
@@ -2118,14 +2018,12 @@ mod tests {
         assert!(first.insert_text.starts_with("/m"));
     }
 
-    /// `/sessions` survives the sessions-modal removal as an alias of
-    /// `/dashboard`: typing it must complete with the alias spelling and the
-    /// dashboard command's description.
+    /// `/sessions` survives the sessions-modal removal as an alias of `/dashboard`.
+    /// Typing it must complete with the alias spelling and the dashboard command's description.
     #[test]
     fn controller_suggests_sessions_alias_for_dashboard() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
-        // `/dashboard` is feature-flag gated (hidden by default); the alias
-        // is only offered once the flag reveals the canonical command.
+        // `/dashboard` is feature-flag gated (hidden by default); the alias is only offered once the flag reveals the canonical command
         ctrl.registry_mut().set_dashboard_visible(true);
         let state = SlashState::default();
         let models = ModelState::default();
@@ -2172,9 +2070,8 @@ mod tests {
     #[test]
     fn no_placeholder_when_cursor_at_start_of_existing_args() {
         // Simulates the user typing "hello", then prepending "/model ".
-        // Cursor ends up right at the start of the args ("hello"), so
-        // args_query is empty but the args range is non-empty.
-        // The placeholder must NOT appear.
+        // Cursor ends up right at the start of the args ("hello"), so args_query is empty but the args range is non-empty
+        // The placeholder must not appear
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         let state = SlashState::default();
         let models = ModelState::default();
@@ -2280,16 +2177,14 @@ mod tests {
 
     // -- session-scoped surface filtering (agent dashboard) --
 
-    /// On a session-less surface (the agent dashboard's dispatch input),
-    /// commands that act on a single session are suppressed from completion
-    /// while pager-global commands remain. See `SlashCommand::session_scoped`.
+    /// On a session-less surface (the agent dashboard's dispatch input), commands that act on a single session are suppressed from completion.
+    /// Pager-global commands remain. See `SlashCommand::session_scoped`.
     #[test]
     fn hide_session_scoped_filters_session_commands_from_dropdown() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         ctrl.set_hide_session_scoped(true);
-        // `/dashboard` is feature-flag gated (hidden by default in the
-        // registry); the session-less surface under test is the dashboard's
-        // own dispatch input, so the flag is necessarily on there.
+        // `/dashboard` is feature-flag gated (hidden by default in the registry)
+        // The session-less surface under test is the dashboard's own dispatch input, so the flag is necessarily on there
         ctrl.registry_mut().set_dashboard_visible(true);
         let state = SlashState::default();
         let models = ModelState::default();
@@ -2303,9 +2198,8 @@ mod tests {
             .map(|r| r.display.as_str())
             .collect();
 
-        // Pager-global commands stay, plus session-scoped opt-ins
-        // (`offered_when_session_less`): `/model`/`/plan` stage the next
-        // spawn; `/multiline` toggles compose on the dashboard inputs.
+        // Pager-global commands stay, plus session-scoped opt-ins (`offered_when_session_less`)
+        // `/model`/`/plan` stage the next spawn; `/multiline` toggles compose on the dashboard inputs
         for keep in [
             "/quit",
             "/new",
@@ -2363,9 +2257,8 @@ mod tests {
         assert!(names.iter().any(|d| d == "/doctor"));
     }
 
-    /// `/cd` is dashboard-only: it appears in the dropdown on the
-    /// session-less dashboard surface but is hidden on the default (agent
-    /// view) surface — the inverse of session-scoped commands.
+    /// `/cd` is dashboard-only: it appears in the dropdown on the session-less dashboard surface but is hidden on the default (agent view) surface.
+    /// This is the inverse of session-scoped commands.
     #[test]
     fn dashboard_only_command_hidden_off_dashboard() {
         let models = ModelState::default();
@@ -2402,9 +2295,8 @@ mod tests {
         );
     }
 
-    /// Fuzzy queries also exclude session-scoped commands while keeping
-    /// global ones that match the same prefix (`/compact` is hidden,
-    /// `/compact-mode` stays).
+    /// Fuzzy queries also exclude session-scoped commands while keeping global ones that match the same prefix.
+    /// `/compact` is hidden, `/compact-mode` stays.
     #[test]
     fn hide_session_scoped_filters_fuzzy_query() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
@@ -2429,8 +2321,7 @@ mod tests {
         );
     }
 
-    /// A fully-typed session command is neither recognized (no teal /
-    /// placeholder) nor offered arg suggestions on the dashboard surface.
+    /// A fully-typed session command is neither recognized (no teal / placeholder) nor offered arg suggestions on the dashboard surface.
     #[test]
     fn hidden_session_command_not_recognized_and_no_args() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
@@ -2452,8 +2343,8 @@ mod tests {
         );
     }
 
-    /// `/model`, `/plan`, and `/multiline` opt in via `offered_when_session_less`,
-    /// so they stay recognized on the dashboard even though they're session-scoped.
+    /// `/model`, `/plan`, and `/multiline` opt in via `offered_when_session_less`.
+    /// They stay recognized on the dashboard even though they're session-scoped.
     #[test]
     fn session_less_opt_in_commands_recognized_on_dashboard() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
@@ -2597,8 +2488,8 @@ mod tests {
             tag: None,
             provenance: None,
         };
-        // Without smart-case, starts_with("p") fails on "Privacy" and ghost disappears
-        // while the dropdown still highlights the row via CaseMatching::Smart.
+        // Without smart-case, starts_with("p") fails on "Privacy" and the ghost disappears
+        // The dropdown would still highlight the row via CaseMatching::Smart
         let ghost = inline_ghost_from_selected_command("p", 1..2, &row).expect(
             "lowercase query must ghost-complete a title-case command (dropdown can select it)",
         );
@@ -2609,9 +2500,8 @@ mod tests {
         assert!(inline_ghost_from_selected_command("PR", 1..3, &row).is_none());
     }
 
-    /// Minimal command used to build a hermetic registry where several names
-    /// tie at the same fuzzy score, so MRU recency (not the live builtin set)
-    /// decides ordering.
+    /// Minimal command used to build a hermetic registry where several names tie at the same fuzzy score.
+    /// MRU recency (not the live builtin set) then decides ordering.
     struct TieCmd(&'static str);
     impl SlashCommand for TieCmd {
         fn name(&self) -> &str {
@@ -2647,8 +2537,7 @@ mod tests {
 
     #[test]
     fn mru_beats_tiebreak_on_equal_fuzzy_score() {
-        // Hermetic: three names tie on fuzzy score for `/p`; MRU recency must
-        // pick the winner regardless of the live builtin registry.
+        // Hermetic: three names tie on fuzzy score for `/p`; MRU recency must pick the winner regardless of the live builtin registry
         let mut ctrl = tie_controller(
             &["privacy", "personas", "plan"],
             &[
@@ -2674,9 +2563,8 @@ mod tests {
         assert_eq!(ghost.full_name, "privacy");
     }
 
-    /// Tier-restricted commands stay in the dropdown (discoverability) even
-    /// though `get()` blocks execution — invoking one shows the SuperGrok
-    /// upsell (covered by the dispatch-level tests).
+    /// Tier-restricted commands stay in the dropdown (discoverability) even though `get()` blocks execution.
+    /// Invoking one shows the SuperGrok upsell (covered by the dispatch-level tests).
     #[test]
     fn restricted_commands_stay_visible_in_dropdown() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
@@ -2698,8 +2586,8 @@ mod tests {
         );
     }
 
-    /// Gate open → both `/always-approve` and `/auto` offered + dispatchable.
-    /// Gate closed → `/auto` hard-hidden; `/always-approve` still offered.
+    /// With the gate open, both `/always-approve` and `/auto` are offered and dispatchable.
+    /// With the gate closed, `/auto` is hard-hidden; `/always-approve` is still offered.
     #[test]
     fn set_auto_mode_available_gates_only_auto() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
@@ -2720,8 +2608,7 @@ mod tests {
         assert!(!dispatchable(&ctrl, "auto"));
     }
 
-    /// With the gate open, both permission-mode toggles appear in completion
-    /// for full-list, prefix, and exact-name queries.
+    /// With the gate open, both permission-mode toggles appear in completion for full-list, prefix, and exact-name queries.
     #[test]
     fn permission_mode_toggles_appear_in_completion_when_available() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
@@ -2789,9 +2676,8 @@ mod tests {
 
     #[test]
     fn ghost_tracks_selection_when_skill_wins_mru_tie() {
-        // Repro of the reported "/p shows ghost `pager-headless` but Tab inserts
-        // `personas`" divergence: a builtin (`personas`) and an ACP skill
-        // (`pager-headless`) tie on fuzzy score for `/p`, MRU favors the skill.
+        // Repro of the reported divergence where "/p" shows ghost `pager-headless` but Tab inserts `personas`
+        // A builtin (`personas`) and an ACP skill (`pager-headless`) tie on fuzzy score for `/p`, and MRU favors the skill
         // The ghost must equal the selected (Tab-accepted) row in every case.
         let mut ctrl = SlashController::new(
             CommandRegistry::new(vec![Arc::new(TieCmd("personas"))]),
@@ -2962,7 +2848,7 @@ mod tests {
 
     #[test]
     fn record_command_use_stores_canonical_for_alias() {
-        // Default controller store is already isolated + in-memory.
+        // The default controller store is already isolated and in-memory
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         ctrl.record_command_use("e", "exit");
         ctrl.record_command_use("q", "/quit");
@@ -2970,7 +2856,7 @@ mod tests {
         assert_eq!(ctrl.mru_last_used("", "exit"), 0);
     }
 
-    /// Inject a per-command tag map into a controller (test seam).
+    /// Inject a per-command tag map into a controller for tests.
     fn set_tags(ctrl: &mut SlashController, entries: &[(&str, &str)]) {
         let map: std::collections::HashMap<String, String> = entries
             .iter()
@@ -2989,8 +2875,8 @@ mod tests {
             .clone()
     }
 
-    /// A command with a tag-map entry (keyed by canonical) carries that tag in
-    /// both the empty-query and the typed-query branches; one without has `None`.
+    /// A command with a tag-map entry (keyed by canonical) carries that tag in both the empty-query and the typed-query branches.
+    /// One without has `None`.
     #[test]
     fn command_row_tag_from_map_keyed_by_canonical() {
         let mut ctrl = tie_controller(&["alpha", "bravo"], &[]);
@@ -3013,8 +2899,7 @@ mod tests {
         );
     }
 
-    /// The bare "/" picker surfaces tagged commands first, preserving registry
-    /// order within the tagged and untagged groups (stable; not alphabetized).
+    /// The bare "/" picker lists tagged commands first, preserving registry order within the tagged and untagged groups (stable; not alphabetized).
     #[test]
     fn empty_query_sorts_tagged_commands_first_stably() {
         // Registry order: alpha, bravo, charlie, delta. Tag the 2nd and 4th.
@@ -3147,8 +3032,7 @@ mod tests {
         );
     }
 
-    /// ACP commands — including bundled skills that arrive as skill-shaped ACP
-    /// commands — tag from the map the same way as builtins.
+    /// ACP commands (including bundled skills that arrive as skill-shaped ACP commands) tag from the map the same way as builtins.
     #[test]
     fn acp_and_skill_commands_tag_from_map() {
         let mut ctrl = SlashController::new(
@@ -3157,7 +3041,7 @@ mod tests {
             ]),
             std::path::PathBuf::from("."),
         );
-        // A skill arrives as an ACP command carrying skill meta (scope + path).
+        // A skill arrives as an ACP command carrying skill meta (scope and path)
         let skill_meta = serde_json::json!({
             "scope": "local",
             "path": "/home/user/.grok/skills/skill-cmd/SKILL.md",
@@ -3192,8 +3076,7 @@ mod tests {
 
     #[test]
     fn flat_mru_boosts_recent_command_regardless_of_typed_prefix() {
-        // Flat schema (hermetic): using `plan` recently boosts it even when
-        // typing `/p`, independent of the live builtin registry.
+        // Flat schema (hermetic): using `plan` recently boosts it even when typing `/p`, independent of the live builtin registry
         let mut ctrl = tie_controller(
             &["plan", "personas"],
             &[("plan", 1_700_000_999), ("personas", 1_700_000_010)],
@@ -3279,8 +3162,7 @@ mod tests {
 
     #[test]
     fn recognized_token_ranges_matches_composer_refresh() {
-        // Parity pin: the submit-time helper must produce exactly the ranges
-        // the composer highlighted while typing (same registry + gates).
+        // Parity pin: the submit-time helper must produce exactly the ranges the composer highlighted while typing (same registry and gates)
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         let state = SlashState::default();
         let models = ModelState::default();
@@ -3296,10 +3178,9 @@ mod tests {
 
     #[test]
     fn recognized_token_ranges_parity_in_mid_text_state_with_session_scope_hidden() {
-        // Dashboard-style surface (session-scoped commands suppressed), cursor
-        // in a mid-text token's args: the mid-text refresh path must apply the
-        // same membership rule as the helper — /compact (session-scoped) is
-        // excluded on this surface, /theme (pager-global) is highlighted.
+        // Dashboard-style surface (session-scoped commands suppressed), cursor in a mid-text token's args
+        // The mid-text refresh path must apply the same membership rule as the helper
+        // /compact (session-scoped) is excluded on this surface; /theme (pager-global) is highlighted
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         ctrl.set_hide_session_scoped(true);
         let state = SlashState::default();
@@ -3313,9 +3194,8 @@ mod tests {
         assert_eq!(helper, composer);
         assert_eq!(helper, vec![17..23]);
 
-        // Cursor inside the suppressed /compact token: the under-cursor teal
-        // source (command_recognized) must agree with the ranges — no teal
-        // flicker while the cursor sits in a not-offered command.
+        // Cursor inside the suppressed /compact token: the under-cursor teal source (command_recognized) must agree with the ranges
+        // No teal flicker while the cursor sits in a not-offered command
         ctrl.refresh(&state, text, 11, &models);
         let snap = state.snapshot();
         assert!(
@@ -3428,8 +3308,7 @@ mod tests {
         );
     }
 
-    /// Fake command: empty query yields a chained "first" row (trailing
-    /// space) and a terminal "second" row; "first " yields terminal rows.
+    /// Fake command: empty query yields a chained "first" row (trailing space) and a terminal "second" row; "first " yields terminal rows.
     struct ChainCmd;
 
     impl SlashCommand for ChainCmd {
@@ -3591,10 +3470,9 @@ mod tests {
         );
     }
 
-    /// A command's `mode_support()` declaration is the whole story for
-    /// completion: a fullscreen-only command must not be offered under
-    /// `--minimal`, a minimal-only one must not be offered in the full TUI,
-    /// and `Inline` (`--no-alt-screen`) counts as the full TUI.
+    /// A command's `mode_support()` declaration is the whole story for completion.
+    /// A fullscreen-only command must not be offered under `--minimal`, and a minimal-only one must not be offered in the full TUI.
+    /// `Inline` (`--no-alt-screen`) counts as the full TUI.
     #[test]
     fn completion_offers_only_commands_that_support_the_mode() {
         let models = ModelState::default();
@@ -3641,9 +3519,8 @@ mod tests {
         assert_eq!(arg_rows(crate::app::ScreenMode::Minimal), 0);
     }
 
-    /// Hidden from completion, still resolvable: dispatch must reach the
-    /// central gate's refusal rather than let `/theme` fall through to the
-    /// model as a raw prompt.
+    /// Hidden from completion, still resolvable.
+    /// Dispatch must reach the central gate's refusal rather than let `/theme` fall through to the model as a raw prompt.
     #[test]
     fn mode_gated_commands_still_resolve_for_dispatch() {
         let reg = test_registry();

@@ -16,6 +16,7 @@
 use std::io::{Cursor, Read};
 
 use quick_xml::Reader;
+use quick_xml::XmlVersion;
 use quick_xml::events::Event;
 use zip::ZipArchive;
 
@@ -23,10 +24,8 @@ use zip::ZipArchive;
 /// against zip bombs (the compressed input is already capped by the caller).
 const MAX_XML_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Extract plain text from PPTX bytes.
-///
-/// Returns the concatenated slide texts, or an error string suitable for
-/// `ReadFileOutput::FileReadError`.
+/// Extract plain text from PPTX bytes. Returns the concatenated slide texts, or an error string
+/// suitable for `ReadFileOutput::FileReadError`.
 pub(crate) fn extract_pptx_text_from_bytes(bytes: &[u8]) -> Result<String, String> {
     let mut archive = ZipArchive::new(Cursor::new(bytes))
         .map_err(|e| format!("Failed to open PPTX archive: {e}"))?;
@@ -113,7 +112,9 @@ fn extract_drawingml_text(xml: &str) -> Result<String, String> {
         match reader.read_event() {
             Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"t" => in_text_run = true,
             Ok(Event::Text(e)) if in_text_run => {
-                let content = e.xml_content().map_err(|e| e.to_string())?;
+                let content = e
+                    .xml_content(XmlVersion::Implicit1_0)
+                    .map_err(|e| e.to_string())?;
                 text.push_str(&content);
             }
             // quick-xml ≥0.37 emits `&amp;` / `&#233;` as separate events
@@ -205,6 +206,48 @@ mod tests {
         let bytes = build_zip(&[("ppt/slides/slide1.xml", slide)]);
         let text = extract_pptx_text_from_bytes(&bytes).unwrap();
         assert_eq!(text, "--- Slide 1 ---\nHello & bye");
+    }
+
+    #[test]
+    fn xml_1_0_line_endings_fold_cr_and_preserve_nel_and_line_separator() {
+        let cases = [
+            ("CRLF folds to LF", "a\r\nb", "a\nb"),
+            ("lone CR folds to LF", "a\rb", "a\nb"),
+            ("U+0085 NEL is preserved", "a\u{0085}b", "a\u{0085}b"),
+            (
+                "U+2028 LINE SEPARATOR is preserved",
+                "a\u{2028}b",
+                "a\u{2028}b",
+            ),
+        ];
+
+        for (case, raw, expected) in cases {
+            let slide = format!(
+                r#"<p:sld xmlns:a="a" xmlns:p="p"><a:p><a:r><a:t>{raw}</a:t></a:r></a:p></p:sld>"#
+            );
+            let bytes = build_zip(&[("ppt/slides/slide1.xml", &slide)]);
+            let text = extract_pptx_text_from_bytes(&bytes).unwrap();
+            assert_eq!(
+                text,
+                format!("--- Slide 1 ---\n{expected}"),
+                "{case}: Office Open XML declares XML 1.0, so slide text must use \
+                 XML 1.0 end-of-line rules. XML 1.1 rules would also fold U+0085 \
+                 and U+2028 into LF and change model-visible output."
+            );
+        }
+    }
+
+    #[test]
+    fn character_references_bypass_line_ending_normalization() {
+        let slide =
+            r#"<p:sld xmlns:a="a" xmlns:p="p"><a:p><a:r><a:t>a&#13;b</a:t></a:r></a:p></p:sld>"#;
+        let bytes = build_zip(&[("ppt/slides/slide1.xml", slide)]);
+        let text = extract_pptx_text_from_bytes(&bytes).unwrap();
+        assert_eq!(
+            text, "--- Slide 1 ---\na\rb",
+            "a CR written as a character reference is not a literal line break, \
+             so XML end-of-line normalization must leave it as CR"
+        );
     }
 
     #[test]

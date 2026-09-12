@@ -381,22 +381,17 @@ mod linux {
 // Cross-platform re-exports
 // ============================================================================
 
-/// Cgroup handle — owns the child cgroup's lifecycle.
-///
-/// On Linux, this creates a real cgroupv2 directory with memory limits.
-/// On other platforms, this is a no-op.
+/// Cgroup handle — owns the child cgroup's lifecycle. On Linux, this creates a real cgroupv2
+/// directory with memory limits. On other platforms, this is a no-op.
 pub struct CgroupGuard {
     #[cfg(target_os = "linux")]
     inner: Option<linux::CgroupHandle>,
 }
 
 impl CgroupGuard {
-    /// Try to create a cgroup with the given memory config.
-    /// Returns a guard that cleans up the cgroup on drop.
-    ///
-    /// On non-Linux platforms this always returns a no-op guard.
-    /// On Linux, if cgroup creation fails (e.g., not running as root,
-    /// cgroupv2 not available), it logs a warning and returns a no-op guard.
+    /// Try to create a cgroup with the given memory config. Returns a guard that cleans up the cgroup on drop. On non-Linux
+    /// platforms this always returns a no-op guard. On Linux, if cgroup creation fails (e.g., not running as root, cgroupv2
+    /// not available), it logs a warning and returns a no-op guard.
     pub async fn try_create(config: &CgroupMemoryConfig) -> Self {
         #[cfg(target_os = "linux")]
         {
@@ -466,10 +461,8 @@ impl CgroupGuard {
     }
 }
 
-/// Memory-high monitor — watches for memory pressure events.
-///
-/// On Linux, uses inotify on `memory.events`.
-/// On other platforms, this is a no-op that never fires.
+/// Memory-high monitor — watches for memory pressure events. On Linux, uses inotify on
+/// `memory.events`. On other platforms, this is a no-op that never fires.
 pub struct MemoryMonitor {
     #[cfg(target_os = "linux")]
     inner: Option<linux::MemoryHighMonitor>,

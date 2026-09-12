@@ -12,12 +12,9 @@ use crate::types::output::SearchReplaceOutput;
 use crate::types::requirements::{Expr, ToolRequirement};
 use crate::types::tool::{ToolKind, ToolNamespace};
 
-/// Concise variant of `SearchReplaceTool`.
-///
-/// Differences from `SearchReplaceTool`:
-/// - Always skips the read-before-edit guard.
-/// - Uses the shorter `tool_output_for_prompt_concise` as prompt output.
-/// - No `IfParams` requirement for a Read tool (guard is always skipped).
+/// Concise variant of `SearchReplaceTool`. Always skips the read-before-edit guard. Uses the
+/// shorter `tool_output_for_prompt_concise` as prompt output. No `IfParams` requirement for a Read
+/// tool (guard is always skipped).
 #[derive(Debug, Default)]
 pub struct SearchReplaceConciseTool;
 

@@ -3,7 +3,7 @@
 //! This client handles:
 //! - Syncing session signals to cli-chat-proxy
 //! - Submitting feedback responses
-//! - Completing/dismissing feedback requests
+//! - Completing or dismissing feedback requests
 //! - Creating feedback requests (when triggered by heuristics)
 
 use std::sync::Arc;
@@ -12,288 +12,19 @@ use anyhow::{Context, Result};
 use reqwest::RequestBuilder;
 use serde::de::DeserializeOwned;
 
-// Import feedback wire types from cli-chat-proxy
 use prod_mc_cli_chat_proxy_types::feedback_types::{
     ClientType, CreateFeedbackRequestInput, CreateFeedbackRequestResponse,
     FeedbackHeuristicsConfig, FeedbackRequestUpdateResponse, FeedbackResponse, FeedbackSubmission,
-    SessionEventRequest, SessionEventResponse, SessionSignalsUpdate, SessionSignalsUpdateResponse,
+    SessionSignalsUpdate, SessionSignalsUpdateResponse, SessionTurnDelta, SessionTurnDeltaResponse,
+    TurnOutcome,
 };
 
 /// Client version header sent on every request to cli-chat-proxy for version gating.
 const CLIENT_VERSION_HEADER: &str = "x-grok-client-version";
 
-// ============================================================================
-// Turn delta wire types (local to xai-grok-shell until cli-chat-proxy catches up)
-// ============================================================================
-
-/// Per-turn delta sent at the end of every turn via
-/// `POST /v1/sessions/{session_id}/turn-deltas`.
-///
-/// Each field falls into one of four categories:
-///
-/// - **Delta** — the *change* since the previous turn end (computed as
-///   `current_cumulative - previous_turn_snapshot`). For the first turn,
-///   the previous snapshot is zero.
-/// - **Turn-level** — an absolute value measured only for *this* turn,
-///   reset between turns. `None` when the event did not occur this turn.
-/// - **Accumulated** — a cumulative total since session start, monotonically
-///   increasing across turns.
-/// - **Context** — session/turn metadata that is neither a counter nor a
-///   measurement (e.g. IDs, timestamps, client type).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SessionTurnDelta {
-    // ── Context fields ──────────────────────────────────────────────────
-    /// **[context]** Which client surface produced this record (e.g. CLI, TUI).
-    pub client_type: ClientType,
-
-    /// **[context]** 1-based turn number at the time of this snapshot. Equals
-    /// the cumulative `turn_count` from `SessionSignals`.
-    pub turn_number: i64,
-
-    // ── Delta counters ──────────────────────────────────────────────────
-    // Each is `current_cumulative - previous_turn_snapshot`.
-    /// **[delta]** Number of tool calls made during this turn.
-    pub delta_tool_calls: i64,
-
-    /// **[delta]** Number of tool calls that failed during this turn.
-    pub delta_tool_failures: i64,
-
-    /// **[delta]** Number of errors (including sampling errors) during this turn.
-    pub delta_errors: i64,
-
-    /// **[delta]** Number of user cancellations (Ctrl+C) during this turn.
-    pub delta_cancellations: i64,
-
-    /// **[delta]** Number of regeneration requests during this turn.
-    pub delta_regenerations: i64,
-
-    /// **[delta]** Number of conversation compactions during this turn.
-    pub delta_compactions: i64,
-
-    /// **[delta]** Number of edit-and-retry actions (user rewinds prompt)
-    /// during this turn.
-    pub delta_edit_and_retries: i64,
-
-    /// **[delta]** Number of positive ratings (thumbs-up) during this turn.
-    pub delta_positive_ratings: i64,
-
-    /// **[delta]** Number of negative ratings (thumbs-down) during this turn.
-    pub delta_negative_ratings: i64,
-
-    /// **[delta]** Number of assistant messages produced during this turn
-    /// (may be >1 when tool-call rounds generate intermediate messages).
-    pub delta_assistant_messages: i64,
-
-    /// **[delta]** Number of long idle pauses (>60 s) that occurred during
-    /// this turn.
-    pub delta_long_pauses: i64,
-
-    /// **[delta]** Number of successful tool uses during this turn. Derived
-    /// as `delta_tool_calls − delta_tool_failures`.
-    pub delta_successful_tool_uses: i64,
-
-    // ── Turn-level snapshot values ──────────────────────────────────────
-    /// **[turn-level]** Consecutive cancellation streak at turn end. This is
-    /// a point-in-time snapshot (not a diff) — it resets to 0 when a turn
-    /// completes normally.
-    pub consecutive_cancellations: i64,
-
-    // ── Turn-level latency ──────────────────────────────────────────────
-    // Absolute measurements for this turn's inference request only.
-    // `None` when no inference occurred during the turn.
-    /// **[turn-level]** Time-to-first-token for this turn's model response
-    /// (milliseconds). `None` when no inference occurred.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub time_to_first_token_ms: Option<i64>,
-
-    /// **[turn-level]** Total wall-clock response time for this turn's model
-    /// response (milliseconds). `None` when no inference occurred.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_response_time_ms: Option<i64>,
-
-    /// **[turn-level]** Inter-token latency p50 for this turn (ms).
-    /// Computed from the token intervals collected during this turn only.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub itl_p50_ms: Option<i64>,
-
-    /// **[turn-level]** Inter-token latency p99 for this turn (ms).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub itl_p99_ms: Option<i64>,
-
-    /// **[turn-level]** Inter-token latency maximum for this turn (ms).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub itl_max_ms: Option<i64>,
-
-    /// **[turn-level]** Inter-token latency mean for this turn (ms).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub itl_mean_ms: Option<i64>,
-
-    // ── Accumulated / snapshot session-level values ─────────────────────
-    /// **[accumulated]** Current context window usage as a percentage (0–100)
-    /// at turn end. Read from cumulative `SessionSignals.context_window_usage`.
-    pub context_window_usage: i64,
-
-    /// **[accumulated]** Primary model ID (most recently used model). Read
-    /// from cumulative `SessionSignals.primary_model_id`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_id: Option<String>,
-
-    // ── Turn-level outcome / served checkpoint ──────────────────────────
-    /// Whole-turn wall-clock duration (prompt→final response), ms.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_duration_ms: Option<i64>,
-
-    /// Terminal outcome: `"completed"` | `"cancelled"` | `"error"`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_outcome: Option<String>,
-
-    /// Served model fingerprint (upstream `system_fingerprint`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_fingerprint: Option<String>,
-
-    // ── Turn-level tool / error detail ──────────────────────────────────
-    /// **[turn-level]** Distinct tool names invoked during this turn
-    /// (deduplicated, sorted, capped at 100 entries). Reset each turn.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tools_used_this_turn: Vec<String>,
-
-    /// **[turn-level]** Error type strings that occurred during this turn
-    /// (e.g. `"timeout"`, `"rate_limit"`, `"tool_error"`). Reset each turn.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub error_types_this_turn: Vec<String>,
-
-    /// **[turn-level]** Per-tool success/failure breakdown for this turn,
-    /// JSON-serialized array of `{ tool_name, successes, failures }`.
-    /// Empty string when no tool calls occurred. Reset each turn.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub tool_outcomes: String,
-
-    // ── Accumulated totals ──────────────────────────────────────────────
-    /// **[accumulated]** Total tool calls since session start.
-    /// Read from cumulative `SessionSignals.tool_call_count`.
-    pub cumulative_tool_calls: i64,
-
-    /// **[accumulated]** Total errors since session start.
-    /// Read from cumulative `SessionSignals.error_count`.
-    pub cumulative_errors: i64,
-
-    /// **[accumulated]** Wall-clock seconds elapsed since session start.
-    /// Read from cumulative `SessionSignals.session_duration_seconds`.
-    pub session_duration_seconds: i64,
-
-    /// **[accumulated]** Sum of token counts across all compactions since
-    /// session start. Read from `SessionSignals.total_tokens_before_compaction`.
-    #[serde(default)]
-    pub total_tokens_before_compaction: i64,
-
-    /// **[context]** Arbitrary JSON metadata blob.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<serde_json::Value>,
-
-    /// **[context]** Prompt/request ID that initiated this turn.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_id: Option<String>,
-
-    /// **[context]** Wall-clock time when the session was created. Used for
-    /// BQ partitioning on the backend.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_start_at: Option<chrono::DateTime<chrono::Utc>>,
-
-    // ── Feedback state ──────────────────────────────────────────────────
-    /// **[accumulated]** Total number of feedback requests sent this session.
-    /// Supplied by `FeedbackHeuristics`, not the signals actor.
-    #[serde(default)]
-    pub feedback_requests_sent: i64,
-
-    /// **[accumulated]** Wall-clock timestamp of the most recent feedback
-    /// request sent this session. Supplied by `FeedbackHeuristics`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_feedback_request_at: Option<chrono::DateTime<chrono::Utc>>,
-
-    // ── Turn-level token counts ─────────────────────────────────────────
-    /// **[turn-level]** Number of response (completion minus reasoning)
-    /// tokens generated during this turn. `None` when no inference occurred.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub response_tokens: Option<i64>,
-
-    /// **[turn-level]** Number of thinking/reasoning tokens generated during
-    /// this turn. `None` when no inference occurred.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking_tokens: Option<i64>,
-
-    // ── LOC Attribution Deltas ──────────────────────────────────────────
-    // Each is `current_cumulative - previous_turn_snapshot`, same as the
-    // counter deltas above. Tracks lines-of-code changes attributed to
-    // the agent vs. the human during this turn.
-    /// **[delta]** Lines added by the agent during this turn.
-    #[serde(default)]
-    pub delta_agent_lines_added: i64,
-
-    /// **[delta]** Lines removed by the agent during this turn.
-    #[serde(default)]
-    pub delta_agent_lines_removed: i64,
-
-    /// **[delta]** Agent-added lines that were reverted during this turn.
-    #[serde(default)]
-    pub delta_agent_lines_added_reverted: i64,
-
-    /// **[delta]** Agent-removed lines that were reverted during this turn.
-    #[serde(default)]
-    pub delta_agent_lines_removed_reverted: i64,
-
-    /// **[delta]** Lines added by the human during this turn.
-    #[serde(default)]
-    pub delta_human_lines_added: i64,
-
-    /// **[delta]** Lines removed by the human during this turn.
-    #[serde(default)]
-    pub delta_human_lines_removed: i64,
-
-    /// **[delta]** Human-added lines that were reverted during this turn.
-    #[serde(default)]
-    pub delta_human_lines_added_reverted: i64,
-
-    /// **[delta]** Human-removed lines that were reverted during this turn.
-    #[serde(default)]
-    pub delta_human_lines_removed_reverted: i64,
-
-    /// **[delta]** New distinct files touched by the agent during this turn.
-    #[serde(default)]
-    pub delta_agent_files_touched: i64,
-
-    /// **[delta]** New distinct files touched by the human during this turn.
-    #[serde(default)]
-    pub delta_human_files_touched: i64,
-
-    /// **[delta]** New distinct files touched (union of agent + human)
-    /// during this turn.
-    #[serde(default)]
-    pub delta_total_files_touched: i64,
-
-    /// **[context]** Whether LOC (lines-of-code) attribution tracking was
-    /// enabled for this session.  When `false`, all `delta_*` LOC fields
-    /// above are meaningless zeros — the hunk tracker was never spawned.
-    /// When `true`, zeros mean "tracking was active but no code changed."
-    /// Defaults to `false` for backwards-compat with old clients that
-    /// don't send this field.
-    #[serde(default)]
-    pub loc_tracking_enabled: bool,
-}
-
-/// Response from the turn-deltas endpoint.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SessionTurnDeltaResponse {
-    pub session_id: String,
-    pub turn_number: i64,
-    pub recorded_at: chrono::DateTime<chrono::Utc>,
-}
-
 /// HTTP error from the feedback/signals API with a preserved status code.
 ///
-/// Used to let callers distinguish auth failures (401) from transient errors
-/// without fragile string matching on error messages.
+/// Used to let callers distinguish auth failures (401) from transient errors without fragile string matching on error messages.
 #[derive(Debug, thiserror::Error)]
 #[error("{context} failed with status {status}: {body}")]
 pub(crate) struct FeedbackApiError {
@@ -355,7 +86,6 @@ impl FeedbackClient {
         self
     }
 
-    /// Create a FeedbackClient with a custom reqwest Client.
     pub fn with_client(
         http: reqwest::Client,
         base_url: impl Into<String>,
@@ -374,16 +104,15 @@ impl FeedbackClient {
 
     pub(crate) fn with_auth_manager(
         mut self,
-        auth_manager: std::sync::Arc<crate::auth::AuthManager>,
+        auth_manager: std::sync::Arc<xai_grok_login::AuthManager>,
     ) -> Self {
         self.credentials = self.credentials.with_auth_manager(auth_manager);
         self.rebuild_middleware();
         self
     }
 
-    /// Whether this client can refresh credentials on a 401: requires both an
-    /// attached `AuthManager` and a wired `TokenRefresher` (e.g. static
-    /// deployment-key sessions return false).
+    /// Whether this client can refresh credentials on a 401.
+    /// Requires both an attached `AuthManager` and a `TokenRefresher`; a static deployment-key session returns false.
     pub(crate) fn has_token_refresher(&self) -> bool {
         self.credentials
             .auth_manager()
@@ -401,14 +130,9 @@ impl FeedbackClient {
         credentials: &crate::util::grok_auth_credentials::GrokAuthCredentials,
     ) -> reqwest_middleware::ClientWithMiddleware {
         let provider = Self::make_auth_provider(credentials);
-        // max_retries=0: the middleware stamps the auth header but does NOT
-        // drive its own ServerRejected recovery on 401.  Background consumers
-        // (signals sync, turn deltas) handle retry at the application level
-        // via with_one_shot_auth_retry / try_refresh_and_retry_sync, which
-        // first wait for the proactive refresh to complete before falling back
-        // to active recovery.  This prevents the 401-amplification pattern
-        // where the middleware's eager ServerRejected refresh races with every
-        // other auth consumer during token-expiry windows.
+        // max_retries=0: the middleware stamps the auth header but does NOT drive its own ServerRejected recovery on 401
+        // Background consumers (signals sync, turn deltas) retry at the application level via with_one_shot_auth_retry or try_refresh_and_retry_sync
+        // Those first wait for the proactive refresh to complete before falling back to active recovery Otherwise the middleware's eager ServerRejected refresh would race every other auth consumer during token-expiry windows and amplify 401s
         reqwest_middleware::ClientBuilder::new(http.clone())
             .with(xai_grok_auth::AuthRetryMiddleware::new(provider, 0))
             .build()
@@ -419,10 +143,11 @@ impl FeedbackClient {
     ) -> Arc<dyn xai_grok_auth::AuthCredentialProvider> {
         if let Some(am) = credentials.auth_manager() {
             Arc::new(
-                crate::auth::credential_provider::ShellAuthCredentialProvider::new(
+                xai_grok_login::credential_provider::ShellAuthCredentialProvider::with_deployment_id_resolver(
                     am.clone(),
                     credentials.deployment_key.clone(),
                     credentials.alpha_test_key.clone(),
+                    std::sync::Arc::new(crate::managed_config::resolve_deployment_id),
                 ),
             )
         } else {
@@ -446,13 +171,12 @@ impl FeedbackClient {
         if response.status() == reqwest::StatusCode::UNAUTHORIZED
             && let Some(am) = self.credentials.auth_manager()
         {
-            // Attribute what the middleware stamped, never a re-resolved or
-            // constructor-time credential (see `StampedBearerSuffix`).
-            // `None` = the request went out with no bearer.
-            crate::auth::attribution::record_consumer_401(
+            // Attribute what the middleware stamped, never a re-resolved or constructor-time credential (see `StampedBearerSuffix`)
+            // `None` means the request went out with no bearer
+            xai_grok_login::attribution::record_consumer_401(
                 am.as_ref(),
                 self.session_id.as_deref(),
-                crate::auth::attribution::ConsumerKind::FeedbackClient,
+                xai_grok_login::attribution::ConsumerKind::FeedbackClient,
                 op,
                 stamp.map(|s| s.0.as_str()),
             );
@@ -464,14 +188,13 @@ impl FeedbackClient {
             return false;
         };
         manager
-            .try_recover_unauthorized(crate::auth::recovery::RecoverySource::Background)
+            .try_recover_unauthorized(xai_grok_login::recovery::RecoverySource::Background)
             .await
     }
 
-    /// Wait for another consumer (proactive refresh, main request path) to
-    /// refresh the token.  Returns `true` if the token changed within the
-    /// timeout.  Background consumers call this before driving their own
-    /// `ServerRejected` recovery to avoid amplifying 401 bursts.
+    /// Wait for another consumer (proactive refresh, main request path) to refresh the token.
+    /// Returns `true` if the token changed within the timeout.
+    /// Background consumers call this before driving their own `ServerRejected` recovery to avoid amplifying 401 bursts.
     pub(crate) async fn wait_for_token_refresh(&self, timeout: std::time::Duration) -> bool {
         let Some(manager) = self.credentials.auth_manager() else {
             return false;
@@ -479,8 +202,7 @@ impl FeedbackClient {
         manager.wait_for_token_refresh(timeout).await
     }
 
-    /// `true` iff the attached `AuthManager` has a non-aged-out
-    /// permanent-failure verdict from the IdP.
+    /// `true` iff the attached `AuthManager` holds a permanent-failure verdict from the IdP that has not aged out.
     pub(crate) fn is_auth_permanently_failed(&self) -> bool {
         self.credentials
             .auth_manager()
@@ -504,8 +226,8 @@ impl FeedbackClient {
                 crate::http::CLIENT_MODE_HEADER,
                 crate::http::process_client_mode(),
             );
-        // User-token auth requires the companion marker header for proxy
-        // routing. Deployment keys do not need it.
+        // User-token auth requires the companion marker header for proxy routing
+        // Deployment keys do not need it
         if self.credentials.deployment_key.is_none() {
             builder.header("X-XAI-Token-Auth", "xai-grok-cli")
         } else {
@@ -518,7 +240,7 @@ impl FeedbackClient {
         request: RequestBuilder,
         context: &'static str,
     ) -> Result<T> {
-        let request = xai_file_utils::trace_context::inject_trace_context_into_request(request);
+        let request = xai_grok_otel::inject_trace_context_into_request(request);
         let req = request.build().context(context)?;
         let (response, stamp) = xai_grok_auth::execute_with_stamp(&self.client, req)
             .await
@@ -552,7 +274,7 @@ impl FeedbackClient {
     }
 
     async fn send_empty(&self, request: RequestBuilder, context: &'static str) -> Result<()> {
-        let request = xai_file_utils::trace_context::inject_trace_context_into_request(request);
+        let request = xai_grok_otel::inject_trace_context_into_request(request);
         let req = request.build().context(context)?;
         let (response, stamp) = xai_grok_auth::execute_with_stamp(&self.client, req)
             .await
@@ -594,18 +316,6 @@ impl FeedbackClient {
         self.send_json(request, "Signals update").await
     }
 
-    /// Record a session event.
-    /// POST /v1/sessions/{session_id}/events
-    pub async fn record_event(
-        &self,
-        session_id: &str,
-        event: &SessionEventRequest,
-    ) -> Result<SessionEventResponse> {
-        let url = format!("{}/sessions/{}/events", self.base_url, session_id);
-        let request = self.post(&url).json(event);
-        self.send_json(request, "Event recording").await
-    }
-
     /// Submit feedback.
     /// POST /v1/feedback
     pub async fn submit_feedback(
@@ -641,12 +351,8 @@ impl FeedbackClient {
         self.send_json(request, "Dismissing feedback request").await
     }
 
-    /// Create a new feedback request.
-    /// POST /v1/feedback/requests
-    ///
-    /// Called when the agent decides to request feedback (based on heuristics).
-    /// This creates a record in BigQuery before the FeedbackRequest notification
-    /// is sent to the client.
+    /// Create a new feedback request. POST /v1/feedback/requests Called when the agent decides to request feedback (based on heuristics).
+    /// This creates a record in the analytics store before the FeedbackRequest notification is sent to the client.
     pub async fn create_feedback_request(
         &self,
         input: &CreateFeedbackRequestInput,
@@ -658,9 +364,7 @@ impl FeedbackClient {
 
     /// Get the active feedback heuristics configuration.
     /// GET /v1/feedback/config
-    ///
-    /// This fetches the current feedback configuration from the server,
-    /// including tier thresholds, sample rates, and feedback modes.
+    /// This fetches the current feedback configuration from the server, including tier thresholds, sample rates, and feedback modes.
     pub async fn get_feedback_config(&self) -> Result<FeedbackHeuristicsConfig> {
         let url = format!("{}/feedback/config", self.base_url);
         let request = self.get(&url);
@@ -669,9 +373,7 @@ impl FeedbackClient {
 
     /// Send a per-turn delta to the backend.
     /// POST /v1/sessions/{session_id}/turn-deltas
-    ///
-    /// Called at the end of every turn to stream time-series data for
-    /// regression tracking and session analytics.
+    /// Called at the end of every turn to stream time-series data for regression tracking and session analytics.
     pub(crate) async fn send_turn_delta(
         &self,
         session_id: &str,
@@ -683,7 +385,6 @@ impl FeedbackClient {
     }
 }
 
-/// Helper to create a SessionSignalsUpdate from local session signals.
 pub fn signals_to_update(
     signals: &crate::session::signals::SessionSignals,
     client_type: ClientType,
@@ -715,9 +416,8 @@ pub fn signals_to_update(
         max_time_to_first_token_ms: Some(signals.max_time_to_first_token_ms as i64),
         latency_sample_count: Some(signals.latency_sample_count as i64),
         // ITL metrics (session-level aggregates)
-        // Guard p50/p99 with itl_sample_count > 0 so that fresh sessions
-        // (no ITL measured) send None → SQL NULL, preserving the "not yet
-        // reported" semantic in the nullable PG columns.
+        // Guard p50/p99 with itl_sample_count > 0 so fresh sessions (no ITL measured) send None, which lands as SQL NULL
+        // That preserves the "not yet reported" meaning of the nullable PG columns
         last_itl_p50_ms: signals.itl_p50_ms.map(|v| v as i64),
         last_itl_p99_ms: signals.itl_p99_ms.map(|v| v as i64),
         worst_itl_max_ms: signals.itl_max_ms.map(|v| v as i64),
@@ -771,14 +471,8 @@ pub fn signals_to_update(
 }
 
 /// Build a `SessionTurnDelta` from a `TurnDeltaSnapshot` produced by the signals actor.
-///
-/// `feedback_requests_sent` and `last_feedback_request_at` are supplied by the
-/// caller (from `FeedbackHeuristics`) because the signals actor does not track
-/// feedback state.
-/// `request_id` is the prompt/request identifier for this turn.
-/// `loc_tracking_enabled` indicates whether the LOC attribution hunk tracker
-/// was active for this session. When `false`, LOC delta fields are zeros
-/// because the tracker was never spawned — not because no code changed.
+/// `feedback_requests_sent` and `last_feedback_request_at` come from the caller (`FeedbackHeuristics`); the signals actor does not track feedback state. `request_id` is the prompt/request identifier for this turn.
+/// `loc_tracking_enabled` indicates whether the LOC attribution hunk tracker was active for this session. When `false`, LOC delta fields are zeros because the tracker was never spawned, not because no code changed.
 pub(crate) fn snapshot_to_turn_delta(
     snapshot: &crate::session::signals::TurnDeltaSnapshot,
     client_type: ClientType,
@@ -787,8 +481,7 @@ pub(crate) fn snapshot_to_turn_delta(
     last_feedback_request_at: Option<chrono::DateTime<chrono::Utc>>,
     loc_tracking_enabled: bool,
     turn_duration_ms: Option<i64>,
-    turn_outcome: Option<String>,
-    model_fingerprint: Option<String>,
+    turn_outcome: TurnOutcome,
 ) -> SessionTurnDelta {
     let metadata = {
         let mut metadata = serde_json::Map::new();
@@ -831,8 +524,8 @@ pub(crate) fn snapshot_to_turn_delta(
         context_window_usage: c.context_window_usage as i64,
         model_id: c.primary_model_id.clone(),
         turn_duration_ms,
-        turn_outcome,
-        model_fingerprint,
+        turn_outcome: Some(turn_outcome),
+        model_fingerprint: snapshot.model_fingerprint.clone(),
         tools_used_this_turn: d.tools_this_turn.clone(),
         error_types_this_turn: d.error_types_this_turn.clone(),
         tool_outcomes: if d.tool_outcomes_this_turn.is_empty() {
@@ -975,6 +668,7 @@ mod tests {
             turn_input_tokens: 0,
             turn_output_tokens: 0,
             turn_cached_input_tokens: 0,
+            model_fingerprint: Some("fp_test_123".to_string()),
         };
 
         let delta = snapshot_to_turn_delta(
@@ -985,8 +679,7 @@ mod tests {
             None,
             false,
             Some(1500),
-            Some("completed".to_string()),
-            Some("fp_test_123".to_string()),
+            TurnOutcome::Completed,
         );
 
         assert_eq!(
@@ -997,14 +690,16 @@ mod tests {
             }))
         );
         assert_eq!(delta.turn_duration_ms, Some(1500));
-        assert_eq!(delta.turn_outcome.as_deref(), Some("completed"));
+        assert_eq!(
+            serde_json::to_value(&delta).unwrap()["turnOutcome"],
+            "completed"
+        );
         assert_eq!(delta.model_fingerprint.as_deref(), Some("fp_test_123"));
     }
 
     #[test]
     fn test_signals_to_update_fresh_session_itl_none() {
-        // When itl_sample_count == 0, p50/p99 must be None (SQL NULL)
-        // to preserve the "not yet reported" semantic in the nullable PG columns.
+        // When itl_sample_count == 0, p50/p99 must be None (SQL NULL) to keep the "not yet reported" meaning of the nullable PG columns
         let signals = crate::session::signals::SessionSignals {
             turn_count: 1,
             user_message_count: 1,
@@ -1124,17 +819,17 @@ mod forbidden_tests {
     }
 }
 
-/// Auth resolve + 401 recovery tests.
+/// Auth resolve and 401 recovery tests.
 #[cfg(test)]
 mod auth_refresh_tests {
     use super::*;
-    use crate::auth::{AuthManager, AuthMode, GrokAuth, GrokComConfig};
     use axum::{Router, routing::get};
     use chrono::{Duration, Utc};
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use tokio::net::TcpListener;
+    use xai_grok_login::{AuthManager, AuthMode, GrokAuth, GrokComConfig};
 
     async fn start_server(router: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1145,8 +840,8 @@ mod auth_refresh_tests {
         (addr, handle)
     }
 
-    /// `send_empty` must sign with the AuthManager bearer. Pre-fix
-    /// it skipped the resolve and went out unauthenticated.
+    /// `send_empty` must sign with the AuthManager bearer.
+    /// It used to skip the resolve and go out unauthenticated.
     #[tokio::test]
     async fn send_empty_signs_request_with_active_auth() {
         let captured = Arc::new(parking_lot::Mutex::new(None::<String>));
@@ -1197,8 +892,7 @@ mod auth_refresh_tests {
         assert_eq!(sent, "Bearer fresh-from-auth-manager");
     }
 
-    /// Outgoing bearer must match `AuthManager.current()`, not the
-    /// FeedbackClient's build-time snapshot.
+    /// Outgoing bearer must match `AuthManager.current()`, not the FeedbackClient's build-time snapshot.
     #[tokio::test]
     async fn feedback_client_uses_active_auth_for_each_request() {
         let captured = Arc::new(parking_lot::Mutex::new(None::<String>));
@@ -1244,20 +938,19 @@ mod auth_refresh_tests {
         );
     }
 
-    /// Counts refresh() calls -- proves disk-reload short-circuits
-    /// before the IdP is hit.
+    /// Counts refresh() calls; proves the disk reload short-circuits before the IdP is hit.
     struct CountingRefresher {
         calls: Arc<AtomicU32>,
     }
 
     #[async_trait::async_trait]
-    impl crate::auth::refresh::TokenRefresher for CountingRefresher {
+    impl xai_grok_login::refresh::TokenRefresher for CountingRefresher {
         async fn refresh(
             &self,
-            _reason: crate::auth::refresh::RefreshReason,
-        ) -> crate::auth::refresh::RefreshOutcome {
+            _reason: xai_grok_login::refresh::RefreshReason,
+        ) -> xai_grok_login::refresh::RefreshOutcome {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            crate::auth::refresh::RefreshOutcome::Success(Box::new(GrokAuth {
+            xai_grok_login::refresh::RefreshOutcome::Success(Box::new(GrokAuth {
                 key: "fresh-from-refresher".into(),
                 auth_mode: AuthMode::Oidc,
                 create_time: Utc::now(),
@@ -1271,8 +964,7 @@ mod auth_refresh_tests {
         }
     }
 
-    /// Disk has a fresher RT than memory; recovery must succeed via
-    /// reload without calling the refresher.
+    /// Disk has a fresher RT than memory; recovery must succeed via reload without calling the refresher.
     #[tokio::test]
     async fn try_refresh_credentials_picks_up_disk_rotation_without_hitting_idp() {
         let dir = tempfile::tempdir().unwrap();
@@ -1334,8 +1026,7 @@ mod auth_refresh_tests {
         );
     }
 
-    /// LegacySession -> `ServerRejectedNoRecovery` -> `false`
-    /// (caller stops retrying, doesn't loop on a no-op refresher).
+    /// A LegacySession yields `ServerRejectedNoRecovery`, which surfaces as `false`; the caller stops retrying instead of looping on a no-op refresher.
     #[tokio::test]
     async fn try_refresh_credentials_returns_false_on_terminal_failure() {
         let dir = tempfile::tempdir().unwrap();

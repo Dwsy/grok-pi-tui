@@ -15,17 +15,12 @@ use xai_grok_auth::{AuthCredentialProvider, StaticAuthCredentialProvider};
 use crate::storage_client::{Auth401AttributionCallback, StaticGrokAuth, StorageClient};
 
 /// Threshold for switching to multipart upload (50 MB).
-///
-/// Files larger than this use `StorageClient::upload_multipart()` (signed URLs,
-/// parts uploaded directly to cloud storage) instead of streaming through the proxy.
+/// Larger files use signed-URL multipart (parts go directly to storage) instead of streaming through the proxy.
 pub const MULTIPART_UPLOAD_THRESHOLD: u64 = 50 * 1024 * 1024;
 
-/// Construct a `StorageClient` for proxy-mode uploads. Uses the caller-provided
-/// refresh-aware credentials when present, otherwise falls back to a
-/// `StaticGrokAuth` carrying the inline user / deployment keys from
-/// `UploadMethod::Proxy`. The optional `http_client` lets the caller pass a
-/// shell-tuned client (HTTP/2 keep-alive, conn pool tuning); when `None` we
-/// fall back to `reqwest::Client::new()`.
+/// Construct a `StorageClient` for proxy-mode uploads.
+/// Uses caller-provided refresh-aware credentials, else a `StaticGrokAuth` from inline keys.
+/// Optional `http_client` lets the caller pass a shell-tuned client; `None` falls back to `Client::new()`.
 fn build_proxy_client_with_fallback(
     proxy_base_url: &str,
     user_token: &str,
@@ -48,10 +43,8 @@ fn build_proxy_client_with_fallback(
     client
 }
 
-/// Implement `StorageConfig` for `TraceExportConfig`. Lives here (alongside the
-/// trait + upload helpers) so callers can use the shared upload helpers without
-/// a foreign-trait impl. Refresh-aware callers still get credential /
-/// attribution wiring via `TraceExportConfigWithAuth` (in shell).
+/// Implement `StorageConfig` for `TraceExportConfig` here so callers can use shared upload helpers.
+/// Refresh-aware callers still get credential wiring via `TraceExportConfigWithAuth` (in shell).
 impl StorageConfig for crate::TraceExportConfig {
     fn bucket_url(&self) -> &str {
         // For proxy mode, bucket_url may be None (proxy determines it from ACLs).
@@ -69,11 +62,9 @@ impl StorageConfig for crate::TraceExportConfig {
 pub trait StorageConfig {
     fn bucket_url(&self) -> &str;
     fn upload_method(&self) -> &UploadMethod;
-    /// Optional refresh-aware credentials for proxy-mode uploads. When
-    /// `Some(_)`, `upload_*_via_proxy` helpers construct a `StorageClient`
-    /// via `StorageClient::with_provider(...)` so 401 retries can request
-    /// a token refresh. Default `None` for configs that ship a static
-    /// user-token only.
+    /// Optional refresh-aware credentials for proxy-mode uploads.
+    /// When `Some`, upload helpers use `StorageClient::with_provider` so 401 retries can refresh.
+    /// Default `None` for configs that ship a static user-token only.
     fn proxy_credentials(&self) -> Option<Arc<dyn AuthCredentialProvider>> {
         None
     }
@@ -83,13 +74,9 @@ pub trait StorageConfig {
     fn proxy_attribution(&self) -> Option<Arc<dyn Auth401AttributionCallback>> {
         None
     }
-    /// Optional HTTP client for proxy-mode uploads. `None` falls back to
-    /// `reqwest::Client::new()` (used by bins/tests). Production callers
-    /// should return shell's tuned `shared_upload_client()` -- HTTP/2
-    /// keep-alive + aggressive connection pool eviction. The trace upload
-    /// queue, feedback uploads, share uploads, and subagent metadata
-    /// uploads all rely on this tuning to avoid stale-connection retries
-    /// during backoff loops.
+    /// Optional HTTP client for proxy-mode uploads. `None` falls back to `reqwest::Client::new()`.
+    /// Production should return the shell-tuned client (HTTP/2 keep-alive, aggressive pool eviction).
+    /// Upload queues rely on that tuning to avoid stale-connection retries during backoff.
     fn proxy_http_client(&self) -> Option<reqwest::Client> {
         None
     }
@@ -180,15 +167,9 @@ pub async fn upload_bytes<C: StorageConfig>(
     }
 }
 
-/// Like [`upload_bytes`], but in proxy mode uses a pre-signed PUT URL
-/// so the data goes directly to storage instead of through the proxy.
-///
-/// This avoids the nginx `proxy-body-size: 4m` limit on the HTTP ingress and
-/// the Cloudflare 100 MB limit, making it safe for arbitrarily large payloads
-/// (e.g. session share data).
-///
-/// In direct mode this is identical to `upload_bytes` (the service
-/// account already talks to storage directly).
+/// Like [`upload_bytes`], but proxy mode uses a pre-signed PUT so data bypasses the proxy.
+/// Avoids nginx `proxy-body-size` and the Cloudflare 100 MB limit for arbitrarily large payloads.
+/// Direct mode is identical to `upload_bytes`.
 pub async fn upload_bytes_signed<C: StorageConfig>(
     config: &C,
     object_path: &str,
@@ -229,14 +210,9 @@ pub async fn upload_bytes_signed<C: StorageConfig>(
     }
 }
 
-/// Uploads a file to cloud storage by streaming from disk.
-///
-/// Preferred over `upload_bytes` for the background upload queue because:
-/// - Never loads the full file into memory (critical for multi-GB dedup blobs)
-/// - For Proxy mode with large files (>50 MB), uses signed-URL multipart upload
-///   so data travels directly to storage, bypassing the proxy's body size limits
-/// - For Proxy mode with small files, uses `StorageClient::upload_file()` (streaming)
-/// - For Direct mode, streams via the gcloud-storage crate
+/// Uploads a file by streaming from disk. Preferred for the background queue: never loads the full file.
+/// Proxy + large files use signed-URL multipart (bypass body limits); small files stream through the proxy.
+/// Direct mode streams via the gcloud-storage crate.
 pub async fn upload_file<C: StorageConfig>(
     config: &C,
     object_path: &str,
@@ -311,9 +287,7 @@ pub async fn upload_file<C: StorageConfig>(
 }
 
 /// Uploads an async reader to cloud storage, dispatching to the appropriate backend.
-///
-/// Used for streaming compressed uploads where the reader is consumed once per attempt.
-/// Callers handle retries by recreating the reader.
+/// The reader is consumed once per attempt; callers handle retries by recreating it.
 pub async fn upload_stream<C: StorageConfig, R>(
     config: &C,
     object_path: &str,
@@ -421,11 +395,8 @@ async fn upload_stream_direct<R: tokio::io::AsyncRead + Send + Sync + 'static>(
 }
 
 /// Upload a file through the cli-chat-proxy, choosing multipart vs streaming based on size.
-///
-/// Files > `MULTIPART_UPLOAD_THRESHOLD` use signed-URL multipart upload (parts go
-/// directly to cloud storage, not through the proxy HTTP body). This avoids the proxy's request
-/// body size limit and the timeout issues that cause 55% of upload failures for large
-/// dedup blobs.
+/// Files above `MULTIPART_UPLOAD_THRESHOLD` use signed-URL multipart so parts skip the proxy body.
+/// Avoids the proxy body-size limit and the timeouts that dominate large-blob failures.
 async fn upload_file_via_proxy(
     proxy_base_url: &str,
     user_token: &str,
@@ -615,15 +586,8 @@ async fn upload_bytes_via_proxy(
     Ok(format!("gs://{}/{}", response.bucket, response.path))
 }
 
-/// Uploads bytes to cloud storage via a pre-signed PUT URL obtained from the proxy.
-///
-/// This completely bypasses the proxy for the data transfer, avoiding
-/// nginx / Cloudflare body-size limits.  The proxy is only contacted
-/// once (to generate the signed URL), after which the bytes go straight
-/// to cloud storage.
-///
-/// Use this when the payload may exceed 4 MB (the nginx `proxy-body-size`
-/// on the HTTP ingress) — e.g. session share data.
+/// Uploads bytes via a pre-signed PUT URL from the proxy. Data bypasses the proxy entirely.
+/// The proxy is contacted once to mint the URL. Use when the payload may exceed the 4 MB ingress limit.
 pub async fn upload_bytes_via_signed_url(
     proxy_base_url: &str,
     user_token: &str,
@@ -781,12 +745,8 @@ mod tests {
         storage_called: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
 
-    /// Start a minimal axum server (with proper State extractors) that records
-    /// which upload routes were hit. Uses the same State extractor pattern as
-    /// storage_client_tests.rs to ensure reliable flag updates in Bazel CI.
-    ///
-    /// Returns (addr, state) where state.multipart_called / state.storage_called
-    /// are set to true when the respective route is hit.
+    /// Start a minimal axum server that records which upload routes were hit.
+    /// Same State extractor pattern as storage_client_tests so flag updates are reliable in Bazel CI.
     async fn start_dispatch_test_server() -> (std::net::SocketAddr, DispatchState) {
         use axum::{
             Router, body::Body, extract::State, http::StatusCode, response::IntoResponse,

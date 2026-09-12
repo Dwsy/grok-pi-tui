@@ -16,16 +16,9 @@ use super::HunkTrackerActor;
 use super::file_utils::{classify_bytes, missing_content};
 use super::state::{FileContentState, GitRepoState, RepoSyncState};
 
-/// Open or discover a gix repository depending on cached state.
-///
-/// When a `ThreadSafeRepository` is already cached (`Discovered`), this calls
-/// `.to_thread_local()` which is a cheap `Arc` clone — no config parsing, no
-/// HEAD resolution, no filesystem discovery. On first call (`Unknown`), it
-/// runs `gix::discover()` and converts the result to a `ThreadSafeRepository`
-/// for caching.
-///
-/// Returns `(repo, prefix, discovered)` where `discovered` is `Some` only when
-/// this was the first discovery attempt (so the caller can cache the result).
+/// When a `ThreadSafeRepository` is already cached (`Discovered`), this calls `.to_thread_local()` which is a cheap `Arc`
+/// clone — no config parsing, no HEAD resolution, no filesystem discovery. Returns `(repo, prefix, discovered)` where
+/// `discovered` is `Some` only when this was the first discovery attempt (so the caller can cache the result).
 #[allow(clippy::type_complexity)]
 fn open_or_discover(
     cached_state: &GitRepoState,
@@ -79,17 +72,9 @@ fn canonicalize_or_parent(path: &Path) -> PathBuf {
 }
 
 impl HunkTrackerActor {
-    /// Refresh git dirty cache and staged cache by querying git status.
-    /// Uses the combined status iterator to get both index→worktree (dirty)
-    /// and HEAD→index (staged) changes in a single pass.
-    /// In AllDirty mode, this also starts tracking all dirty files.
-    ///
-    /// `scope` limits the scan to the given working-dir-relative paths:
-    /// pathspecs prune the untracked dirwalk and the index-entry walk and
-    /// filter the tree-index diff — but that diff still materializes the
-    /// full HEAD-tree index per call (gix limitation), an O(repo) floor.
-    /// `None` — and, by gix semantics, an empty list — scans the full
-    /// worktree, so callers wanting "scan nothing" must skip the call.
+    /// Refresh git dirty cache and staged cache by querying git status. Uses the combined status iterator to get both
+    /// index→worktree (dirty) and HEAD→index (staged) changes in a single pass. `None` — and, by gix semantics, an empty list
+    /// — scans the full worktree, so callers wanting "scan nothing" must skip the call.
     pub(super) async fn refresh_git_dirty_cache(&mut self, scope: Option<Vec<PathBuf>>) {
         // Early return if we already know this isn't a git repo
         if matches!(self.git_repo_state, GitRepoState::NotARepo) {
@@ -152,13 +137,9 @@ impl HunkTrackerActor {
                 }
             };
 
-            // `:(top)` anchors each pathspec to the repo root — without it gix
-            // prepends a process-cwd-derived prefix (`Repository::prefix`),
-            // which is unrelated to this actor's working_dir. `literal` stops
-            // path bytes from being interpreted as globs. `into_bstr` is
-            // byte-preserving on unix; on Windows it requires UTF-8 (a panic
-            // there aborts under panic=abort; with unwind it is a JoinError and
-            // we keep previous caches). Separators must be `/` for gix paths.
+            // `:(top)` anchors each pathspec to the repo root — without it gix prepends a process-cwd-derived prefix
+            // (`Repository::prefix`), which is unrelated to this actor's working_dir. `literal` stops path bytes from being
+            // interpreted as globs. Separators must be `/` for gix paths.
             let pathspecs: Vec<BString> = scope
                 .map(|rels| {
                     rels.iter()
@@ -320,13 +301,6 @@ impl HunkTrackerActor {
     }
 
     /// Read baseline content from git HEAD.
-    ///
-    /// # Arguments
-    /// * `path` - Absolute path to the file
-    ///
-    /// Returns FileContentState::Missing if file doesn't exist in HEAD,
-    /// FileContentState::Binary/TooLarge for non-text or large files,
-    /// FileContentState::Full for text content within size limits.
     pub(super) async fn read_baseline(&mut self, path: &Path) -> FileContentState {
         // Early return if we already know this isn't a git repo
         if matches!(self.git_repo_state, GitRepoState::NotARepo) {
@@ -419,15 +393,9 @@ impl HunkTrackerActor {
         }
     }
 
-    /// Read baseline content from git HEAD for multiple files in a single
-    /// `spawn_blocking` call. Opens the repo and resolves HEAD once, then
-    /// looks up every path in the same tree, avoiding the per-file overhead
-    /// of `read_baseline`.
-    ///
-    /// Returns a map from absolute path to its baseline content state.
-    /// FileContentState::Missing for files not in HEAD,
-    /// FileContentState::Binary/TooLarge for non-text or large files,
-    /// FileContentState::Full for text content within size limits.
+    /// Opens the repo and resolves HEAD once, then looks up every path in the same tree, avoiding the per-file overhead of
+    /// `read_baseline`. FileContentState::Missing for files not in HEAD, FileContentState::Binary/TooLarge for non-text or
+    /// large files, FileContentState::Full for text content within size limits.
     pub(super) async fn read_baselines_batch(
         &mut self,
         paths: &[PathBuf],

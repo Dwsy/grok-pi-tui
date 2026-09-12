@@ -14,9 +14,9 @@ fn main_cli_tools_override_preserves_profile_injection_policy() {
         assert_eq!(definition.inject_default_tools, expected_injection);
     }
 }
-/// `AutoModeConfig` parses identically from a local `[auto_mode]` TOML table
-/// and an equivalent remote settings JSON object (serde is format-agnostic). The
-/// lean shape is all scalars/enums, so no custom tolerant deser is needed.
+/// `AutoModeConfig` parses identically from a local `[auto_mode]` TOML table and an equivalent remote settings JSON object.
+/// Serde is format-agnostic.
+/// The lean shape is all scalars/enums, so no custom tolerant deserializer is needed.
 #[test]
 fn auto_mode_config_parses_from_toml_and_json_equivalently() {
     use xai_grok_workspace::permission::ClassifierPromptType;
@@ -125,11 +125,8 @@ fn laziness_detector_block_round_trips_through_serde() {
     assert_eq!(cfg.min_confidence, Some(0.8));
     assert_eq!(cfg.include_reasoning, Some(false));
 }
-/// Pins all three states of the per-model `include_reasoning`
-/// override (`Some(true)`, `Some(false)`, absent → `None`) so a
-/// future drift on the `#[serde(default)]` attribute or the field
-/// type fails the test rather than silently changing the resolved
-/// default.
+/// Pins all three states of the per-model `include_reasoning` override (`Some(true)`, `Some(false)`, and absent giving `None`).
+/// A future drift on the `#[serde(default)]` attribute or the field type fails the test rather than silently changing the resolved default.
 #[test]
 fn laziness_detector_include_reasoning_serde_states() {
     let some_true: LazinessDetectorPerModelConfig =
@@ -291,6 +288,15 @@ fn re_resolve_runtime_fields_refreshes_typed_memory_from_raw_config() {
     assert_eq!(cfg.memory_config.unwrap().search.max_results, 12);
 }
 #[test]
+fn resolved_memory_config_retains_v2_mode_while_disabled() {
+    let raw: toml::Value = toml::from_str("[memory]\nenabled = false\nmode = \"v2\"").unwrap();
+    let mut cfg = Config::new_from_toml_cfg(&raw).unwrap();
+    cfg.re_resolve_runtime_fields(&raw);
+    let memory = cfg.memory_config.expect("resolved config is retained");
+    assert!(!memory.enabled);
+    assert_eq!(memory.mode, crate::config::MemoryMode::V2);
+}
+#[test]
 fn resolve_runtime_fields_propagates_disable_web_search() {
     fn ctx(raw: &toml::Value, disable_web_search: bool) -> RuntimeResolutionContext<'_> {
         RuntimeResolutionContext {
@@ -436,14 +442,13 @@ fn resolve_aux_model_honors_grok_build_override() {
     assert_eq!(resolved.base_url, "https://vendor.example/v1");
     assert_eq!(resolved.api_key.as_deref(), Some("vendor-key"));
 }
-/// Cold cache falls back to the session model, never the xAI proxy;
-/// warm cache serves the provider token at the provider endpoint.
+/// Cold cache falls back to the session model, never the xAI proxy; warm cache serves the provider token at the provider endpoint.
 #[tokio::test]
 async fn aux_model_with_auth_provider_never_reroutes() {
     let endpoints = EndpointsConfig::default();
-    let provider = crate::auth::AuthProviderRef::new(
+    let provider = xai_grok_login::AuthProviderRef::new(
         "aux-provider-test".into(),
-        crate::auth::AuthProviderConfig {
+        xai_grok_login::AuthProviderConfig {
             command: "printf aux-token".into(),
             args: None,
             token_ttl_secs: Some(3600),
@@ -482,9 +487,7 @@ async fn aux_model_with_auth_provider_never_reroutes() {
     assert_eq!(resolved.base_url, "https://litellm.example/v1");
     assert_eq!(resolved.api_key.as_deref(), Some("aux-token"));
 }
-/// The session bearer resolver must never be stamped onto a third-party
-/// sampler: the sampler substitutes the resolver's bearer at request
-/// time.
+/// The session bearer resolver must never be stamped onto a third-party sampler: the sampler substitutes the resolver's bearer at request time.
 #[test]
 fn session_resolver_is_not_stamped_onto_third_party_samplers() {
     #[derive(Debug)]
@@ -496,6 +499,7 @@ fn session_resolver_is_not_stamped_onto_third_party_samplers() {
     }
     let session_cfg = SamplerConfig {
         bearer_resolver: Some(std::sync::Arc::new(SessionResolver)),
+        conversation_group_id: Some("root-group".into()),
         ..SamplerConfig::default()
     };
     let mut third_party = SamplerConfig {
@@ -507,6 +511,13 @@ fn session_resolver_is_not_stamped_onto_third_party_samplers() {
         third_party.bearer_resolver.is_none(),
         "a third-party endpoint must keep its resolved credential"
     );
+    assert_eq!(
+        third_party
+            .conversation_group_id
+            .as_ref()
+            .map(|id| id.as_ref()),
+        Some("root-group")
+    );
     let mut first_party = SamplerConfig {
         base_url: EndpointsConfig::default().resolve_inference_base_url(),
         ..SamplerConfig::default()
@@ -516,15 +527,21 @@ fn session_resolver_is_not_stamped_onto_third_party_samplers() {
         first_party.bearer_resolver.is_some(),
         "first-party aux samplers keep the session refresh behavior"
     );
+    assert_eq!(
+        first_party
+            .conversation_group_id
+            .as_ref()
+            .map(|id| id.as_ref()),
+        Some("root-group")
+    );
 }
-/// A cold cache disables web search rather than sending an
-/// unauthenticated request.
+/// A cold cache disables web search rather than sending an unauthenticated request.
 #[tokio::test]
 async fn web_search_with_auth_provider_requires_warm_cache() {
     let endpoints = EndpointsConfig::default();
-    let provider = crate::auth::AuthProviderRef::new(
+    let provider = xai_grok_login::AuthProviderRef::new(
         "web-search-provider-test".into(),
-        crate::auth::AuthProviderConfig {
+        xai_grok_login::AuthProviderConfig {
             command: "printf ws-token".into(),
             args: None,
             token_ttl_secs: Some(3600),
@@ -562,7 +579,7 @@ async fn web_search_with_auth_provider_requires_warm_cache() {
     .expect("warm cache resolves");
     assert_eq!(resolved.api_key.as_deref(), Some("ws-token"));
 }
-/// GBT-4128: bad `[mcp_servers.*]` entries are dropped, not fatal.
+/// Bad `[mcp_servers.*]` entries are dropped, not fatal.
 #[test]
 fn invalid_mcp_server_stub_does_not_fail_config_load() {
     let raw_config: toml::Value = toml::from_str(
@@ -601,8 +618,7 @@ fn invalid_mcp_server_stub_does_not_fail_config_load() {
     );
     assert!(cfg.mcp_servers["linear"].enabled);
 }
-/// The lenient parser warns per problem and never fails the whole
-/// config.
+/// The lenient parser warns per problem and never fails the whole config.
 #[test]
 fn auth_provider_parse_warnings_are_lenient_and_specific() {
     use super::super::config_model_override_parse::{ConfigWarningKind, WarningTarget};
@@ -825,7 +841,7 @@ fn parses_auth_provider_tables_and_model_reference() {
     let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
     assert_eq!(
         cfg.auth_providers.get("litellm"),
-        Some(&crate::auth::AuthProviderConfig {
+        Some(&xai_grok_login::AuthProviderConfig {
             command: "/usr/local/bin/litellm-token".into(),
             args: Some(vec!["--scope".into(), "corp".into()]),
             token_ttl_secs: Some(3600),
@@ -851,9 +867,8 @@ fn parses_auth_provider_tables_and_model_reference() {
         "declaring an auth provider implies supported_in_api"
     );
 }
-/// A static key shadows a fully defined provider through the real
-/// `resolve_model_list` + `attach_trusted_config` pipeline (not a
-/// hand-built ref): the static key wins even with the provider cache warm.
+/// A static key shadows a fully defined provider through the real `resolve_model_list` and `attach_trusted_config` pipeline (not a hand-built ref).
+/// The static key wins even with the provider cache warm.
 #[tokio::test]
 async fn static_key_shadows_defined_provider_through_pipeline() {
     let raw_config: toml::Value = toml::from_str(
@@ -915,9 +930,9 @@ fn undefined_auth_provider_fails_closed() {
 async fn resolve_credentials_serves_cached_provider_token() {
     use xai_chat_state::AuthType;
     let mut model = test_model_entry("m", "https://litellm.example/v1", None, None, None);
-    let provider = crate::auth::AuthProviderRef::new(
+    let provider = xai_grok_login::AuthProviderRef::new(
         "resolve-creds-test".into(),
-        crate::auth::AuthProviderConfig {
+        xai_grok_login::AuthProviderConfig {
             command: "printf provider-minted-token".into(),
             args: None,
             token_ttl_secs: Some(3600),
@@ -934,17 +949,16 @@ async fn resolve_credentials_serves_cached_provider_token() {
     assert_eq!(creds.auth_type, AuthType::ApiKey);
     assert_eq!(creds.base_url, "https://litellm.example/v1");
 }
-/// A set `env_key` shadows even a warm provider cache at resolve time, so
-/// the static credential wins on the wire and the provider never governs.
+/// A set `env_key` shadows even a warm provider cache at resolve time, so the static credential wins on the wire and the provider never governs.
 #[tokio::test]
 async fn set_env_key_shadows_warm_provider_at_resolve_time() {
     use xai_grok_test_support::EnvGuard;
     let var = "GROK_TEST_ENVKEY_SHADOW";
     let _guard = EnvGuard::set(var, "env-token");
     let mut model = test_model_entry("m", "https://litellm.example/v1", None, Some(var), None);
-    let provider = crate::auth::AuthProviderRef::new(
+    let provider = xai_grok_login::AuthProviderRef::new(
         "env-shadow-test".into(),
-        crate::auth::AuthProviderConfig {
+        xai_grok_login::AuthProviderConfig {
             command: "printf provider-token".into(),
             args: None,
             token_ttl_secs: Some(3600),
@@ -970,7 +984,7 @@ async fn set_env_key_shadows_warm_provider_at_resolve_time() {
 #[test]
 fn prefetched_entry_provider_config_comes_from_trusted_tables_only() {
     let mut entry = test_model_entry("m", "https://cache.example/v1", None, None, None);
-    let smuggled: crate::auth::AuthProviderRef =
+    let smuggled: xai_grok_login::AuthProviderRef =
         serde_json::from_str(r#"{"name": "cache-smuggle-test", "config": {"command": "evil"}}"#)
             .unwrap();
     entry.auth_provider = Some(smuggled);
@@ -984,11 +998,14 @@ fn prefetched_entry_provider_config_comes_from_trusted_tables_only() {
         None,
         "an unusable provider fails closed"
     );
-    assert_eq!(provider.config, crate::auth::AuthProviderConfig::default());
+    assert_eq!(
+        provider.config,
+        xai_grok_login::AuthProviderConfig::default()
+    );
     let mut cfg = Config::default();
     cfg.auth_providers.insert(
         "cache-smuggle-test".to_string(),
-        crate::auth::AuthProviderConfig {
+        xai_grok_login::AuthProviderConfig {
             command: "printf local".to_string(),
             args: None,
             token_ttl_secs: None,
@@ -1057,6 +1074,7 @@ fn test_model_entry(
             agent_type: default_agent_type(),
             inference_idle_timeout_secs: None,
             max_retries: None,
+            rate_limit_retry_threshold: None,
             subagent_rate_limit_max_attempts: None,
             hidden: false,
             supported_in_api: true,
@@ -1069,16 +1087,17 @@ fn test_model_entry(
             show_model_fingerprint: false,
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
+            variants: Vec::new(),
         },
+        mtls_cert_dir: None,
         api_key: api_key.map(|s| s.to_string()),
         env_key: env_key.map(EnvKeys::single),
         auth_provider: None,
         api_base_url: api_base_url.map(|s| s.to_string()),
     }
 }
-/// The effective-model RE-support lookup must use the model ACTUALLY used:
-/// the resolved aux model when present, else the session model (an
-/// unresolvable slug ⇒ aux `None` ⇒ session model's capability wins).
+/// The effective-model RE-support lookup must use the model ACTUALLY used: the resolved aux model when present, else the session model.
+/// An unresolvable slug resolves aux to `None`, so the session model's capability wins.
 #[test]
 fn effective_classifier_supports_re_uses_actually_used_model() {
     let mut re_model = test_model_entry("v9", "https://x/v1", None, None, None);
@@ -1352,7 +1371,7 @@ fn resolve_credentials_empty_env_key_falls_through_to_session() {
     let alias = "GROK_TEST_EMPTY_ENV_LC_ALIAS";
     let _primary = EnvGuard::set(primary, "");
     let _alias = EnvGuard::set(alias, "");
-    let mut model = test_model_entry("m", "https://inference.example/v1", None, None, None);
+    let mut model = test_model_entry("m", "https://api.x.ai/v1", None, None, None);
     model.env_key = Some(EnvKeys::new([primary, alias]));
     assert!(!model.has_own_credentials());
     let creds = resolve_credentials(&model, Some("session-jwt"));
@@ -1382,7 +1401,7 @@ fn resolve_credentials_empty_env_key_falls_through_to_global_key() {
 #[test]
 fn resolve_credentials_empty_api_key_falls_through_to_session() {
     use xai_chat_state::AuthType;
-    let model = test_model_entry("m", "https://inference.example/v1", Some(""), None, None);
+    let model = test_model_entry("m", "https://api.x.ai/v1", Some(""), None, None);
     assert!(!model.has_own_credentials());
     let creds = resolve_credentials(&model, Some("session-jwt"));
     assert_eq!(creds.auth_type, AuthType::SessionToken);
@@ -1412,15 +1431,15 @@ fn config_toml_env_key_array_parses() {
 #[test]
 fn resolve_credentials_sets_auth_type() {
     use xai_chat_state::AuthType;
-    let model = test_model_entry("m", "https://example.com/v1", None, None, None);
+    let model = test_model_entry("m", "https://api.x.ai/v1", None, None, None);
     let creds = resolve_credentials(&model, Some("tok"));
     assert_eq!(creds.auth_type, AuthType::SessionToken);
     let byok = test_model_entry("m", "https://example.com/v1", Some("key"), None, None);
     let creds = resolve_credentials(&byok, Some("tok"));
     assert_eq!(creds.auth_type, AuthType::ApiKey);
 }
-/// Regression: BYOK env-var auth must stay ApiKey even when signed in,
-/// otherwise the bearer resolver overwrites the BYOK key with a session JWT.
+/// Regression: BYOK env-var auth must stay ApiKey even when signed in, otherwise the bearer resolver overwrites the BYOK key with a session JWT. `#[serial]`: mutates the process env. A unique var name is NOT enough.
+/// The `unsafe set_var` hazard is the global `environ` array (realloc races every concurrent `getenv` in the binary) The test must therefore serialize against all env tests
 #[test]
 #[serial_test::serial]
 fn resolve_credentials_env_key_byok_keeps_api_key_auth_with_session() {
@@ -1482,9 +1501,8 @@ fn proxy_messages_models_use_bearer_auth_scheme() {
         Some("xai-grok-cli")
     );
 }
-/// Regression: without a session key, `resolve_credentials` falls through
-/// to ApiKey. Session-based callers must override auth_type to SessionToken
-/// when their auth manager has only a buffered/expired token.
+/// Regression: without a session key, `resolve_credentials` falls through to ApiKey.
+/// Session-based callers must override auth_type to SessionToken when their auth manager has only a buffered/expired token.
 #[test]
 fn resolve_credentials_no_session_key_returns_api_key() {
     let model = test_model_entry("m", "https://example.com/v1", None, None, None);
@@ -1526,12 +1544,9 @@ fn enforce_disable_api_key_auth_blocks_first_party_only() {
     enforce_disable_api_key_auth(&mut creds, true, Some("session-jwt"));
     assert_eq!(creds.auth_type, AuthType::SessionToken);
 }
-/// Regression for the OVERRIDE_MODEL kill-switch bypass: a first-party model
-/// with its own api_key resolves to `ApiKey` (priority 1, beating the
-/// session), and the kill switch — now applied inside
-/// `try_resolve_model_credentials` — swaps it for the session token. BYOK
-/// (non-x.ai) own keys are preserved. (`try_resolve_model_credentials`
-/// loads global config, so this exercises its resolve + enforce core.)
+/// Regression for the OVERRIDE_MODEL kill-switch bypass. A first-party model with its own api_key resolves to `ApiKey` (priority 1, beating the session).
+/// The kill switch, now applied inside `try_resolve_model_credentials`, swaps it for the session token. BYOK (non-x.ai) own keys are preserved.
+/// (`try_resolve_model_credentials` loads global config, so this exercises its resolve and enforce core.)
 #[test]
 fn try_resolve_model_credentials_swaps_first_party_own_key_under_kill_switch() {
     use xai_chat_state::AuthType;
@@ -1626,9 +1641,8 @@ fn has_own_credentials_guards_session_vs_external_key() {
     );
     assert!(config_model.has_own_credentials());
 }
-/// The `ConfigUnavailable → Unknown` arm matters for safety: a transient
-/// config failure must not read as a definite `NotByok`, which would drive
-/// the live resolver and could overwrite a per-model BYOK key.
+/// The `ConfigUnavailable → Unknown` arm matters for safety.
+/// A transient config failure must not read as a definite `NotByok`, which would drive the live resolver and could overwrite a per-model BYOK key.
 #[test]
 fn byok_from_lookup_classifies_all_states() {
     assert_eq!(
@@ -1843,12 +1857,11 @@ fn compaction_mode_precedence_env_over_config_over_remote_over_default() {
     );
     assert_eq!(
         resolve_compaction_mode_from(None, None, None),
-        CompactionMode::Summary
+        CompactionMode::Segments(xai_chat_state::CompactionDetail::default())
     );
 }
-/// Detail shares the env>config>remote>default combinator that the mode
-/// test exercises; the detail-specific facts are remote settings routing and the
-/// `Verbose` default (with unrecognized values falling through).
+/// Detail shares the env>config>remote>default combinator that the mode test exercises.
+/// The detail-specific facts are remote settings routing and the `Verbose` default (with unrecognized values falling through).
 #[test]
 fn compaction_detail_resolves_remote_settings_and_verbose_default() {
     use xai_chat_state::CompactionDetail;
@@ -1975,8 +1988,9 @@ fn parses_model_api_backend_chat_completions() {
     assert_eq!(model.info.api_backend, ApiBackend::ChatCompletions);
 }
 /// Messages backend auto-defaults supports_reasoning_effort=true.
-/// Without this, `--reasoning-effort` is silently dropped in
-/// xai-grok-shell/src/agent/models.rs:857 for any BYOK Claude config.
+/// Without this, `--reasoning-effort` is silently dropped by
+/// `model_offers_reasoning_effort` in agent/remote_config/resolution.rs for any
+/// BYOK Claude config.
 #[test]
 fn model_messages_backend_auto_defaults_supports_reasoning_effort() {
     let raw_config: toml::Value = toml::from_str(
@@ -1997,8 +2011,7 @@ fn model_messages_backend_auto_defaults_supports_reasoning_effort() {
         "Messages backend should auto-default supports_reasoning_effort=true",
     );
 }
-/// An explicit `supports_reasoning_effort = false` in config must override
-/// the Messages auto-default — config wins.
+/// An explicit `supports_reasoning_effort = false` in config must override the Messages auto-default; config wins.
 #[test]
 fn model_messages_backend_respects_explicit_supports_reasoning_effort_false() {
     let raw_config: toml::Value = toml::from_str(
@@ -2020,8 +2033,8 @@ fn model_messages_backend_respects_explicit_supports_reasoning_effort_false() {
         "explicit supports_reasoning_effort=false in config must override the Messages auto-default",
     );
 }
-/// Non-Messages backends keep their existing default (false) since adaptive
-/// thinking is Messages-backend-specific and other providers vary per upstream model.
+/// Non-Messages backends keep their existing default (false).
+/// Adaptive thinking is specific to the Messages backend, and other providers vary per upstream model.
 #[test]
 fn model_chat_completions_backend_does_not_auto_default_supports_reasoning_effort() {
     let raw_config: toml::Value = toml::from_str(
@@ -2132,6 +2145,7 @@ fn model_info_from_config_propagates_use_concise() {
         agent_type: default_agent_type(),
         inference_idle_timeout_secs: None,
         max_retries: None,
+        rate_limit_retry_threshold: None,
         subagent_rate_limit_max_attempts: None,
         hidden: false,
         supported_in_api: true,
@@ -2144,6 +2158,7 @@ fn model_info_from_config_propagates_use_concise() {
         show_model_fingerprint: false,
         stream_tool_calls: None,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
+        variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
     assert!(info.use_concise);
@@ -2293,6 +2308,7 @@ fn model_info_from_config_propagates_agent_type() {
         agent_type: "codex".to_string(),
         inference_idle_timeout_secs: None,
         max_retries: None,
+        rate_limit_retry_threshold: None,
         subagent_rate_limit_max_attempts: None,
         hidden: false,
         supported_in_api: true,
@@ -2305,6 +2321,7 @@ fn model_info_from_config_propagates_agent_type() {
         show_model_fingerprint: false,
         stream_tool_calls: None,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
+        variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
     assert_eq!(info.agent_type, "codex");
@@ -2509,7 +2526,7 @@ fn acp_model_meta_always_has_context_window() {
 }
 #[test]
 fn hidden_model_excluded_from_acp_but_kept_in_catalog() {
-    use crate::agent::models::{available_models, resolve_model_catalog};
+    use crate::agent::remote_config::{available_models, resolve_model_catalog};
     let raw_config: toml::Value = toml::from_str(
         r#"
             [model.visible-model]
@@ -2547,7 +2564,7 @@ fn hidden_model_excluded_from_acp_but_kept_in_catalog() {
 }
 #[test]
 fn disabled_models_removed_from_catalog() {
-    use crate::agent::models::resolve_model_catalog;
+    use crate::agent::remote_config::resolve_model_catalog;
     let raw: toml::Value = toml::from_str(
         r#"
             [models]
@@ -2564,7 +2581,7 @@ fn disabled_models_removed_from_catalog() {
 }
 #[test]
 fn hidden_models_kept_in_catalog_but_not_in_acp() {
-    use crate::agent::models::{available_models, resolve_model_catalog};
+    use crate::agent::remote_config::{available_models, resolve_model_catalog};
     let raw: toml::Value = toml::from_str(
         r#"
             [models]
@@ -2584,7 +2601,7 @@ fn hidden_models_kept_in_catalog_but_not_in_acp() {
 }
 #[test]
 fn allowed_models_marks_selectable_by_wildcard_key_or_model() {
-    use crate::agent::models::resolve_model_catalog;
+    use crate::agent::remote_config::resolve_model_catalog;
     let raw: toml::Value = toml::from_str(
         r#"
             [models]
@@ -2617,7 +2634,7 @@ fn allowed_models_marks_selectable_by_wildcard_key_or_model() {
 }
 #[test]
 fn allowed_models_empty_is_unrestricted() {
-    use crate::agent::models::resolve_model_catalog;
+    use crate::agent::remote_config::resolve_model_catalog;
     let raw: toml::Value = toml::from_str(
         r#"
             [models]
@@ -2637,8 +2654,8 @@ fn allowed_models_empty_is_unrestricted() {
 }
 #[test]
 fn invalid_glob_is_rejected_by_validation() {
-    use crate::agent::models::ModelGlobSet;
-    assert!(ModelGlobSet::compile(Some(&vec!["grok[".to_string()])).is_err());
+    use crate::agent::remote_config::ModelGlobSet;
+    assert!(ModelGlobSet::compile(Some(["grok[".to_string()].as_slice())).is_err());
     let raw: toml::Value = toml::from_str(
         r#"
             [models]
@@ -2657,7 +2674,7 @@ fn invalid_glob_is_rejected_by_validation() {
 }
 #[test]
 fn supported_in_api_false_hides_from_api_key_users() {
-    use crate::agent::models::{available_models, resolve_model_catalog};
+    use crate::agent::remote_config::{available_models, resolve_model_catalog};
     let raw: toml::Value = toml::from_str(
         r#"
             [model.oauth-only-model]
@@ -2746,6 +2763,7 @@ fn inference_idle_timeout_propagates_to_model_info() {
         agent_type: default_agent_type(),
         inference_idle_timeout_secs: Some(120),
         max_retries: None,
+        rate_limit_retry_threshold: None,
         subagent_rate_limit_max_attempts: None,
         hidden: false,
         supported_in_api: true,
@@ -2758,6 +2776,7 @@ fn inference_idle_timeout_propagates_to_model_info() {
         show_model_fingerprint: false,
         stream_tool_calls: None,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
+        variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
     assert_eq!(info.inference_idle_timeout_secs, Some(120));
@@ -2785,6 +2804,37 @@ fn telemetry_config_parses_custom_values_from_toml() {
         Some("custom-token")
     );
     assert!(!cfg.telemetry.mixpanel_enabled);
+}
+#[test]
+fn telemetry_otel_timeout_accepts_toml_integer_and_string() {
+    let as_int: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_timeout = 10000
+            otel_metric_export_interval = 60000
+            "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&as_int).expect("integer otel_timeout must parse");
+    assert_eq!(cfg.telemetry.otel_timeout.as_deref(), Some("10000"));
+    assert_eq!(
+        cfg.telemetry.otel_metric_export_interval.as_deref(),
+        Some("60000")
+    );
+    let as_str: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_timeout = "10000"
+            otel_metric_export_interval = "60000"
+            "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&as_str).expect("string otel_timeout must parse");
+    assert_eq!(cfg.telemetry.otel_timeout.as_deref(), Some("10000"));
+    assert_eq!(
+        cfg.telemetry.otel_metric_export_interval.as_deref(),
+        Some("60000")
+    );
 }
 /// Empty/whitespace values must become `None`, not reach the HTTP client as empty strings.
 #[test]
@@ -2851,8 +2901,7 @@ fn grok_com_config_still_works() {
     let oidc = cfg.grok_com_config.oidc.expect("oidc should be set");
     assert_eq!(oidc.issuer, "https://example.okta.com");
 }
-/// `disable_api_key_auth` plumbs through the `[auth]` alias, and absent
-/// means None (opt-in knob, zero impact by default).
+/// `disable_api_key_auth` parses through the `[auth]` alias, and absent means None (opt-in knob, zero impact by default).
 #[test]
 fn disable_api_key_auth_parses_from_auth_alias() {
     let absent = Config::new_from_toml_cfg(&toml::from_str("").unwrap()).unwrap();
@@ -2867,14 +2916,36 @@ fn disable_api_key_auth_parses_from_auth_alias() {
     let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
     assert_eq!(cfg.grok_com_config.disable_api_key_auth, Some(true));
 }
-/// `force_login_team_uuid` parses a string (pin), array (any-of), or `[]`
-/// (fail closed); absent => None.
+/// `login_device_flow` reaches `Config::login_device_flow` via both `[grok_com_config]` and the `[auth]` alias, without warning as unrecognized.
+#[test]
+fn login_device_flow_reads_from_config() {
+    let absent = Config::new_from_toml_cfg(&toml::from_str("").unwrap()).unwrap();
+    assert_eq!(absent.login_device_flow, None);
+    for section in ["grok_com_config", "auth"] {
+        let raw: toml::Value =
+            toml::from_str(&format!("[{section}]\nlogin_device_flow = true\n")).unwrap();
+        let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+        assert_eq!(
+            cfg.login_device_flow,
+            Some(true),
+            "`[{section}] login_device_flow` must reach Config::login_device_flow"
+        );
+        assert!(
+            !cfg.config_warnings
+                .iter()
+                .any(|w| w.target.label().contains("login_device_flow")),
+            "`[{section}] login_device_flow` must not warn as unrecognized: {:?}",
+            cfg.config_warnings
+        );
+    }
+}
+/// `force_login_team_uuid` parses a string (pin), array (any-of), or `[]` (fail closed); absent means None.
 #[test]
 fn force_login_team_uuid_parses_string_and_array() {
-    use crate::auth::ForceLoginTeam;
+    use xai_grok_login::ForceLoginTeam;
     let _g = crate::env::EnvVarGuard::remove("GROK_FORCE_LOGIN_TEAM_ID");
     assert!(
-        crate::auth::force_login_team_from_requirements().is_none(),
+        super::force_login_team_from_requirements().is_none(),
         "clear the force_login_team_uuid pin in requirements.toml to run this test",
     );
     let absent = Config::new_from_toml_cfg(&toml::from_str("").unwrap()).unwrap();
@@ -2919,14 +2990,14 @@ fn force_login_team_uuid_parses_string_and_array() {
         Some(ForceLoginTeam::AnyOf(vec![])),
     );
 }
-/// The env override applies when config is empty and wins over a user/managed
-/// `config.toml` value (requirements clamping is covered in `auth::config`).
+/// The env override applies when config is empty and wins over a user/managed `config.toml` value.
+/// Requirements clamping is covered in `auth::config`.
 #[test]
 fn force_login_team_id_env_overrides_user_config() {
-    use crate::auth::ForceLoginTeam;
+    use xai_grok_login::ForceLoginTeam;
     let _guard = crate::env::EnvVarGuard::set("GROK_FORCE_LOGIN_TEAM_ID", "env-team");
     assert!(
-        crate::auth::force_login_team_from_requirements().is_none(),
+        super::force_login_team_from_requirements().is_none(),
         "clear the force_login_team_uuid pin in requirements.toml to run this test",
     );
     let from_env = Config::new_from_toml_cfg(&toml::from_str("").unwrap()).unwrap();
@@ -2947,14 +3018,13 @@ fn force_login_team_id_env_overrides_user_config() {
         Some(ForceLoginTeam::Single("env-team".into())),
     );
 }
-/// Env unset: `force_login_team_uuid` is taken from `config.toml` unchanged (the
-/// env override tier never clobbers the merged config value).
+/// Env unset: `force_login_team_uuid` is taken from `config.toml` unchanged (the env override tier never clobbers the merged config value).
 #[test]
 fn force_login_team_id_env_unset_keeps_config_value() {
-    use crate::auth::ForceLoginTeam;
+    use xai_grok_login::ForceLoginTeam;
     let _guard = crate::env::EnvVarGuard::remove("GROK_FORCE_LOGIN_TEAM_ID");
     assert!(
-        crate::auth::force_login_team_from_requirements().is_none(),
+        super::force_login_team_from_requirements().is_none(),
         "clear the force_login_team_uuid pin in requirements.toml to run this test",
     );
     let raw: toml::Value = toml::from_str(
@@ -2970,12 +3040,11 @@ fn force_login_team_id_env_unset_keeps_config_value() {
         Some(ForceLoginTeam::Single("admin-team".into())),
     );
 }
-/// Pinning a team via `force_login_team_uuid` implies API-key auth is
-/// disabled even without an explicit `disable_api_key_auth` (team
-/// membership can't be verified from a bare API key, so it needs IdP login).
+/// Pinning a team via `force_login_team_uuid` implies API-key auth is disabled even without an explicit `disable_api_key_auth`.
+/// Team membership can't be verified from a bare API key, so it needs IdP login.
 #[test]
 fn force_login_team_uuid_implies_api_key_auth_disabled() {
-    use crate::auth::{ForceLoginTeam, GrokComConfig};
+    use xai_grok_login::{ForceLoginTeam, GrokComConfig};
     let base = GrokComConfig {
         disable_api_key_auth: None,
         force_login_team_uuid: None,
@@ -3436,9 +3505,9 @@ fn e2e_enterprise_endpoints_only_no_model_override() {
         "default model should use enterprise xai_api_base_url"
     );
 }
-/// Unset every env var that `EndpointsConfig::default()` reads for endpoints,
-/// so the cli-chat-proxy resolver tests below are deterministic regardless of
-/// the ambient environment. Gated behind `#[serial]`.
+/// Unset every env var that `EndpointsConfig::default()` reads for endpoints.
+/// The cli-chat-proxy resolver tests below are then deterministic regardless of the ambient environment.
+/// Gated behind `#[serial]`.
 fn unset_endpoint_env_vars() {
     for k in [
         "GROK_CLI_CHAT_PROXY_BASE_URL",
@@ -3458,9 +3527,8 @@ fn unset_endpoint_env_vars() {
         unsafe { std::env::remove_var(k) };
     }
 }
-/// INVARIANT: auxiliary-service resolvers resolve to the cli-chat-proxy, never
-/// `xai_api_base_url` — overriding ONLY inference keeps every aux endpoint on
-/// the proxy; explicit per-service overrides win verbatim.
+/// INVARIANT: auxiliary-service resolvers resolve to the cli-chat-proxy, never `xai_api_base_url`.
+/// Overriding ONLY inference keeps every aux endpoint on the proxy; explicit per-service overrides win verbatim.
 #[test]
 #[serial]
 fn aux_endpoints_resolve_to_proxy_never_inference() {
@@ -3516,10 +3584,8 @@ fn aux_endpoints_resolve_to_proxy_never_inference() {
         "https://trace.enterprise.example"
     );
 }
-/// REGRESSION: the managed-config URL never follows `xai_api_base_url`
-/// through the full loader `Config::new_from_toml_cfg` — a distinct construction
-/// path from `from_config_value`, so the deployment key never reaches the
-/// inference host on either.
+/// REGRESSION: the managed-config URL never follows `xai_api_base_url` through the full loader `Config::new_from_toml_cfg`.
+/// That is a distinct construction path from `from_config_value`, so the deployment key never reaches the inference host on either.
 #[test]
 #[serial]
 fn loader_managed_config_url_never_follows_inference_endpoint() {
@@ -3602,10 +3668,88 @@ fn e2e_config_models_parsed_directly_not_via_deep_merge() {
         "base_url should be None when user didn't set it"
     );
 }
-/// A field holding a registered key is read as of whenever it was written, and
-/// these three are built before the value's last writer runs. `auto_wake` shipped
-/// that way and lost every pin. Catches the spelling, not the class: a mirror
-/// under another name still gets through.
+#[test]
+fn model_mtls_cert_dir_flows_from_config_toml_to_sampler() {
+    let (_, models) = resolve_models_from_toml(
+        r#"
+            [model.secure-model]
+            model = "secure-upstream"
+            base_url = "https://inference.example.com/v1"
+            context_window = 200000
+            api_key = "test-key"
+            mtls_cert_dir = "/run/secrets/secure-model"
+            "#,
+        None,
+    );
+    let model = models
+        .get("secure-model")
+        .expect("configured model should resolve");
+    assert_eq!(
+        model.mtls_cert_dir.as_deref(),
+        Some(std::path::Path::new("/run/secrets/secure-model"))
+    );
+    let sampling = resolve_sampling(model, None);
+    assert_eq!(
+        sampling.mtls_cert_dir.as_deref(),
+        Some(std::path::Path::new("/run/secrets/secure-model"))
+    );
+    assert_eq!(sampling.base_url, "https://inference.example.com/v1");
+}
+#[test]
+fn model_mtls_configuration_requires_one_explicit_https_destination() {
+    for (config, expected_error) in [
+        (
+            r#"[model.secure]
+               mtls_cert_dir = "/run/secrets/secure-model""#,
+            "mtls_cert_dir requires base_url in the same model table",
+        ),
+        (
+            r#"[model.secure]
+               base_url = "http://inference.example.com/v1"
+               mtls_cert_dir = "/run/secrets/secure-model""#,
+            "base_url must be an HTTPS URL with a host",
+        ),
+        (
+            r#"[model.secure]
+               base_url = "not a URL"
+               mtls_cert_dir = "/run/secrets/secure-model""#,
+            "base_url is invalid",
+        ),
+        (
+            r#"[model.secure]
+               base_url = "https://inference.example.com/v1"
+               mtls_cert_dir = """#,
+            "mtls_cert_dir must not be empty",
+        ),
+        (
+            r#"[model.secure]
+               base_url = "https://inference.example.com/v1"
+               api_base_url = "https://api.example.com/v1"
+               mtls_cert_dir = "/run/secrets/secure-model""#,
+            "cannot set both mtls_cert_dir and api_base_url",
+        ),
+        (
+            r#"[model_providers.gateway]
+               api_base_url = "https://api.example.com/v1"
+
+               [model.secure]
+               base_url = "https://inference.example.com/v1"
+               model_provider = "gateway"
+               mtls_cert_dir = "/run/secrets/secure-model""#,
+            "cannot use model_providers.gateway.api_base_url with mtls_cert_dir",
+        ),
+    ] {
+        let raw: toml::Value = toml::from_str(config).expect("test config should parse as TOML");
+        let error = Config::new_from_toml_cfg(&raw).expect_err("invalid mTLS config must fail");
+        assert!(
+            error.contains(expected_error),
+            "expected {expected_error:?} in {error:?}"
+        );
+    }
+}
+/// A field holding a registered key is read as of whenever it was written, and these three are built before the value's last writer runs.
+/// `auto_wake` shipped that way and lost every pin.
+/// Catches the spelling, not the class: a mirror under another name still gets through.
 #[test]
 fn no_registered_feature_is_mirrored_by_a_config_field() {
     const SRC: &str = include_str!("config.rs");
@@ -3637,8 +3781,7 @@ fn no_registered_feature_is_mirrored_by_a_config_field() {
         }
     }
 }
-/// The tamper-resistance `25-enterprise.md` sells to administrators, for
-/// every key an administrator can pin.
+/// The tamper-resistance `25-enterprise.md` sells to administrators, for every key an administrator can pin.
 #[test]
 #[serial]
 fn requirement_pin_outranks_a_hostile_environment() {
@@ -3653,8 +3796,7 @@ fn requirement_pin_outranks_a_hostile_environment() {
         assert_eq!(r.source, ConfigSource::Requirement, "{}", spec.key);
     }
 }
-/// A registered key is a `&'static str` matched against the `[features]`
-/// table, not a serde field name, so every one of them is read back here.
+/// A registered key is a `&'static str` matched against the `[features]` table, not a serde field name, so every one of them is read back here.
 #[test]
 #[serial]
 fn every_registered_key_parses_out_of_the_features_table() {
@@ -3679,9 +3821,8 @@ fn every_registered_key_parses_out_of_the_features_table() {
         assert_eq!(r.source, ConfigSource::Env, "{}", spec.key);
     }
 }
-/// The keys the list names are read from the raw layers, so each must be one no
-/// field claims. A quoted `remote_fetch` used to read as absent and leave the
-/// egress gate open.
+/// The keys the list names are read from the raw layers, so each must be one no field claims.
+/// A quoted `remote_fetch` used to read as absent and leave the egress gate open.
 #[test]
 fn non_boolean_value_fails_the_load_for_a_key_with_no_field() {
     let features = include_str!("config.rs")
@@ -3707,10 +3848,9 @@ fn non_boolean_value_fails_the_load_for_a_key_with_no_field() {
         );
     }
 }
-/// What no list could cover: a key this build has never heard of is typed all
-/// the same, so the next boolean added to `[features]` is checked before anyone
-/// writes it down. `image_edit` rides the same path, which is why it is kept out
-/// of the list that only suppresses the unrecognized-key warning.
+/// What no list could cover: a key this build has never heard of is typed all the same.
+/// That means the next boolean added to `[features]` is checked before anyone writes it down.
+/// `image_edit` takes the same path, which is why it is kept out of the list that only suppresses the unrecognized-key warning.
 #[test]
 fn non_boolean_value_fails_the_load_for_an_unregistered_key() {
     for key in ["image_edit", "a_key_no_build_has_ever_had"] {
@@ -3723,9 +3863,9 @@ fn non_boolean_value_fails_the_load_for_an_unregistered_key() {
         );
     }
 }
-/// The other half of the rule. A later release can add a `[features]` key that
-/// holds something other than a boolean, and the build that predates its field
-/// has to start on that config rather than strand a fleet mid-rollout.
+/// The other half of the rule.
+/// A later release can add a `[features]` key that holds something other than a boolean.
+/// The build that predates its field has to start on that config rather than strand a fleet mid-rollout.
 #[test]
 fn a_value_that_reads_as_nothing_like_a_boolean_still_loads() {
     for value in ["\"aggressive\"", "42", "[\"a\", \"b\"]", "1.5"] {
@@ -3742,8 +3882,60 @@ fn a_value_that_reads_as_nothing_like_a_boolean_still_loads() {
         );
     }
 }
-/// The non-row keys that do have a field are turned away by serde, whatever it
-/// words the failure as.
+/// Managed policy keys are workspace-resolved, not Config serde: every spelling must pass the unrecognized-key scan.
+#[test]
+fn managed_policy_keys_do_not_warn_as_unrecognized() {
+    let entry = r#"
+allow_managed_mcp_servers_only = true
+allowManagedMcpServersOnly = true
+enable_all_project_mcp_servers = false
+enableAllProjectMcpServers = false
+plugin_auto_update = false
+pluginAutoUpdate = false
+
+[[allowed_mcp_servers]]
+server_url = "https://mcp.example.com/*"
+
+[[allowedMcpServers]]
+serverCommand = ["npx", "@corp/mcp"]
+
+[[denied_mcp_servers]]
+server_name = "blocked"
+
+[[deniedMcpServers]]
+serverUrl = "https://evil.example.com/*"
+
+[[strict_known_marketplaces]]
+source = "git"
+url = "https://github.com/corp/approved.git"
+
+[[strictKnownMarketplaces]]
+source = "github"
+repo = "corp/more"
+
+[extra_known_marketplaces.corp]
+source = { source = "git", url = "https://github.com/corp/approved.git" }
+
+[extraKnownMarketplaces.corp2]
+source = { source = "git", url = "https://github.com/corp/other.git" }
+"#;
+    let unused = unused_keys_from_toml(entry);
+    let leaked: Vec<&String> = unused
+        .iter()
+        .filter(|key| {
+            xai_grok_workspace::permission::resolution::MANAGED_POLICY_CONFIG_KEYS
+                .iter()
+                .any(|policy_key| {
+                    key.as_str() == *policy_key || key.starts_with(&format!("{policy_key}."))
+                })
+        })
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "policy keys must not warn as unrecognized: {leaked:?}"
+    );
+}
+/// The non-row keys that do have a field are turned away by serde, whatever it words the failure as.
 #[test]
 fn non_boolean_value_fails_the_load_for_a_key_with_a_field() {
     for key in ["title_refresh", "image_gen", "video_gen"] {
@@ -3762,8 +3954,7 @@ fn non_boolean_feature_value_fails_the_load() {
         "the error names the key and the spelling that works: {err}"
     );
 }
-/// Title refresh defaults to the resolved `turn_summary` value, but each knob
-/// (env / config / remote) can flip it independently of turn summary.
+/// Title refresh defaults to the resolved `turn_summary` value, but each knob (env / config / remote) can flip it independently of turn summary.
 #[test]
 #[serial]
 fn resolve_title_refresh_defaults_to_turn_summary_but_decouples() {
@@ -3801,9 +3992,9 @@ fn resolve_title_refresh_defaults_to_turn_summary_but_decouples() {
     assert_eq!(r.source, ConfigSource::Env);
     unsafe { std::env::remove_var("GROK_TITLE_REFRESH") };
 }
-/// A `turn_summary` pin lands in the title's default slot, so it moves the title
-/// with it. Only the default slot, so `GROK_TITLE_REFRESH` still outranks it and a
-/// user can turn the title back on. Pinning `title_refresh` is what closes that.
+/// A `turn_summary` pin lands in the title's default slot, so it moves the title with it.
+/// Only the default slot, so `GROK_TITLE_REFRESH` still outranks it and a user can turn the title back on.
+/// Pinning `title_refresh` is what closes that.
 #[test]
 #[serial]
 fn a_turn_summary_pin_moves_the_title_default_and_the_environment_lifts_it() {
@@ -3826,8 +4017,8 @@ fn a_turn_summary_pin_moves_the_title_default_and_the_environment_lifts_it() {
     assert!(r.value, "the environment outranks a derived default");
     assert_eq!(r.source, ConfigSource::Env);
 }
-/// The tier that closes it. Not a registry row, so the sweep in
-/// `requirement_pin_outranks_a_hostile_environment` never reaches this key.
+/// The tier that closes it.
+/// Not a registry row, so the sweep in `requirement_pin_outranks_a_hostile_environment` never reaches this key.
 #[test]
 #[serial]
 fn a_title_refresh_pin_outranks_the_environment() {
@@ -3840,10 +4031,9 @@ fn a_title_refresh_pin_outranks_the_environment() {
     assert!(!r.value, "the pin lost to GROK_TITLE_REFRESH");
     assert_eq!(r.source, ConfigSource::Requirement);
 }
-/// Gate precedence: env > `[doom_loop_recovery]` > remote settings >
-/// default(ON), with the remote layer merged PER-FIELD from the nested
-/// `doom_loop_recovery` object and each layer's `false` an independent
-/// kill switch. One test covers the full ladder.
+/// Gate precedence: env > `[doom_loop_recovery]` > remote settings > default(ON).
+/// The remote layer merges PER-FIELD from the nested `doom_loop_recovery` object, and each layer's `false` is an independent kill switch.
+/// One test covers the full ladder.
 #[test]
 #[serial]
 fn resolve_doom_loop_recovery_precedence() {
@@ -3949,8 +4139,7 @@ fn resolve_doom_loop_recovery_precedence() {
     );
     unsafe { std::env::remove_var("GROK_DOOM_LOOP_RECOVERY") };
 }
-/// The `[doom_loop_recovery]` TOML section deserializes through the
-/// standard config path (no bespoke parser).
+/// The `[doom_loop_recovery]` TOML section deserializes through the standard config path (no bespoke parser).
 #[test]
 #[serial]
 fn doom_loop_recovery_section_parses_from_toml() {
@@ -4120,6 +4309,7 @@ fn trace_upload_decision_debug_reports_winning_source() {
 #[serial]
 fn resolve_trace_upload_honors_config_when_telemetry_on() {
     unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
+    unsafe { std::env::remove_var("DISABLE_TELEMETRY") };
     unsafe { std::env::remove_var("GROK_TELEMETRY_TRACE_UPLOAD") };
     let mut cfg = Config::default();
     cfg.features.telemetry = Some(TelemetryMode::Enabled);
@@ -4181,8 +4371,7 @@ fn resolve_goal_remote_settings_used_when_no_local() {
     assert_eq!(r.source, ConfigSource::Remote);
     assert!(r.value);
 }
-/// The remote settings `goal_enabled: false` kill-switch must still win over
-/// the default-on fallback.
+/// The remote settings `goal_enabled: false` kill-switch must still win over the default-on fallback.
 #[test]
 #[serial]
 fn resolve_goal_remote_settings_kill_switch_overrides_default_on() {
@@ -4409,8 +4598,7 @@ fn resolve_video_gen_gates() {
         .value
     );
 }
-/// Clear every env var the goal/companion resolvers read so tests
-/// start from a known baseline regardless of run order.
+/// Clear every env var the goal/companion resolvers read so tests start from a known baseline regardless of run order.
 fn clear_goal_envs() {
     unsafe {
         std::env::remove_var("GROK_GOAL");
@@ -5041,8 +5229,7 @@ agent_type = "cursor"
         ConfigSource::Config
     );
 }
-/// A malformed pin must drop to `None`, not fail the whole parse (which
-/// would silently wipe every other setting).
+/// A malformed pin must drop to `None`, not fail the whole parse (which would silently wipe every other setting).
 #[test]
 fn goal_model_pin_malformed_is_dropped_not_fatal() {
     let toml_str = r#"
@@ -5080,8 +5267,7 @@ agent_type = "cursor"
     assert_eq!(cfg.goal.skeptic_models[0].model, "grok-build");
     assert_eq!(cfg.goal.skeptic_models[1].model, "test-model-fast");
 }
-/// Acceptance test: a full managed-config `[goal]` block resolves end-to-end,
-/// every value sourced from config (not remote/default).
+/// Acceptance test: a full managed-config `[goal]` block resolves end-to-end, every value sourced from config (not remote/default).
 #[test]
 #[serial]
 fn full_goal_managed_config_resolves_end_to_end() {
@@ -5145,9 +5331,8 @@ agent_type = "cursor"
     clear_goal_envs();
     clear_goal_model_env();
 }
-/// Run the production scan (`deserialize_collecting_unrecognized`) on a
-/// TOML string, mirroring the [model] removal + default-merge in
-/// `new_from_toml_cfg`.
+/// Run the production scan (`deserialize_collecting_unrecognized`) on a TOML string.
+/// Mirrors the [model] removal and default-merge in `new_from_toml_cfg`.
 fn unused_keys_from_toml(toml_str: &str) -> Vec<String> {
     let raw: toml::Value = toml::from_str(toml_str).unwrap();
     let raw_without_models = {
@@ -5227,9 +5412,8 @@ fn known_non_serde_config_paths_are_not_reported_unused() {
         "real typos still surface: {unused:?}"
     );
 }
-/// `[toolset.web_search]`'s domain keys are read from the raw layers, not from
-/// `ShellToolsetConfig::web_search` (a `SamplerConfig`), so the scan must not
-/// call the documented settings typos.
+/// `[toolset.web_search]`'s domain keys are read from the raw layers, not from `ShellToolsetConfig::web_search` (a `SamplerConfig`).
+/// The scan must therefore not call the documented settings typos.
 #[test]
 fn web_search_domain_keys_are_not_reported_unused() {
     for key in ["allowed_domains", "excluded_domains"] {
@@ -5373,9 +5557,8 @@ fn config_accepts_compact_permission_section() {
         "false positive on [permission] keys: {unused:?}"
     );
 }
-/// `prompt_policy` is not consumed from any TOML permission section (the
-/// verbose loader keeps only `rules`; prompt policy comes from .claude
-/// settings `defaultMode`), so it must warn rather than be a silent no-op.
+/// `prompt_policy` is not consumed from any TOML permission section, so it must warn rather than be a silent no-op.
+/// The verbose loader keeps only `rules`; prompt policy comes from .claude settings `defaultMode`.
 #[test]
 fn permission_prompt_policy_warns_as_unconsumed() {
     let unused = unused_keys_from_toml(
@@ -5391,8 +5574,7 @@ fn permission_prompt_policy_warns_as_unconsumed() {
         "an unconsumed key in a security section must be flagged"
     );
 }
-/// A typo'd `[permission]` sub-key must still warn — silently dropping a
-/// misspelled security rule would leave the user believing it's in force.
+/// A typo'd `[permission]` sub-key must still warn: silently dropping a misspelled security rule would leave the user believing it's in force.
 #[test]
 fn permission_unknown_subkey_still_warns() {
     let unused = unused_keys_from_toml(
@@ -5408,9 +5590,8 @@ fn permission_unknown_subkey_still_warns() {
         "exactly the typo'd sub-key must be flagged"
     );
 }
-/// Permission *values* are opaque: a malformed `[[permission.rules]]`
-/// entry neither warns nor fails Config load — the out-of-band loaders
-/// parse it tolerantly and warn per item.
+/// Permission *values* are opaque: a malformed `[[permission.rules]]` entry neither warns nor fails Config load.
+/// The out-of-band loaders parse it tolerantly and warn per item.
 #[test]
 fn malformed_permission_rules_do_not_fail_config_load() {
     let toml_str = r#"
@@ -5423,8 +5604,7 @@ fn malformed_permission_rules_do_not_fail_config_load() {
     let unused = unused_keys_from_toml(toml_str);
     assert!(unused.is_empty(), "got: {unused:?}");
 }
-/// A non-table `[permission]` value still fails Config load (pre-existing
-/// behavior): a fundamentally broken security section should be loud.
+/// A non-table `[permission]` value still fails Config load: a fundamentally broken security section should be loud.
 #[test]
 fn non_table_permission_value_fails_config_load() {
     let raw: toml::Value = toml::from_str(r#"permission = "foo""#).unwrap();
@@ -5433,9 +5613,8 @@ fn non_table_permission_value_fails_config_load() {
         "non-table [permission] must fail loudly"
     );
 }
-/// Wrong-typed values for the opaque passthrough keys must neither warn
-/// nor fail config load — an admin typo in a managed layer must not brick
-/// startup fleet-wide; the out-of-band consumers degrade gracefully.
+/// Wrong-typed values for the opaque passthrough keys must neither warn nor fail config load.
+/// An admin typo in a managed layer must not brick startup fleet-wide; the out-of-band consumers degrade gracefully.
 #[test]
 fn wrong_typed_passthrough_values_neither_warn_nor_fail() {
     let toml_str = r#"
@@ -5449,8 +5628,7 @@ fn wrong_typed_passthrough_values_neither_warn_nor_fail() {
     Config::new_from_toml_cfg(&raw)
         .expect("wrong-typed passthrough values must not fail config load");
 }
-/// Exempting `[permission]` and friends must not swallow warnings for
-/// genuinely unknown keys.
+/// Exempting `[permission]` and friends must not swallow warnings for genuinely unknown keys.
 #[test]
 fn unknown_key_still_warns_next_to_exempt_sections() {
     let unused = unused_keys_from_toml(
@@ -5536,8 +5714,7 @@ fn otlp_headers_parse() {
         ]
     );
 }
-/// Base config for the internal-OTLP tests: pinned proxy, every OTLP knob
-/// explicitly unset so ambient env (via `Default`) can't leak in.
+/// Base config for the internal-OTLP tests: pinned proxy, every OTLP knob explicitly unset so ambient env (via `Default`) can't leak in.
 fn internal_otlp_test_config() -> EndpointsConfig {
     EndpointsConfig {
         cli_chat_proxy_base_url: Some("https://proxy.example/v1".to_string()),
@@ -5550,8 +5727,7 @@ fn internal_otlp_test_config() -> EndpointsConfig {
         ..Default::default()
     }
 }
-/// `grok_internal_otlp_traces_endpoint` wins over the legacy `OTEL_*`
-/// fields regardless of the master switch.
+/// `grok_internal_otlp_traces_endpoint` wins over the legacy `OTEL_*` fields regardless of the master switch.
 #[test]
 fn internal_otlp_endpoint_grok_internal_wins_regardless_of_switch() {
     for switch in [false, true] {
@@ -5573,7 +5749,7 @@ fn internal_otlp_endpoint_grok_internal_wins_regardless_of_switch() {
         );
     }
 }
-/// Master switch unset → legacy fallback preserved (back-compat).
+/// Master switch unset: the legacy fallback is preserved (back-compat).
 #[test]
 fn internal_otlp_endpoint_legacy_fallback_when_switch_unset() {
     let traces = EndpointsConfig {
@@ -5593,10 +5769,8 @@ fn internal_otlp_endpoint_legacy_fallback_when_switch_unset() {
         "https://legacy-base.example/v1/traces"
     );
 }
-/// Master switch SET → legacy `OTEL_*` endpoint/headers are completely
-/// ignored by the internal pipeline (the external stream owns them); the
-/// internal pipeline falls back to the proxy default and
-/// `internal_otlp_consumed_standard_vars()` is false.
+/// Master switch SET: the internal pipeline ignores legacy `OTEL_*` endpoint/headers entirely (the external stream owns them).
+/// The internal pipeline falls back to the proxy default and `internal_otlp_consumed_standard_vars()` is false.
 #[test]
 fn internal_otlp_ignores_legacy_vars_when_switch_set() {
     let cfg = EndpointsConfig {
@@ -5715,8 +5889,7 @@ fn internal_otlp_consumed_standard_vars_cases() {
         );
     }
 }
-/// Headers precedence: `grok_internal_otlp_headers` wins; legacy
-/// `otel_exporter_otlp_headers` only when the master switch is unset.
+/// Headers precedence: `grok_internal_otlp_headers` wins; legacy `otel_exporter_otlp_headers` only when the master switch is unset.
 #[test]
 fn internal_otlp_headers_precedence() {
     for switch in [false, true] {
@@ -5906,6 +6079,7 @@ fn external_otel_requirements_pin_wins_over_env() {
             [telemetry]
             otel_log_user_prompts = false
             otel_log_tool_details = false
+            otel_log_tool_content = false
             "#,
     )
     .unwrap();
@@ -5917,6 +6091,7 @@ fn external_otel_requirements_pin_wins_over_env() {
             ("OTEL_LOGS_EXPORTER", "otlp"),
             ("OTEL_LOG_USER_PROMPTS", "1"),
             ("OTEL_LOG_TOOL_DETAILS", "1"),
+            ("OTEL_LOG_TOOL_CONTENT", "1"),
         ]),
         ext_client(),
         false,
@@ -5924,14 +6099,423 @@ fn external_otel_requirements_pin_wins_over_env() {
     .expect("stream still active; only gates pinned");
     assert!(!cfg.gates.log_user_prompts, "requirement pin must win");
     assert!(!cfg.gates.log_tool_details, "requirement pin must win");
+    assert!(!cfg.gates.log_tool_content, "requirement pin must win");
 }
-/// Regression: an org enable via `[telemetry].otel_enabled`
-/// (managed config / requirements — no `GROK_EXTERNAL_OTEL` env var) must
-/// flip the master switch the *internal* pipeline keys off, so legacy
-/// `OTEL_EXPORTER_OTLP_*` repointing shuts off in lockstep with the
-/// external stream activating. A desync would point the internally-authed
-/// firehose at the customer collector while
-/// `internal_pipeline_consumed_otel_vars` blocks the external stream.
+#[test]
+fn external_otel_requirements_pin_endpoint_beats_env() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            otel_endpoint = "http://corp:4318"
+            "#,
+    )
+    .unwrap();
+    let cfg = resolve_external_otel_config_with(
+        None,
+        Some(&req),
+        ext_env(&[("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9")]),
+        ext_client(),
+        false,
+    )
+    .expect("pin must keep the stream active");
+    assert!(
+        cfg.logs_endpoint.starts_with("http://corp:4318"),
+        "listed endpoint must beat env: {}",
+        cfg.logs_endpoint
+    );
+}
+#[test]
+fn external_otel_unset_endpoint_still_env_overridable() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            "#,
+    )
+    .unwrap();
+    let cfg = resolve_external_otel_config_with(
+        None,
+        Some(&req),
+        ext_env(&[("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")]),
+        ext_client(),
+        false,
+    )
+    .expect("unset endpoint stays developer-settable");
+    assert!(
+        cfg.logs_endpoint.contains("127.0.0.1:4318"),
+        "{}",
+        cfg.logs_endpoint
+    );
+}
+#[test]
+fn external_otel_pin_endpoint_strips_per_signal_env() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            otel_endpoint = "http://corp:4318"
+            "#,
+    )
+    .unwrap();
+    let cfg = resolve_external_otel_config_with(
+        None,
+        Some(&req),
+        ext_env(&[(
+            "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+            "http://127.0.0.1:9/v1/logs",
+        )]),
+        ext_client(),
+        false,
+    )
+    .expect("stream active");
+    assert!(
+        !cfg.logs_endpoint.contains("127.0.0.1:9"),
+        "unlisted per-signal endpoint env must not win: {}",
+        cfg.logs_endpoint
+    );
+    assert!(cfg.logs_endpoint.contains("corp:4318"));
+}
+#[test]
+fn external_otel_pin_endpoint_hides_unlisted_file_siblings() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            otel_endpoint = "http://corp:4318"
+            "#,
+    )
+    .unwrap();
+    let effective: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_logs_endpoint = "http://127.0.0.1:9/v1/logs"
+            otel_metrics_endpoint = "http://127.0.0.1:9/v1/metrics"
+            "#,
+    )
+    .unwrap();
+    let cfg = resolve_external_otel_config_with(
+        Some(&effective),
+        Some(&req),
+        ext_env(&[]),
+        ext_client(),
+        false,
+    )
+    .expect("stream active");
+    assert!(
+        !cfg.logs_endpoint.contains("127.0.0.1:9"),
+        "unlisted file sibling must not retarget: {}",
+        cfg.logs_endpoint
+    );
+    assert!(
+        cfg.logs_endpoint.contains("corp:4318"),
+        "{}",
+        cfg.logs_endpoint
+    );
+}
+#[test]
+fn external_otel_pin_protocol_hides_unlisted_file_siblings() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            otel_endpoint = "http://corp:4318"
+            otel_protocol = "http/protobuf"
+            "#,
+    )
+    .unwrap();
+    let effective: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_logs_protocol = "grpc"
+            "#,
+    )
+    .unwrap();
+    let cfg = resolve_external_otel_config_with(
+        Some(&effective),
+        Some(&req),
+        ext_env(&[]),
+        ext_client(),
+        false,
+    )
+    .expect("stream active");
+    assert_eq!(
+        cfg.logs_transport,
+        xai_grok_telemetry::external::config::OtlpTransport::HttpProtobuf,
+        "unlisted file protocol sibling must not win"
+    );
+}
+#[test]
+fn external_otel_pin_ca_keeps_file_endpoint() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            otel_certificate = "/etc/ssl/corp-ca.pem"
+            "#,
+    )
+    .unwrap();
+    let effective: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_logs_endpoint = "http://logs:4318/v1/logs"
+            "#,
+    )
+    .unwrap();
+    let cfg = resolve_external_otel_config_with(
+        Some(&effective),
+        Some(&req),
+        ext_env(&[]),
+        ext_client(),
+        false,
+    )
+    .expect("stream active");
+    assert_eq!(
+        cfg.logs_endpoint, "http://logs:4318/v1/logs",
+        "CA pin must not lock destination"
+    );
+}
+#[test]
+fn external_otel_pin_client_cert_hides_file_endpoints() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            otel_client_certificate = "/etc/ssl/client.crt"
+            otel_client_key = "/etc/ssl/client.key"
+            "#,
+    )
+    .unwrap();
+    let effective: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_logs_endpoint = "http://127.0.0.1:9/v1/logs"
+            "#,
+    )
+    .unwrap();
+    let cfg = resolve_external_otel_config_with(
+        Some(&effective),
+        Some(&req),
+        ext_env(&[]),
+        ext_client(),
+        false,
+    )
+    .expect("stream active");
+    assert!(
+        !cfg.logs_endpoint.contains("127.0.0.1:9"),
+        "client-identity pin must hide unlisted file endpoints: {}",
+        cfg.logs_endpoint
+    );
+}
+#[test]
+fn external_otel_pin_logs_endpoint_keeps_that_signal() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            otel_endpoint = "http://corp:4318"
+            otel_logs_endpoint = "http://logs:4318/v1/logs"
+            "#,
+    )
+    .unwrap();
+    let cfg = resolve_external_otel_config_with(
+        None,
+        Some(&req),
+        ext_env(&[(
+            "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+            "http://127.0.0.1:9/v1/logs",
+        )]),
+        ext_client(),
+        false,
+    )
+    .expect("stream active");
+    assert_eq!(cfg.logs_endpoint, "http://logs:4318/v1/logs");
+}
+#[test]
+fn external_otel_pin_exporter_beats_none() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            otel_endpoint = "http://corp:4318"
+            "#,
+    )
+    .unwrap();
+    let cfg = resolve_external_otel_config_with(
+        None,
+        Some(&req),
+        ext_env(&[("OTEL_LOGS_EXPORTER", "none")]),
+        ext_client(),
+        false,
+    )
+    .expect("pinned exporter must beat OTEL_LOGS_EXPORTER=none");
+    assert_eq!(
+        cfg.logs_exporter,
+        xai_grok_telemetry::external::config::ExporterSelection::Otlp
+    );
+}
+#[test]
+fn external_otel_omit_exporter_still_allows_none() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_endpoint = "http://corp:4318"
+            "#,
+    )
+    .unwrap();
+    assert!(
+        resolve_external_otel_config_with(
+            None,
+            Some(&req),
+            ext_env(&[
+                ("OTEL_LOGS_EXPORTER", "none"),
+                ("OTEL_METRICS_EXPORTER", "none")
+            ]),
+            ext_client(),
+            false,
+        )
+        .is_none(),
+        "omitted exporter stays env-overridable to none"
+    );
+}
+#[test]
+fn external_otel_pin_client_cert_strips_developer_endpoints() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            otel_endpoint = "http://corp:4318"
+            otel_client_certificate = "/etc/ssl/client.crt"
+            otel_client_key = "/etc/ssl/client.key"
+            "#,
+    )
+    .unwrap();
+    let cfg = resolve_external_otel_config_with(
+        None,
+        Some(&req),
+        ext_env(&[("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9")]),
+        ext_client(),
+        false,
+    )
+    .expect("stream active");
+    assert!(
+        cfg.logs_endpoint.starts_with("http://corp:4318"),
+        "{}",
+        cfg.logs_endpoint
+    );
+}
+#[test]
+fn external_otel_pin_ca_does_not_strip_endpoints() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            otel_certificate = "/etc/ssl/corp-ca.pem"
+            "#,
+    )
+    .unwrap();
+    let cfg = resolve_external_otel_config_with(
+        None,
+        Some(&req),
+        ext_env(&[("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")]),
+        ext_client(),
+        false,
+    )
+    .expect("CA-only pin must not lock destination");
+    assert!(
+        cfg.logs_endpoint.contains("127.0.0.1:4318"),
+        "{}",
+        cfg.logs_endpoint
+    );
+}
+#[test]
+fn external_otel_pin_ca_hides_unlisted_per_signal_cert_env() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            otel_endpoint = "http://corp:4318"
+            otel_certificate = "/etc/ssl/corp-ca.pem"
+            "#,
+    )
+    .unwrap();
+    let cfg = resolve_external_otel_config_with(
+        None,
+        Some(&req),
+        ext_env(&[(
+            "OTEL_EXPORTER_OTLP_LOGS_CERTIFICATE",
+            "/tmp/decoy-logs-ca.pem",
+        )]),
+        ext_client(),
+        false,
+    )
+    .expect("stream active");
+    assert_eq!(
+        cfg.logs_ca_certificate.as_deref(),
+        Some("/etc/ssl/corp-ca.pem"),
+        "generic CA pin must hide OTEL_EXPORTER_OTLP_LOGS_CERTIFICATE"
+    );
+}
+#[test]
+fn external_otel_pin_assistant_beats_env() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            otel_log_assistant_responses = false
+            "#,
+    )
+    .unwrap();
+    let cfg = resolve_external_otel_config_with(
+        None,
+        Some(&req),
+        ext_env(&[("OTEL_LOG_ASSISTANT_RESPONSES", "1")]),
+        ext_client(),
+        false,
+    )
+    .expect("stream active");
+    assert!(!cfg.gates.log_assistant_responses);
+}
+#[test]
+fn external_otel_pin_prompts_true_omitted_assistant_stays_off() {
+    let req: toml::Value = toml::from_str(
+        r#"
+            [telemetry]
+            otel_enabled = true
+            otel_logs_exporter = "otlp"
+            otel_log_user_prompts = true
+            "#,
+    )
+    .unwrap();
+    let cfg =
+        resolve_external_otel_config_with(None, Some(&req), ext_env(&[]), ext_client(), false)
+            .expect("stream active");
+    assert!(cfg.gates.log_user_prompts);
+    assert!(
+        !cfg.gates.log_assistant_responses,
+        "omitted sibling gate must default off across the requirements boundary"
+    );
+    assert!(!cfg.gates.log_tool_details);
+    assert!(
+        !cfg.gates.log_tool_content,
+        "omitted CONTENT sibling must default off across the requirements boundary"
+    );
+}
+/// Regression: an org enable via `[telemetry].otel_enabled` (managed config / requirements — no `GROK_EXTERNAL_OTEL` env var) must flip the master switch the *internal* pipeline keys off, so legacy `OTEL_EXPORTER_OTLP_*` repointing shuts off in lockstep with the external stream activating. A desync would point the internally-authed firehose at the customer collector while `internal_pipeline_consumed_otel_vars` blocks the external stream.
 #[test]
 fn external_otel_master_switch_resolves_from_all_layers() {
     let enabled_table: toml::Value = toml::from_str("[telemetry]\notel_enabled = true").unwrap();
@@ -6025,7 +6609,7 @@ fn assert_session_one_disabled(config: CompatConfig, expected: CompatVendor) {
                 config.value(cell),
                 cell.vendor() != expected,
                 "{}.sessions",
-                cell.vendor().as_str()
+                Into::<&'static str>::into(cell.vendor())
             );
         }
     }
@@ -6200,8 +6784,8 @@ fn remote_keys_are_one_hot_and_false_overrides_default() {
                 remote_compat_value(Some(&remote), cell.remote_key()),
                 (cell.remote_key() == Some(key)).then_some(false),
                 "{key:?} mapped to {}.{}",
-                cell.vendor().as_str(),
-                cell.surface().as_str()
+                Into::<&'static str>::into(cell.vendor()),
+                Into::<&'static str>::into(cell.surface())
             );
         }
     }
@@ -6555,6 +7139,40 @@ fn is_telemetry_explicitly_disabled_sync_env_signals() {
     unsafe { std::env::remove_var("DISABLE_TELEMETRY") };
 }
 #[test]
+#[serial]
+fn resolve_telemetry_mode_disable_env_beats_opt_in_but_not_requirements_pin() {
+    let home = tempfile::tempdir().unwrap();
+    let _home = EnvGuard::set("GROK_HOME", home.path());
+    let _enable = EnvGuard::set("GROK_TELEMETRY_ENABLED", "true");
+    let mut cfg = Config::default();
+    cfg.features.telemetry = Some(TelemetryMode::Enabled);
+    let _falsy = EnvGuard::set("DISABLE_TELEMETRY", "0");
+    let resolved = cfg.resolve_telemetry_mode();
+    assert_eq!(
+        (resolved.value, resolved.source),
+        (TelemetryMode::Enabled, ConfigSource::Env)
+    );
+    let _truthy = EnvGuard::set("DISABLE_TELEMETRY", "1");
+    let resolved = cfg.resolve_telemetry_mode();
+    assert_eq!(
+        (resolved.value, resolved.source),
+        (TelemetryMode::Disabled, ConfigSource::Env)
+    );
+    assert!(
+        is_telemetry_disabled_sync(),
+        "sync gate must agree with resolve_telemetry_mode"
+    );
+    cfg.requirements.telemetry.pin(
+        TelemetryMode::Enabled,
+        crate::config::RequirementSource::Unknown,
+    );
+    let resolved = cfg.resolve_telemetry_mode();
+    assert_eq!(
+        (resolved.value, resolved.source),
+        (TelemetryMode::Enabled, ConfigSource::Requirement)
+    );
+}
+#[test]
 fn version_overrides_apply_into_typed_config() {
     let mut value: toml::Value = toml::from_str(
         r#"
@@ -6573,13 +7191,8 @@ default = "grok-4.5"
     let cfg = Config::new_from_toml_cfg(&value).unwrap();
     assert_eq!(cfg.models.default.as_deref(), Some("grok-4.5"));
 }
-/// Reproduce the enterprise managed config bug: [model.grok-build] sets
-/// context_window=500k for model="grok-4.5", but
-/// [models].default="grok-4.5" resolves to the bare
-/// prefetched entry (256k) because Layer 3 only overrides key
-/// "grok-build", not key "grok-4.5".
-///
-/// After the Layer 4 slug propagation fix, both keys should have 500k.
+/// Reproduce the enterprise managed config bug: [model.grok-build] sets context_window=500k for model="grok-4.5". [models].default="grok-4.5" still resolves to the bare prefetched entry (256k).
+/// Layer 3 only overrides key "grok-build", not key "grok-4.5". After the Layer 4 slug propagation fix, both keys should have 500k.
 #[test]
 fn slug_propagation_enterprise_managed_config_key_mismatch() {
     let default_cw = DEFAULT_CONTEXT_WINDOW;
@@ -6656,8 +7269,7 @@ fn slug_propagation_inherits_api_backend_but_not_agent_type() {
         "api_backend should be inherited from sibling"
     );
 }
-/// When the prefetched entry has an explicitly-set context_window
-/// (not the 256k default), slug propagation must NOT overwrite it.
+/// When the prefetched entry has an explicitly-set context_window (not the 256k default), slug propagation must NOT overwrite it.
 #[test]
 fn slug_propagation_does_not_overwrite_explicit_context_window() {
     let raw: toml::Value = toml::from_str(
@@ -6680,6 +7292,84 @@ fn slug_propagation_does_not_overwrite_explicit_context_window() {
         latest.info.context_window.get(),
         65_536,
         "explicitly-set context_window must not be overwritten by slug propagation"
+    );
+}
+/// Resolves a prefetched `custom-model` (default context window, ChatCompletions) against a same-slug `[model.alias]` donor at 500000 / `responses`, plus whatever `extra_toml` adds.
+/// The slug is absent from the built-in catalog so Layer 2 cannot pre-fill the prefetched entry and turn it into its own donor.
+fn resolve_custom_model_with_alias_donor(extra_toml: &str) -> ModelEntry {
+    let raw: toml::Value = toml::from_str(&format!(
+        r#"
+            [model.alias]
+            model = "custom-model"
+            context_window = 500000
+            base_url = "https://test.example.com/v1"
+            api_backend = "responses"
+
+            {extra_toml}
+            "#
+    ))
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let mut prefetched = IndexMap::new();
+    let mut entry = test_model_entry(
+        "custom-model",
+        "https://test.example.com/v1",
+        None,
+        None,
+        None,
+    );
+    entry.info.context_window = NonZeroU64::new(DEFAULT_CONTEXT_WINDOW).unwrap();
+    prefetched.insert("custom-model".to_owned(), entry);
+    resolve_model_list(&cfg, Some(prefetched))
+        .shift_remove("custom-model")
+        .expect("custom-model key must exist")
+}
+/// An explicit `chat_completions` equals the enum default, so propagation must tell it apart from
+/// a field that was never set. The context window still inherits from the donor.
+#[test]
+fn slug_propagation_keeps_explicit_chat_completions_api_backend() {
+    let entry = resolve_custom_model_with_alias_donor(
+        r#"
+            [model.custom-model]
+            api_backend = "chat_completions"
+            "#,
+    );
+    assert_eq!(
+        (entry.info.api_backend, entry.info.context_window.get()),
+        (ApiBackend::ChatCompletions, 500_000)
+    );
+}
+/// A backend inherited from `[model_providers.<id>]` counts as explicit for the model.
+#[test]
+fn slug_propagation_keeps_provider_chat_completions_api_backend() {
+    let entry = resolve_custom_model_with_alias_donor(
+        r#"
+            [model_providers.gateway]
+            base_url = "https://test.example.com/v1"
+            api_backend = "chat_completions"
+            api_key = "sk-provider"
+
+            [model.custom-model]
+            model_provider = "gateway"
+            "#,
+    );
+    assert_eq!(
+        (entry.info.api_backend, entry.info.context_window.get()),
+        (ApiBackend::ChatCompletions, 500_000)
+    );
+}
+/// A `[model.<id>]` override that leaves `api_backend` unset still inherits from the donor.
+#[test]
+fn slug_propagation_inherits_api_backend_into_config_entry_without_one() {
+    let entry = resolve_custom_model_with_alias_donor(
+        r#"
+            [model.custom-model]
+            name = "Custom Model"
+            "#,
+    );
+    assert_eq!(
+        (entry.info.api_backend, entry.info.context_window.get()),
+        (ApiBackend::Responses, 500_000)
     );
 }
 /// When no sibling has a real context_window, slug propagation is a no-op.
@@ -6729,6 +7419,7 @@ fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend
             agent_type: default_agent_type(),
             inference_idle_timeout_secs: None,
             max_retries: None,
+            rate_limit_retry_threshold: None,
             subagent_rate_limit_max_attempts: None,
             hidden: false,
             supported_in_api: true,
@@ -6743,7 +7434,9 @@ fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend
             laziness_detector: LazinessDetectorPerModelConfig::default(),
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
+            variants: Vec::new(),
         },
+        mtls_cert_dir: None,
         api_key: None,
         env_key: None,
         auth_provider: None,
@@ -6884,6 +7577,49 @@ fn global_model_defaults_apply_to_model_without_override() {
     assert_eq!(info.inference_idle_timeout_secs, Some(600));
     assert_eq!(info.subagent_rate_limit_max_attempts, Some(12));
     assert_eq!(info.stream_tool_calls, Some(true));
+}
+#[test]
+fn rate_limit_retry_threshold_resolves_toml_precedence_and_propagates() {
+    let global_only = prefetch_model_entry("global-only", 200_000, ApiBackend::default());
+    let mut prefetched = prefetch_model_entry("prefetched", 200_000, ApiBackend::default());
+    prefetched.info.rate_limit_retry_threshold = Some(5);
+    let mut overridden = prefetch_model_entry("per-model", 200_000, ApiBackend::default());
+    overridden.info.rate_limit_retry_threshold = Some(6);
+    let prefetched = IndexMap::from([
+        ("global-only".to_owned(), global_only),
+        ("prefetched".to_owned(), prefetched),
+        ("per-model".to_owned(), overridden),
+    ]);
+    let (_, models) = resolve_models_from_toml(
+        r#"
+            [models]
+            rate_limit_retry_threshold = 4
+
+            [model."per-model"]
+            rate_limit_retry_threshold = 7
+        "#,
+        Some(prefetched),
+    );
+    assert_eq!(
+        models["global-only"].info.rate_limit_retry_threshold,
+        Some(4),
+        "the global scalar must fill an unset prefetched model"
+    );
+    assert_eq!(
+        models["prefetched"].info.rate_limit_retry_threshold,
+        Some(5),
+        "a prefetched value must beat the global fallback"
+    );
+    assert_eq!(
+        models["per-model"].info.rate_limit_retry_threshold,
+        Some(7),
+        "a per-model TOML value must beat prefetched and global values"
+    );
+    assert_eq!(
+        resolve_sampling(&models["per-model"], None).rate_limit_retry_threshold,
+        Some(7),
+        "the resolved model value must reach SamplerConfig"
+    );
 }
 #[test]
 fn per_model_value_overrides_global_model_default() {
@@ -7150,9 +7886,8 @@ fn resolve_model_list_empty_prefetch_yields_empty_base() {
     let resolved = resolve_model_list(&cfg, Some(IndexMap::new()));
     assert!(resolved.is_empty());
 }
-/// Regression: enterprise managed config overlays env_key on an oauth-only
-/// catalog entry. BYOK must force visibility for API-key users so a
-/// base `supported_in_api: false` does not leak into the overlay.
+/// Regression: enterprise managed config overlays env_key on an oauth-only catalog entry.
+/// BYOK must force visibility for API-key users so a base `supported_in_api: false` does not leak into the overlay.
 #[test]
 fn byok_config_overlay_visible_to_api_key_users() {
     let raw: toml::Value = toml::from_str(
@@ -7179,8 +7914,8 @@ fn byok_config_overlay_visible_to_api_key_users() {
          env_key must override base supported_in_api=false"
     );
 }
-/// Guard: config overlay WITHOUT credentials must NOT flip the
-/// bundled supported_in_api flag. Only BYOK triggers that override.
+/// Guard: a config overlay WITHOUT credentials must NOT flip the bundled supported_in_api flag.
+/// Only BYOK triggers that override.
 #[test]
 fn plain_config_overlay_preserves_bundled_visibility() {
     let dm = crate::models::default_model();
@@ -7299,6 +8034,48 @@ fn mcp_auto_restart_env_wins_over_config_and_below() {
     let r = resolve_mcp_auto_restart(None, None, Some(false), Some(false), Some(false));
     unsafe { std::env::remove_var("GROK_MCP_AUTO_RESTART") };
     assert!(r.value);
+    assert_eq!(r.source, ConfigSource::Env);
+}
+#[test]
+#[serial]
+fn turn_transient_retry_default_is_true() {
+    unsafe { std::env::remove_var("GROK_TURN_TRANSIENT_RETRY") };
+    let r = resolve_turn_transient_retry(None, None, None, None, None);
+    assert!(r.value, "transient retry is on by default");
+    assert_eq!(r.source, ConfigSource::Default);
+}
+#[test]
+#[serial]
+fn turn_transient_retry_config_kill_switch() {
+    unsafe { std::env::remove_var("GROK_TURN_TRANSIENT_RETRY") };
+    let r = resolve_turn_transient_retry(None, None, Some(false), None, None);
+    assert!(
+        !r.value,
+        "config `[features] turn_transient_retry = false` disables"
+    );
+    assert_eq!(r.source, ConfigSource::Config);
+}
+#[test]
+#[serial]
+fn turn_transient_retry_remote_flag_disables_below_config() {
+    unsafe { std::env::remove_var("GROK_TURN_TRANSIENT_RETRY") };
+    let r = resolve_turn_transient_retry(None, None, None, None, Some(false));
+    assert!(!r.value);
+    assert_eq!(r.source, ConfigSource::Remote);
+    let r = resolve_turn_transient_retry(None, None, Some(true), None, Some(false));
+    assert!(r.value);
+    assert_eq!(r.source, ConfigSource::Config);
+    let r = resolve_turn_transient_retry(None, None, Some(false), None, Some(true));
+    assert!(!r.value);
+    assert_eq!(r.source, ConfigSource::Config);
+}
+#[test]
+#[serial]
+fn turn_transient_retry_env_wins_over_config() {
+    unsafe { std::env::set_var("GROK_TURN_TRANSIENT_RETRY", "false") };
+    let r = resolve_turn_transient_retry(None, None, Some(true), None, None);
+    unsafe { std::env::remove_var("GROK_TURN_TRANSIENT_RETRY") };
+    assert!(!r.value);
     assert_eq!(r.source, ConfigSource::Env);
 }
 #[test]
@@ -7459,6 +8236,34 @@ fn remote_settings_disarm_managed_config_signatures() {
     );
     assert!(xai_grok_config::signed_policy::verification_active());
 }
+/// A pass with no payload must keep the last applied policy (a cancelled
+/// first bootstrap followed by an offline fallback pass must not wipe it);
+/// a real payload still rewrites the caches, clearing omitted fields.
+#[test]
+#[serial_test::serial(remote_sig_disarm)]
+fn absent_settings_keep_previously_applied_remote_policy() {
+    let settings = crate::util::config::RemoteSettings {
+        prompt_suggestions: Some(serde_json::json!({"enabled": true})),
+        ..Default::default()
+    };
+    apply_remote_settings_side_effects(Some(&settings));
+    assert_eq!(
+        crate::util::config::cached_remote_prompt_suggestions_enabled(),
+        Some(true)
+    );
+    apply_remote_settings_side_effects(None);
+    assert_eq!(
+        crate::util::config::cached_remote_prompt_suggestions_enabled(),
+        Some(true),
+        "a fetchless pass must not wipe the last applied payload"
+    );
+    apply_remote_settings_side_effects(Some(&crate::util::config::RemoteSettings::default()));
+    assert_eq!(
+        crate::util::config::cached_remote_prompt_suggestions_enabled(),
+        None,
+        "a real payload clears the fields it omits"
+    );
+}
 /// Keyed path: prod proxy origin can disarm; env override cannot.
 #[test]
 #[serial_test::serial(remote_sig_disarm)]
@@ -7538,4 +8343,44 @@ fn a_status_line_the_parser_could_not_read_in_full_reaches_grok_inspect() {
         1
     );
     assert_eq!(cfg.ui.theme.as_deref(), Some("kanagawa"));
+}
+/// A model's `env_key` credential, installed as the process static key, is served by the shared api-key provider.
+/// Lives agent-side because it resolves a model list from the full `Config`, which the auth layer never sees.
+#[tokio::test]
+#[serial]
+async fn process_key_from_model_env_key() {
+    use std::sync::Arc;
+    use xai_grok_login::{AuthManager, GrokComConfig, shared_api_key_provider};
+    const ENV: &str = "TEST_MODEL_ENV_KEY";
+    const TOKEN: &str = "model-env-token";
+    let _xai = EnvGuard::unset("XAI_API_KEY");
+    let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let _tok = EnvGuard::set(ENV, TOKEN);
+    let dm = xai_grok_models::default_model();
+    let cfg = Config::new_from_toml_cfg(
+        &toml::from_str(&format!(
+            r#"
+            [model."{dm}"]
+            model = "{dm}"
+            env_key = "{ENV}"
+            "#
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let key = resolve_model_list(&cfg, None)
+        .get(dm)
+        .and_then(|m| m.own_credential())
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+    assert!(mgr.current().is_none());
+    mgr.set_process_static_api_key(Some(key));
+    assert_eq!(
+        shared_api_key_provider(mgr)
+            .current_api_key_async()
+            .await
+            .as_deref(),
+        Some(TOKEN)
+    );
 }

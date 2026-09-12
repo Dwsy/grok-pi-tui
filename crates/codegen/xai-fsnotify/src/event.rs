@@ -11,10 +11,8 @@
 
 use std::path::PathBuf;
 
-/// One semantic event from the local workspace. Causal order on the
-/// source's broadcast channel. `FilesChanged` paths share a single `kind`
-/// (per-debounce-window grouping); per-event causality would need
-/// `Vec<{path, kind}>`.
+/// One semantic event from the local workspace. Causal order on the source's broadcast channel.
+/// `FilesChanged` paths share a single `kind` (per-debounce-window grouping).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -30,16 +28,12 @@ pub enum FsEvent {
     /// A git metadata file changed (HEAD, index, refs/, FETCH_HEAD).
     GitMetaChanged { kind: GitMetaKind },
 
-    /// VCS lock activity observed: `index.lock`/`gc.pid`/`.sl` `wlock` is
-    /// present, or an event for one arrived with the file already gone (fast
-    /// ops complete inside one debounce batch). State is in flux until the
-    /// matching `GitOperationCompleted` arrives.
+    /// VCS lock activity observed, or an event for a lock that is already gone (fast ops finish inside one batch).
+    /// State is in flux until the matching `GitOperationCompleted` arrives.
     GitOperationStarted,
 
-    /// The lock has been gone for [`crate::SETTLE_MS`]: rapid lock cycles
-    /// (rebase/squash picks) merge into one operation, so one pair is emitted
-    /// per burst, not per cycle. `head_changed` reports whether `.git/HEAD`
-    /// differs from its value when the operation's *first* lock appeared.
+    /// The lock has been gone for [`crate::SETTLE_MS`]: rapid lock cycles merge into one operation.
+    /// `head_changed` reports whether `.git/HEAD` differs from its value when the operation's first lock appeared.
     GitOperationCompleted { head_changed: bool },
 }
 

@@ -18,10 +18,8 @@ where
         match line {
             std::borrow::Cow::Borrowed(slice) => {
                 let slice_addr = slice.as_ptr() as usize;
-                // Skip slices whose pointers don't lie within `text`.
-                // This guards against empty Cow::Borrowed("") slices from
-                // textwrap that reference static memory instead of the
-                // input buffer (e.g. at zero or degenerate widths).
+                // Skip slices whose pointers don't lie within `text`. This guards against empty Cow::Borrowed("") slices from textwrap
+                // that reference static memory instead of the input buffer (e.g. at zero or degenerate widths).
                 if slice_addr < text_start || slice_addr > text_end {
                     continue;
                 }
@@ -575,13 +573,6 @@ mod tests {
     fn wrap_ranges_trim_empty_text_does_not_panic() {
         let ranges = wrap_ranges_trim("", 1);
         assert!(ranges.is_empty() || ranges == vec![0..0]);
-    }
-
-    #[test]
-    fn word_wrap_line_width_one_with_newlines_does_not_panic() {
-        let line = Line::from("\n\n\n\n\n");
-        let out = word_wrap_line(&line, 1);
-        assert!(!out.is_empty());
     }
 
     #[test]

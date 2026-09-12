@@ -12,10 +12,9 @@ pub const BINARY_EXTENSIONS: &[&str] = &[
 const SAMPLE_SIZE: usize = 8192;
 const NON_PRINTABLE_THRESHOLD: f64 = 0.3;
 
-/// Returns `true` if the file should be treated as binary.
-///
-/// A file is binary if its extension is in [`BINARY_EXTENSIONS`], or if
-/// a significant portion of the first [`SAMPLE_SIZE`] bytes are non-printable.
+/// Returns `true` if the file should be treated as binary. A file is binary if its extension is in
+/// [`BINARY_EXTENSIONS`], or if a significant portion of the first [`SAMPLE_SIZE`] bytes are
+/// non-printable.
 pub fn is_binary(extension: &str, bytes: &[u8]) -> bool {
     if BINARY_EXTENSIONS.binary_search(&extension).is_ok() {
         return true;

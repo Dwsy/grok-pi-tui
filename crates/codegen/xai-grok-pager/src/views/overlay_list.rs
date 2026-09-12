@@ -1,4 +1,7 @@
-//! Shared prompt-area list overlay with a cursor and scroll window.
+//! Shared prompt-area list overlay: accent bar, bold title, and a scrollable single-line row list with a cursor.
+//!
+//! `/rewind`'s picker phase and `/jump` each used to keep this row geometry in sync by hand across their render, hit-test, and height functions.
+//! Row content stays with the caller (a closure); this module owns the accent bar, title, cursor styling, and the scroll window.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -8,6 +11,9 @@ use ratatui::text::{Line, Span};
 use crate::theme::Theme;
 
 const MAX_ROWS: usize = 15;
+
+/// List geometry: row count and cursor position.
+/// Construct per call; every method derives the same scroll window from these two fields, so the render, hit-test, and height paths cannot drift.
 
 pub struct ListOverlay {
     pub len: usize,
@@ -31,6 +37,8 @@ pub struct SearchLine<'a> {
 }
 
 impl ListOverlay {
+    /// Overlay height: title plus rows (at most [`MAX_ROWS`]), capped at 60% of the screen, plus one padding row.
+
     pub fn height(&self, screen_h: u16) -> u16 {
         self.height_with_search(screen_h, false)
     }
@@ -57,6 +65,8 @@ impl ListOverlay {
             0
         }
     }
+
+    /// Row index under a screen position, or `None` when the position misses the rows.
 
     pub fn row_at(&self, area: Rect, col: u16, row: u16) -> Option<usize> {
         self.row_at_with_search(area, col, row, false)
@@ -92,6 +102,10 @@ impl ListOverlay {
         let index = self.scroll_offset(visible_rows) + relative;
         (index < self.len).then_some(index)
     }
+
+    /// Render the overlay: bg fill, accent bar, title, then the visible window of rows.
+    /// `row_line(idx, ctx)` produces each row's content; cursor and row backgrounds are painted here.
+    /// Applies the standard unfocus dim, so callers must not blend again.
 
     pub fn render(
         &self,
@@ -181,6 +195,7 @@ impl ListOverlay {
             } else {
                 background
             };
+
             let row_rect = Rect {
                 x: content_x.saturating_sub(1),
                 y: row,
@@ -195,11 +210,14 @@ impl ListOverlay {
             };
             let line = row_line(index, &context);
             buf.set_line(content_x, row, &line, content_width);
+            if is_cursor && focused {
+                buf.set_style(row_rect, theme.selection_overlay());
+            }
             row += 1;
         }
 
         if !focused {
-            crate::render::color::blend_area(buf, area, Some((background, 0.66)), None);
+            crate::render::color::recede_area(buf, area, background, 0.66);
         }
     }
 }
@@ -231,11 +249,71 @@ mod tests {
 
     #[test]
     fn row_at_respects_scroll_window() {
+        // 20 rows, 7 visible (height 10 - 3), cursor at the end: the window starts at 13 so the cursor stays visible
+
         let list = ListOverlay {
             len: 20,
             selected: 19,
         };
         assert_eq!(list.row_at(area(), 5, 2), Some(13));
         assert_eq!(list.row_at(area(), 5, 8), Some(19));
+    }
+
+    /// Terminal theme (zero opaque cells): the cursor row carries reverse
+    /// video instead of a painted band. RGB themes keep the `bg_visual`
+    /// band and the row's own fgs.
+    #[test]
+    fn terminal_theme_cursor_row_uses_reverse_video() {
+        use ratatui::style::Modifier;
+
+        let _guard = crate::theme::cache::pin_theme();
+        let list = ListOverlay {
+            len: 3,
+            selected: 1,
+        };
+        let render = || {
+            let theme = Theme::current();
+            let mut buf = Buffer::empty(area());
+            list.render(&mut buf, area(), "Pick", true, |i, ctx| {
+                Line::from(Span::styled(
+                    format!("row {i}"),
+                    Style::default().fg(theme.text_primary).bg(ctx.row_bg),
+                ))
+            });
+            // Rows start at y+2; content at x+3.
+            (buf[(3, 3)].style(), buf[(3, 2)].style())
+        };
+
+        crate::theme::cache::set(crate::theme::ThemeKind::Terminal);
+        let (cursor, normal) = render();
+        assert!(
+            cursor.add_modifier.contains(Modifier::REVERSED),
+            "cursor row uses reverse video, got {cursor:?}"
+        );
+        assert_eq!(cursor.bg, Some(Color::Reset), "no painted band");
+        assert!(!normal.add_modifier.contains(Modifier::REVERSED));
+
+        crate::theme::cache::set(crate::theme::ThemeKind::GrokNight);
+        let (cursor, normal) = render();
+        let theme = Theme::current();
+        assert_eq!(cursor.bg, Some(theme.bg_visual), "RGB keeps the band");
+        assert_eq!(cursor.fg, Some(theme.text_primary), "RGB keeps row fgs");
+        assert!(!cursor.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(normal.bg, Some(theme.bg_light));
+    }
+
+    #[test]
+    fn height_caps_at_max_rows_and_screen_fraction() {
+        let two = ListOverlay {
+            len: 2,
+            selected: 0,
+        };
+        assert_eq!(two.height(40), 5); // title + 2 rows + padding
+        let many = ListOverlay {
+            len: 30,
+            selected: 0,
+        };
+        assert_eq!(many.height(40), 18); // 15-row cap
+        assert_eq!(many.height(12), 8); // 60% screen cap
     }
 }

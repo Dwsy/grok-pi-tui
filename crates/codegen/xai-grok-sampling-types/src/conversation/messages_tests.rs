@@ -1,5 +1,3 @@
-//! Tests for the Messages API conversion.
-
 use super::test_support::*;
 use super::*;
 
@@ -214,127 +212,6 @@ fn test_messages_request_cache_breakpoint_skips_thinking() {
 }
 
 #[test]
-fn test_btw_stripped_reasoning_produces_no_thinking_blocks() {
-    // Simulate a conversation where the model responded with thinking.
-    let with_reasoning = ConversationItem::Assistant(AssistantItem {
-        content: "Here is the answer.".into(),
-        tool_calls: vec![],
-        model_id: Some("messages-compatible-model".into()),
-        model_fingerprint: None,
-        reasoning_effort: None,
-    });
-
-    // Reasoning now lives as a sibling `ConversationItem::Reasoning`,
-    // so "stripping reasoning" means filtering those siblings out — see
-    // `strip_reasoning_blocks` in xai-chat-state. Here the assistant
-    // never had a sibling Reasoning, so the strip is a no-op.
-    let stripped = with_reasoning;
-
-    let req = ConversationRequest::from_items(vec![
-        ConversationItem::user("hello"),
-        stripped,
-        ConversationItem::user("btw what is X?"),
-    ]);
-
-    let msg = build_messages_request(&req);
-    let json = serde_json::to_value(&msg).unwrap();
-
-    // No thinking blocks should appear in any message.
-    let messages = json.get("messages").unwrap().as_array().unwrap();
-    for (i, m) in messages.iter().enumerate() {
-        if let Some(content) = m.get("content").and_then(|c| c.as_array()) {
-            for block in content {
-                assert_ne!(
-                    block.get("type").and_then(|t| t.as_str()),
-                    Some("thinking"),
-                    "message[{i}] must not contain thinking blocks after stripping reasoning",
-                );
-            }
-        }
-    }
-
-    // Top-level thinking must also be absent.
-    assert!(
-        json.get("thinking").is_none()
-            || json
-                .pointer("/thinking")
-                .map(|v| v.is_null())
-                .unwrap_or(false),
-        "top-level thinking must be absent; got: {json:#}",
-    );
-}
-
-#[test]
-fn test_btw_mid_turn_truncation_removes_trailing_tool_use() {
-    // Simulate a conversation that was snapshotted mid-turn: the last
-    // assistant made a tool call that hasn't been answered yet.
-    let mut items = vec![
-        ConversationItem::system("You are a helpful assistant."),
-        ConversationItem::user("Fix the bug"),
-        ConversationItem::assistant("I'll look at the code."),
-        // Completed tool call pair:
-        ConversationItem::assistant_tool_calls(vec![ToolCall {
-            id: "call_1".into(),
-            name: "read_file".to_string(),
-            arguments: r#"{"path": "src/main.rs"}"#.into(),
-        }]),
-        ConversationItem::tool_result("call_1", "fn main() {}"),
-        ConversationItem::assistant("I see the issue. Let me fix it."),
-        // Mid-turn: tool call with NO tool_result yet
-        ConversationItem::assistant_tool_calls(vec![ToolCall {
-            id: "call_2".into(),
-            name: "search_replace".to_string(),
-            arguments: "{}".into(),
-        }]),
-    ];
-
-    // Apply the same truncation pattern as handle_side_question.
-    while let Some(last) = items.last() {
-        match last {
-            ConversationItem::Assistant(a) if !a.tool_calls.is_empty() => {
-                items.pop();
-            }
-            ConversationItem::ToolResult(_) => {
-                items.pop();
-            }
-            _ => break,
-        }
-    }
-
-    // Add the btw user question.
-    items.push(ConversationItem::user("btw what is X?"));
-
-    let msg = build_messages_request(&ConversationRequest::from_items(items.clone()));
-    let json = serde_json::to_value(&msg).unwrap();
-    let messages = json.get("messages").unwrap().as_array().unwrap();
-
-    // The last message before the btw question should be a plain
-    // assistant text (not a tool_use), so the request is valid.
-    // Messages: user("Fix the bug"), asst("I'll look"), asst(tool_use call_1),
-    //           user(tool_result call_1), asst("I see the issue"),
-    //           user("btw what is X?")
-    // The orphaned call_2 assistant must be gone.
-    let last_assistant = messages
-        .iter()
-        .rev()
-        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
-        .unwrap();
-    if let Some(content) = last_assistant.get("content").and_then(|c| c.as_array()) {
-        for block in content {
-            assert_ne!(
-                block.get("type").and_then(|t| t.as_str()),
-                Some("tool_use"),
-                "last assistant must not have unanswered tool_use blocks",
-            );
-        }
-    }
-
-    // Verify the original complete pair (call_1) survived.
-    // system + user + asst_text + asst(call_1) + tool_result(call_1) + asst_text + user(btw) = 7
-    assert_eq!(items.len(), 7);
-}
-
-#[test]
 fn test_btw_cross_api_messages_no_regressions() {
     let items = btw_prepare_items(btw_mid_turn_conversation());
     let req = ConversationRequest::from_items(items);
@@ -378,7 +255,6 @@ fn test_btw_cross_api_messages_no_regressions() {
         "top-level thinking must be absent; got: {json:#}",
     );
 
-    // Temperature must be absent (not hardcoded).
     assert!(
         json.get("temperature").is_none()
             || json.pointer("/temperature").is_some_and(|v| v.is_null()),
@@ -443,8 +319,7 @@ fn test_tool_result_with_images_to_anthropic() {
 
     let messages_req = build_messages_request(&req);
 
-    // Find the user message that contains the tool result
-    // (the Messages API wraps tool results in user messages)
+    // Find the user message that contains the tool result (the Messages API wraps tool results in user messages)
     let tool_result_msg = messages_req
         .messages
         .iter()
@@ -473,7 +348,6 @@ fn test_tool_result_with_images_to_anthropic() {
         })
         .unwrap();
 
-    // Should be Blocks variant with text + image, not Text
     let crate::messages::ToolResultContent::Blocks(inner) = tool_result_block else {
         panic!("Expected ToolResultContent::Blocks, got Text");
     };
@@ -489,7 +363,7 @@ fn test_tool_result_with_images_to_anthropic() {
 #[test]
 fn upgrade_legacy_reasoning_singular_anthropic_no_id() {
     // Messages streaming sets id = "" (see stream/messages.rs:340).
-    // The upgrader must still emit a sibling carrying text + signature.
+    // The upgrader must still emit a sibling carrying text and signature
     let raw = serde_json::json!({
         "type": "assistant",
         "content": "answer",

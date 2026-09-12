@@ -42,11 +42,9 @@ const MIN_IMAGE_DIMENSION: u32 = 128;
 /// JPEG quality ladder for the read-file image compression path.
 const READFILE_QUALITY_STEPS: &[u8] = &[85, 70, 50, 40];
 
-/// Absolute upper bound on decoded pixel count before we refuse to decode.
-/// Matches the model API's `MAX_IMAGE_PIXELS` ceiling (and the shell's
-/// `MAX_VISION_TOTAL_PX`) so any photo the API would accept can be read and
-/// downscaled — a 20-48 Mpx camera photo must not fail `read_file`. Images
-/// above this are rejected by the API regardless.
+/// Absolute upper bound on decoded pixel count before we refuse to decode. Matches the model API's `MAX_IMAGE_PIXELS`
+/// ceiling (and the shell's `MAX_VISION_TOTAL_PX`) so any photo the API would accept can be read and downscaled — a
+/// 20-48 Mpx camera photo must not fail `read_file`. Images above this are rejected by the API regardless.
 const MAX_DECODE_PIXELS: u64 = 178_956_970;
 
 /// Resize and compress an image so its base64 form stays under
@@ -63,11 +61,9 @@ pub fn compress_image_for_conversation(
     )
 }
 
-/// [`compress_image_for_conversation`] off the async path, mapped to the
-/// read tools' output: an embeddable
+/// [`compress_image_for_conversation`] off the async path, mapped to the read tools' output: an embeddable
 /// [`ImageContent`](crate::types::output::ImageContent) on success, or
-/// [`ImageSizeError`](crate::types::output::ReadFileOutput::ImageSizeError)
-/// with the model-visible reason.
+/// [`ImageSizeError`](crate::types::output::ReadFileOutput::ImageSizeError) with the model-visible reason.
 pub async fn image_read_output(
     file_bytes: Vec<u8>,
     mime_type: String,
@@ -151,12 +147,9 @@ fn compress_image_for_conversation_with_caps(
         .and_then(|r| r.into_dimensions().ok())
         .is_none_or(|(w, h)| !params.exceeds_dimension_caps(w, h));
 
-    // Pass through untouched only if the bytes are a structurally complete
-    // JPEG/PNG/WebP — the formats the API accepts on the wire. Anything
-    // else (truncated container, HEIC/PSD/unsniffable bytes) falls through
-    // to the re-encode chain, which either emits valid endpoint bytes or
-    // fails this call — never embedding a payload that would 400 on this
-    // and every following turn.
+    // Pass through untouched only if the bytes are a structurally complete JPEG/PNG/WebP — the formats the API accepts on the wire. Anything else
+    // (truncated container, HEIC/PSD/unsniffable bytes) falls through to the re-encode chain, which either emits valid endpoint bytes or fails
+    // this call — never embedding a payload that would 400 on this and every following turn.
     let passthrough_sendable = match image::guess_format(&raw_bytes) {
         Ok(
             format

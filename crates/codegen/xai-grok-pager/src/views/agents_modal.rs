@@ -1,8 +1,8 @@
-//! Agents modal popup — lists all agent definitions (built-in, user, project, bundled).
+//! Agents modal popup: lists all agent definitions (built-in, user, project, bundled).
 //!
-//! Opened by `/config-agents` (alias `/agents`). Uses the shared
-//! [`ModalWindow`](super::modal_window) chrome. Blocks all input until
-//! closed with `Esc`.
+//! Opened by `/config-agents` (alias `/agents`).
+//! Uses the shared [`ModalWindow`](super::modal_window) chrome.
+//! Blocks all input until closed with `Esc`.
 use crate::app::bundle::{BundleState, PersonaDetail};
 use crate::input::line_editor::{LineEditOutcome, LineEditor};
 use crate::theme::Theme;
@@ -102,12 +102,12 @@ pub enum AgentsModalOutcome {
     Close,
     Changed,
     Unchanged,
-    /// User pressed Enter/o — open the agent's full definition in the line viewer.
+    /// User pressed Enter or o: open the agent's full definition in the line viewer.
     /// Contains the source path (if file-based) or in-memory markdown content.
     ViewAgent {
         /// Display title for the viewer.
         title: String,
-        /// File path on disk (preferred — opens with syntax highlighting).
+        /// File path on disk (preferred; opens with syntax highlighting).
         source_path: Option<PathBuf>,
         /// Fallback: in-memory markdown content (for built-in agents).
         content: Option<String>,
@@ -229,20 +229,17 @@ pub enum PersonaConfirmAction {
 /// Modal state for the agents listing.
 pub struct AgentsModalState {
     pub window: ModalWindowState,
-    /// Currently active tab (source of truth).
-    ///
-    /// `window.active_tab` (a `usize` index) is derived from this in the
-    /// render path via `AgentsTab::ALL.position()`. Only this field
-    /// should be mutated by input handlers; the window's copy is a
-    /// rendering hint synced each frame.
+    /// Currently active tab (source of truth). `window.active_tab` (a `usize` index) is derived from
+    /// this in the render path via `AgentsTab::ALL.position()`. Only this field should be mutated by
+    /// input handlers; the window's copy is a rendering hint synced each frame.
     pub active_tab: AgentsTab,
     pub agents: Vec<AgentListEntry>,
     pub selected: usize,
     pub scroll: usize,
     search: LineEditor,
     pub search_active: bool,
-    /// Maps screen Y position to agent index. Rebuilt every render frame
-    /// for mouse click → agent selection.
+    /// Maps screen Y position to agent index.
+    /// Rebuilt every render frame so a mouse click can select an agent.
     pub(crate) row_map: Vec<(u16, usize)>,
     /// Content area rect from the last render (for click bounds checking).
     pub(crate) content_rect: Option<Rect>,
@@ -254,16 +251,13 @@ pub struct AgentsModalState {
     pub cwd: PathBuf,
     /// Snapshot of bundle catalog used to merge persona lists.
     bundle: BundleState,
-    /// Resolved startup agent name (same chain as shell: `[agent]`, `GROK_AGENT`,
-    /// model `agentType`, then `grok-build`).
+    /// Resolved startup agent name (same chain as the shell: `[agent]`, `GROK_AGENT`, model `agentType`, then `grok-build`).
     pub default_agent: String,
     /// Agent running in the current session (`session/info` `agentName`).
     pub active_agent: Option<String>,
-    /// Model `agentType` from the pager's default/current model catalog entry,
-    /// used when re-resolving after `s` toggles `[agent] name`.
+    /// Model `agentType` from the pager's default or current model catalog entry, used when re-resolving after `s` toggles `[agent] name`.
     model_agent_type: Option<String>,
-    /// Plugin registry snapshot for listing plugin-provided agents
-    /// (`None` when no plugins are installed/enabled).
+    /// Plugin registry snapshot for listing plugin-provided agents (`None` when no plugins are installed or enabled).
     plugin_registry: Option<xai_grok_agent::plugins::PluginRegistry>,
     pub personas: Vec<PersonaDetail>,
     pub persona_selected: usize,
@@ -272,9 +266,8 @@ pub struct AgentsModalState {
     pub persona_expanded: std::collections::HashSet<usize>,
 }
 /// Built-in agent names that should be shown to the user.
-/// Skips internal variants (GrokBuildConcise, GrokBuildPlan,
-/// GrokBuildPlanNoSubagents, GrokBuildAskUser, Codex, Opencode,
-/// CursorExtended, GrokBuildOrchestrator).
+/// Skips the internal variants:
+/// GrokBuildConcise, GrokBuildPlan, GrokBuildPlanNoSubagents, GrokBuildAskUser, Codex, Opencode, CursorExtended, GrokBuildOrchestrator.
 fn user_visible_builtins() -> &'static [BuiltinAgentName] {
     &[
         BuiltinAgentName::GrokBuild,
@@ -331,7 +324,7 @@ impl AgentsModalState {
             self.selected = self.agents.len().saturating_sub(1);
         }
     }
-    /// Rebuild persona list from bundle cache + local disk.
+    /// Rebuild the persona list from the bundle cache and local disk.
     pub fn refresh_personas(&mut self) {
         self.personas = merge_persona_lists(&self.bundle, &self.cwd);
         self.persona_expanded.clear();
@@ -382,9 +375,8 @@ impl AgentsModalState {
         }
     }
 }
-/// Build the full agent list: user-visible built-ins first, then
-/// file-based agents from discovery (with dedup), then plugin-provided
-/// agents under qualified `plugin:agent` names.
+/// Build the full agent list: user-visible built-ins first, then file-based agents from discovery (with dedup).
+/// Plugin-provided agents come last under qualified `plugin:agent` names.
 pub fn build_agent_list(
     cwd: &Path,
     toggle: &HashMap<String, bool>,
@@ -613,8 +605,7 @@ pub fn load_agent_toggle() -> HashMap<String, bool> {
         .filter_map(|(k, v)| v.as_bool().map(|b| (k.to_string(), b)))
         .collect()
 }
-/// Sanitize a name for use as a filename: replace non-alphanumeric chars
-/// (except `-` and `_`) with `-`, require at least one alphanumeric char.
+/// Sanitize a name for use as a filename: replace non-alphanumeric chars (except `-` and `_`) with `-`, require at least one alphanumeric char.
 pub fn sanitize_config_name(name: &str) -> Result<String, String> {
     let sanitized: String = name
         .chars()
@@ -735,8 +726,8 @@ fn load_agent_selection_config() -> AgentSelectionConfig {
 fn load_config_agent_name() -> Option<String> {
     load_agent_selection_config().name.filter(|s| !s.is_empty())
 }
-/// Resolve the agent name new sessions would start with — mirrors
-/// `MvpAgent::resolve_agent_definition` in xai-grok-shell.
+/// Resolve the agent name new sessions would start with.
+/// Mirrors `MvpAgent::resolve_agent_definition` in xai-grok-shell.
 pub fn resolve_default_agent_name(cwd: &Path, model_agent_type: Option<&str>) -> String {
     let agent_config = load_agent_selection_config();
     xai_grok_shell::agent::mvp_agent::MvpAgent::resolve_agent_definition(
@@ -756,7 +747,7 @@ fn refresh_default_agent(state: &mut AgentsModalState) {
 ///
 /// Pass `Some(name)` to set, `None` to clear (remove the key).
 pub fn set_default_agent(name: Option<&str>) -> Result<(), String> {
-    let config_path = xai_grok_config::grok_home().join("config.toml");
+    let config_path = xai_grok_config::grok_home().join(xai_grok_config::USER_CONFIG_FILENAME);
     if let Some(parent) = config_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -780,7 +771,7 @@ pub fn set_default_agent(name: Option<&str>) -> Result<(), String> {
 }
 /// Toggle an agent's enabled state via `[subagents.toggle]` in config.toml.
 pub fn toggle_agent(name: &str, enabled: bool) -> Result<(), String> {
-    let config_path = xai_grok_config::grok_home().join("config.toml");
+    let config_path = xai_grok_config::grok_home().join(xai_grok_config::USER_CONFIG_FILENAME);
     if let Some(parent) = config_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -856,8 +847,8 @@ pub fn format_agent_detail(entry: &AgentListEntry) -> Vec<String> {
     lines
 }
 /// Word-wrap text to fit within `max_width` display columns.
-/// Breaks at word boundaries (spaces). Words longer than `max_width`
-/// are placed on their own line (not hard-broken).
+/// Breaks at word boundaries (spaces).
+/// Words longer than `max_width` are placed on their own line (not hard-broken).
 fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
@@ -885,12 +876,9 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     }
     lines
 }
-/// Build viewer content for a built-in agent's prompt extension.
-///
-/// Shows only the `prompt_body` — the custom instructions this agent adds
-/// on top of the base template. Template variables like
-/// `${{ tools.by_kind.read }}` are resolved to actual tool names using
-/// the agent's configured toolset.
+/// Build viewer content for a built-in agent's prompt extension. Shows only the `prompt_body`, the
+/// custom instructions this agent adds on top of the base template. Template variables like `${{
+/// tools.by_kind.read }}` are resolved to actual tool names using the agent's configured toolset.
 fn synthesize_agent_markdown(entry: &AgentListEntry) -> String {
     if let Some(ref body) = entry.definition.prompt_body {
         render_prompt_body(body, &entry.definition.tool_config)
@@ -901,8 +889,7 @@ fn synthesize_agent_markdown(entry: &AgentListEntry) -> String {
         )
     }
 }
-/// Resolve `${{ tools.by_kind.* }}` template variables in a prompt body
-/// using the agent's tool config.
+/// Resolve `${{ tools.by_kind.* }}` template variables in a prompt body using the agent's tool config.
 fn render_prompt_body(body: &str, tool_config: &ToolServerConfig) -> String {
     let mut kind_map: HashMap<ToolKind, String> = HashMap::new();
     for tool in &tool_config.tools {
@@ -1264,7 +1251,7 @@ fn render_agents_search(
             .saturating_add(viewport.cursor_display_column as u16)
             .min(area.width - 1);
         if let Some(cell) = buf.cell_mut((area.x + cursor_offset, area.y)) {
-            cell.set_style(Style::default().fg(theme.bg_base).bg(theme.text_primary));
+            cell.set_style(theme.block_cursor_over(theme.bg_base));
         }
     }
 }
@@ -1861,7 +1848,7 @@ fn render_create_text_field(
         if cursor_x < content_area.x + content_area.width
             && let Some(cell) = buf.cell_mut((cursor_x, y))
         {
-            cell.set_style(Style::default().fg(theme.bg_base).bg(theme.text_primary));
+            cell.set_style(theme.block_cursor_over(theme.bg_base));
         }
     }
     y + 2
@@ -1974,8 +1961,7 @@ fn render_persona_confirm_dialog(
     let hint = "y: confirm | n/Esc: cancel";
     buf.set_string(content_area.x, y, hint, Style::default().fg(theme.gray_dim));
 }
-/// Group an agent entry belongs to in the flat list: its scope, or the
-/// dedicated plugins group for plugin-provided agents.
+/// Group an agent entry belongs to in the flat list: its scope, or the dedicated plugins group for plugin-provided agents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentGroup {
     Scope(AgentScope),
@@ -2956,8 +2942,7 @@ mod tests {
         s.persona_select_prev();
         assert_eq!(s.persona_selected, 0, "should remain 0 on empty list");
     }
-    /// On the Agents tab both `/` and `i` (no modifiers) activate the shared
-    /// search.
+    /// On the Agents tab both `/` and `i` (no modifiers) activate the shared search.
     #[test]
     fn agents_tab_slash_and_i_activate_search() {
         for code in [KeyCode::Char('/'), KeyCode::Char('i')] {
@@ -2971,8 +2956,7 @@ mod tests {
             assert!(s.search_active, "{code:?} must activate Agents-tab search");
         }
     }
-    /// Personas symmetry: both `/` and `i` activate the shared search (the
-    /// Personas tab now answers `/` too, matching the Agents tab).
+    /// Personas symmetry: both `/` and `i` activate the shared search (the Personas tab now answers `/` too, matching the Agents tab).
     #[test]
     fn personas_tab_slash_and_i_activate_search() {
         for code in [KeyCode::Char('/'), KeyCode::Char('i')] {
@@ -2988,8 +2972,7 @@ mod tests {
             );
         }
     }
-    /// The `modifiers.is_empty()` guard: Ctrl+i / Alt+i must NOT activate
-    /// search on either tab.
+    /// The `modifiers.is_empty()` guard: Ctrl+i and Alt+i must NOT activate search on either tab.
     #[test]
     fn modified_i_does_not_activate_search_either_tab() {
         for mods in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
@@ -3008,8 +2991,7 @@ mod tests {
             assert!(!personas.search_active);
         }
     }
-    /// End-to-end: `i` survives the public dispatcher + chrome to reach the
-    /// per-tab handler and activate search.
+    /// End-to-end: `i` survives the public dispatcher and chrome to reach the per-tab handler and activate search.
     #[test]
     fn handle_agents_key_i_activates_search_end_to_end() {
         let mut s = make_persona_state(vec![], "", 0);
@@ -3027,13 +3009,7 @@ mod tests {
             "`i` must survive chrome dispatch to activate search"
         );
     }
-    /// Wiring check: both tab footers carry the shared `i search` hint under vim
-    /// nav mode, and the Personas footer advertises `/ search` (symmetric with
-    /// the Agents tab). The gate is covered centrally by `modal_window`'s
-    /// `vim_nav_search_hint_only_in_vim_nav_mode`. The explicit `set_vim_mode`
-    /// pin (a thread-local that, once set, blocks disk-seeding) keeps this
-    /// independent of the dev's on-disk `[ui].vim_mode`; reset afterward since
-    /// libtest reuses worker threads.
+    /// Wiring check: both tab footers carry the shared `i search` hint under vim nav mode.
     #[test]
     fn tab_footers_advertise_i_search_under_vim() {
         crate::appearance::cache::set_vim_mode(true);

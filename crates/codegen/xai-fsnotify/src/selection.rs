@@ -59,12 +59,8 @@ pub(crate) fn event_triggers_reconcile(kind: FsEventKind, paths: &[PathBuf], roo
 }
 
 /// Per-dir mode: classify one event's paths into watch-set delta candidates.
-///
-/// A structural event on an existing dir is both pruned and added, so a
-/// delete+recreate inside one debounce window re-arms. A `.git`/`.sl` marker
-/// whose parent is another workspace also prunes that parent: `git worktree
-/// add` writes the marker last, so a directory can become another workspace
-/// after selection accepted it.
+/// A structural event on an existing dir is both pruned and added, so a delete+recreate in one window re-arms.
+/// A `.git`/`.sl` marker whose parent is another workspace also prunes that parent.
 pub(crate) fn scan_per_dir_updates(
     kind: FsEventKind,
     paths: &[PathBuf],

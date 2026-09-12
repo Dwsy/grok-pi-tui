@@ -1,11 +1,6 @@
 //! Dropdown list renderer for @-completion results.
 //!
-//! Renders fuzzy match results as a scrollable list with:
-//! - Selection highlight (background color on selected row)
-//! - Fuzzy match character highlighting (accent color on matched chars)
-//! - Scrollbar when results exceed visible height
-//! - Truncation with `…` for long paths
-//! - Result count hint (e.g., "12/345") in the separator line
+//! Rows highlight the selection and the fuzzy-matched characters, long paths truncate with `…`, and a scrollbar appears when results overflow.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -22,11 +17,9 @@ use super::state::FileSearchState;
 /// Maximum number of visible rows in the dropdown (excluding separator).
 pub const MAX_DROPDOWN_ROWS: u16 = 8;
 
-/// Render the file search dropdown items into the given area.
-///
-/// This renders ONLY the result rows (no borders or separators).
-/// Panel chrome (clear, borders, count hint) is handled by the caller
-/// (AgentView). The `area` covers just the item rows.
+/// Render the file search dropdown items into the given area. This renders only the result rows;
+/// the caller (AgentView) clears the panel and draws the borders, separator, and count hint. The
+/// `area` covers just the item rows.
 pub fn render_dropdown(buf: &mut Buffer, area: Rect, file_search: &FileSearchState, theme: &Theme) {
     if area.height == 0 || area.width < 4 || !file_search.is_visible() {
         return;
@@ -38,7 +31,7 @@ pub fn render_dropdown(buf: &mut Buffer, area: Rect, file_search: &FileSearchSta
     let scroll = file_search.scroll_offset();
     let dir_mode = file_search.is_dir_mode();
 
-    // Reserve 2 columns on the right for scrollbar (gap + track).
+    // Reserve 2 columns on the right for the scrollbar (gap and track)
     let needs_scrollbar = topk.len() > area.height as usize;
     let content_width = if needs_scrollbar {
         area.width.saturating_sub(2)
@@ -99,7 +92,7 @@ pub fn render_dropdown(buf: &mut Buffer, area: Rect, file_search: &FileSearchSta
     }
 }
 
-/// Desired height for the dropdown (separator + min(results, max_rows)).
+/// Desired height for the dropdown: the separator row plus min(results, max_rows).
 pub fn dropdown_height(file_search: &FileSearchState, max_rows: u16) -> u16 {
     if !file_search.is_visible() {
         return 0;
@@ -108,7 +101,7 @@ pub fn dropdown_height(file_search: &FileSearchState, max_rows: u16) -> u16 {
     1 + result_rows // separator + results
 }
 
-/// Non-selected prefix — same width as the arrow, just spaces.
+/// Non-selected prefix: same width as the arrow, just spaces.
 const ITEM_PREFIX: &str = "  ";
 const PREFIX_WIDTH: u16 = crate::glyphs::PROMPT_ARROW_WIDTH;
 
@@ -233,5 +226,20 @@ fn render_fuzzy_item(
     {
         cell.set_char('/');
         cell.set_style(normal_style);
+    }
+
+    // Terminal theme (Reset bands): reverse video; no-op on RGB themes.
+    if embed.is_none() {
+        let row_rect = Rect {
+            x,
+            y,
+            width,
+            height: 1,
+        };
+        if is_selected {
+            buf.set_style(row_rect, theme.selection_overlay());
+        } else if is_hovered {
+            buf.set_style(row_rect, theme.hover_overlay());
+        }
     }
 }

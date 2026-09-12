@@ -12,11 +12,9 @@ fn probe_output(worktree: &Path, command: Command, what: &str) -> Result<Vec<u8>
     }
 }
 
-/// Keep when the snapshot's stored blob for a path does not round-trip the
-/// on-disk bytes: a clean filter or CRLF rule can make `ls-tree`'s blob differ
-/// from the working-tree file, so a snapshot that looks complete would still
-/// lose the real content. Compares the stored id against `hash-object
-/// --no-filters` of the file (see `find_converted_path_in`).
+/// Keep when a snapshot blob does not round-trip on-disk bytes: a clean filter
+/// or CRLF rule can make `ls-tree` differ from the working tree, so a complete
+/// looking snapshot would still lose content. Compares against `hash-object --no-filters`.
 pub(super) fn find_converted_path(worktree: &Path, snapshot: &str) -> Option<KeepReason> {
     let mut command = probe_command(worktree);
     command.args(["status", "--porcelain", "-z", "--untracked-files=all"]);

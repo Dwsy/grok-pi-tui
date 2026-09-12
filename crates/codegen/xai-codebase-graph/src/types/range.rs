@@ -7,9 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A position in a source file.
-///
-/// Positions are stored as 0-indexed internally (tree-sitter compatible).
-/// Use `line_1indexed()` and `column_1indexed()` for display/LSP output.
+/// Stored 0-indexed (tree-sitter compatible). Use `line_1indexed()` / `column_1indexed()` for display.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Position {

@@ -31,15 +31,8 @@ use xai_grok_auth::AuthCredentialProvider;
 
 use crate::circuit_breaker_observer::TracingObserver;
 
-// ============================================================================
-// Storage Circuit Breaker policy
-// ============================================================================
-// `StorageClient`'s session-wide breaker uses the shared
-// `xai_circuit_breaker::BreakerConfig::client()` preset
-// (sliding-window-with-min-samples: 5 samples / 60s window / 60s open
-// duration / failure code = 401). The observer name "storage_breaker"
-// is surfaced as a structured field on every tracing event so existing
-// analytics queries continue to match.
+// StorageClient's session-wide breaker uses `BreakerConfig::client()` (401 failure code).
+// Observer name "storage_breaker" is a structured field so existing analytics queries keep matching.
 
 const STORAGE_BREAKER_NAME: &str = "storage_breaker";
 
@@ -47,18 +40,9 @@ fn storage_breaker_config() -> BreakerConfig {
     BreakerConfig::client()
 }
 
-/// Hook invoked by [`StorageClient`] at every 401 response site so that
-/// the embedding application can record auth-attribution telemetry.
-///
-/// Mirrors the pattern in `xai-grok-sampler::Auth401AttributionCallback`
-/// and `xai-grok-tools::Auth401AttributionCallback`. The shell installs
-/// a bridge implementation that wires into
-/// `crate::auth::attribution::record_consumer_401`.
-///
-/// `sent_bearer_prefix` is the first-N characters of the bearer that was
-/// actually sent on the wire (extracted at the trait boundary so the full
-/// bearer never escapes `StorageClient`). `None` indicates no bearer was
-/// configured (the unauthenticated test/CI path).
+/// Hook invoked at every 401 so the embedding app can record auth-attribution telemetry.
+/// `sent_bearer_prefix` is a prefix only — the full bearer never escapes `StorageClient`.
+/// `None` means no bearer was configured.
 pub trait Auth401AttributionCallback: Send + Sync + std::fmt::Debug {
     fn record_401(&self, operation: &str, sent_bearer_prefix: Option<&str>);
 }
@@ -68,9 +52,7 @@ pub trait Auth401AttributionCallback: Send + Sync + std::fmt::Debug {
 // ============================================================================
 
 /// Configuration for exponential backoff retry logic.
-///
-/// This is particularly important for handling 429 (rate limit) errors from GCS,
-/// which commonly occur during autoscaling events.
+/// Particularly important for 429s from GCS during autoscaling.
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
     /// Initial delay before the first retry (default: 500ms)
@@ -359,14 +341,9 @@ mod retry_status_tests {
     }
 }
 
-/// Static credentials for the proxy-mode upload path when no `AuthManager`
-/// is available (bins, tests, bare `TraceExportConfig` with no auth wrap).
-///
-/// SAFETY: only hit by bins/tests/no-AuthManager paths; the refresh-aware
-/// path uses the obfuscated shell impl (`GrokAuthCredentials::apply` via
-/// `ShellAuthCredentialProvider`). A future reader should not innocently
-/// make the static provider the production default -- the obfuscated
-/// routing + obfstr-protected literals only live in the shell impl.
+/// Static credentials for proxy-mode uploads when no `AuthManager` is available.
+/// Only bins/tests/no-AuthManager paths; production uses the obfuscated shell provider.
+/// Do not make the static provider the production default.
 pub struct StaticGrokAuth {
     pub user_token: Option<String>,
     pub deployment_key: Option<String>,
@@ -461,18 +438,9 @@ pub struct StorageClient {
 }
 
 impl StorageClient {
-    /// Creates a new StorageClient with a static user-token credential.
-    ///
-    /// Convenience constructor for bins, tests, and other callers that have a
-    /// raw bearer string and no AuthManager. Internally wraps the token in a
-    /// `StaticAuthCredentialProvider` -- there is no refresh capability and no
-    /// attribution callback.
-    ///
-    /// Production code with refresh-aware auth should use [`Self::with_provider`].
-    ///
-    /// # Arguments
-    /// * `proxy_base_url` - Base URL for the proxy (e.g., "https://cli-chat-proxy.grok.com/v1")
-    /// * `user_token` - User's grok.com auth token
+    /// Creates a StorageClient with a static user-token. No refresh and no attribution callback.
+    /// Convenience for bins/tests with a raw bearer and no AuthManager.
+    /// Production refresh-aware auth should use [`Self::with_provider`].
     pub fn new(proxy_base_url: &str, user_token: &str) -> Self {
         let creds = StaticGrokAuth::new(Some(user_token.to_owned()));
         let bearer = creds.wire_bearer();
@@ -513,17 +481,9 @@ impl StorageClient {
         self.breaker.is_open()
     }
 
-    /// Test-only constructor that rebuilds the breaker with a shortened
-    /// `open_duration` so cool-down windows finish in tens of
-    /// milliseconds. Preserves observer fidelity by reinstalling the
-    /// production `TracingObserver`.
-    ///
-    /// **Observer-clobber**: this replaces the whole breaker (and its
-    /// observer) wholesale. Tests that want a custom observer must use
-    /// [`Self::with_breaker_for_testing`] instead. If a future feature
-    /// exposes an open-duration knob in non-test code it must NOT use
-    /// this helper; add a dedicated setter on the shared crate so the
-    /// existing observer is preserved.
+    /// Test-only: rebuild the breaker with a shortened `open_duration`, reinstalling `TracingObserver`.
+    /// Replaces the whole breaker. Tests that want a custom observer must use [`Self::with_breaker_for_testing`].
+    /// Non-test code must not use this helper.
     #[cfg(test)]
     fn with_breaker_open_duration(mut self, open_duration: Duration) -> Self {
         let mut config = storage_breaker_config();
@@ -533,12 +493,8 @@ impl StorageClient {
         self
     }
 
-    /// Test-only constructor that rebuilds the breaker with a shortened
-    /// `open_duration` AND a caller-supplied observer.
-    ///
-    /// **Observer-clobber**: same caveat as
-    /// [`Self::with_breaker_open_duration`] — the supplied observer
-    /// fully replaces the production `TracingObserver`.
+    /// Test-only: rebuild the breaker with a shortened `open_duration` and a caller-supplied observer.
+    /// The supplied observer fully replaces the production `TracingObserver`.
     #[cfg(test)]
     fn with_breaker_for_testing(
         mut self,
@@ -558,24 +514,9 @@ impl StorageClient {
         self
     }
 
-    /// Configures the client identity reported to the storage backend on all
-    /// storage requests (including the high-traffic `batch_upload`).
-    ///
-    /// These become the headers:
-    ///   - `x-grok-client-version`
-    ///   - `x-grok-client-identifier` (one of "grok-shell", "grok-pager",
-    ///     "grok-desktop", "grok-extension", "grok-agent-sdk")
-    ///
-    /// Server-side logs in `cli-chat-proxy` and analytics queries now
-    /// surface these values, making it easy to attribute 400/403 errors to
-    /// specific client versions and products.
-    ///
-    /// Preferred way to construct the client from the Grok shell/pager:
-    ///   `build_storage_client_for_proxy(..., client_identifier)`
-    /// (see `xai-grok-shell/src/auth/credential_provider.rs`).
-    ///
-    /// Direct callers (tests, load-test binaries, etc.) can use:
-    ///   `StorageClient::with_provider(...).with_client_identity(version, identifier)`
+    /// Configures the client identity reported to the storage backend on all storage requests.
+    /// Becomes `x-grok-client-version` and `x-grok-client-identifier` so 400/403s can be attributed.
+    /// Prefer `build_storage_client_for_proxy` from the shell; direct callers use `with_client_identity`.
     pub fn with_client_identity(
         mut self,
         version: impl Into<String>,
@@ -594,25 +535,14 @@ impl StorageClient {
     }
 
     /// Sets the retry configuration for handling transient failures.
-    ///
-    /// This is particularly useful for tuning retry behavior for 429 (rate limit) errors
-    /// that commonly occur during GCS autoscaling events.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let client = StorageClient::new(url, token)
-    ///     .with_retry_config(RetryConfig::conservative());
-    /// ```
+    /// Useful for tuning 429 retries during GCS autoscaling.
     pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
         self.retry_config = config;
         self
     }
 
-    /// Fetches upload size limits from cli-chat-proxy.
-    /// GET /v1/storage/limits
-    ///
-    /// Reuses `add_common_headers` for the shared client headers. Returns UploadLimits
-    /// struct; 0 = unlimited.
+    /// Fetches upload size limits from cli-chat-proxy (`GET /v1/storage/limits`).
+    /// Reuses `add_common_headers`. `0` means unlimited.
     pub async fn get_upload_limits(&self) -> Result<UploadLimits> {
         let url = format!("{}/storage/limits", self.base_url);
         let request = self.add_common_headers(self.http_client.get(&url));
@@ -637,17 +567,9 @@ impl StorageClient {
             .context("Failed to parse upload limits response")
     }
 
-    /// Fire the attribution callback if installed.
-    ///
-    /// `operation` is the consumer-side op *suffix* (e.g. `"check_exists"`,
-    /// `"batch_check_exists"`, `"upload"`, `"upload_file"`). The
-    /// `StorageClientAttributionBridge` in the shell prepends
-    /// `"StorageClient."` to produce the final consumer string in analytics
-    /// events (e.g. `"StorageClient.check_exists"`).
-    ///
-    /// Reads the bearer from the credential provider's current snapshot
-    /// (not the exact wire bearer — a refresh may have occurred between
-    /// send and 401 response, though in practice this is rare).
+    /// Fire the attribution callback if installed. `operation` is the consumer-side op suffix.
+    /// The shell bridge prepends `"StorageClient."` for the analytics consumer string.
+    /// Bearer is read from the current snapshot, not necessarily the exact wire bearer.
     fn fire_401_attribution(&self, operation: &str) {
         if let Some(ref cb) = self.attribution {
             let bearer_prefix = self.credentials.snapshot().token;
@@ -668,11 +590,8 @@ impl StorageClient {
 
         match request.send().await {
             Ok(resp) if resp.status().is_success() => {
-                // Defer the Success record until after the body
-                // parses — a 2xx with an unparseable body returns
-                // `ProbeFailed` to the caller, so counting it as
-                // a breaker Success would dilute the failure rate
-                // during partial-outage / bad-payload scenarios.
+                // Defer the Success record until after the body parses.
+                // A 2xx with an unparseable body is `ProbeFailed`; counting it Success would dilute the failure rate.
                 match resp.json().await {
                     Ok(payload) => {
                         self.breaker.record(Outcome::Success);
@@ -707,11 +626,8 @@ impl StorageClient {
         }
     }
 
-    /// POST /v1/storage/batch_exists. Same status mapping as `check_exists`,
-    /// returning the set of paths confirmed present.
-    ///
-    /// Accepts any `AsRef<str>` slice so callers can pass `&[String]`, `&[&str]`,
-    /// or `&[Cow<'_, str>]` without cloning into a fresh `Vec<String>`.
+    /// POST /v1/storage/batch_exists. Same status mapping as `check_exists`.
+    /// Accepts any `AsRef<str>` slice so callers need not clone into a fresh `Vec<String>`.
     pub async fn batch_check_exists<S: AsRef<str>>(
         &self,
         paths: &[S],
@@ -750,12 +666,8 @@ impl StorageClient {
                 ExistsResult::Unauthorized
             }
             Ok(resp) if resp.status().is_success() => {
-                // Defer the Success record until after parse — see
-                // the matching comment in `check_exists`. A 2xx
-                // with an unparseable body returns `ProbeFailed`,
-                // which the caller treats as transient; counting
-                // it as a breaker Success masks proxy / payload
-                // outages.
+                // Defer the Success record until after parse — see `check_exists`.
+                // A 2xx with an unparseable body is `ProbeFailed`; counting it Success masks proxy/payload outages.
                 match resp.json::<Response>().await {
                     Ok(r) => {
                         self.breaker.record(Outcome::Success);
@@ -778,12 +690,9 @@ impl StorageClient {
         }
     }
 
-    /// Upload multiple small files in a single batch request.
-    /// POST /v1/storage/batch_upload (multipart/form-data)
-    ///
-    /// Returns `Some(results)` on success, or `None` if the endpoint is
-    /// unavailable (404 from old proxy) or on error. Callers should fall back
-    /// to per-file `upload` when `None` is returned.
+    /// Upload multiple small files in one batch request (`POST /v1/storage/batch_upload`).
+    /// `None` if the endpoint is unavailable (404 from an old proxy) or on error.
+    /// Callers should fall back to per-file `upload` when `None` is returned.
     pub async fn batch_upload(
         &self,
         files: Vec<(String, Vec<u8>, String)>,
@@ -885,19 +794,9 @@ impl StorageClient {
         }
     }
 
-    /// Upload multiple small files in a single JSON request with zstd compression.
-    /// POST /v1/storage/batch_upload_json
-    ///
-    /// Encodes file contents as base64 in a JSON body, compresses with zstd,
-    /// and sends with `Content-Encoding: zstd`. The payload is a plain `Vec<u8>`
-    /// (compressed JSON), so retries just re-send the same bytes without
-    /// rebuilding a multipart form.
-    ///
-    /// If `files` is empty, this is a no-op that returns `Some(Vec::new())`
-    /// without making any HTTP request.
-    ///
-    /// Returns `Some(results)` on success, or `None` if the endpoint is
-    /// unavailable (404 from old proxy) or on error.
+    /// Upload multiple small files as zstd-compressed JSON (`POST /v1/storage/batch_upload_json`).
+    /// Retries re-send the same compressed bytes without rebuilding a multipart form.
+    /// Empty `files` is a no-op. `None` if the endpoint is unavailable or on error.
     pub async fn batch_upload_json(
         &self,
         files: Vec<(String, Vec<u8>, String)>,
@@ -1012,19 +911,8 @@ impl StorageClient {
         }
     }
 
-    /// Download a dedup blob from GCS to a local destination path.
-    /// GET /v1/storage/download
-    ///
-    /// Authorization is enforced by the proxy. The proxy generates a short-lived
-    /// signed GET URL; this method follows that URL and streams the object bytes
-    /// to `dest`.
-    ///
-    /// Returns `Err` with a clear message on 403 (not authorized) or any other
-    /// non-success response.
-    ///
-    /// This is the download primitive for deduped content materialisation during
-    /// restore. Callers should only invoke it when download is permitted for the
-    /// current session.
+    /// Download a dedup blob from GCS to a local path. The proxy mints a short-lived signed GET.
+    /// `Err` on 403 or any other non-success. Call only when download is permitted for this session.
     pub async fn download_blob(&self, storage_path: &str, dest: &Path) -> Result<()> {
         // Step 1: get a signed GET URL from the proxy.
         let url = format!("{}/storage/download", self.base_url);
@@ -1113,9 +1001,7 @@ impl StorageClient {
         &self,
         builder: reqwest_middleware::RequestBuilder,
     ) -> reqwest_middleware::RequestBuilder {
-        // Prefer caller-provided identity (from shell/pager/etc.) so that
-        // cli-chat-proxy logs and metrics see the real end-user client
-        // (e.g. "0.1.210-alpha.5", "grok-shell" / "grok-pager").
+        // Prefer caller-provided identity so proxy logs see the real end-user client.
         // Falls back to the library's own version for bins/tests.
         let version = self
             .client_version
@@ -1131,26 +1017,15 @@ impl StorageClient {
             builder = builder.header("x-grok-client-mode", mode);
         }
 
-        for (name, value) in crate::trace_context::trace_context_headers().iter() {
+        for (name, value) in xai_grok_otel::trace_context_headers().iter() {
             builder = builder.header(name.clone(), value.clone());
         }
         builder
     }
 
-    /// Uploads content to GCS with retry logic for transient failures.
-    ///
-    /// Retries on 429 (rate limit), 500, 502, 503, 504 errors with configurable
-    /// exponential backoff and jitter. Respects `Retry-After` headers from 429 responses.
-    ///
+    /// Uploads content to GCS with retry for transient failures (429/5xx, `Retry-After`).
     /// The bucket is determined by the proxy based on the user's ACLs.
-    ///
-    /// # Arguments
-    /// * `path` - The destination path in the bucket (e.g., "uploads/file.txt")
-    /// * `content` - The content to upload as bytes
-    /// * `content_type` - MIME type of the content (e.g., "text/plain", "application/octet-stream")
-    ///
-    /// # Returns
-    /// The upload response containing bucket, path, size, content_type, and generation.
+    /// Returns the upload response (bucket, path, size, content_type, generation).
     pub async fn upload(
         &self,
         path: &str,
@@ -1174,12 +1049,9 @@ impl StorageClient {
 
         let mut attempt = 0u32;
         loop {
-            // Re-consult the breaker at the top of each retry
-            // iteration. The initial check above gates entry, but
-            // 429/5xx retries can continue issuing requests after
-            // a concurrent call has tripped the breaker open;
-            // re-checking preserves the "no wire I/O while open"
-            // invariant matching the half-open probe gate.
+            // Re-consult the breaker at the top of each retry iteration.
+            // 429/5xx retries must not keep issuing requests after a concurrent call opened the breaker.
+            // Re-checking preserves "no wire I/O while open", matching the half-open probe gate.
             if attempt > 0
                 && let Err(BreakerOpen { retry_after }) = self.breaker.check()
             {
@@ -1251,22 +1123,9 @@ impl StorageClient {
         }
     }
 
-    /// Uploads a file to GCS with retry logic for transient failures.
-    ///
-    /// This is more memory-efficient than `upload()` as it streams the file content
-    /// without loading it entirely into memory. Unlike `upload_stream()`, this method
-    /// supports automatic retries by re-reading from the file on each attempt.
-    ///
-    /// Retries on 429 (rate limit), 500, 502, 503, 504 errors with configurable
-    /// exponential backoff and jitter. Respects `Retry-After` headers from 429 responses.
-    ///
-    /// # Arguments
-    /// * `dest_path` - The destination path in the bucket (e.g., "uploads/file.txt")
-    /// * `file_path` - Path to the local file to upload
-    /// * `content_type` - MIME type of the content (e.g., "application/gzip")
-    ///
-    /// # Returns
-    /// The upload response containing bucket, path, size, content_type, and generation.
+    /// Uploads a file to GCS with retry, streaming without loading it entirely into memory.
+    /// Unlike `upload_stream()`, retries re-read from the file on each attempt.
+    /// Retries 429/5xx with backoff and honors `Retry-After`.
     pub async fn upload_file(
         &self,
         dest_path: &str,
@@ -1375,22 +1234,8 @@ impl StorageClient {
         }
     }
 
-    /// Uploads content from an async reader to GCS using streaming.
-    ///
-    /// This is more memory-efficient for large files as it doesn't require
-    /// loading the entire content into memory.
-    ///
-    /// Note: Streaming uploads do not support automatic retries since the stream
-    /// can only be consumed once.
-    ///
-    /// # Arguments
-    /// * `bucket` - The GCS bucket name
-    /// * `path` - The destination path in the bucket (e.g., "uploads/file.txt")
-    /// * `reader` - An async reader providing the content
-    /// * `content_type` - MIME type of the content
-    ///
-    /// # Returns
-    /// The upload response containing bucket, path, size, content_type, and generation.
+    /// Uploads content from an async reader using streaming. Does not load the entire content.
+    /// Streaming uploads do not support automatic retries — the stream can only be consumed once.
     pub async fn upload_stream<R>(
         &self,
         path: &str,
@@ -1463,28 +1308,9 @@ impl StorageClient {
         Ok(upload_response)
     }
 
-    /// Uploads a large file using multipart upload with parallel chunk uploads.
-    ///
-    /// This method splits the file into chunks (default 50MB each) and uploads
-    /// them in parallel, then triggers server-side compose to create the final object.
-    ///
-    /// **Direct Upload Mode**: When the server provides pre-signed URLs, parts are
-    /// uploaded directly to GCS, bypassing the proxy for data transfer. This is
-    /// more efficient as it reduces proxy load and latency.
-    ///
-    /// **Fallback Mode**: If the server doesn't provide signed URLs (legacy mode),
-    /// parts are uploaded through the proxy as before.
-    ///
+    /// Uploads a large file via multipart with parallel chunk uploads, then server-side compose.
+    /// When the server provides pre-signed URLs, parts go directly to GCS; otherwise through the proxy.
     /// The bucket is determined by the proxy based on the user's ACLs.
-    ///
-    /// # Arguments
-    /// * `path` - The final destination path in the bucket
-    /// * `file_path` - Path to the local file to upload
-    /// * `content_type` - MIME type of the content (e.g., "application/gzip")
-    /// * `options` - Optional configuration for the multipart upload
-    ///
-    /// # Returns
-    /// The multipart complete response containing the final GCS URL and metadata.
     pub async fn upload_multipart(
         &self,
         path: &str,
@@ -1861,11 +1687,8 @@ impl StorageClient {
     // ====================================================================
 
     /// Request a pre-signed GCS PUT URL from the proxy.
-    ///
-    /// The caller can then upload directly to GCS with a plain HTTP PUT,
-    /// completely bypassing the proxy (and its nginx / Cloudflare body-size
-    /// limits).  This is the recommended path for payloads that may exceed
-    /// 4 MB.
+    /// The caller then PUTs directly to GCS, bypassing proxy body-size limits.
+    /// Recommended for payloads that may exceed 4 MB.
     pub async fn get_signed_upload_url(
         &self,
         path: &str,
@@ -1907,9 +1730,7 @@ impl StorageClient {
     }
 
     /// Upload bytes directly to GCS using a pre-signed PUT URL.
-    ///
-    /// The `content_type` **must** match the one baked into the signed URL,
-    /// otherwise GCS will reject the request with 403.
+    /// `content_type` must match the one baked into the signed URL, or GCS rejects with 403.
     pub async fn upload_via_signed_url(
         &self,
         signed_url: &str,
@@ -1935,10 +1756,7 @@ impl StorageClient {
     }
 
     /// Convenience: request a signed URL and upload bytes in one call.
-    ///
-    /// Combines [`Self::get_signed_upload_url`] and
-    /// [`Self::upload_via_signed_url`] so callers don't need to juggle the
-    /// intermediate response.
+    /// Combines [`Self::get_signed_upload_url`] and [`Self::upload_via_signed_url`].
     pub async fn upload_bytes_signed(
         &self,
         path: &str,
@@ -1959,9 +1777,7 @@ impl StorageClient {
 const READ_AT_CHUNK_SIZE: usize = 5 << 20;
 
 /// Upload a single part with streaming and retry logic.
-///
-/// Uses `read_at` (pread) to read from a shared file descriptor without seeking.
-/// This allows multiple parts to stream from the same file concurrently.
+/// Uses `read_at` so multiple parts can stream from the same file concurrently.
 /// On retry, the stream is recreated from the same offset.
 async fn upload_part_streaming(
     client: &reqwest_middleware::ClientWithMiddleware,
@@ -1998,7 +1814,7 @@ async fn upload_part_streaming(
             .header("Content-Type", "application/octet-stream")
             .header("x-grok-client-version", xai_grok_version::VERSION)
             .header("Content-Length", length.to_string());
-        for (name, value) in crate::trace_context::trace_context_headers().iter() {
+        for (name, value) in xai_grok_otel::trace_context_headers().iter() {
             request = request.header(name.clone(), value.clone());
         }
 
@@ -2050,9 +1866,7 @@ async fn upload_part_streaming(
 }
 
 /// Upload a single part directly to GCS using a pre-signed URL.
-///
-/// This bypasses the proxy entirely - data goes directly to GCS.
-/// No authorization headers are needed as the signed URL includes auth.
+/// Bypasses the proxy; no authorization headers — the signed URL includes auth.
 async fn upload_part_direct(
     client: &Client,
     signed_url: &str,
@@ -2129,11 +1943,7 @@ async fn upload_part_direct(
 }
 
 /// Creates a stream that reads from a file at the specified offset using `read_at` (pread).
-///
-/// This is more efficient than seek+read because:
-/// 1. No mutex/lock needed on the file position
-/// 2. Multiple readers can share the same file descriptor
-/// 3. The kernel handles concurrent reads efficiently
+/// No lock on file position, so multiple readers can share the same descriptor.
 fn create_read_at_stream(
     file: Arc<StdFile>,
     start_offset: u64,
@@ -2209,11 +2019,8 @@ fn create_read_at_stream(
         } else {
             0.0
         };
-        // NOTE: This logs when the producer has finished reading from disk and pushing
-        // to the channel. Network transmission may still be in progress as reqwest
-        // drains the channel buffer and sends data over the wire.
-        // The speed here is throttled by network backpressure (channel_send waits),
-        // NOT disk speed.
+        // Logs when the producer has finished reading from disk, not when the network send completes.
+        // Speed here is throttled by network backpressure, not disk speed.
         tracing::debug!(
             "Part {} file read complete (buffered for network): {} bytes in {:?} ({:.2} MB/s effective, network-throttled)",
             part_number,
@@ -2318,9 +2125,7 @@ pub struct UploadedPartInfo {
 }
 
 /// Request to complete a multipart upload.
-/// Bucket is passed via X-Storage-Bucket header.
-/// Path is passed via X-Storage-Path header.
-/// Content-Type is passed via Content-Type header.
+/// Bucket, path, and content-type are passed via headers, not the body.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MultipartCompleteRequest {

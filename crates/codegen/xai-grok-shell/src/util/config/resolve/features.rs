@@ -23,31 +23,72 @@ pub fn resolve_zdr_access_enabled(
         .value
 }
 
-/// Whether model-catalog (`/v1/models`) and remote-settings (`/v1/settings`)
-/// fetches from xAI backends are allowed, including the deployment-config sync
-/// bundled into the startup prefetch (the background managed-config sync has
-/// its own `[features] managed_config` gate).
-///
-/// Precedence: requirements (MDM > system > user) > managed
-/// (`managed_config.toml` > system managed) > user `config.toml` > default
-/// (true). Overlay-free: the `GROK_CONFIG` / `GROK_CONFIG_PATH` overlay is
-/// deliberately excluded (an egress gate, matching the overlay-free contract in
-/// `ConfigLayers::env_overlay`), so an overlay cannot re-arm a user's or a
-/// deployment's "never fetch" decision. Callable before an `AgentConfig` exists
-/// (startup prefetch runs pre-agent), so it re-reads the config layers like
-/// `managed_config::is_fetch_enabled`.
-///
-/// Deliberately no env var and no remote tier: remote settings are exactly
-/// what is unreachable when this knob is needed (firewalled / air-gapped
-/// deployments), and an env var would be one more way to re-arm the fetches.
+pub(crate) fn turn_transient_retry_from_toml(v: Option<&TomlValue>) -> Option<bool> {
+    v?.get("features")?.get("turn_transient_retry")?.as_bool()
+}
+
+/// Spawn-time kill switch: `[features] turn_transient_retry`, `GROK_TURN_TRANSIENT_RETRY`, remote key (below local), default on.
+/// Loads local layers itself; call once per session.
+pub(crate) fn resolve_turn_transient_retry(remote: Option<bool>) -> bool {
+    let user_cfg = crate::config::load_effective_config().ok();
+    // Merged (user, system, MDM last-wins) like the sibling resolvers, so an enterprise pin is not silently dropped
+    let requirements = crate::config::load_merged_requirements();
+    compose_turn_transient_retry(requirements.as_ref(), user_cfg.as_ref(), remote)
+}
+
+fn compose_turn_transient_retry(
+    requirements: Option<&TomlValue>,
+    user: Option<&TomlValue>,
+    remote: Option<bool>,
+) -> bool {
+    use turn_transient_retry_from_toml as from_toml;
+    crate::agent::config::resolve_turn_transient_retry(
+        from_toml(requirements),
+        /* cli          */ None,
+        from_toml(user),
+        /* managed: merged into the config layer by load_effective_config */ None,
+        remote,
+    )
+    .value
+}
+
+/// Precedence: requirements > env > config.toml > remote > default (on).
+pub(crate) fn resolve_repo_status_in_system_prompt(remote: Option<&RemoteSettings>) -> bool {
+    use crate::agent::config::{Feature, FeatureSources};
+    let user_cfg = crate::config::load_effective_config().ok();
+    let requirements = crate::config::load_merged_requirements();
+    let env = FeatureSources::from_process_env(Feature::RepoStatusInSystemPrompt).env;
+    compose_repo_status_in_system_prompt(requirements.as_ref(), user_cfg.as_ref(), remote, env)
+}
+
+fn compose_repo_status_in_system_prompt(
+    requirements: Option<&TomlValue>,
+    user: Option<&TomlValue>,
+    remote: Option<&RemoteSettings>,
+    env: Option<bool>,
+) -> bool {
+    use crate::agent::config::{Feature, FeatureSources};
+    let feature = Feature::RepoStatusInSystemPrompt;
+    let from_toml = |v: Option<&TomlValue>| -> Option<bool> {
+        v?.get("features")?.get(feature.key())?.as_bool()
+    };
+    feature
+        .resolve(FeatureSources {
+            pin: from_toml(requirements),
+            env,
+            config: from_toml(user),
+            remote: feature.remote_value(remote),
+        })
+        .value
+}
+
+/// Whether model-catalog (`/v1/models`) and remote-settings (`/v1/settings`) fetches from xAI backends are allowed. That includes the deployment-config sync bundled into the startup prefetch.
+/// The background managed-config sync has its own `[features] managed_config` gate. Precedence: requirements (MDM > system > user) > managed (`managed_config.toml` > system managed) > user `config.toml` > default (true).
+/// This is an egress gate, so an overlay cannot re-enable a user's or a deployment's "never fetch" decision. Callable before an `AgentConfig` exists (startup prefetch runs pre-agent).
 pub fn resolve_remote_fetch_enabled() -> bool {
     match crate::config::ConfigLayers::load() {
         Ok(layers) => remote_fetch_enabled_from_layers(&layers),
-        // The full-layer load is all-or-nothing, but the policy tiers load
-        // independently (requirements soft-fail per layer; the managed loaders
-        // are the same ones ConfigLayers::load uses) — a corrupt user-writable
-        // config.toml must not disarm a requirements or managed-layer pin.
-        // Fail open only when policy is genuinely absent.
+        // A corrupt user-writable config.toml must not drop a requirements or managed-layer pin
         Err(_) => remote_fetch_enabled_from_policy_layers(
             crate::config::load_merged_requirements().as_ref(),
             crate::config::load_managed_config().ok().as_ref(),
@@ -66,19 +107,11 @@ fn remote_fetch_value(v: &TomlValue) -> Option<bool> {
     v.get("features")?.get("remote_fetch")?.as_bool()
 }
 
-/// First-match layer walk instead of the plain effective-config merge: the
-/// merge puts the user layer over managed, but for this knob the management
-/// layer must win so a user's stray `remote_fetch = true` cannot re-arm a
-/// deployment's "never fetch" decision.
+/// This walks the layers first-match instead of using the plain effective-config merge, which puts the user layer over managed.
+/// For this knob the management layer must win, so a user's stray `remote_fetch = true` cannot re-enable a deployment's "never fetch" decision.
 fn remote_fetch_enabled_from_layers(layers: &crate::config::ConfigLayers) -> bool {
-    // Exhaustive destructure (no `..`): a future layer must be slotted into the
-    // walk deliberately instead of silently keeping stale precedence.
-    // `env_overlay` is deliberately NOT in the walk: the `GROK_CONFIG` overlay
-    // is soft, user-tier input, and this is an egress gate, so it must never
-    // arm/disarm remote_fetch (the overlay-free contract in
-    // `ConfigLayers::env_overlay`). `campaigns` is excluded for the same reason:
-    // campaign patches are soft, dismissable overlays applied after the layer
-    // merge, and requirements are re-merged over campaigns for the same reason.
+    // Exhaustive destructure (no `..`): a future layer must be slotted into the walk deliberately instead of silently keeping stale precedence `env_overlay` is deliberately NOT in the walk: the `GROK_CONFIG` overlay is soft, user-tier input, and this is an egress gate `campaigns` is excluded for the same reason: campaign patches are soft, dismissable overlays applied after the layer merge
+    // Requirements are re-merged over campaigns for the same reason
     let crate::config::ConfigLayers {
         system_managed,
         managed,
@@ -103,13 +136,9 @@ fn remote_fetch_enabled_from_layers(layers: &crate::config::ConfigLayers) -> boo
     .unwrap_or(true)
 }
 
-/// Err-arm fallback for [`resolve_remote_fetch_enabled`]: the independently
-/// loadable policy tiers in Ok-arm walk order — merged requirements
-/// (`load_merged_requirements` merges user, system, MDM with last-wins,
-/// matching the walk), then the managed tiers — so a root-owned or synced
-/// managed-only pin also survives a corrupt user layer. The user `config.toml`
-/// tier stays fail-open: it is a preference, not deployment policy. Mirrors
-/// the `auto_permission_mode_enabled_from_disk` soft-fail precedent.
+/// Err-arm fallback for [`resolve_remote_fetch_enabled`]: walks the independently loadable policy tiers in Ok-arm walk order.
+/// Merged requirements come first (`load_merged_requirements` merges user, system, MDM with last-wins, matching the walk), then the managed tiers. A root-owned or synced managed-only pin thus survives a corrupt user layer.
+/// The user `config.toml` tier stays fail-open: it is a preference, not deployment policy.
 fn remote_fetch_enabled_from_policy_layers(
     merged_requirements: Option<&TomlValue>,
     managed: Option<&TomlValue>,
@@ -208,9 +237,8 @@ mod tests {
 
     #[test]
     fn remote_fetch_system_and_mdm_tiers_follow_the_walk() {
-        // Within the managed tier: user-level managed_config.toml beats the
-        // system managed layer (mirrors effective_config merge order), and
-        // system managed still beats the user config.
+        // Within the managed tier: user-level managed_config.toml beats the system managed layer (mirrors effective_config merge order)
+        // System managed still beats the user config
         let mut layers = empty_layers();
         layers.system_managed = features_remote_fetch(true);
         layers.managed = features_remote_fetch(false);
@@ -223,8 +251,7 @@ mod tests {
         layers.system_managed = features_remote_fetch(false);
         assert!(!remote_fetch_enabled_from_layers(&layers));
 
-        // Within the requirements tier: system beats user requirements, MDM
-        // beats both (mirrors requirements_layers apply order).
+        // Within the requirements tier: system beats user requirements, MDM beats both (mirrors requirements_layers apply order)
         let mut layers = empty_layers();
         layers.user_requirements = Some(features_remote_fetch(true));
         layers.system_requirements = Some(features_remote_fetch(false));
@@ -236,10 +263,6 @@ mod tests {
         assert!(!remote_fetch_enabled_from_layers(&layers));
     }
 
-    /// The all-or-nothing layer load failing (corrupt user config.toml, IO
-    /// error) must not disarm a policy pin — the Err arm still consults the
-    /// merged requirements and both managed tiers, in Ok-arm walk order, and
-    /// fails open only with no policy at all.
     #[test]
     fn remote_fetch_layer_load_failure_still_honors_policy_pins() {
         let off = features_remote_fetch(false);
@@ -255,8 +278,7 @@ mod tests {
             None,
             None
         ));
-        // A pin living only in a managed tier survives too (root-owned
-        // system-managed-only and synced managed-only deployments).
+        // A pin living only in a managed tier survives too (root-owned system-managed-only and synced managed-only deployments)
         assert!(!remote_fetch_enabled_from_policy_layers(
             None,
             None,
@@ -282,5 +304,98 @@ mod tests {
             remote_fetch_enabled_from_policy_layers(None, None, None),
             "genuinely absent policy fails open"
         );
+    }
+}
+
+#[cfg(test)]
+mod turn_transient_retry_toml_tests {
+    use super::turn_transient_retry_from_toml;
+
+    #[test]
+    fn composition_orders_requirements_over_config_over_remote() {
+        let t = |b: bool| -> toml::Value {
+            let mut f = toml::map::Map::new();
+            f.insert("turn_transient_retry".into(), toml::Value::Boolean(b));
+            let mut root = toml::map::Map::new();
+            root.insert("features".into(), toml::Value::Table(f));
+            toml::Value::Table(root)
+        };
+        // requirements beat user config; config beats remote; remote beats default.
+        assert!(!super::compose_turn_transient_retry(
+            Some(&t(false)),
+            Some(&t(true)),
+            None
+        ));
+        assert!(!super::compose_turn_transient_retry(
+            None,
+            Some(&t(false)),
+            Some(true)
+        ));
+        assert!(!super::compose_turn_transient_retry(
+            None,
+            None,
+            Some(false)
+        ));
+        assert!(super::compose_turn_transient_retry(None, None, None));
+    }
+
+    #[test]
+    fn reads_the_features_key_and_defaults_absent_to_none() {
+        let v: toml::Value = toml::toml! { [features] turn_transient_retry = false }.into();
+        assert_eq!(turn_transient_retry_from_toml(Some(&v)), Some(false));
+        let empty: toml::Value = toml::toml! { [features] }.into();
+        assert_eq!(turn_transient_retry_from_toml(Some(&empty)), None);
+        assert_eq!(turn_transient_retry_from_toml(None), None);
+    }
+}
+
+#[cfg(test)]
+mod repo_status_in_system_prompt_tests {
+    use super::compose_repo_status_in_system_prompt;
+    use crate::util::config::RemoteSettings;
+
+    fn features_toml(v: bool) -> toml::Value {
+        toml::from_str(&format!("[features]\nrepo_status_in_system_prompt = {v}\n")).unwrap()
+    }
+
+    fn remote(v: bool) -> RemoteSettings {
+        RemoteSettings {
+            repo_status_in_system_prompt: Some(v),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn precedence_requirements_over_env_over_config_over_remote_over_default() {
+        // Absent everywhere: defaults on.
+        assert!(compose_repo_status_in_system_prompt(None, None, None, None));
+        // remote off beats the default.
+        assert!(!compose_repo_status_in_system_prompt(
+            None,
+            None,
+            Some(&remote(false)),
+            None
+        ));
+        // config off beats remote on.
+        assert!(!compose_repo_status_in_system_prompt(
+            None,
+            Some(&features_toml(false)),
+            Some(&remote(true)),
+            None
+        ));
+        // env on beats config off and remote off.
+        assert!(compose_repo_status_in_system_prompt(
+            None,
+            Some(&features_toml(false)),
+            Some(&remote(false)),
+            Some(true)
+        ));
+        // requirements pin off beats env on, config on, remote on.
+        assert!(!compose_repo_status_in_system_prompt(
+            Some(&features_toml(false)),
+            Some(&features_toml(true)),
+            Some(&remote(true)),
+            Some(true)
+        ));
     }
 }

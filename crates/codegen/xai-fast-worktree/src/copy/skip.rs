@@ -16,10 +16,8 @@ pub(crate) fn build_skip_matcher(patterns: &[String]) -> Result<globset::GlobSet
     Ok(builder.build()?)
 }
 
-/// Collect all *unignored* paths in `source` (relative).
-///
-/// This is used to implement an "ignored-only" copy: by collecting unignored paths
-/// and then skipping them during a second pass with `respect_gitignore=false`.
+/// Unignored relative paths in `source`. The ignored-only copy skips these on a
+/// second pass with `respect_gitignore=false`.
 pub(crate) fn collect_unignored_paths(
     source: &Path,
     parallelism: usize,

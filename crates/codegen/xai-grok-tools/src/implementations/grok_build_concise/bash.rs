@@ -32,10 +32,8 @@ fn annotations(bash: &BashOutput) -> String {
 }
 
 /// CONCISE foreground format: `Exit code: N [annotations]\n\nCommand output:\n\n```...```\n\nCommand completed.\n...`
-///
-/// When the process was killed by the harness or a kernel signal
-/// (see [`KillReason`]), the header reads
-/// `Exit code: killed (reason)` instead of `Exit code: -1 [signal=…]`.
+/// When the process was killed by the harness or a kernel signal (see [`KillReason`]), the header reads `Exit code:
+/// killed (reason)` instead of `Exit code: -1 [signal=…]`.
 fn format_concise_foreground_prompt(bash: &BashOutput) -> String {
     let raw = String::from_utf8_lossy(&bash.output);
     let output_str = strip_str(&raw).to_string();
@@ -76,10 +74,8 @@ fn format_concise_background_prompt(bash: &BashOutput) -> String {
     )
 }
 
-/// Concise variant of `BashTool`.
-///
-/// Delegates to `BashTool::run()`, then overwrites `output_for_prompt` with
-/// the concise format. The `concise` concept lives entirely in this file.
+/// Concise variant of `BashTool`. Delegates to `BashTool::run()`, then overwrites
+/// `output_for_prompt` with the concise format. The `concise` concept lives entirely in this file.
 #[derive(Debug, Default)]
 pub struct BashConciseTool;
 

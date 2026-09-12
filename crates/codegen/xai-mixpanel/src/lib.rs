@@ -122,10 +122,9 @@ impl Mixpanel {
 mod tests {
     use super::*;
 
-    /// Project token is deliberately Bearer-shaped: it would be redacted
-    /// if `prepare_properties` ran the scrubber after token injection.
-    /// The `error` value catches the inverse regression: if the scrub
-    /// loop is dropped, the user-supplied Bearer leaks.
+    /// Project token is deliberately Bearer-shaped: it would be redacted if `prepare_properties` ran the scrubber after token
+    /// injection. The `error` value catches the inverse regression: if the scrub loop is dropped, the user-supplied Bearer
+    /// leaks.
     #[test]
     fn prepare_properties_scrubs_then_injects_token() {
         let project_token = "Bearer fake-project-token-abcdef0123456789";

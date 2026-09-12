@@ -10,12 +10,9 @@ use super::types::{ToolConfig, ToolServerConfig};
 
 pub use xai_grok_tools_api::config_validation::{ToolConfigEntryError, ToolConfigEntryErrorKind};
 
-/// Convert one wire [`xai_grok_tools_api::ToolConfigEntry`] to a runtime
-/// [`ToolConfig`].
-///
-/// `index` is only used for error reporting. The result always has
-/// `kind: None`: the wire format carries no capability kind, and
-/// capability-mode filtering intentionally keeps baseline `kind: None` tools.
+/// Convert one wire [`xai_grok_tools_api::ToolConfigEntry`] to a runtime [`ToolConfig`]. `index` is
+/// only used for error reporting. The result always has `kind: None`: the wire format carries no
+/// capability kind, and capability-mode filtering intentionally keeps baseline `kind: None` tools.
 pub fn tool_config_from_entry(
     index: usize,
     entry: xai_grok_tools_api::ToolConfigEntry,
@@ -53,11 +50,9 @@ pub fn tool_config_from_entry(
     })
 }
 
-/// Convert a wire tool-config list to a runtime [`ToolServerConfig`].
-/// Fails on the first invalid entry.
-///
-/// `behavior_preset` is always `None` (the `"current"` default); per-tool
-/// `behavior_version` overrides on individual entries still apply.
+/// Convert a wire tool-config list to a runtime [`ToolServerConfig`]. Fails on the first invalid
+/// entry. `behavior_preset` is always `None` (the `"current"` default); per-tool `behavior_version`
+/// overrides on individual entries still apply.
 pub fn tool_server_config_from_entries(
     entries: Vec<xai_grok_tools_api::ToolConfigEntry>,
 ) -> Result<ToolServerConfig, ToolConfigEntryError> {

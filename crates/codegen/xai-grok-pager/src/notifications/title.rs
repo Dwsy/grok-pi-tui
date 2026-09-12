@@ -9,21 +9,14 @@ const TITLE_SPINNER: &[char] = &[
     '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
 ];
 
-/// Hold each spinner frame for this many ticks before advancing.
-///
-/// Terminals (notably Ghostty) debounce tab title updates, so writing a
-/// new title every tick (~33ms at 30fps) produces more OSC 0 writes than
-/// the tab bar can render. A divisor of 8 gives ~264ms per frame — slow
-/// enough for debounced renderers while still looking animated.
+/// Hold each spinner frame for this many ticks before advancing. Terminals (notably Ghostty) debounce tab title
+/// updates. Writing a new title every tick (~33ms at 30fps) produces more OSC 0 writes than the tab bar can render.
+/// A divisor of 8 gives ~264ms per frame, slow enough for debounced renderers while still looking animated.
 const TITLE_SPINNER_DIVISOR: u64 = 8;
 
-/// Hold the "⚠ Action Required" label for this many ticks before toggling
-/// (only while unfocused; see focused field below).
-///
-/// A divisor of 15 at 30fps gives ~500ms visible, ~500ms hidden — a calm 1s
-/// blink cycle that reads as intentional rather than broken flickering. When
-/// focused we show the prefix statically to eliminate oscillation during
-/// active interaction (e.g. typing in permission modals).
+/// Hold the "⚠ Action Required" label for this many ticks before toggling (only while unfocused; see the focused field below).
+/// A divisor of 15 at 30fps gives ~500ms visible, ~500ms hidden: a calm 1s blink cycle that reads as intentional rather than broken flickering.
+/// When focused we show the prefix statically to eliminate oscillation during active interaction (e.g. typing in permission modals).
 const ACTION_REQUIRED_BLINK_DIVISOR: u64 = 15;
 
 /// State passed into `TitleManager::update()` each tick.
@@ -34,12 +27,10 @@ pub struct TitleState<'a> {
     pub has_pending_permissions: bool,
     pub cwd: Option<&'a str>,
     pub turn_elapsed: Option<std::time::Duration>,
-    /// Whether the agent is busy (turn or command running), even if
-    /// `activity` is `None` (the "Waiting" gap before first chunk).
+    /// Whether the agent is busy (turn or command running), even if `activity` is `None` (the "Waiting" gap before first chunk).
     pub is_busy: bool,
-    /// Whether the terminal pane/window is currently focused (from
-    /// FocusTracker). Suppresses title blinking/oscillation while the
-    /// user is actively interacting.
+    /// Whether the terminal pane/window is currently focused (from FocusTracker).
+    /// Suppresses title blinking/oscillation while the user is actively interacting.
     pub focused: bool,
 }
 
@@ -63,16 +54,13 @@ impl TitleManager {
     }
 
     /// Compose the title string from the current state.
-    ///
-    /// Returns the escape sequence bytes to set the terminal title when the
-    /// composed title differs from the last one emitted. Returns `None` when
-    /// the title is unchanged (dedup).
+    /// Returns the escape sequence bytes to set the terminal title when the composed title differs from the last one emitted.
+    /// Returns `None` when the title is unchanged (dedup).
     pub fn update(&mut self, state: &TitleState<'_>) -> Option<String> {
         self.composed.clear();
         let mut has_parts = false;
 
-        // Iterate by index: TitleItem is Copy, so indexing avoids borrowing
-        // self.items while we mutate self.composed.
+        // Iterate by index: TitleItem is Copy, so indexing avoids borrowing self.items while we mutate self.composed
         for i in 0..self.items.len() {
             let item = self.items[i];
             if write_item(
@@ -103,8 +91,7 @@ impl TitleManager {
             std::mem::swap(&mut self.last_title, &mut self.composed);
         }
 
-        // Advance counters after rendering so the first tick sees
-        // tick_count=0 (phase 0, ActionRequired visible) and spinner_frame=0.
+        // Advance counters after rendering so the first tick sees tick_count=0 (phase 0, ActionRequired visible) and spinner_frame=0
         self.tick_count = self.tick_count.wrapping_add(1);
         self.spinner_frame =
             (self.tick_count / TITLE_SPINNER_DIVISOR) as usize % TITLE_SPINNER.len();
@@ -195,8 +182,7 @@ fn write_item(
                 return false;
             }
             // Blink (oscillate) only while unfocused, for tab attention.
-            // When focused (user actively interacting, e.g. in permission
-            // modal or prompt), show static prefix to stop distracting flash.
+            // When focused (user actively interacting, e.g. in permission modal or prompt), show static prefix to stop distracting flash.
             let should_blink =
                 !state.focused && !(tick_count / ACTION_REQUIRED_BLINK_DIVISOR).is_multiple_of(2);
             if should_blink {
@@ -238,9 +224,16 @@ fn write_activity(buf: &mut String, activity: &TurnActivity) {
         TurnActivity::Retrying {
             attempt,
             max_retries,
-            ..
+            reason,
+            error_type,
         } => {
-            let _ = write!(buf, "Retrying ({}/{})", attempt, max_retries);
+            buf.push_str(&crate::app::error_display::format_retry_activity_label(
+                *attempt,
+                *max_retries,
+                reason,
+                error_type.as_deref(),
+                crate::app::error_display::RetryLabelStyle::Compact,
+            ));
         }
         TurnActivity::WritingToolCall(writing) => buf.push_str(&writing.label()),
         TurnActivity::Waiting(reason) => buf.push_str(&reason.label()),
@@ -263,13 +256,8 @@ fn write_truncated(buf: &mut String, s: &str, max: usize) {
     }
 }
 
-/// Build the escape sequence for setting the terminal title without writing
-/// it to stderr. The caller is responsible for routing these bytes through
-/// the frame pipeline.
-///
-/// Control characters are stripped here: title parts include remote-sourced
-/// strings (e.g. grok.com conversation titles), which must not terminate the
-/// OSC sequence early or inject escapes into the terminal.
+/// Build the escape sequence for setting the terminal title without writing it to stderr. Those must not terminate
+/// the OSC sequence early or inject escapes into the terminal.
 fn build_title_escape(title: &str) -> String {
     let sanitized: String = title.chars().filter(|c| !c.is_control()).collect();
     let mut buf = Vec::new();
@@ -511,14 +499,15 @@ mod tests {
         let activity = TurnActivity::Retrying {
             attempt: 2,
             max_retries: 5,
-            reason: "timeout".to_owned(),
+            reason: "API error (status 504 Gateway Timeout): upstream timeout".to_owned(),
+            error_type: None,
         };
         let state = TitleState {
             activity: Some(&activity),
             ..idle_state()
         };
         mgr.update(&state);
-        assert_eq!(mgr.last_title, "Retrying (2/5)");
+        assert_eq!(mgr.last_title, "Request timed out (504) | Retrying (2/5)");
     }
 
     #[test]
@@ -584,7 +573,7 @@ mod tests {
             ..idle_state()
         };
 
-        // tick_count=0 (even) on first render → ActionRequired visible.
+        // tick_count=0 (even) on first render, so ActionRequired is visible
         mgr.update(&state);
         assert!(
             mgr.last_title.contains("Action Required"),
@@ -599,7 +588,7 @@ mod tests {
         let mut mgr = TitleManager::new(&cfg);
         let state = TitleState {
             has_pending_permissions: true,
-            focused: false, // unfocused → should blink
+            focused: false, // unfocused, so it blinks
             ..idle_state()
         };
 
@@ -789,7 +778,7 @@ mod tests {
             session_name: Some("my-session"),
             activity: Some(&activity),
             has_pending_permissions: true,
-            focused: false, // unfocused → should blink per original test
+            focused: false, // unfocused, so it blinks
             ..idle_state()
         };
 
@@ -870,8 +859,7 @@ mod tests {
         assert!(mgr.last_title.ends_with('\u{2026}'));
     }
 
-    /// Remote-sourced title parts must not smuggle control bytes into the
-    /// OSC sequence: the only ESC/BEL in the output is crossterm's framing.
+    /// Title parts from remote sources must not smuggle control bytes into the OSC sequence: the only ESC/BEL in the output is crossterm's framing.
     #[test]
     fn title_escape_strips_control_characters() {
         let esc = build_title_escape("evil\u{1b}]0;pwned\u{7}\r\ntitle");

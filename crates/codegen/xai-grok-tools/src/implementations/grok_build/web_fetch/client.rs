@@ -67,12 +67,9 @@ impl WebFetchClient {
         })
     }
 
-    /// Fetch a URL and return its content as markdown.
-    ///
-    /// Handles: validation, HTTPS upgrade, SSRF check, HTTP fetch with
-    /// same-host redirects, HTML-to-markdown conversion, truncation, and
-    /// caching. On transport errors, the HTTP client is invalidated so
-    /// the next call gets a fresh connection pool (see [`HttpClient`]).
+    /// Fetch a URL and return its content as markdown. Handles: validation, HTTPS upgrade, SSRF check, HTTP fetch with
+    /// same-host redirects, HTML-to-markdown conversion, truncation, and caching. On transport errors, the HTTP client is
+    /// invalidated so the next call gets a fresh connection pool (see [`HttpClient`]).
     pub async fn fetch(
         &self,
         raw_url: &str,
@@ -99,6 +96,7 @@ impl WebFetchClient {
 
         // Make request and build output.
         let http = self.http.get_or_rebuild()?;
+        let http_span = tracing::info_span!("web_fetch.http", bytes = tracing::field::Empty);
         let result = match fetch_url(
             &http,
             &url,
@@ -132,6 +130,8 @@ impl WebFetchClient {
                 });
             }
         };
+        http_span.record("bytes", body.len() as i64);
+        drop(http_span);
 
         // PDF: save raw bytes to disk instead of lossy UTF-8 conversion.
         if is_pdf(&content_type) {
@@ -200,6 +200,7 @@ impl WebFetchClient {
             });
         }
 
+        let render_span = tracing::info_span!("web_fetch.render", bytes = tracing::field::Empty);
         let processed = self
             .process_text_content(
                 &body,
@@ -211,6 +212,8 @@ impl WebFetchClient {
                 },
             )
             .await;
+        render_span.record("bytes", processed.bytes as i64);
+        drop(render_span);
         let was_truncated = processed.was_truncated;
 
         let output = WebFetchOutput::Content(WebFetchContent {
@@ -320,10 +323,9 @@ fn validate_url(raw: &str) -> Result<Url, WebFetchError> {
     Ok(parsed)
 }
 
-/// Upgrade `http://` to `https://`, except for explicit loopback hosts.
-///
-/// Local dev servers almost always speak plain HTTP; forcing TLS would break
-/// `http://127.0.0.1` / `http://localhost` when local binding is opted in.
+/// Upgrade `http://` to `https://`, except for explicit loopback hosts. Local dev servers almost
+/// always speak plain HTTP; forcing TLS would break `http://127.0.0.1` / `http://localhost` when
+/// local binding is opted in.
 fn upgrade_to_https(url: &mut Url) {
     if url.scheme() != "http" {
         return;
@@ -353,11 +355,9 @@ enum FetchResult {
     },
 }
 
-/// Fetch a URL with manual same-host redirect handling.
-///
-/// Re-runs SSRF checks on every hop so DNS rebinding between redirects cannot
-/// sneak a previously-blocked address past the initial check (partial TOCTOU
-/// mitigation; peer IP on the live TCP connection is not available from reqwest).
+/// Fetch a URL with manual same-host redirect handling. Re-runs SSRF checks on every hop so DNS
+/// rebinding between redirects cannot sneak a previously-blocked address past the initial check
+/// (partial TOCTOU mitigation; peer IP on the live TCP connection is not available from reqwest).
 async fn fetch_url(
     client: &reqwest::Client,
     url: &Url,
@@ -534,10 +534,9 @@ fn media_extension(content_type: &str) -> &'static str {
     }
 }
 
-/// Returns `true` for content types that are binary and would produce garbage
-/// through `String::from_utf8_lossy`. Text-like types (`text/*`,
-/// `application/json`, `application/xml`, `application/javascript`, etc.)
-/// return `false`.
+/// Returns `true` for content types that are binary and would produce garbage through
+/// `String::from_utf8_lossy`. Text-like types (`text/*`, `application/json`, `application/xml`,
+/// `application/javascript`, etc.) return `false`.
 fn is_binary_content_type(content_type: &str) -> bool {
     let mime = content_type
         .split(';')
@@ -761,10 +760,8 @@ fn clean_html(html: &str) -> String {
     document.html()
 }
 
-/// Strip base64 data URIs from content to prevent token bloat.
-///
-/// Uses manual scanning (`find` + byte matching) instead of regex for
-/// lower overhead — no compilation cost and O(n) linear scanning.
+/// Strip base64 data URIs from content to prevent token bloat. Uses manual scanning (`find` + byte
+/// matching) instead of regex for lower overhead — no compilation cost and O(n) linear scanning.
 fn strip_base64_data_uris(content: String) -> String {
     // A valid base64 quantum is 4 characters; anything shorter is noise.
     const MIN_BASE64_PAYLOAD: usize = 4;
@@ -1290,10 +1287,9 @@ mod tests {
         .into_owned()
     }
 
-    /// Both implementations must produce identical output on all realistic
-    /// inputs. Covers: markdown images, standalone URIs, multiple URIs,
-    /// normal URLs, non-base64 data URIs, HTML/CSS contexts, various
-    /// positions, and real-world payloads.
+    /// Both implementations must produce identical output on all realistic inputs. Covers: markdown
+    /// images, standalone URIs, multiple URIs, normal URLs, non-base64 data URIs, HTML/CSS
+    /// contexts, various positions, and real-world payloads.
     #[test]
     fn strip_base64_equivalence_with_regex() {
         let cases: &[&str] = &[

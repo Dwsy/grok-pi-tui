@@ -9,13 +9,9 @@
 
 use std::path::Path;
 
-/// Exact historical read failure message for `read_file` in legacy-0.4.10.
-///
-/// Captured from the historical 0.4.10 implementation.
-///
-/// Historical 0.4.10 collapsed filesystem read failures (missing file,
-/// directory path, permission denied, etc.) into the same generic message
-/// without appending OS error detail.
+/// Exact historical read failure message for `read_file` in legacy-0.4.10. Captured from the historical 0.4.10
+/// implementation. Historical 0.4.10 collapsed filesystem read failures (missing file, directory path, permission
+/// denied, etc.) into the same generic message without appending OS error detail.
 pub(crate) fn render_read_error(path: &Path) -> String {
     format!("Failed to read file: {}", path.display())
 }

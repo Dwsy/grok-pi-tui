@@ -1,10 +1,9 @@
 use super::*;
 use xai_grok_tools::implementations::skills::types::SkillScope;
 
-/// Shadows [`super::resolve`] for the cases that route something other
-/// than `/loop`: they are indifferent to the fire mode, and pinning it
-/// here keeps a plumbing change out of every unrelated call site. Tests
-/// that care about the mode call `super::resolve` directly.
+/// Shadows [`super::resolve_human_intent`] for the cases that route something other than `/loop`.
+/// Those cases are indifferent to the fire mode, and pinning it here keeps a change to that argument out of every unrelated call site.
+/// Tests that care about the mode call `super::resolve_human_intent` directly.
 fn resolve(
     prompt_blocks: Vec<acp::ContentBlock>,
     skills: &[SkillInfo],
@@ -12,13 +11,12 @@ fn resolve(
     skill_rewrite: SkillSlashRewrite,
     workflows: &[crate::session::workflow::registry::WorkflowListing],
 ) -> Result<Vec<acp::ContentBlock>, SlashCommandOutcome> {
-    super::resolve(
+    super::resolve_human_intent(
         prompt_blocks,
         skills,
         availability,
         skill_rewrite,
         workflows,
-        LoopFireMode::Detached,
     )
 }
 
@@ -36,7 +34,7 @@ async fn product_skill_infos_none_without_auth() {
 
 #[test]
 fn product_skills_cache_matches_identity_and_team() {
-    use crate::auth::{AuthMode, GrokAuth};
+    use xai_grok_login::{AuthMode, GrokAuth};
     let base = ProductSkillsCacheEntry {
         auth_key: "tok-a".into(),
         user_id: "user-1".into(),
@@ -92,7 +90,7 @@ fn product_skills_cache_matches_identity_and_team() {
 
 #[test]
 fn product_skills_cache_after_untagged_recovery_keeps_primary_tenant() {
-    use crate::auth::{AuthMode, GrokAuth};
+    use xai_grok_login::{AuthMode, GrokAuth};
     let primary = GrokAuth {
         key: "oidc-team".into(),
         user_id: "user-1".into(),
@@ -158,7 +156,6 @@ fn make_skill(name: &str, user_invocable: bool) -> SkillInfo {
     }
 }
 
-/// Extract the first parsed skill from an InvokeSkill outcome.
 fn first_skill(outcome: SlashCommandOutcome) -> ParsedSkillRef {
     match outcome {
         SlashCommandOutcome::InvokeSkill { skills, .. } => {
@@ -181,38 +178,6 @@ fn invoke_text(outcome: SlashCommandOutcome) -> String {
             .unwrap(),
         _ => panic!("expected InvokeSkill"),
     }
-}
-
-// ── parse_slash_prefix ──────────────────────────────────────────
-
-#[test]
-fn parse_slash_prefix_extracts_name_and_args() {
-    assert_eq!(
-        parse_slash_prefix(&[text_block("/compact keep auth")]),
-        Some(("compact", "keep auth")),
-    );
-    assert_eq!(
-        parse_slash_prefix(&[text_block("/yolo")]),
-        Some(("yolo", "")),
-    );
-}
-
-#[test]
-fn parse_slash_prefix_ignores_non_leading_slash() {
-    assert_eq!(
-        parse_slash_prefix(&[text_block("please run /commit")]),
-        None
-    );
-    assert_eq!(parse_slash_prefix(&[text_block("fix the bug")]), None);
-    assert_eq!(parse_slash_prefix(&[text_block("/")]), None);
-}
-
-#[test]
-fn parse_slash_prefix_trims_whitespace() {
-    assert_eq!(
-        parse_slash_prefix(&[text_block("  /commit fix typo  ")]),
-        Some(("commit", "fix typo")),
-    );
 }
 
 // ── builtin resolve fns ─────────────────────────────────────────
@@ -261,7 +226,6 @@ fn always_approve_parses_on_off() {
 
 #[test]
 fn yolo_alias_resolves_to_always_approve() {
-    // /yolo should resolve via alias to the always-approve command
     let blocks = vec![text_block("/yolo on")];
     let outcome = resolve(blocks, &[], all_gated(), SkillSlashRewrite::default(), &[]).unwrap_err();
     assert!(matches!(
@@ -306,6 +270,86 @@ fn status_alias_resolves_to_session_info() {
 }
 
 #[test]
+fn resolve_model_authored_skill_requires_exact_child_catalog_name_and_loader() {
+    let skills = vec![make_skill("commit", true), make_skill("other", true)];
+
+    let outcome = super::resolve_model_authored_skill(
+        vec![text_block("/commit fix typo")],
+        "commit",
+        "fix typo",
+        &skills,
+        all_gated(),
+        true,
+    )
+    .unwrap_err();
+    let skill = first_skill(outcome);
+    assert_eq!(skill.name, "commit");
+    assert_eq!(skill.args, "fix typo");
+
+    for (name, has_skill_loader) in [
+        ("Commit", true),
+        ("local:commit", true),
+        ("missing", true),
+        ("commit", false),
+        ("always-approve", true),
+    ] {
+        assert!(
+            super::resolve_model_authored_skill(
+                vec![text_block(&format!("/{name}"))],
+                name,
+                "",
+                &skills,
+                all_gated(),
+                has_skill_loader,
+            )
+            .is_ok(),
+            "{name} with loader={has_skill_loader} must stay inert"
+        );
+    }
+
+    let colliding = vec![make_skill("compact", true)];
+    let outcome = super::resolve_model_authored_skill(
+        vec![text_block("/local:compact keep history")],
+        "local:compact",
+        "keep history",
+        &colliding,
+        all_gated(),
+        true,
+    )
+    .unwrap_err();
+    let skill = first_skill(outcome);
+    assert_eq!(skill.name, "local:compact");
+    assert_eq!(skill.args, "keep history");
+
+    let flush_skill = vec![make_skill("flush", true)];
+    let memory_off = CommandAvailability::default();
+    let advertised = available_commands(&flush_skill, memory_off, &[]);
+    assert!(advertised.iter().any(|command| command.name == "flush"));
+    assert!(
+        super::resolve_model_authored_skill(
+            vec![text_block("/flush")],
+            "flush",
+            "",
+            &flush_skill,
+            memory_off,
+            true,
+        )
+        .is_err()
+    );
+    assert!(
+        super::resolve_model_authored_skill(
+            vec![text_block("/local:flush")],
+            "local:flush",
+            "",
+            &flush_skill,
+            memory_off,
+            true,
+        )
+        .is_ok()
+    );
+}
+
+#[test]
 fn resolve_parses_skill_with_args() {
     let skills = vec![make_skill("commit", true)];
     let outcome = resolve(
@@ -333,10 +377,8 @@ fn resolve_parses_skill_with_args() {
     assert_eq!(skill.args, "");
 }
 
-/// `build_skill_information_for_refs` loads the SKILL.md, applies
-/// substitutions, and wraps everything in `<skill_information>`;
-/// unloadable refs are skipped, and no loadable content → `None`.
-/// Shared by turn start and the interjection drain.
+/// `build_skill_information_for_refs` loads the SKILL.md, applies substitutions, and wraps everything in `<skill_information>`.
+/// Both turn start and the interjection drain call it.
 #[tokio::test]
 async fn build_skill_information_for_refs_loads_and_wraps() {
     let dir = tempfile::tempdir().unwrap();
@@ -362,7 +404,7 @@ async fn build_skill_information_for_refs_loads_and_wraps() {
         "$ARGUMENTS must substitute: {info}"
     );
 
-    // Missing file → logged, skipped, and with nothing loaded: None.
+    // The missing file is logged and skipped; with nothing loaded the result is None
     let missing = vec![make_skill("ghost", true)];
     let parsed =
         parse_skill_references("/ghost", &missing, all_gated()).expect("known skill must parse");
@@ -413,8 +455,7 @@ fn resolve_loop_annotates_block_with_compact_display_text() {
 
 #[test]
 fn resolve_loop_without_args_uses_bare_command_display_text() {
-    // `/loop` with no args expands to the usage message but should still
-    // carry a sensible compact `displayText`.
+    // `/loop` with no args expands to the usage message
     let outcome = resolve(
         vec![text_block("/loop")],
         &[],
@@ -439,36 +480,6 @@ fn resolve_loop_without_args_uses_bare_command_display_text() {
 }
 
 #[test]
-fn resolve_loop_expands_for_the_sessions_fire_mode() {
-    let text_of = |mode| {
-        let outcome = super::resolve(
-            vec![text_block("/loop 1m echo hello")],
-            &[],
-            all_gated(),
-            SkillSlashRewrite::default(),
-            &[],
-            mode,
-        )
-        .unwrap_err();
-        let SlashCommandOutcome::InvokeSkill { blocks, .. } = outcome else {
-            panic!("expected InvokeSkill for /loop");
-        };
-        let Some(acp::ContentBlock::Text(tb)) = blocks.into_iter().next() else {
-            panic!("expected a text block");
-        };
-        tb.text
-    };
-    assert!(
-        text_of(LoopFireMode::Detached).contains("cannot see this conversation"),
-        "detached sessions must get the standalone-prompt framing"
-    );
-    assert!(
-        text_of(LoopFireMode::InSession).contains("arrives as a new turn in this conversation"),
-        "in-session sessions must get the standing-order framing"
-    );
-}
-
-#[test]
 fn resolve_passthrough_preserves_original_blocks() {
     // External-harness agents: blocks are passed through verbatim.
     // The prompt assembly layer decides how to format them.
@@ -481,7 +492,6 @@ fn resolve_passthrough_preserves_original_blocks() {
         &[],
     )
     .unwrap_err();
-    // Original text is preserved in blocks.
     assert_eq!(invoke_text(outcome), "/commit fix typo");
 
     let outcome = resolve(
@@ -593,8 +603,7 @@ fn advertised_names(availability: CommandAvailability) -> Vec<String> {
 
 #[test]
 fn availability_filters_memory_commands() {
-    // memory=false hides /flush and /dream but NOT /memory (gated on
-    // memory_configured instead, so the user can re-enable via toggle).
+    // memory=false hides /flush and /dream but NOT /memory (gated on memory_configured instead, so the user can re-enable via toggle)
     let names = advertised_names(CommandAvailability {
         memory: false,
         ..CommandAvailability::all_enabled()
@@ -699,9 +708,7 @@ fn goal_does_not_resolve_when_host_capability_is_off() {
 
 #[test]
 fn loop_does_not_resolve_when_scheduler_unavailable() {
-    // Without the scheduler gate the shell should not route /loop --
-    // it would otherwise produce a useless "call scheduler_create"
-    // prompt the model can't act on.
+    // Routing /loop without the scheduler would produce a "call scheduler_create" prompt the model can't act on
     let availability = CommandAvailability {
         scheduler: false,
         ..CommandAvailability::all_enabled()
@@ -719,9 +726,8 @@ fn loop_does_not_resolve_when_scheduler_unavailable() {
     );
 }
 
-/// Extract the text of the first block produced by `build_loop_prompt_blocks`.
-fn loop_text(args: &str, mode: LoopFireMode) -> String {
-    match build_loop_prompt_blocks(args, mode).into_iter().next() {
+fn loop_text(args: &str) -> String {
+    match build_loop_prompt_blocks(args).into_iter().next() {
         Some(acp::ContentBlock::Text(t)) => t.text,
         other => panic!("expected a text block, got {other:?}"),
     }
@@ -729,8 +735,7 @@ fn loop_text(args: &str, mode: LoopFireMode) -> String {
 
 #[test]
 fn loop_usage_has_no_10m_default() {
-    // The shell client must not advertise a silent 10m default.
-    let usage = loop_text("", LoopFireMode::Detached);
+    let usage = loop_text("");
     assert!(usage.contains("Usage: /loop"), "got: {usage}");
     assert!(
         !usage.contains("10m"),
@@ -740,7 +745,7 @@ fn loop_usage_has_no_10m_default() {
 
 #[test]
 fn loop_instruction_derives_interval_without_default_or_inline_execute() {
-    let instr = loop_text("every 30 minutes do x", LoopFireMode::Detached);
+    let instr = loop_text("every 30 minutes do x");
     assert!(
         !instr.contains("10m"),
         "instruction must not default: {instr}"
@@ -748,11 +753,6 @@ fn loop_instruction_derives_interval_without_default_or_inline_execute() {
     assert!(instr.contains("30 minutes"));
     assert!(instr.contains("<number><unit>"));
     assert!(instr.contains("ask the user how often"));
-    assert!(instr.contains("Do NOT execute the prompt inline"));
-    assert!(
-        !instr.contains("immediately execute the parsed prompt"),
-        "stale inline-execute wording must be gone: {instr}"
-    );
     assert!(instr.contains("every 30 minutes do x"));
 }
 
@@ -762,13 +762,11 @@ fn loop_prompt_matches_pager_wording() {
     use xai_grok_tools::implementations::grok_build::{
         loop_schedule_instruction, loop_usage_message,
     };
-    assert_eq!(loop_text("", LoopFireMode::Detached), loop_usage_message());
-    for mode in [LoopFireMode::Detached, LoopFireMode::InSession] {
-        assert_eq!(
-            loop_text("2h run tests", mode),
-            loop_schedule_instruction("2h run tests", mode)
-        );
-    }
+    assert_eq!(loop_text(""), loop_usage_message());
+    assert_eq!(
+        loop_text("2h run tests"),
+        loop_schedule_instruction("2h run tests")
+    );
 }
 
 #[test]
@@ -783,9 +781,8 @@ fn build_tools_meta_serialises_tool_names() {
 
 #[test]
 fn pre_session_builtin_commands_excludes_gated_entries() {
-    // The pre-session list (advertised in InitializeResponse._meta)
-    // with a default (fail-closed) availability must not include any
-    // gated command -- we don't know the toolset yet at that point.
+    // The pre-session list (advertised in InitializeResponse._meta) with a default (fail-closed) availability must not include any gated command
+    // We don't know the toolset yet at that point
     let names: Vec<String> = builtin_commands(CommandAvailability::default())
         .into_iter()
         .map(|c| c.name)
@@ -816,10 +813,8 @@ fn pre_session_builtin_commands_excludes_gated_entries() {
 
 #[test]
 fn pre_session_builtin_commands_advertises_goal_when_flag_enabled() {
-    // `/goal` is gated on a config feature flag known at initialize
-    // time (not a live toolset), so when the pre-session availability
-    // enables it the command must be advertised -- otherwise it would
-    // only show up after the first user turn created a session.
+    // `/goal` is gated on a config feature flag known at initialize time (not a live toolset)
+    // Without pre-session advertising it would only show up after the first user turn created a session
     let availability = CommandAvailability {
         goal: true,
         ..CommandAvailability::default()
@@ -914,7 +909,7 @@ fn flush_resolves_to_builtin_action() {
         resolve_builtin("flush", ""),
         Some(BuiltinAction::FlushMemory)
     ));
-    // Args are ignored — still resolves to FlushMemory
+    // Args are ignored
     assert!(matches!(
         resolve_builtin("flush", "some extra args"),
         Some(BuiltinAction::FlushMemory)
@@ -1030,12 +1025,11 @@ fn make_scoped_skill(name: &str, scope: SkillScope) -> SkillInfo {
 
 #[test]
 fn resolve_ambiguous_bare_name_passes_through() {
-    // Two skills share the bare name "commit" in different scopes.
     let skills = vec![
         make_scoped_skill("commit", SkillScope::Local),
         make_scoped_skill("commit", SkillScope::User),
     ];
-    // Bare "/commit" is ambiguous -- should pass through (not first-match).
+    // Bare "/commit" is ambiguous and must not resolve to the first match
     assert!(
         resolve(
             vec![text_block("/commit")],
@@ -1085,7 +1079,7 @@ fn resolve_qualified_skill_name() {
 #[test]
 fn resolve_accepts_qualified_form_of_bare_advertised_skill() {
     let skills = vec![make_scoped_skill("deploy", SkillScope::Local)];
-    // Advertised bare (no collision, no duplicate).
+    // The skill is advertised bare (no collision, no duplicate)
     let names: Vec<String> = available_commands(&skills, all_gated(), &[])
         .into_iter()
         .map(|c| c.name)
@@ -1128,7 +1122,6 @@ fn available_commands_uses_qualified_names_for_duplicates() {
         !names.contains(&"local:deploy"),
         "non-colliding skill should NOT get a qualified duplicate, got: {names:?}"
     );
-    // Bare "commit" should NOT appear.
     assert!(!names.contains(&"commit"));
 }
 
@@ -1397,7 +1390,6 @@ fn feedback_resolves_when_enabled() {
     ));
 }
 
-/// Collect the advertised command names for the given availability.
 fn advertised_names_with(availability: CommandAvailability) -> Vec<String> {
     available_commands(&[], availability, &[])
         .into_iter()
@@ -1405,12 +1397,9 @@ fn advertised_names_with(availability: CommandAvailability) -> Vec<String> {
         .collect()
 }
 
-/// `CommandAvailability::default()` must be fail-closed: every gated
-/// command is hidden, only `BuiltinGate::AlwaysOn` survives. The
-/// pre-session `MvpAgent::command_availability()` builds on this value
-/// (only flipping config-derived gates like `goal` on), so a
-/// regression here would re-expose `/flush`, `/loop`, etc. on the home
-/// screen for harnesses that won't actually run them.
+/// `CommandAvailability::default()` must be fail-closed: every gated command is hidden, only `BuiltinGate::AlwaysOn` survives.
+/// The pre-session `MvpAgent::command_availability()` builds on this value (only flipping config-derived gates like `goal` on).
+/// A regression here would re-expose `/flush`, `/loop`, etc. on the home screen for harnesses that won't actually run them.
 #[test]
 fn default_availability_is_fail_closed_on_every_gate() {
     let names = advertised_names_with(CommandAvailability::default());
@@ -1441,19 +1430,15 @@ fn default_availability_is_fail_closed_on_every_gate() {
     }
 }
 
-/// `/flush` is a memory-write that's only useful when the model can
-/// later read back what it wrote. The shell's
-/// `build_command_availability()` ANDs `memory.is_enabled()` with
-/// `memory_search`/`memory_get` registration; the gate itself just
-/// reads `availability.memory`. Lock both halves so a future change
-/// to either side is forced through this test.
+/// `/flush` is a memory-write that's only useful when the model can later read back what it wrote.
+/// The shell's `build_command_availability()` ANDs `memory.is_enabled()` with `memory_search`/`memory_get` registration.
+/// Lock both halves so a future change to either side is forced through this test.
 #[test]
 fn flush_hidden_when_memory_gate_off_visible_when_on() {
     let off = advertised_names_with(CommandAvailability::default());
     assert!(!off.iter().any(|n| n == "flush"), "got: {off:?}");
     assert!(!off.iter().any(|n| n == "dream"), "got: {off:?}");
-    // /memory is gated on memory_configured, not memory — hidden here
-    // because Default sets both to false.
+    // /memory is gated on memory_configured, not memory; it is hidden here because Default sets both to false
     assert!(!off.iter().any(|n| n == "memory"), "got: {off:?}");
 
     let on = advertised_names_with(CommandAvailability {
@@ -1537,8 +1522,7 @@ fn mem_alias_resolves_toggle_with_args() {
 
 #[test]
 fn memory_resolves_when_disabled_but_configured() {
-    // memory=false but memory_configured=true: /memory must still work
-    // so the user can re-enable via the toggle.
+    // memory=false but memory_configured=true: /memory must still work so the user can re-enable via the toggle
     let availability = CommandAvailability {
         memory: false,
         ..CommandAvailability::all_enabled()
@@ -1611,7 +1595,6 @@ fn parse_skill_refs_multi_skill() {
 #[test]
 fn parse_skill_refs_ignores_unknown_slash() {
     let skills = vec![make_skill("commit", true)];
-    // /api/v2/users is not a known skill — should be ignored.
     let result = parse_skill_references("check /api/v2/users", &skills, all_gated());
     assert!(result.is_none());
 }
@@ -1619,7 +1602,6 @@ fn parse_skill_refs_ignores_unknown_slash() {
 #[test]
 fn parse_skill_refs_ignores_builtins() {
     let skills = vec![make_skill("commit", true)];
-    // /compact is a builtin — should NOT appear in skill refs.
     let result = parse_skill_references("/compact", &skills, all_gated());
     assert!(result.is_none());
 }
@@ -1657,8 +1639,7 @@ fn parse_skill_refs_qualified_name() {
 
 #[test]
 fn parse_skill_refs_text_before_first_skill() {
-    // Text before the first skill reference is part of user query,
-    // not consumed as args.
+    // Text before the first skill reference is part of user query, not consumed as args
     let skills = vec![make_skill("commit", true)];
     let refs = parse_skill_references("please do /commit fix typo", &skills, all_gated()).unwrap();
     assert_eq!(refs.len(), 1);
@@ -1998,9 +1979,8 @@ fn workflow_manage_parses_both_orders_and_optional_id() {
 
 #[test]
 fn workflow_named_runs_is_shadowed_by_the_runs_op() {
-    // `/workflow runs` is always the overview op, even with a workflow named
-    // `runs` installed; that workflow still launches via its advertised bare
-    // `/runs` command or `/workflow runs <args>`.
+    // `/workflow runs` is always the overview op, even with a workflow named `runs` installed
+    // That workflow still launches via its advertised bare `/runs` command or `/workflow runs <args>`
     let workflows = vec![listing("runs")];
     assert!(matches!(
         resolve(
@@ -2109,8 +2089,7 @@ fn goal_set_budget_accepts_boundary_and_extra_whitespace() {
 
 #[test]
 fn goal_set_malformed_budget_stays_in_objective() {
-    // Non-numeric, missing, non-positive, glued, signed, overflowing,
-    // or mid-text values must not be consumed as a budget.
+    // Non-numeric, missing, non-positive, glued, signed, overflowing, or mid-text values must not be consumed as a budget
     for text in [
         "implement X --budget abc",
         "implement X --budget",
@@ -2169,8 +2148,7 @@ fn goal_args_provided() {
 }
 
 // ── GoalTracker handler-level interaction tests ──────────────
-// These test the exact tracker state transitions that the slash
-// command handlers perform, without constructing a full SessionActor.
+// These test the exact tracker state transitions that the slash command handlers perform, without constructing a full SessionActor
 
 #[test]
 fn goal_tracker_status_with_no_goal_returns_none() {
@@ -2193,13 +2171,13 @@ fn goal_tracker_create_sets_active() {
 fn goal_tracker_pause_only_when_active() {
     use crate::session::goal_tracker::{GoalPauseReason, GoalStatus, GoalTracker};
     let mut tracker = GoalTracker::new(std::path::PathBuf::from("/tmp/test"));
-    // No goal — pause returns false
+    // No goal: pause returns false
     assert!(!tracker.pause(GoalPauseReason::User));
 
     tracker.create_goal("g1".into(), "obj".into(), None, 0, "now".into(), None);
     assert!(tracker.pause(GoalPauseReason::User));
     assert_eq!(tracker.status(), Some(GoalStatus::UserPaused));
-    // Already paused — pause returns false
+    // Already paused: pause returns false
     assert!(!tracker.pause(GoalPauseReason::User));
 }
 
@@ -2208,7 +2186,7 @@ fn goal_tracker_resume_only_when_paused() {
     use crate::session::goal_tracker::{GoalPauseReason, GoalStatus, GoalTracker};
     let mut tracker = GoalTracker::new(std::path::PathBuf::from("/tmp/test"));
     tracker.create_goal("g1".into(), "obj".into(), None, 0, "now".into(), None);
-    // Active — resume returns false
+    // Active: resume returns false
     assert!(!tracker.resume());
     tracker.pause(GoalPauseReason::User);
     assert!(tracker.resume());

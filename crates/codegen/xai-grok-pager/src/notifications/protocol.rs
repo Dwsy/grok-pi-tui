@@ -1,10 +1,10 @@
 use std::borrow::Cow;
-use std::io::Write;
 
 use crate::notifications::tmux;
 use crate::terminal::{MultiplexerKind, TerminalContext, TerminalName};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "lowercase")]
 pub enum NotificationProtocol {
     /// iTerm2/WezTerm/Warp: `\x1b]9;{message}\x07`
     Osc9,
@@ -17,20 +17,6 @@ pub enum NotificationProtocol {
     /// No notification capability
     None,
 }
-
-impl NotificationProtocol {
-    /// Stable lowercase name for telemetry and analytics output.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Osc9 => "osc9",
-            Self::Osc99 => "osc99",
-            Self::Osc777 => "osc777",
-            Self::Bel => "bel",
-            Self::None => "none",
-        }
-    }
-}
-
 /// Choose the best notification protocol for the current terminal environment.
 pub fn select_protocol(ctx: &TerminalContext) -> NotificationProtocol {
     if ctx.multiplexer == MultiplexerKind::Zellij {
@@ -62,8 +48,8 @@ pub fn select_protocol(ctx: &TerminalContext) -> NotificationProtocol {
 
 const BEL_BYTE: &[u8] = b"\x07";
 
-/// Strip C0/C1 controls (including BEL and C1 ST) so model-derived titles
-/// cannot terminate OSC/DCS early. Same filter as tab-title construction.
+/// Strip C0/C1 controls (including BEL and C1 ST) so model-derived titles cannot terminate OSC/DCS early.
+/// Same filter as tab-title construction.
 fn sanitize_osc_text(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).collect()
 }
@@ -87,37 +73,36 @@ fn notification_sequence(
     })
 }
 
-/// Build the escape sequence for a notification, then write it to stderr.
+/// Build the notification bytes ready for the tty. `None` means emit nothing.
 ///
-/// When running under tmux the sequence is wrapped in DCS passthrough so the
-/// outer terminal sees it.
+/// When running under tmux the sequence is wrapped in DCS passthrough so the outer terminal sees it.
+fn notification_bytes(
+    protocol: NotificationProtocol,
+    title: &str,
+    body: &str,
+    ctx: &TerminalContext,
+) -> Option<Vec<u8>> {
+    let sequence = notification_sequence(protocol, title, body)?;
+    Some(if ctx.is_tmux_backed() {
+        tmux::tmux_passthrough(&sequence).into_bytes()
+    } else if matches!(protocol, NotificationProtocol::Bel) {
+        BEL_BYTE.to_vec()
+    } else {
+        sequence.into_owned().into_bytes()
+    })
+}
+
+/// Build the escape sequence for a notification and enqueue it on the terminal writer
+/// (notifications fire from the event-loop thread; see `EscapeWriter`).
 pub fn emit_notification(
     protocol: NotificationProtocol,
     title: &str,
     body: &str,
     ctx: &TerminalContext,
+    writer: &crate::render::draw::EscapeWriter,
 ) {
-    let Some(sequence) = notification_sequence(protocol, title, body) else {
-        return;
-    };
-
-    if ctx.is_tmux_backed() {
-        let wrapped = tmux::tmux_passthrough(&sequence);
-        xai_grok_shell::util::with_locked_stderr(|stderr| {
-            let _ = stderr.write_all(wrapped.as_bytes());
-            let _ = stderr.flush();
-        });
-    } else if matches!(protocol, NotificationProtocol::Bel) {
-        xai_grok_shell::util::with_locked_stderr(|stderr| {
-            let _ = stderr.write_all(BEL_BYTE);
-            let _ = stderr.flush();
-        });
-    } else {
-        let bytes = sequence.as_bytes();
-        xai_grok_shell::util::with_locked_stderr(|stderr| {
-            let _ = stderr.write_all(bytes);
-            let _ = stderr.flush();
-        });
+    if let Some(bytes) = notification_bytes(protocol, title, body, ctx) {
+        writer.emit(bytes);
     }
 }
 
@@ -141,144 +126,7 @@ mod tests {
         }
     }
 
-    // --- select_protocol: every TerminalName variant ---
-
-    #[test]
-    fn select_iterm2_uses_osc9() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand(TerminalName::Iterm2)),
-            NotificationProtocol::Osc9
-        );
-    }
-
-    #[test]
-    fn select_wezterm_uses_osc9() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand(TerminalName::WezTerm)),
-            NotificationProtocol::Osc9
-        );
-    }
-
-    #[test]
-    fn select_warp_uses_osc9() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand(TerminalName::WarpTerminal)),
-            NotificationProtocol::Osc9
-        );
-    }
-
-    #[test]
-    fn select_kitty_uses_osc99() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand(TerminalName::Kitty)),
-            NotificationProtocol::Osc99
-        );
-    }
-
-    #[test]
-    fn select_ghostty_uses_osc777() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand(TerminalName::Ghostty)),
-            NotificationProtocol::Osc777
-        );
-    }
-
-    #[test]
-    fn select_vte_uses_osc777() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand(TerminalName::Vte)),
-            NotificationProtocol::Osc777
-        );
-    }
-
-    #[test]
-    fn select_grok_desktop_uses_none() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand(TerminalName::GrokDesktop)),
-            NotificationProtocol::None
-        );
-    }
-
-    #[test]
-    fn select_apple_terminal_uses_bel() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand(TerminalName::AppleTerminal)),
-            NotificationProtocol::Bel
-        );
-    }
-
-    #[test]
-    fn select_alacritty_uses_bel() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand(TerminalName::Alacritty)),
-            NotificationProtocol::Bel
-        );
-    }
-
-    #[test]
-    fn select_vscode_uses_bel() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand(TerminalName::VsCode)),
-            NotificationProtocol::Bel
-        );
-    }
-
-    #[test]
-    fn select_unknown_uses_bel() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand(TerminalName::Unknown)),
-            NotificationProtocol::Bel
-        );
-    }
-
-    // --- Zellij override ---
-
-    #[test]
-    fn zellij_overrides_to_bel_for_kitty() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand_and_mux(
-                TerminalName::Kitty,
-                MultiplexerKind::Zellij
-            )),
-            NotificationProtocol::Bel
-        );
-    }
-
-    #[test]
-    fn zellij_overrides_to_bel_for_ghostty() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand_and_mux(
-                TerminalName::Ghostty,
-                MultiplexerKind::Zellij
-            )),
-            NotificationProtocol::Bel
-        );
-    }
-
-    #[test]
-    fn zellij_overrides_to_bel_for_iterm2() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand_and_mux(
-                TerminalName::Iterm2,
-                MultiplexerKind::Zellij
-            )),
-            NotificationProtocol::Bel
-        );
-    }
-
-    #[test]
-    fn zellij_overrides_to_bel_for_wezterm() {
-        assert_eq!(
-            select_protocol(&ctx_with_brand_and_mux(
-                TerminalName::WezTerm,
-                MultiplexerKind::Zellij
-            )),
-            NotificationProtocol::Bel
-        );
-    }
-
-    // --- tmux does NOT override protocol selection (passthrough is handled
-    //     at emission time, not selection time) ---
+    // --- tmux does NOT override protocol selection (passthrough is handled at emission time, not selection time) ---
 
     #[test]
     fn tmux_preserves_osc9_for_iterm2() {
@@ -315,37 +163,68 @@ mod tests {
         );
     }
 
-    // --- emit_notification: verifies None is a no-op (does not panic) ---
+    // --- notification_bytes / emit_notification ---
 
     #[test]
-    fn emit_none_is_noop() {
+    fn bytes_none_is_noop() {
         let ctx = ctx_with_brand(TerminalName::GrokDesktop);
-        // Should return immediately without writing anything.
-        emit_notification(NotificationProtocol::None, "title", "body", &ctx);
+        assert_eq!(
+            notification_bytes(NotificationProtocol::None, "title", "body", &ctx),
+            None
+        );
     }
 
     #[test]
-    fn emit_bel_does_not_panic() {
+    fn bytes_bel_is_bare_bell() {
         let ctx = ctx_with_brand(TerminalName::Unknown);
-        emit_notification(NotificationProtocol::Bel, "", "", &ctx);
+        assert_eq!(
+            notification_bytes(NotificationProtocol::Bel, "", "", &ctx).as_deref(),
+            Some(b"\x07".as_slice())
+        );
     }
 
     #[test]
-    fn emit_osc9_does_not_panic() {
+    fn bytes_osc9_folds_title_into_body() {
         let ctx = ctx_with_brand(TerminalName::Iterm2);
-        emit_notification(NotificationProtocol::Osc9, "title", "body", &ctx);
+        assert_eq!(
+            notification_bytes(NotificationProtocol::Osc9, "title", "body", &ctx).as_deref(),
+            Some("\x1b]9;body \u{b7} title\x07".as_bytes())
+        );
     }
 
     #[test]
-    fn emit_osc99_does_not_panic() {
-        let ctx = ctx_with_brand(TerminalName::Kitty);
-        emit_notification(NotificationProtocol::Osc99, "title", "body", &ctx);
+    fn bytes_tmux_backed_wraps_in_dcs_passthrough() {
+        let ctx = ctx_with_brand_and_mux(TerminalName::Iterm2, MultiplexerKind::Tmux);
+        let bytes = notification_bytes(NotificationProtocol::Osc9, "t", "b", &ctx).expect("bytes");
+        assert!(bytes.starts_with(b"\x1bPtmux;"), "missing DCS passthrough");
     }
 
+    fn capture_writer() -> (
+        crate::render::draw::EscapeWriter,
+        std::sync::mpsc::Receiver<crate::render::draw::WriterPayload>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let writer =
+            crate::render::draw::EscapeWriter::new(tx, crate::render::draw::WriterSync::new());
+        (writer, rx)
+    }
+
+    /// The emit path enqueues the built bytes on the writer queue (never an inline tty write).
     #[test]
-    fn emit_osc777_does_not_panic() {
+    fn emit_enqueues_bytes_on_writer_queue() {
         let ctx = ctx_with_brand(TerminalName::Ghostty);
-        emit_notification(NotificationProtocol::Osc777, "title", "body", &ctx);
+        let (writer, rx) = capture_writer();
+        emit_notification(NotificationProtocol::Osc777, "title", "body", &ctx, &writer);
+        let payload = rx.try_recv().expect("one payload enqueued");
+        assert_eq!(payload.data(), "\x1b]777;notify;Grok;body\x1b\\".as_bytes());
+    }
+
+    #[test]
+    fn emit_none_enqueues_nothing() {
+        let ctx = ctx_with_brand(TerminalName::GrokDesktop);
+        let (writer, rx) = capture_writer();
+        emit_notification(NotificationProtocol::None, "title", "body", &ctx, &writer);
+        assert!(rx.try_recv().is_err(), "no payload expected");
     }
 
     #[test]

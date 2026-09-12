@@ -1,12 +1,10 @@
-//! Atomic file writes, shared by the managed-cache marker, the signature
-//! sidecar, and downstream identifier caches (e.g. the telemetry agent id).
+//! Atomic file writes, shared by the managed-cache marker, the signature sidecar, and downstream identifier caches (e.g. the telemetry agent id).
 
 use std::path::Path;
 
-/// Atomic temp + rename so a torn write can't leave a half-written file. The temp
-/// name is unique per writer (pid + counter) and `create_new`, so concurrent
-/// writers don't collide. `mode` (unix only) is applied at temp-file creation, so
-/// the final file never exists with looser permissions.
+/// Write to a temp file then rename, so a torn write can't leave a half-written file.
+/// The temp name is unique per writer (pid and counter) and `create_new`, so concurrent writers don't collide.
+/// `mode` (unix only) is applied at temp-file creation, so the final file never exists with looser permissions.
 pub fn write_atomically(
     final_path: &Path,
     contents: &str,

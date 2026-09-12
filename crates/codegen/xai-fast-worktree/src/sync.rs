@@ -31,15 +31,8 @@ use crate::copy::cow::{clone_file, replace_symlink};
 use crate::git::checkout::{git_clean_fd, git_command, git_reset_hard_command};
 use crate::git::discovery::get_head_commit;
 
-/// Pre-collected dirty state from a source repository.
-///
-/// Holds the raw output of `git status --porcelain=v2 -z --untracked-files=all`.
-/// Collect once via [`collect_source_dirty_state`], then pass to multiple
-/// [`WorktreeSync::sync_from_precomputed`] calls to avoid redundant `git status`
-/// invocations (each takes ~1.4s on large repos).
-///
-/// Uses [`Bytes`] internally so cloning is a cheap ref-count bump rather
-/// than a full buffer copy — important when sharing across multiple syncs.
+/// Raw `git status --porcelain=v2 -z` output, collected once and shared.
+/// [`Bytes`] makes clones a ref-count bump, not a buffer copy.
 #[derive(Clone, Debug)]
 pub struct SourceDirtyState {
     /// Raw NUL-delimited porcelain v2 output. Empty means the source is clean.
@@ -53,13 +46,8 @@ impl SourceDirtyState {
     }
 }
 
-/// Collect dirty state from a source repository.
-///
-/// Runs `git status --porcelain=v2 -z --untracked-files=all` on the source
-/// and captures the output. The result can be shared across multiple
-/// [`WorktreeSync::sync_from_precomputed`] calls.
-///
-/// This is a **blocking** function — call from `spawn_blocking` in async contexts.
+/// Blocking `git status --porcelain=v2 -z` capture. Share the result across
+/// [`WorktreeSync::sync_from_precomputed`] calls; use `spawn_blocking` from async.
 pub fn collect_source_dirty_state(source: &Path) -> Result<SourceDirtyState> {
     let output = git_command()
         .args(["status", "--porcelain=v2", "-z", "--untracked-files=all"])
@@ -112,13 +100,8 @@ pub struct SyncReport {
     pub staged_replay_ms: u64,
 }
 
-/// Sync a pre-created worktree to match a source repo's current state.
-///
-/// Holds the source and worktree paths, allowing repeated sync operations
-/// on the same pair (useful for pool replenishment).
-///
-/// All operations are **synchronous/blocking**. Callers should use
-/// `spawn_blocking` when calling from async contexts.
+/// Sync a pre-created worktree to a source. All operations are blocking;
+/// use `spawn_blocking` from async.
 pub struct WorktreeSync<'a> {
     /// Path to the source repository (the "truth").
     pub source: &'a Path,
@@ -132,31 +115,15 @@ impl<'a> WorktreeSync<'a> {
         Self { source, worktree }
     }
 
-    /// Sync the worktree to match the source's current HEAD + dirty state.
-    ///
-    /// Strategy:
-    /// 1. Resolve source HEAD and worktree HEAD via gix.
-    /// 2. If HEAD moved → `git reset --hard <source_HEAD>` (linked worktrees
-    ///    share the object store, so new commits are always available).
-    /// 3. `git clean -fd` to remove any leftover untracked files (skippable).
-    /// 4. If `copy_dirty` is true → replicate dirty state from source.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any git command fails (non-zero exit), or if
-    /// the gix repository cannot be opened.
+    /// Match source HEAD and dirty state. Errors if a git command fails or gix
+    /// cannot open the repo.
     pub fn sync_worktree(&self, copy_dirty: bool) -> Result<SyncReport> {
         self.sync_worktree_opts(copy_dirty, false)
     }
 
-    /// Sync with full control over the clean step.
-    ///
-    /// When `skip_clean` is `true`, the `git clean` step is omitted entirely.
-    /// This is safe when the worktree is **known to be clean** — e.g. a freshly
-    /// created pool worktree, or one that was just released (reset+clean'd).
-    /// Skipping the clean step saves ~800ms on large repos (106K files) because
-    /// `git clean` walks the entire directory tree even when there's nothing to
-    /// remove.
+    /// `skip_clean` omits `git clean`. Safe only when the worktree is known
+    /// clean; otherwise leftover untracked files survive. `git clean` walks the
+    /// whole tree even when empty.
     pub fn sync_worktree_opts(&self, copy_dirty: bool, skip_clean: bool) -> Result<SyncReport> {
         use std::time::Instant;
         let mut report = SyncReport::default();
@@ -168,9 +135,7 @@ impl<'a> WorktreeSync<'a> {
             get_head_commit(self.worktree).context("failed to get worktree HEAD")?;
         report.head_resolve_ms = t.elapsed().as_millis() as u64;
 
-        // Phase 2: Sync committed state.
-        // `git reset --hard` rebuilds the index with correct stat caches,
-        // fsmonitor data, and untracked-cache extensions. We must NOT
+        // `git reset --hard` rebuilds stat caches and index extensions. Do not
         // overwrite this index afterwards.
         if source_head != worktree_head {
             report.head_moved = true;
@@ -179,11 +144,8 @@ impl<'a> WorktreeSync<'a> {
             report.reset_hard_ms = t.elapsed().as_millis() as u64;
         }
 
-        // Phase 3: Clean untracked files from previous use.
-        // Skipped when the worktree is known to be clean (freshly created or
-        // just released). Uses `-fd` (not `-fdx`): pool worktrees never have
-        // gitignored files, and skipping `-x` avoids parsing .gitignore which
-        // is faster.
+        // `-fd` not `-fdx`: pool worktrees have no gitignored files, and `-x`
+        // would parse .gitignore for nothing.
         if skip_clean {
             report.clean_skipped = true;
             tracing::debug!(
@@ -196,10 +158,8 @@ impl<'a> WorktreeSync<'a> {
             report.clean_ms = t.elapsed().as_millis() as u64;
         }
 
-        // Phase 4: Replicate dirty state if requested.
-        // This copies dirty files and replays staged changes via
-        // `git add`/`git rm --cached` — it does NOT copy the index
-        // wholesale, preserving the stat caches built by reset.
+        // Replay dirty files and staged changes. Do not copy the index
+        // wholesale — that would destroy the stat caches built by reset.
         if copy_dirty {
             let t = Instant::now();
             let dirty_report = self.sync_dirty_state_timed()?;
@@ -215,14 +175,8 @@ impl<'a> WorktreeSync<'a> {
         Ok(report)
     }
 
-    /// Sync using a pre-collected [`SourceDirtyState`].
-    ///
-    /// Same as [`sync_worktree_opts`] but uses a pre-computed dirty state
-    /// instead of running `git status` internally. This allows a single
-    /// `git status` call to be shared across multiple worktree syncs.
-    ///
-    /// If `dirty_state` is `None`, dirty sync is skipped entirely
-    /// (equivalent to `copy_dirty=false`).
+    /// Like [`sync_worktree_opts`] but uses a shared dirty-state capture.
+    /// `None` skips dirty sync (`copy_dirty=false`).
     pub fn sync_from_precomputed(
         &self,
         dirty_state: Option<&SourceDirtyState>,
@@ -264,10 +218,8 @@ impl<'a> WorktreeSync<'a> {
                 report.dirty_skipped = true;
             }
             None => {
-                // No dirty state provided — skip entirely.
-                // Currently unreachable from production callers (fallback path
-                // uses the old `sync_worktree_opts` instead), but kept as a
-                // defensive API contract: callers can pass None to opt out.
+                // None opts out of dirty sync. Production fallback uses
+                // `sync_worktree_opts` instead; kept as the API contract.
                 report.dirty_skipped = true;
             }
         }
@@ -275,20 +227,8 @@ impl<'a> WorktreeSync<'a> {
         Ok(report)
     }
 
-    /// Copy dirty files from source to worktree and replicate staged changes.
-    ///
-    /// Uses `git status --porcelain=v2 -z` for correct handling of all entry
-    /// types including renames (see module-level docs for rationale).
-    /// File copies use `reflink_or_copy()` for CoW.
-    ///
-    /// Staged changes are replicated by running `git add` / `git rm --cached`
-    /// on the worktree for each entry with a non-`.` X column. This preserves
-    /// the worktree's index stat caches, fsmonitor data, and untracked-cache
-    /// extensions that were built by `git reset --hard`.
-    ///
-    /// **Does NOT copy the source index wholesale** — that would destroy all
-    /// stat caches (every entry would have stale mtime/inode/dev from the
-    /// source filesystem) and force `git status` to re-hash every file.
+    /// Copy dirty files and replay staged changes. Do not copy the source index:
+    /// its stat caches are from another filesystem and force a full re-hash.
     pub fn sync_dirty_state(&self) -> Result<SyncReport> {
         self.sync_dirty_state_timed()
     }
@@ -344,35 +284,17 @@ struct ApplyResult {
     copied: u64,
     /// Number of files deleted in worktree to match source.
     deleted: u64,
-    /// Staged additions/modifications: `(mode_in_index, hash_in_index, path)`.
-    ///
-    /// We capture the exact blob hash from porcelain v2 (`hI` field) so that
-    /// `replay_staged_changes` can use `git update-index --cacheinfo` to set
-    /// the index entry to the correct blob WITHOUT re-reading the working tree.
-    /// This is critical for `XY = "MM"` where the staged content differs from
-    /// the working tree content.
+    /// Staged adds: `(mode_in_index, hash_in_index, path)`. The porcelain `hI`
+    /// blob lets `--cacheinfo` set the index without reading the worktree —
+    /// required for `XY = "MM"`, where staged content differs from disk.
     staged_adds: Vec<(String, String, String)>,
     /// Paths that need `git rm --cached` in the worktree (staged deletions).
     staged_deletes: Vec<String>,
 }
 
-/// Parse `git status --porcelain=v2 -z` output and apply changes to the destination.
-///
-/// Porcelain v2 format with `-z` uses NUL as the field/record separator.
-/// Entry types:
-/// - `1 <XY> ...` — ordinary changed entry (one path follows)
-/// - `2 <XY> ...` — renamed/copied entry (two paths follow: path then origPath)
-/// - `u <XY> ...` — unmerged entry (one path follows)
-/// - `? <path>` — untracked file
-/// - `! <path>` — ignored file (not shown by default)
-///
-/// For renames (`2` entries), we copy the destination path (the new name)
-/// and delete the source path (the old name) if it was tracked.
-///
-/// Also collects staged entries (X != '.') so the caller can replay them
-/// on the worktree's index without copying the index wholesale.
-///
-/// Submodule entries are skipped — see [`is_submodule_entry`].
+/// Apply porcelain-v2 `-z` changes. Renames copy the new path and delete the
+/// old tracked name. Staged entries (X != '.') are collected for index replay.
+/// Submodules are skipped — see [`is_submodule_entry`].
 fn apply_porcelain_v2_entries(
     stdout: &[u8],
     source: &Path,
@@ -394,10 +316,8 @@ fn apply_porcelain_v2_entries(
         let line = std::str::from_utf8(chunk).context("non-UTF-8 path in git status output")?;
 
         if line.starts_with("1 ") || line.starts_with("u ") {
-            // Ordinary entry: `1 XY sub mH mI mW hH hI path`
-            //                   0  1  2   3  4  5  6  7  8
-            // Unmerged entry:  `u XY sub m1 m2 m3 h1 h2 h3 path`
-            //                   0  1  2   3  4  5  6  7  8  9
+            // Ordinary: `1 XY sub mH mI mW hH hI path`.
+            // Unmerged: `u XY sub m1 m2 m3 h1 h2 h3 path`.
 
             if is_submodule_entry(line) {
                 tracing::debug!(line = %line, "skipping submodule entry in dirty sync");
@@ -473,28 +393,17 @@ fn apply_porcelain_v2_entries(
     })
 }
 
-/// Check whether a porcelain v2 entry is a submodule.
-///
-/// The `sub` field (space-delimited field 2) is `S...` for submodules and
-/// `N...` for regular entries. Submodules are directories on disk, so
-/// `reflink_or_copy` cannot handle them. Their committed state is already
-/// synced by `git reset --hard`.
+/// `sub` (field 2) is `S...` for submodules. They are directories, so
+/// `reflink_or_copy` cannot handle them; `git reset --hard` already synced
+/// their committed state.
 fn is_submodule_entry(line: &str) -> bool {
     line.split(' ')
         .nth(2)
         .is_some_and(|sub| sub.starts_with('S'))
 }
 
-/// Extract `(mode_in_index, hash_in_index)` from a porcelain v2 line.
-///
-/// For ordinary entries (`1 XY sub mH mI mW hH hI path`):
-///   - `mI` is field 4 (0-indexed), the mode in the index
-///   - `hI` is field 7, the object hash in the index
-///
-/// For rename entries (`2 XY sub mH mI mW hH hI X<score> path`):
-///   - Same field positions for mI and hI
-///
-/// Returns `None` if the line doesn't have enough fields.
+/// `(mI, hI)` from a porcelain v2 line: fields 4 and 7 for both ordinary and
+/// rename entries. `None` if the line is too short.
 fn extract_index_mode_hash(line: &str) -> Option<(String, String)> {
     let fields: Vec<&str> = line.splitn(10, ' ').collect();
     if fields.len() >= 8 {
@@ -505,14 +414,8 @@ fn extract_index_mode_hash(line: &str) -> Option<(String, String)> {
     }
 }
 
-/// Extract the path from a porcelain v2 ordinary/rename/unmerged entry.
-///
-/// See `git status --help`, section "Changed Tracked Entries" for the format:
-/// <https://git-scm.com/docs/git-status#_changed_tracked_entries>
-///
-/// Format: `1 XY sub mH mI mW hH hI path` (8 space-separated header fields)
-/// Rename: `2 XY sub mH mI mW hH hI X<score> path` (9 fields)
-/// Unmerged: `u XY sub m1 m2 m3 h1 h2 h3 path` (10 fields)
+/// Path after the porcelain header: 8 fields for ordinary, 9 for rename,
+/// 10 for unmerged. See git-status "Changed Tracked Entries".
 fn extract_ordinary_path(line: &str) -> &str {
     let prefix = if line.starts_with("2 ") {
         // Rename: 9 space-separated header fields before path
@@ -539,16 +442,8 @@ fn extract_ordinary_path(line: &str) -> &str {
     line
 }
 
-/// Apply a single file change (copy or delete) based on the XY status.
-///
-/// In porcelain v2, `X` is the **staged** (index) status and `Y` is the
-/// **worktree** status. We care about the worktree column (`Y`) for deciding
-/// whether the file exists on disk in the source:
-///
-/// - `Y == 'D'` → file is deleted in the worktree → delete in target
-/// - `X == 'D'` with `Y != 'D'` → staged for deletion (`git rm --cached`)
-///   but the file **still exists** on disk → copy it
-/// - anything else → file exists on disk → copy it
+/// `Y` is worktree status. `Y == 'D'` deletes in the target; `X == 'D'` with
+/// `Y != 'D'` is `git rm --cached` and the file still exists, so copy it.
 fn apply_file_change(
     xy: &str,
     path: &str,
@@ -577,18 +472,8 @@ fn apply_file_change(
     Ok(())
 }
 
-/// Replay staged changes on the worktree's index.
-///
-/// For staged additions/modifications, uses `git update-index --cacheinfo`
-/// with the exact `(mode, blob_hash, path)` from the source's porcelain v2
-/// output. This sets the index entry to the correct blob **without reading
-/// the working tree**, which is critical for `XY = "MM"` where the staged
-/// content differs from the on-disk content.
-///
-/// For staged deletions, uses `git rm --cached` to remove the entry from
-/// the index while leaving the file on disk (if present).
-///
-/// Returns the total number of staged entries applied.
+/// Replay staged adds via `--cacheinfo` (no worktree read — required for
+/// `XY = "MM"`) and staged deletes via `git rm --cached` (file stays on disk).
 fn replay_staged_changes(
     worktree: &Path,
     staged_adds: &[(String, String, String)],
@@ -596,12 +481,8 @@ fn replay_staged_changes(
 ) -> Result<u64> {
     let mut count = 0u64;
 
-    // Batch `git update-index --cacheinfo` for all staged adds.
-    // We use `--stdin` with `-z` for NUL-delimited input to handle
-    // paths with spaces/special characters safely.
-    //
-    // Input format for --cacheinfo via --stdin -z:
-    //   <mode> SP <hex-hash> TAB <path> NUL
+    // `--stdin -z` so paths with spaces survive. Format:
+    // `<mode> SP <hex-hash> TAB <path> NUL`.
     if !staged_adds.is_empty() {
         use std::io::Write;
         #[allow(clippy::disallowed_methods)] // git command, waited on below
@@ -671,11 +552,8 @@ fn replay_staged_changes(
     Ok(count)
 }
 
-/// Copy a single dirty entry from source to worktree, creating parent dirs as
-/// needed.
-///
-/// Uses `symlink_metadata` (not `exists`) to read the entry type without
-/// following the link, so a dangling symlink is recreated, not skipped.
+/// Copy one dirty entry. `symlink_metadata` (not `exists`) so a dangling
+/// symlink is recreated, not skipped.
 fn copy_file_to_worktree(source: &Path, worktree: &Path, rel_path: &str) -> Result<()> {
     let src_file = source.join(rel_path);
     let dst_file = worktree.join(rel_path);
@@ -1311,14 +1189,8 @@ mod tests {
         );
     }
 
-    // ========================================================================
-    // skip_clean=true tests (pool path)
-    //
-    // The worktree pool calls sync_worktree_opts(copy_dirty, skip_clean=true)
-    // because pool worktrees are known-clean (freshly created or just
-    // released). These tests verify that commits, dirty files, and untracked
-    // files are correctly replicated through that code path.
-    // ========================================================================
+    // Pool path uses skip_clean=true because those worktrees are known-clean.
+    // These tests check commits, dirty files, and untracked files still replicate.
 
     #[test]
     fn test_skip_clean_commit_replication() {
@@ -1561,11 +1433,8 @@ mod tests {
     #[test]
     fn test_skip_clean_does_not_remove_leftover_untracked() {
         xai_test_utils::require_git!();
-        // Documents the skip_clean contract: if the worktree has leftover
-        // untracked files from a previous use and skip_clean=true is passed,
-        // those files PERSIST. This is correct for the pool because pool
-        // worktrees are always cleaned before being returned to the ready
-        // state.
+        // skip_clean leaves leftover untracked files. Correct for the pool,
+        // which cleans a worktree before returning it to ready.
         let temp = TempDir::new().unwrap();
         let source = temp.path().join("source");
         std::fs::create_dir_all(&source).unwrap();

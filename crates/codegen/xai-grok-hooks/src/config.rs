@@ -77,8 +77,7 @@ impl HooksMap {
         )
     }
 
-    /// Parse a `hooks` table from TOML. Unlike [`Self::from_value`], a malformed
-    /// event is skipped so one bad event can't drop the layer.
+    /// Parse a `hooks` table from TOML. Unlike [`Self::from_value`], a malformed event is skipped so one bad event can't drop the layer.
     pub fn from_toml_value(value: toml::Value) -> Result<Self, String> {
         let entries: HashMap<String, toml::Value> = value
             .try_into()
@@ -111,8 +110,7 @@ pub struct RawHandler {
     pub env: HashMap<String, String>,
 }
 
-/// Treat `null` or an absent field as an empty map (serde otherwise rejects
-/// `null` for a `HashMap`).
+/// Treat `null` or an absent field as an empty map (serde otherwise rejects `null` for a `HashMap`).
 fn deserialize_optional_string_map<'de, D>(de: D) -> Result<HashMap<String, String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -125,37 +123,70 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 5;
 
 pub const DEFAULT_TIMEOUT_MS: u64 = DEFAULT_TIMEOUT_SECS * 1000;
 
-/// Stop gates run real verification (builds, tests) and fail open on timeout, so
-/// the short observe default would silently disable a ported stop policy.
-pub const DEFAULT_STOP_GATE_TIMEOUT_SECS: u64 = 600;
+/// Stop and PostToolUse gates run verification work (builds, tests, linters), so they get a generous 600s bound; they fail open on timeout.
+pub const DEFAULT_VERIFICATION_GATE_TIMEOUT_SECS: u64 = 600;
 
-pub const DEFAULT_STOP_GATE_TIMEOUT_MS: u64 = DEFAULT_STOP_GATE_TIMEOUT_SECS * 1000;
+pub const DEFAULT_VERIFICATION_GATE_TIMEOUT_MS: u64 = DEFAULT_VERIFICATION_GATE_TIMEOUT_SECS * 1000;
 
-fn default_timeout_ms(event: crate::event::HookEventName) -> u64 {
-    if event.traits().gate == crate::event::GateKind::Stop {
-        DEFAULT_STOP_GATE_TIMEOUT_MS
-    } else {
-        DEFAULT_TIMEOUT_MS
-    }
-}
+/// Prompt gates run before every prompt, so a stuck hook stalls the session.
+/// 30s bounds that stall while leaving room for real validation work.
+pub const DEFAULT_PROMPT_GATE_TIMEOUT_SECS: u64 = 30;
 
-/// The validated handler kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HandlerType {
-    Command,
-    Http,
-}
+pub const DEFAULT_PROMPT_GATE_TIMEOUT_MS: u64 = DEFAULT_PROMPT_GATE_TIMEOUT_SECS * 1000;
 
-impl HandlerType {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Command => "command",
-            Self::Http => "http",
+pub const SESSION_END_HOOK_BUDGET_DEFAULT_MS: u64 = 1_500;
+pub const SESSION_END_HOOK_BUDGET_MAX_MS: u64 = 60_000;
+
+fn resolve_session_end_default(value: Option<&str>) -> u64 {
+    let Some(value) = value else {
+        return SESSION_END_HOOK_BUDGET_DEFAULT_MS;
+    };
+    match value.trim().parse::<u64>() {
+        Ok(ms) if ms > 0 => ms.min(SESSION_END_HOOK_BUDGET_MAX_MS),
+        _ => {
+            tracing::warn!(
+                value,
+                "GROK_SESSION_END_HOOKS_TIMEOUT_MS must be a positive integer; using default {}ms",
+                SESSION_END_HOOK_BUDGET_DEFAULT_MS
+            );
+            SESSION_END_HOOK_BUDGET_DEFAULT_MS
         }
     }
 }
 
+fn session_end_default_timeout_ms() -> u64 {
+    static VALUE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        resolve_session_end_default(
+            std::env::var("GROK_SESSION_END_HOOKS_TIMEOUT_MS")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+fn default_timeout_ms(event: crate::event::HookEventName) -> u64 {
+    use crate::event::GateKind;
+    if event == crate::event::HookEventName::SessionEnd {
+        return session_end_default_timeout_ms();
+    }
+    match event.traits().gate {
+        GateKind::Stop | GateKind::PostTool => DEFAULT_VERIFICATION_GATE_TIMEOUT_MS,
+        GateKind::Prompt => DEFAULT_PROMPT_GATE_TIMEOUT_MS,
+        GateKind::Observe | GateKind::Tool => DEFAULT_TIMEOUT_MS,
+    }
+}
+
+/// The validated handler kind.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr, strum::IntoStaticStr,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum HandlerType {
+    Command,
+    Http,
+}
 impl std::str::FromStr for HandlerType {
     type Err = ();
 
@@ -179,25 +210,23 @@ pub struct HookSpec {
     #[serde(skip)]
     pub matcher: Option<HookMatcher>,
     pub enabled: bool,
-    /// Command path, env-expanded; unresolved/modifier forms kept for the runner's
-    /// `sh -c` branch. Not re-expanded at run time. Display via `command_raw`.
+    /// Command path, env-expanded; unresolved/modifier forms kept for the runner's `sh -c` branch.
+    /// Not re-expanded at run time. Display via `command_raw`.
     pub command: Option<PathBuf>,
     /// Pre-expansion `command` for display, so resolved secrets never leak.
     pub command_raw: Option<String>,
-    /// URL (http handlers), env-expanded. Unlike `command`, the HTTP runner
-    /// re-expands at run time before SSRF validation (deliberate asymmetry).
+    /// URL (http handlers), env-expanded.
+    /// Unlike `command`, the HTTP runner re-expands at run time before SSRF validation (deliberate asymmetry).
     pub url: Option<String>,
     /// Pre-expansion `url` for display; see `command_raw`.
     pub url_raw: Option<String>,
     pub timeout_ms: u64,
     pub source_dir: PathBuf,
-    /// Env injected into the hook process, and consulted by load-time `command`/
-    /// `url` expansion. Precedence low→high: user `env` (reserved keys stripped) <
-    /// plugin-injected < runner-injected at spawn (authentic identity always wins).
+    /// Env injected into the hook process, and consulted by load-time `command`/`url` expansion.
+    /// Precedence from low to high: user `env` (reserved keys stripped), plugin-injected, runner-injected at spawn (authentic identity always wins).
     pub extra_env: std::collections::HashMap<String, String>,
-    /// The hook's origin and single source of truth for classification: `File`
-    /// (JSON files, agent frontmatter), a config tier, or `Plugin`. `#[serde(default)]`
-    /// reads pre-field wire specs as `File`.
+    /// The hook's origin and single source of truth for classification: `File` (JSON files, agent frontmatter), a config tier, or `Plugin`.
+    /// `#[serde(default)]` maps specs serialized before this field existed to `File`.
     #[serde(default)]
     pub layer: HookProvenance,
 }
@@ -218,8 +247,14 @@ pub fn expand_env_skipping_runner_vars(input: &str) -> String {
     )
 }
 
-/// Namespace prefixes stamped on hook names, matched by [`hook_origin`]. Shared
-/// so a rename can't silently reclassify a tier.
+impl HookSpec {
+    /// Pinned by admin/server-managed policy and therefore not user-disableable; see [`HookProvenance::is_managed_policy`].
+    pub fn is_managed_policy(&self) -> bool {
+        self.layer.is_managed_policy()
+    }
+}
+
+/// Namespace prefixes stamped on hook names, matched by [`hook_origin`]. Shared so a rename can't silently reclassify a tier.
 pub const GLOBAL_HOOK_PREFIX: &str = "global/";
 pub const PROJECT_HOOK_PREFIX: &str = "project/";
 pub const PLUGIN_HOOK_PREFIX: &str = "plugin/";
@@ -239,13 +274,13 @@ pub enum HookOrigin {
     Unknown,
 }
 
-/// Classify a hook's origin from [`HookProvenance`], falling back to the name
-/// prefix for `File`-tier hooks.
+/// Classify a hook's origin from [`HookProvenance`], falling back to the name prefix for `File`-tier hooks.
 pub fn hook_origin(spec: &HookSpec) -> HookOrigin {
     match spec.layer {
         HookProvenance::SystemManaged => HookOrigin::SystemManaged,
         HookProvenance::Managed => HookOrigin::Managed,
-        HookProvenance::Requirements => HookOrigin::Requirements,
+        // Both requirements tiers display as the requirements origin; only the policy exemption distinguishes root-owned from `$GROK_HOME`
+        HookProvenance::Requirements | HookProvenance::UserRequirements => HookOrigin::Requirements,
         HookProvenance::User => HookOrigin::UserConfig,
         HookProvenance::Plugin => HookOrigin::Plugin,
         HookProvenance::Unknown => HookOrigin::Unknown,
@@ -267,10 +302,64 @@ pub fn hook_origin(spec: &HookSpec) -> HookOrigin {
     }
 }
 
+/// How a qualified hook name reads to the user; see [`hook_display_label`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookDisplayName<'a> {
+    /// A real name (`global/lint`), an agent identity (`agent:<name>`), or a `client:<id>`.
+    Named(&'a str),
+    /// Config-tier copy ("a managed policy hook") for sources whose stamped spec path means nothing to the user.
+    Tier(&'static str),
+}
+
+/// User-facing hook name for blocked-prompt copy: drops the stamped `:{event}[i].hooks[j]` tail, then renders config-tier sources as tier copy.
+/// The tier copy is split by [`HookProvenance::is_managed_policy`] (who controls the hook), not [`HookOrigin`]'s grouping.
+pub fn hook_display_label(qualified: &str) -> HookDisplayName<'_> {
+    let source = strip_spec_path(qualified);
+    match source {
+        "user" | "requirements/user" => HookDisplayName::Tier("a user hook"),
+        "managed" => HookDisplayName::Tier("a managed hook"),
+        "system_managed" | "requirements/system" => HookDisplayName::Tier("a managed policy hook"),
+        _ => HookDisplayName::Named(source),
+    }
+}
+
+/// [`hook_display_label`] flattened for callers that read both forms the same way.
+pub fn hook_display_name(qualified: &str) -> &str {
+    match hook_display_label(qualified) {
+        HookDisplayName::Named(name) => name,
+        HookDisplayName::Tier(copy) => copy,
+    }
+}
+
+/// `{source}:{event}[i].hooks[j]` becomes `{source}`; anything else is unchanged.
+fn strip_spec_path(qualified: &str) -> &str {
+    match qualified.rsplit_once(':') {
+        Some((source, tail)) if !source.is_empty() && is_spec_path(tail) => source,
+        _ => qualified,
+    }
+}
+
+/// Matches the `{event}[{i}].hooks[{j}]` spec-path shape the parsers stamp.
+fn is_spec_path(tail: &str) -> bool {
+    let Some((event, indices)) = tail.split_once('[') else {
+        return false;
+    };
+    let Some((event_idx, hook_idx)) = indices.split_once("].hooks[") else {
+        return false;
+    };
+    let Some(hook_idx) = hook_idx.strip_suffix(']') else {
+        return false;
+    };
+    let is_index = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    !event.is_empty()
+        && event.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+        && is_index(event_idx)
+        && is_index(hook_idx)
+}
+
 /// Parse hooks from a JSON value (e.g. from agent definition frontmatter).
 ///
-/// `source_dir` resolves relative command paths: pass the agent definition's
-/// directory or the workspace CWD.
+/// `source_dir` resolves relative command paths: pass the agent definition's directory or the workspace CWD.
 pub fn parse_hooks_from_value(
     hooks: &serde_json::Value,
     source_name: &str,
@@ -278,8 +367,8 @@ pub fn parse_hooks_from_value(
     parse_hooks_from_value_with_dir(hooks, source_name, std::path::Path::new("."))
 }
 
-/// [`parse_hooks_from_value`] with an explicit `source_dir`. Parses the decoded
-/// value directly (no re-parse round-trip); a malformed event is a hard error.
+/// [`parse_hooks_from_value`] with an explicit `source_dir`.
+/// Parses the decoded value directly (no re-parse round-trip); a malformed event is a hard error.
 pub fn parse_hooks_from_value_with_dir(
     hooks: &serde_json::Value,
     source_name: &str,
@@ -321,11 +410,9 @@ pub fn parse_hooks_from_value_with_dir(
     )
 }
 
-/// Build specs from config-layer `hooks` blocks, tagging each with its layer's
-/// `source_name`. Layers arrive highest-authority-first and specs preserve that
-/// order, so the caller's dedup keeps the higher-authority copy. Relative commands
-/// resolve against each layer's own directory; a layer that fails to parse is
-/// recorded and skipped, the rest still load.
+/// Build specs from config-layer `hooks` blocks, tagging each with its layer's `source_name`.
+/// Layers arrive highest-authority-first and specs preserve that order, so the caller's dedup keeps the higher-authority copy.
+/// Relative commands resolve against each layer's own directory; a layer that fails to parse is recorded and skipped, the rest still load.
 pub fn parse_hooks_from_config_layers(
     layers: &[xai_grok_config::HookConfigLayer],
 ) -> (Vec<HookSpec>, Vec<HookError>) {
@@ -430,8 +517,7 @@ pub fn parse_hook_file(content: &str, file_path: &Path) -> (Vec<HookSpec>, Vec<H
     )
 }
 
-/// Build [`HookSpec`]s from a [`HooksMap`], shared by the JSON and config paths
-/// so the two never diverge.
+/// Build [`HookSpec`]s from a [`HooksMap`], shared by the JSON and config paths so the two never diverge.
 fn build_specs(hooks_map: HooksMap, ctx: SpecContext<'_>) -> (Vec<HookSpec>, Vec<HookError>) {
     let mut specs = Vec::new();
     let mut errors = Vec::new();
@@ -472,9 +558,9 @@ fn build_specs(hooks_map: HooksMap, ctx: SpecContext<'_>) -> (Vec<HookSpec>, Vec
     (specs, errors)
 }
 
-/// Resolve a group's `(configured_matcher, compiled_matcher)`. The compiled
-/// matcher is `None` with no pattern, or when the event ignores matchers (pattern
-/// kept for display, hook always fires). Errors only on an invalid regex.
+/// Resolve a group's `(configured_matcher, compiled_matcher)`.
+/// The compiled matcher is `None` with no pattern, or when the event ignores matchers (pattern kept for display, hook always fires).
+/// Errors only on an invalid regex.
 fn resolve_group_matcher(
     group_matcher: Option<&str>,
     event: HookEventName,
@@ -519,8 +605,7 @@ struct SpecContext<'a> {
 }
 
 /// Build one [`HookSpec`] from a handler entry, or the [`HookError`] preventing it.
-/// `command`/`url` are env-expanded (unset refs kept for the runner); `matcher` is
-/// not, since `$` is the regex end anchor.
+/// `command`/`url` are env-expanded (unset refs kept for the runner); `matcher` is not, since `$` is the regex end anchor.
 fn build_one_spec(
     handler: RawHandler,
     event: HookEventName,
@@ -529,12 +614,17 @@ fn build_one_spec(
     compiled_matcher: Option<HookMatcher>,
     ctx: &SpecContext<'_>,
 ) -> Result<HookSpec, HookError> {
-    let timeout_ms = handler
-        .timeout
-        // Untrusted config value: saturate rather than overflow (debug panic /
-        // release wrap) on an absurd timeout.
-        .map(|secs| secs.saturating_mul(1000))
-        .unwrap_or(default_timeout_ms(event));
+    let timeout_ms = match handler.timeout {
+        None | Some(0) => default_timeout_ms(event),
+        Some(secs) => {
+            let ms = secs.saturating_mul(1000);
+            if event == crate::event::HookEventName::SessionEnd {
+                ms.min(SESSION_END_HOOK_BUDGET_MAX_MS)
+            } else {
+                ms
+            }
+        }
+    };
 
     let mut extra_env: HashMap<String, String> = handler.env;
     strip_reserved_env_keys(&mut extra_env, &name, ctx.error_path);
@@ -624,6 +714,111 @@ mod tests {
     use super::*;
     use crate::test_support::with_env_var;
 
+    #[test]
+    fn is_managed_policy_covers_root_owned_tiers_only() {
+        fn expected(layer: HookProvenance) -> bool {
+            match layer {
+                HookProvenance::SystemManaged | HookProvenance::Requirements => true,
+                HookProvenance::Managed
+                | HookProvenance::UserRequirements
+                | HookProvenance::User
+                | HookProvenance::File
+                | HookProvenance::Plugin
+                | HookProvenance::Unknown => false,
+            }
+        }
+        for layer in [
+            HookProvenance::SystemManaged,
+            HookProvenance::Managed,
+            HookProvenance::Requirements,
+            HookProvenance::UserRequirements,
+            HookProvenance::User,
+            HookProvenance::File,
+            HookProvenance::Plugin,
+            HookProvenance::Unknown,
+        ] {
+            assert_eq!(
+                layer.is_managed_policy(),
+                expected(layer),
+                "is_managed_policy wrong for {layer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hook_display_name_hides_config_paths() {
+        for (qualified, expected) in [
+            ("user:user_prompt_submit[0].hooks[0]", "a user hook"),
+            (
+                "requirements/user:user_prompt_submit[0].hooks[0]",
+                "a user hook",
+            ),
+            ("managed:pre_tool_use[2].hooks[1]", "a managed hook"),
+            (
+                "requirements/system:pre_tool_use[0].hooks[0]",
+                "a managed policy hook",
+            ),
+            (
+                "system_managed:user_prompt_submit[0].hooks[0]",
+                "a managed policy hook",
+            ),
+            (
+                "global/block-hihi:user_prompt_submit[0].hooks[0]",
+                "global/block-hihi",
+            ),
+            (
+                "agent:code-reviewer:user_prompt_submit[0].hooks[0]",
+                "agent:code-reviewer",
+            ),
+            ("client:cb-123", "client:cb-123"),
+            ("a hook", "a hook"),
+        ] {
+            assert_eq!(hook_display_name(qualified), expected, "for {qualified}");
+        }
+    }
+
+    #[test]
+    fn hook_display_name_tracks_stamped_names() {
+        let tiers = [
+            ("user", HookProvenance::User, "a user hook"),
+            (
+                "requirements/user",
+                HookProvenance::UserRequirements,
+                "a user hook",
+            ),
+            ("managed", HookProvenance::Managed, "a managed hook"),
+            (
+                "requirements/system",
+                HookProvenance::Requirements,
+                "a managed policy hook",
+            ),
+            (
+                "system_managed",
+                HookProvenance::SystemManaged,
+                "a managed policy hook",
+            ),
+        ];
+        for (source_name, provenance, expected) in tiers {
+            let layer = xai_grok_config::HookConfigLayer::new(
+                provenance,
+                source_name,
+                toml::from_str::<toml::Value>(
+                    "[[UserPromptSubmit]]\n[[UserPromptSubmit.hooks]]\ntype = \"command\"\ncommand = \"gate.sh\"\n",
+                )
+                .unwrap(),
+            );
+            let (specs, errors) = parse_hooks_from_config_layers(std::slice::from_ref(&layer));
+            assert!(errors.is_empty(), "{source_name}: {errors:?}");
+            let name = &specs[0].name;
+            assert_eq!(hook_display_name(name), expected, "for stamped name {name}");
+            assert_eq!(
+                expected == "a managed policy hook",
+                provenance.is_managed_policy(),
+                "{source_name}: copy must track the trust split"
+            );
+        }
+    }
+
     fn config_layer(source_name: &str, toml_src: &str) -> xai_grok_config::HookConfigLayer {
         let value: toml::Value = toml::from_str(toml_src).unwrap();
         let hooks = value.get("hooks").cloned().unwrap();
@@ -653,8 +848,6 @@ mod tests {
 
     #[test]
     fn config_layer_keeps_valid_events_when_one_is_malformed() {
-        // A config layer skips a malformed event and keeps the rest, unlike the
-        // JSON path which fails the whole file.
         let layer = config_layer(
             "managed",
             "hooks.PreToolUse = \"oops\"\n[[hooks.PostToolUse]]\n[[hooks.PostToolUse.hooks]]\ntype = \"command\"\ncommand = \"ok.sh\"\n",
@@ -677,8 +870,6 @@ mod tests {
             )
         };
 
-        // Distinct commands are additive; an identical command dedupes to the
-        // higher-authority (first-listed) copy.
         use xai_grok_config::HookProvenance::{Managed, User};
         let (additive, _) = parse_hooks_from_config_layers(&[
             mk("managed", Managed, "m.sh"),
@@ -773,6 +964,7 @@ mod tests {
 
     #[test]
     fn parse_default_timeout() {
+        use crate::event::GateKind;
         let json = r#"{
             "hooks": {
                 "SessionEnd": [
@@ -783,18 +975,80 @@ mod tests {
                 ],
                 "SubagentStop": [
                     { "hooks": [{ "type": "command", "command": "sub.sh" }] }
+                ],
+                "PostToolUse": [
+                    { "hooks": [{ "type": "command", "command": "lint.sh" }] }
+                ],
+                "UserPromptSubmit": [
+                    { "hooks": [{ "type": "command", "command": "gate.sh" }] }
                 ]
             }
         }"#;
         let (specs, errors) = parse_hook_file(json, Path::new("/tmp/test.json"));
         assert!(errors.is_empty());
         for spec in &specs {
-            let expected = match spec.event {
-                HookEventName::Stop | HookEventName::SubagentStop => DEFAULT_STOP_GATE_TIMEOUT_MS,
-                _ => DEFAULT_TIMEOUT_MS,
+            let expected = if spec.event == crate::event::HookEventName::SessionEnd {
+                SESSION_END_HOOK_BUDGET_DEFAULT_MS
+            } else {
+                match spec.event.traits().gate {
+                    GateKind::Stop | GateKind::PostTool => DEFAULT_VERIFICATION_GATE_TIMEOUT_MS,
+                    GateKind::Prompt => DEFAULT_PROMPT_GATE_TIMEOUT_MS,
+                    GateKind::Observe | GateKind::Tool => DEFAULT_TIMEOUT_MS,
+                }
             };
             assert_eq!(spec.timeout_ms, expected, "event {}", spec.event);
         }
+    }
+
+    #[test]
+    fn resolve_session_end_default_parses_env() {
+        assert_eq!(
+            resolve_session_end_default(None),
+            SESSION_END_HOOK_BUDGET_DEFAULT_MS
+        );
+        assert_eq!(resolve_session_end_default(Some(" 2000 ")), 2000);
+        assert_eq!(
+            resolve_session_end_default(Some("0")),
+            SESSION_END_HOOK_BUDGET_DEFAULT_MS
+        );
+        assert_eq!(
+            resolve_session_end_default(Some("nope")),
+            SESSION_END_HOOK_BUDGET_DEFAULT_MS
+        );
+        assert_eq!(
+            resolve_session_end_default(Some("600000")),
+            SESSION_END_HOOK_BUDGET_MAX_MS
+        );
+    }
+
+    #[test]
+    fn zero_timeout_floors_to_event_default() {
+        let json = r#"{ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "s.sh", "timeout": 0 }] }] } }"#;
+        let (specs, errors) = parse_hook_file(json, Path::new("/tmp/test.json"));
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert_ne!(specs[0].timeout_ms, 0);
+        assert_eq!(specs[0].timeout_ms, default_timeout_ms(specs[0].event));
+    }
+
+    #[test]
+    fn session_end_timeout_resolution() {
+        fn timeout_ms(handler_timeout: Option<u64>) -> u64 {
+            let handler = match handler_timeout {
+                Some(secs) => {
+                    format!(r#"{{ "type": "command", "command": "end.sh", "timeout": {secs} }}"#)
+                }
+                None => r#"{ "type": "command", "command": "end.sh" }"#.to_string(),
+            };
+            let json =
+                format!(r#"{{ "hooks": {{ "SessionEnd": [{{ "hooks": [{handler}] }}] }} }}"#);
+            let (specs, errors) = parse_hook_file(&json, Path::new("/tmp/test.json"));
+            assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+            specs[0].timeout_ms
+        }
+        assert_eq!(timeout_ms(None), SESSION_END_HOOK_BUDGET_DEFAULT_MS);
+        assert_eq!(timeout_ms(Some(10)), 10_000);
+        assert_eq!(timeout_ms(Some(120)), SESSION_END_HOOK_BUDGET_MAX_MS);
+        assert_eq!(timeout_ms(Some(0)), SESSION_END_HOOK_BUDGET_DEFAULT_MS);
     }
 
     #[test]
@@ -1056,9 +1310,6 @@ mod tests {
         assert!(has_post, "expected PostToolUse hook");
     }
 
-    /// A `command` referencing a process-env var must be expanded at load time,
-    /// removing the dependence on the runtime `sh -c` heuristic for direct-exec
-    /// paths with no other shell metachars.
     #[test]
     fn parse_hook_file_expands_env_var_in_command_from_process_env() {
         let key = "GROK_HOOKS_PARSE_TEST_CMD_PROC_ENV";
@@ -1083,8 +1334,6 @@ mod tests {
         });
     }
 
-    /// An HTTP `url` referencing a process-env var must be substituted at load
-    /// time so SSRF validation sees the resolved host.
     #[test]
     fn parse_hook_file_expands_env_var_in_url_from_process_env() {
         let key = "GROK_HOOKS_PARSE_TEST_URL_PROC_ENV";
@@ -1112,8 +1361,6 @@ mod tests {
         });
     }
 
-    /// A declared `env` map is injected into the process via
-    /// `HookSpec::extra_env`.
     #[test]
     fn parse_hook_file_env_map_populates_extra_env() {
         let json = r#"{
@@ -1145,8 +1392,6 @@ mod tests {
         );
     }
 
-    /// An `env` map value for a var referenced in `command` must win over the
-    /// process env when expanding at load time.
     #[test]
     fn parse_hook_file_env_map_feeds_command_expansion() {
         let json = r#"{
@@ -1178,9 +1423,6 @@ mod tests {
         );
     }
 
-    /// A `command` referencing a var unset at load time must preserve the
-    /// literal `${VAR}`, so the runner's pre-flight check stays the single
-    /// source of truth for run-time resolvability.
     #[test]
     fn parse_hook_file_preserves_unresolved_env_refs_in_command() {
         let key = "GROK_HOOKS_PARSE_TEST_NEVER_SET_AT_LOAD_TIME";
@@ -1207,8 +1449,6 @@ mod tests {
         });
     }
 
-    /// Symmetry: load-time expansion of `url` must also preserve unset
-    /// refs, otherwise a deferred plugin var would be silently stripped.
     #[test]
     fn parse_hook_file_preserves_unresolved_env_refs_in_url() {
         let key = "GROK_HOOKS_PARSE_TEST_URL_NEVER_SET_AT_LOAD_TIME";
@@ -1230,8 +1470,6 @@ mod tests {
         });
     }
 
-    /// Explicit `"env": null` is tolerated and yields an empty `extra_env` map,
-    /// rather than serde's default failure mode.
     #[test]
     fn parse_hook_file_env_null_treated_as_empty() {
         let json = r#"{
@@ -1251,8 +1489,6 @@ mod tests {
         assert!(specs[0].extra_env.is_empty());
     }
 
-    /// Env values are stored verbatim: references inside them (e.g. `"${HOME}/x"`)
-    /// are NOT recursively expanded. The env map is plumbing, not a template layer.
     #[test]
     fn parse_hook_file_env_values_are_stored_verbatim() {
         let json = r#"{
@@ -1312,9 +1548,6 @@ mod tests {
         });
     }
 
-    /// A non-string `env` value (e.g. `"PORT": 8080`) fails deserialization; the
-    /// whole file surfaces a `ParseFile` error rather than silently dropping it.
-    /// Users who need numeric values must quote them (`"PORT": "8080"`).
     #[test]
     fn parse_hook_file_env_value_must_be_string() {
         let json = r#"{
@@ -1349,8 +1582,6 @@ mod tests {
         );
     }
 
-    /// User attempts to set runner-reserved keys via the `env` map are stripped
-    /// at load time, giving a clear "ignored" signal on top of spawn-time override.
     #[test]
     fn parse_hook_file_strips_runner_reserved_env_keys() {
         let json = r#"{

@@ -1,17 +1,12 @@
 //! Queued-prompt editing (`PromptMode::EditingQueued`) state machine.
 //!
-//! Extracted from `agent_view.rs` as a sibling `impl AgentView` block (same
-//! pattern as xai-grok-shell's `compaction.rs`): entry from the queue pane,
-//! editing-mode key intercepts, the dirty-edit focus lock, and the
-//! exit/cleanup paths.
+//! Extracted from `agent_view.rs` as a sibling `impl AgentView` block (same pattern as xai-grok-shell's `compaction.rs`).
+//! Covers entry from the queue pane, editing-mode key intercepts, the dirty-edit focus lock, and the exit/cleanup paths.
 //!
-//! Stash invariant: `stashed_prompt` is set exactly once on entry
-//! (`enter_queue_edit`) and `take()`n exactly once on exit —
-//! `exit_editing_mode` is the sole restore owner: every exit (including
-//! lost-row cancel) restores the draft exactly once.
+//! Stash invariant: `stashed_prompt` is set exactly once on entry (`enter_queue_edit`) and `take()`n exactly once on exit.
+//! `exit_editing_mode` is the sole restore owner: every exit (including lost-row cancel) restores the draft exactly once.
 //!
-//! A dirty pane switch is blocked and never arms the undrawn `EditConfirm`
-//! modal, which would otherwise capture all input invisibly.
+//! A dirty pane switch is blocked and never arms the undrawn `EditConfirm` modal, which would otherwise capture all input invisibly.
 
 use crossterm::event::{KeyCode, KeyEvent};
 
@@ -34,19 +29,15 @@ pub enum PromptMode {
     Normal,
     /// Editing a queued prompt.
     EditingQueued {
-        /// Stable selection ID of the prompt being edited. For local rows
-        /// this is the `QueuedPrompt.id` monotonic counter; for server rows
-        /// this is the synthesized `QueuedPromptEntry.id` (a hash of
-        /// `server_id`) so [`AgentView::queue`] selection works uniformly.
+        /// Stable selection ID of the prompt being edited.
+        /// For local rows this is the `QueuedPrompt.id` monotonic counter.
+        /// For server rows it is the synthesized `QueuedPromptEntry.id` (a hash of `server_id`) so [`AgentView::queue`] selection works uniformly.
         id: u64,
         /// Snapshot of the original text (for dirty detection).
         original: String,
-        /// When `Some`, this is a server-authoritative shared-queue row and
-        /// `server_id` is the agent's stable `prompt_id`. On save we route
-        /// the change through `Action::QueueEditShared` (and rely on the
-        /// `x.ai/queue/changed` rebroadcast for the visual result) instead
-        /// of mutating the local `pending_prompts` mirror. `None` is the
-        /// pre-existing local-origin path.
+        /// When `Some`, this is a server-authoritative shared-queue row and `server_id` is the agent's stable `prompt_id`.
+        /// Save routes through `Action::QueueEditShared` instead of mutating the local `pending_prompts` mirror.
+        /// The `x.ai/queue/changed` rebroadcast paints the result.
         server_id: Option<String>,
         /// Kind snapshot for the interject guard's vanished-row fallback.
         kind: crate::app::agent::QueueEntryKind,
@@ -54,24 +45,15 @@ pub enum PromptMode {
 }
 
 impl AgentView {
-    /// Editing-mode key intercepts for the prompt pane.
-    ///
-    /// Bare Enter saves, Esc (or Ctrl-C on empty) cancels. Shift/Alt+Enter
-    /// inserts a newline (same as the normal composer) and must not save.
-    /// Apple Terminal Cmd/Shift/Opt+Enter is rescued inside `is_mod_enter`
-    /// via CoreGraphics — not a universal Cmd+Enter binding.
-    /// Interject is remappable, so it is handled via the
-    /// `ActionId::InterjectPrompt` registry arm → `interject_editing_queued_intercept`,
-    /// not matched as a raw key here.
-    ///
-    /// Returns `None` when not editing or unhandled — must fall through to the widget.
+    /// Shift/Alt+Enter inserts a newline (same as the normal composer) and must not save.
+    /// Interject is remappable, so it is not matched as a raw key here.
+    /// Returns `None` when not editing or unhandled; must fall through to the widget.
     pub(super) fn handle_editing_queued_key(&mut self, key: &KeyEvent) -> Option<InputOutcome> {
         if let PromptMode::EditingQueued { id, server_id, .. } = &self.prompt_mode {
             let (id, server_id) = (*id, server_id.clone());
             let ctrl_c_empty = key!('c', CONTROL).matches(key) && self.prompt.text().is_empty();
 
-            // Before bare-Enter save: Shift/Alt flags, or Apple Terminal bare
-            // Enter with Cmd/Shift/Opt held (CoreGraphics rescue in is_mod_enter).
+            // Before bare-Enter save: Shift/Alt flags, or Apple Terminal bare Enter with Cmd/Shift/Opt held (CoreGraphics rescue in is_mod_enter)
             if crate::input::is_mod_enter(key) {
                 self.prompt.textarea.insert_str("\n");
                 return Some(InputOutcome::Changed);
@@ -81,6 +63,9 @@ impl AgentView {
             }
             if key.code == KeyCode::Esc || ctrl_c_empty {
                 self.exit_editing_mode();
+                if crate::app::turn_completion::reopen_blocked_card_if_held(self) {
+                    return Some(InputOutcome::Changed);
+                }
                 return Some(InputOutcome::Action(Action::DrainQueue));
             }
         }
@@ -88,18 +73,16 @@ impl AgentView {
     }
 
     /// Dirty-edit focus lock checked by `set_active_pane`.
-    ///
-    /// `None` = not editing / no lock — the caller proceeds with the normal
-    /// pane switch. `Some(switched)` = the lock handled the switch: `false`
-    /// when blocked behind the confirm modal, `true` after a clean exit.
+    /// `None` means not editing (no lock); the caller proceeds with the normal pane switch.
+    /// `Some(switched)` means the lock handled the switch: `false` when blocked behind the confirm modal, `true` after a clean exit.
     pub(super) fn editing_lock_on_pane_switch(&mut self, target: AgentPane) -> Option<bool> {
         if let PromptMode::EditingQueued { ref original, .. } = self.prompt_mode
             && target != AgentPane::Prompt
         {
             let dirty = self.prompt.text() != original;
             if dirty {
-                // Block the switch; never arm `EditConfirm` here (it has no draw
-                // arm, so it would capture all input invisibly). Resolve with Enter/Esc.
+                // Block the switch; never arm `EditConfirm` here (it has no draw arm, so it would capture all input invisibly)
+                // Resolve with Enter/Esc
                 // Clear the overlay-focus flip toggle callers set before switching.
                 match target {
                     AgentPane::Queue => self.queue.overlay.focused = false,
@@ -111,16 +94,17 @@ impl AgentView {
                 self.show_toast("Editing a queued prompt: press Enter to save, Esc to discard");
                 return Some(false); // blocked, no modal armed
             }
-            // Clean edit — silently exit editing mode.
+            // Clean edit: silently exit editing mode
+            // With a hook-block hold in place the card comes back (it stays on screen while the user works in the target pane)
             self.exit_editing_mode();
             self.active_pane = target;
+            crate::app::turn_completion::reopen_blocked_card_if_held(self);
             return Some(true);
         }
         None
     }
 
-    /// Resolve an `EditConfirm` modal keypress (the modal has already been
-    /// `take()`n out of `active_modal` by `handle_modal_key`).
+    /// Resolve an `EditConfirm` modal keypress (the modal has already been `take()`n out of `active_modal` by `handle_modal_key`).
     pub(super) fn handle_edit_confirm_choice(
         &mut self,
         confirm: ModalConfirmation<EditConfirmResult>,
@@ -135,11 +119,13 @@ impl AgentView {
                     // (active_modal already taken)
                 }
                 EditConfirmResult::Save => {
-                    // Empty edit: keep the original row text — a
-                    // queued prompt must never be blanked by Save.
+                    // Empty edit: keep the original row text; a queued prompt must never be blanked by Save
                     if self.prompt.text().trim().is_empty() {
                         self.exit_editing_mode();
                         self.set_active_pane(pending_target, true);
+                        if crate::app::turn_completion::reopen_blocked_card_if_held(self) {
+                            return InputOutcome::Changed;
+                        }
                         if was_drain_blocked {
                             return InputOutcome::Action(Action::DrainQueue);
                         }
@@ -147,12 +133,10 @@ impl AgentView {
                     }
                     let outcome = match self.prompt_mode.clone() {
                         PromptMode::EditingQueued { id, server_id, .. } => {
-                            // Drain only when "save & send" was the
-                            // advertised label (see helper doc).
+                            // Drain only when "save & send" was the advertised label (see helper doc)
                             self.save_edited_queued_row(id, server_id, was_drain_blocked)
                         }
-                        // Unreachable in practice: the modal only
-                        // opens from `EditingQueued`.
+                        // Unreachable in practice: the modal only opens from `EditingQueued`
                         _ => {
                             self.exit_editing_mode();
                             InputOutcome::Changed
@@ -165,6 +149,9 @@ impl AgentView {
                     // Discard changes (revert to original), exit editing.
                     self.exit_editing_mode();
                     self.set_active_pane(pending_target, true);
+                    if crate::app::turn_completion::reopen_blocked_card_if_held(self) {
+                        return InputOutcome::Changed;
+                    }
                     if was_drain_blocked {
                         return InputOutcome::Action(Action::DrainQueue);
                     }
@@ -172,9 +159,7 @@ impl AgentView {
                 }
                 EditConfirmResult::Delete => {
                     // Delete the prompt entirely from the queue.
-                    // Server-origin rows route through
-                    // `Action::QueueRemoveShared`; local rows mutate
-                    // the mirror.
+                    // Server-origin rows route through `Action::QueueRemoveShared`; local rows mutate the mirror
                     if let PromptMode::EditingQueued {
                         id: _,
                         server_id: Some(server_id),
@@ -187,21 +172,25 @@ impl AgentView {
                             .find(|e| e.id == server_id)
                             .map(|e| e.version)
                             .unwrap_or(0);
-                        // Keep the hold until remove lands — release would re-kick promote of the row we are deleting.
+                        // Keep the hold until remove lands; release would re-kick promote of the row we are deleting
                         self.exit_editing_mode_keeping_hold();
                         self.set_active_pane(pending_target, true);
+                        crate::app::turn_completion::reopen_blocked_card_if_held(self);
                         return InputOutcome::Action(Action::QueueRemoveShared {
                             id: server_id,
                             expected_version,
                         });
                     }
                     if let PromptMode::EditingQueued { id, .. } = self.prompt_mode {
-                        self.session.pending_prompts.retain(|p| p.id != id);
+                        // The shared remove path owns the scoped hold release.
+                        self.remove_local_queue_row(id);
                     }
                     self.exit_editing_mode();
                     self.set_active_pane(pending_target, true);
-                    // If drain was blocked and we deleted the front,
-                    // the next prompt (if any) should now drain.
+                    if crate::app::turn_completion::reopen_blocked_card_if_held(self) {
+                        return InputOutcome::Changed;
+                    }
+                    // If drain was blocked and we deleted the front, the next prompt (if any) should now drain
                     if was_drain_blocked {
                         return InputOutcome::Action(Action::DrainQueue);
                     }
@@ -209,7 +198,7 @@ impl AgentView {
                 }
             }
         } else {
-            // Key didn't match any option — restore modal, keep blocking.
+            // Key didn't match any option: restore modal, keep blocking
             self.active_modal = Some(ActiveModal::EditConfirm {
                 modal: confirm,
                 pending_target,
@@ -218,19 +207,29 @@ impl AgentView {
         InputOutcome::Changed
     }
 
-    /// Enter editing mode for the queue row selected via
-    /// `QueueEvent::EditSelected` (called from `handle_queue_key`).
+    /// Enter editing mode for the queue row selected via `QueueEvent::EditSelected` (called from `handle_queue_key`).
     pub(super) fn enter_queue_edit(&mut self, id: u64, is_server: bool, row: Option<QueueRowRef>) {
         use crate::app::agent::QueueEntryKind;
-        // Optimistic echo whose enqueue RPC has not confirmed: the shell has no row to hold
-        // yet, so toast instead of silently dropping the keypress and wait for the confirming
-        // `x.ai/queue/changed` before allowing the edit. Mirrors the send-now park gate in
-        // `force_interject_queue_row`: both gates enforce the same unconfirmed-row rule, so a
-        // change to one likely applies to the other.
+        // Optimistic echo whose enqueue RPC has not confirmed: the shell has no row to hold yet
+        // Toast instead of silently dropping the keypress, and wait for the confirming `x.ai/queue/changed` before allowing the edit
+        // Both gates enforce the same unconfirmed-row rule, so a change to one likely applies to the other
         if let Some(sid) = row.as_ref().and_then(|r| r.server_id.as_deref())
             && self.optimistic_queue_ids.contains(sid)
         {
             self.show_toast(STILL_QUEUEING_TOAST);
+            return;
+        }
+        if is_server
+            && let Some(server_id) = row.as_ref().and_then(|row| row.server_id.as_deref())
+            && !self.shared_queue.iter().any(|entry| entry.id == server_id)
+        {
+            self.show_toast("Queued prompt is no longer in the queue");
+            return;
+        }
+        if let Some(row) = row.as_ref()
+            && let Some(capabilities) = self.server_row_capabilities(row)
+            && !capabilities.can_edit()
+        {
             return;
         }
         type QueueEditEntryData = (
@@ -241,10 +240,8 @@ impl AgentView {
             Vec<crate::app::agent::ChipElement>,
         );
 
-        // Resolve text + display kind from whichever mirror owns
-        // the row, plus the server `prompt_id` for server-origin
-        // rows. The save path in `save_edited_queued_row` / the
-        // modal-confirm `Save` arm branches on `server_id`.
+        // Resolve text and display kind from whichever mirror owns the row, plus the server `prompt_id` for server-origin rows
+        // The save path in `save_edited_queued_row` and the modal-confirm `Save` arm branch on `server_id`
         let entry_data: Option<QueueEditEntryData> = if is_server {
             row.as_ref()
                 .and_then(|r| r.server_id.clone())
@@ -285,18 +282,14 @@ impl AgentView {
                 Some(self.prompt.stash())
             };
             // Load queued text and enter editing mode.
-            // Set prompt_input_mode based on entry kind so the prompt
-            // renders with the correct visual (yellow `!` prefix
-            // for bash entries, normal for prompts/commands).
+            // Set prompt_input_mode based on entry kind so the prompt renders with the correct visual (yellow `!` prefix for bash entries)
             self.prompt
                 .restore(crate::views::prompt_widget::StashedPrompt::from_submission(
                     text.clone(),
                     images,
                     chip_elements,
                 ));
-            // `server_id: Some(_)` routes the save through
-            // `Action::QueueEditShared` (server LWW); `None` is
-            // the existing local-mirror mutation path.
+            // `server_id: Some(_)` routes the save through `Action::QueueEditShared` (server LWW); `None` is the local-mirror mutation path
             self.prompt_mode = PromptMode::EditingQueued {
                 id,
                 original: text,
@@ -322,19 +315,10 @@ impl AgentView {
         }
     }
 
-    /// Save the edited composer text back to the queued row and exit edit
-    /// mode. Single owner of the save invariants for the bare-Enter
-    /// intercept, the idle edit-interject, and the modal Save arm.
-    ///
-    /// `drain`: whether a local-row save requests a queue drain. Enter-save
-    /// and idle edit-interject always drain (the user just released the
-    /// front edit lock); modal Save drains only when the drain was blocked
-    /// on this edit — a plain save of a non-front row must not start the
-    /// head prompt's turn.
-    ///
-    /// Text that resolves to a pager builtin leaves through `Action::RunEditedQueuedCommand`
-    /// instead, ignoring `drain`: dispatch runs the command and drains once it has settled the row.
-    fn save_edited_queued_row(
+    /// Single owner of the save invariants for the bare-Enter intercept, the idle edit-interject, and the modal Save arm.
+    /// Enter-save and idle edit-interject always drain (the user just released the front edit lock).
+    /// Modal Save drains only when the drain was blocked on this edit; a plain save of a non-front row must not start the head prompt's turn.
+    pub(in crate::app) fn save_edited_queued_row(
         &mut self,
         id: u64,
         server_id: Option<String>,
@@ -355,9 +339,8 @@ impl AgentView {
                 self.prompt.slash_controller.registry(),
             )
         {
-            let text = self.prompt.text().to_string();
-            // A vanished server row has no version to check, so it carries no removal and dispatch
-            // just runs the command.
+            let mut submission = self.prompt.stash();
+            // A vanished server row has no version to check, so it carries no removal and dispatch just runs the command
             let server = server_id.as_ref().and_then(|sid| {
                 self.queue
                     .row_ref(id)
@@ -366,23 +349,31 @@ impl AgentView {
                         expected_version: row.version,
                     })
             });
-            // Release the hold: the action's `QueueRemove` is processed inside `drain_and_process`,
-            // before `pending_effects` flush, so it goes out first; a remove rejected on a stale
-            // version then returns the row to combine.
+            if server.is_some() {
+                // Shared rows load no local images; only disarm temps a live queue row still owns.
+                let retained: std::collections::HashSet<u64> = self
+                    .session
+                    .pending_prompts
+                    .iter()
+                    .flat_map(|prompt| prompt.images.iter())
+                    .map(|image| image.preview.identity())
+                    .collect();
+                submission.disarm_image_cleanup(&retained);
+            }
+            // Release the hold: the action's `QueueRemove` runs inside `drain_and_process`, before `pending_effects` flush, so it goes out first
+            // A remove rejected on a stale version then returns the row to combine
             self.exit_editing_mode();
             return InputOutcome::Action(Action::RunEditedQueuedCommand {
                 local_id: id,
                 server,
-                text,
+                submission,
             });
         }
         match server_id {
             Some(server_id) => {
                 let new_text = self.prompt.text().to_string();
-                // Server-origin row: route the edit through the agent (LWW); the
-                // rebroadcast updates every client's mirror, so don't mutate
-                // locally. Keep the hold until the edit lands — see
-                // `exit_editing_mode_keeping_hold`.
+                // Server-origin row: route the edit through the agent (LWW); the rebroadcast updates every client's mirror, so don't mutate locally
+                // Keep the hold until the edit lands; see `exit_editing_mode_keeping_hold`
                 self.exit_editing_mode_keeping_hold();
                 InputOutcome::Action(Action::QueueEditShared {
                     id: server_id,
@@ -392,9 +383,8 @@ impl AgentView {
             None => {
                 let edited = self.prompt.stash();
                 let (new_text, mut images, chip_elements) = edited.into_submission();
-                // Local row: in-place mutation (existing behavior).
-                // Recompute token ranges for the edited text — the stale
-                // ranges would point at the pre-edit byte offsets.
+                // Local row: in-place mutation
+                // Recompute token ranges for the edited text; the stale ranges would point at the pre-edit byte offsets
                 let skill_token_ranges = self
                     .prompt
                     .slash_controller
@@ -406,25 +396,41 @@ impl AgentView {
                         .collect();
                     for old in entry.images.drain(..) {
                         if !retained.contains(&old.preview.identity()) {
-                            crate::prompt_images::cleanup_temp_file(&old);
+                            crate::prompt_images::cleanup_image(
+                                crate::prompt_images::SessionPathPolicy::Preserve,
+                                &old,
+                            );
                         }
                     }
                     entry.text = new_text;
                     entry.images = std::mem::take(&mut images);
                     entry.chip_elements = chip_elements;
                     entry.skill_token_ranges = skill_token_ranges;
-                    // Clear stale wire_blocks: edited text may no longer match the original skill
-                    // invocation. The prompt will be sent as plain text via the normal path.
-                    // Pager builtins never get here (`is_complete_builtin_invocation` routed them
-                    // to dispatch); ACP, skill, and unknown `/…` text is left for the agent's
-                    // resolve(), which does not know pager builtins.
+                    // Clear stale wire_blocks: edited text may no longer match the original skill invocation
+                    // Pager builtins never get here (`is_complete_builtin_invocation` routed them to dispatch)
+                    // ACP, skill, and unknown `/…` text is left for the agent's resolve(), which does not know pager builtins
                     entry.wire_blocks = None;
-                    // display_as_skill rides wire_blocks (see its field doc) — clear both
-                    // together, or the drain keeps stale skill styling over the ranges.
+                    // display_as_skill rides wire_blocks (see its field doc)
+                    // Clear both together, or the drain keeps stale skill styling over the ranges
                     entry.display_as_skill = false;
                 }
-                crate::prompt_images::drain_and_cleanup(&mut images);
+                crate::prompt_images::drain_and_cleanup(
+                    crate::prompt_images::SessionPathPolicy::Preserve,
+                    &mut images,
+                );
                 self.exit_editing_mode();
+                // Saving the blocked row is the card's Edit resolution: release and resend it in place
+                // Saving any other row must not unpark the blocked front; the card comes back
+                if self
+                    .session
+                    .blocked_prompt
+                    .as_ref()
+                    .is_none_or(|b| b.row_id == id)
+                {
+                    self.release_hook_block_hold();
+                } else if crate::app::turn_completion::reopen_blocked_card_if_held(self) {
+                    return InputOutcome::Changed;
+                }
                 if drain {
                     InputOutcome::Action(Action::DrainQueue)
                 } else {
@@ -434,11 +440,9 @@ impl AgentView {
         }
     }
 
-    /// Interject-key intercept while editing a queued row, delegated from
-    /// the `ActionId::InterjectPrompt` registry arm in `handle_prompt_key`.
-    /// Falling through would strand `EditingQueued` with the row still
-    /// queued (dirty-modal loop + blocked drain). `None` = not editing —
-    /// the arm proceeds with its normal interject handling.
+    /// Interject-key intercept while editing a queued row, delegated from the `ActionId::InterjectPrompt` registry arm in `handle_prompt_key`.
+    /// Falling through would strand `EditingQueued` with the row still queued (dirty-modal loop, blocked drain).
+    /// `None` means not editing; the arm proceeds with its normal interject handling.
     pub(super) fn interject_editing_queued_intercept(&mut self) -> Option<InputOutcome> {
         if let PromptMode::EditingQueued {
             id,
@@ -453,9 +457,8 @@ impl AgentView {
         None
     }
 
-    /// Interject key pressed while editing a queued row: turn running →
-    /// interject the EDITED text and remove the row; idle → bare-Enter
-    /// save; empty composer → no-op, stay in edit mode.
+    /// Interject key pressed while editing a queued row.
+    /// Turn running: interject the EDITED text and remove the row. Idle: bare-Enter save. Empty composer: no-op, stay in edit mode.
     fn interject_edited_queued(
         &mut self,
         id: u64,
@@ -481,19 +484,17 @@ impl AgentView {
         }
         match server_id {
             Some(server_id) => {
-                // Server rows: the queue wire (`x.ai/queue/interject` newText)
-                // is text-only, so composer images can't ride along — known
-                // limitation, dropped with an accurate toast.
+                // Server rows: the queue wire (`x.ai/queue/interject` newText) is text-only, so composer images can't ride along
+                // Drop them with an accurate toast
                 if !self.prompt.images.is_empty() {
                     self.prompt.images.clear();
                     self.show_toast("Images can't be attached when editing a shared queued prompt");
                 }
-                // new_text carries the edit — without it the agent would
-                // interject the original server-side text.
+                // new_text carries the edit; without it the agent would interject the original server-side text
                 let expected_version = self.queue.row_ref(id).map(|r| r.version);
                 match expected_version {
                     Some(expected_version) => {
-                        // Hold until interject clears it — release would re-kick promote of original text.
+                        // Hold until interject clears it; release would re-kick promote of the original text
                         self.exit_editing_mode_keeping_hold();
                         InputOutcome::Action(Action::QueueInterjectShared {
                             id: server_id,
@@ -501,7 +502,7 @@ impl AgentView {
                             new_text: Some(text),
                         })
                     }
-                    // Row vanished from the mirror — just interject the text.
+                    // Row vanished from the mirror: just interject the text
                     None => {
                         self.exit_editing_mode();
                         InputOutcome::Action(Action::Interject {
@@ -523,7 +524,10 @@ impl AgentView {
                         .collect();
                     for old in row.images.drain(..) {
                         if !retained.contains(&old.preview.identity()) {
-                            crate::prompt_images::cleanup_temp_file(&old);
+                            crate::prompt_images::cleanup_image(
+                                crate::prompt_images::SessionPathPolicy::Preserve,
+                                &old,
+                            );
                         }
                     }
                 }
@@ -533,11 +537,8 @@ impl AgentView {
     }
 
     /// Whether the next turn is held because the user is editing the front prompt.
-    ///
-    /// - Local rows (`server_id: None`): idle and the edited id is
-    ///   `pending_prompts` front.
-    /// - Server rows (`server_id: Some(sid)`): idle and `sid` is the front of
-    ///   `shared_queue` (wire excludes the running turn, so index 0 is next).
+    /// Local rows (`server_id: None`): idle and the edited id is `pending_prompts` front.
+    /// Server rows (`server_id: Some(sid)`): idle and `sid` is the front of `shared_queue` (wire excludes the running turn, so index 0 is next).
     pub(crate) fn drain_blocked(&self) -> bool {
         let PromptMode::EditingQueued { id, server_id, .. } = &self.prompt_mode else {
             return false;
@@ -566,33 +567,27 @@ impl AgentView {
         ) {
             return;
         }
-        // Restore the pre-edit draft; keeping the orphaned edit text would look
-        // "duplicated" (the row is now the running turn). A concurrent-removal edit is lost.
+        // Restore the pre-edit draft; keeping the orphaned edit text would look "duplicated" (the row is now the running turn)
+        // A concurrent-removal edit is lost
         self.exit_editing_mode();
         self.show_toast("Queued prompt is no longer in the queue");
     }
 
     /// Exit editing mode: restore stashed text, clear mode, focus queue pane.
-    /// No-op unless `EditingQueued`. The default exit; releases the
-    /// server-side combine hold (cancel, lost-row, modal paths).
-    ///
-    /// Always resets `prompt_input_mode` to `Normal` so it doesn't leak
-    /// into subsequent normal prompt entry.
+    /// No-op unless `EditingQueued`. The default exit; releases the server-side combine hold (cancel, lost-row, modal paths).
+    /// Always resets `prompt_input_mode` to `Normal` so it doesn't leak into subsequent normal prompt entry.
     pub(super) fn exit_editing_mode(&mut self) {
         self.exit_editing_mode_inner(true);
     }
 
-    /// Exit editing without emitting `QueueReleaseEdit` — the server-row save
-    /// path's `QueueEditShared` clears the hold on the shell instead. Releasing
-    /// here would flush first (via `pending_effects`) and let combine merge the
-    /// row on stale text before the edit lands.
+    /// Exit editing without emitting `QueueReleaseEdit`; the server-row save path's `QueueEditShared` clears the hold on the shell instead.
+    /// Releasing here would flush first (via `pending_effects`) and let combine merge the row on stale text before the edit lands.
     fn exit_editing_mode_keeping_hold(&mut self) {
         self.exit_editing_mode_inner(false);
     }
 
     fn exit_editing_mode_inner(&mut self, release_hold: bool) {
-        // Idempotent: remove_local_queue_row's guard may have exited already;
-        // a second take() of the spent stash would wipe the composer.
+        // Idempotent: remove_local_queue_row's guard may have exited already; a second take() of the spent stash would wipe the composer
         if !matches!(self.prompt_mode, PromptMode::EditingQueued { .. }) {
             return;
         }
@@ -614,13 +609,12 @@ impl AgentView {
         self.finish_editing_exit();
     }
 
-    /// Shared tail of every edit exit — stash policy stays with the callers.
+    /// Shared tail of every edit exit; stash policy stays with the callers.
     fn finish_editing_exit(&mut self) {
         self.prompt_mode = PromptMode::Normal;
         self.prompt_input_mode = PromptInputMode::Normal;
-        // Editing is over, so a pending EditConfirm is meaningless — left
-        // behind it would eat all input without ever rendering. Other
-        // modal variants are untouched.
+        // Editing is over, so a pending EditConfirm is meaningless; left behind it would eat all input without ever rendering
+        // Other modal variants are untouched
         if matches!(self.active_modal, Some(ActiveModal::EditConfirm { .. })) {
             self.active_modal = None;
         }
@@ -678,7 +672,7 @@ mod tests {
         agent
     }
 
-    /// Shift/Alt+Enter → newline in edit mode (must not save).
+    /// Shift/Alt+Enter inserts a newline in edit mode (must not save).
     /// Cmd/SUPER is not a product-wide newline chord (Apple Terminal only via CG).
     /// `/btw why` fences the ordering: mod-Enter beats the hijack in `save_edited_queued_row`.
     #[test]
@@ -789,8 +783,7 @@ mod tests {
         );
     }
 
-    /// Editing a Server-origin row enters `EditingQueued` with `server_id`
-    /// populated (the new behavior replacing the "isn't supported yet" toast).
+    /// Editing a Server-origin row enters `EditingQueued` with `server_id` populated.
     #[test]
     fn edit_server_row_enters_editing_queued_with_server_id() {
         let mut agent = make_running_agent();
@@ -920,8 +913,7 @@ mod tests {
         assert!(matches!(agent.prompt_mode, PromptMode::Normal));
     }
 
-    /// Saving a server-row edit must not emit `QueueReleaseEdit` — see
-    /// `exit_editing_mode_keeping_hold`.
+    /// Saving a server-row edit must not emit `QueueReleaseEdit`; see `exit_editing_mode_keeping_hold`.
     #[test]
     fn submit_server_edit_keeps_combine_hold_until_edit() {
         use crate::app::actions::Effect;
@@ -958,8 +950,7 @@ mod tests {
         );
     }
 
-    /// Cancelling (Esc) a server-row edit still releases the hold, so an
-    /// abandoned edit can't pin the row out of combine.
+    /// Cancelling (Esc) a server-row edit still releases the hold, so an abandoned edit can't pin the row out of combine.
     #[test]
     fn cancel_server_edit_releases_combine_hold() {
         use crate::app::actions::Effect;
@@ -992,7 +983,6 @@ mod tests {
             target: crate::app::actions::ClipboardPasteTarget::AgentPrompt {
                 agent_id: agent.session.id,
                 images_dir: None,
-                from_feedback_pane: false,
             },
             source: crate::app::actions::ClipboardPasteSource::ClipboardKey {
                 text: crate::app::actions::ClipboardTextRead::Success(None),
@@ -1025,8 +1015,7 @@ mod tests {
         }
     }
 
-    /// Submitting an edit on a local-origin row continues to mutate the local
-    /// `pending_prompts` in place (existing behavior preserved).
+    /// Submitting an edit on a local-origin row mutates the local `pending_prompts` in place.
     #[test]
     fn submit_local_edit_mutates_local_pending_prompts() {
         let mut agent = make_running_agent();
@@ -1049,10 +1038,8 @@ mod tests {
         assert!(matches!(agent.prompt_mode, PromptMode::Normal));
     }
 
-    /// Editing a skill-injection row clears `display_as_skill` alongside
-    /// `wire_blocks`, so the drained echo styles the recomputed mid-text
-    /// ranges (not stale leading-token skill styling) and the wire send is
-    /// plain text.
+    /// Editing a skill-injection row clears `display_as_skill` alongside `wire_blocks`.
+    /// The drained echo styles the recomputed mid-text ranges (not stale leading-token skill styling) and the wire send is plain text.
     #[test]
     fn edit_skill_row_drains_with_recomputed_ranges_not_skill_styling() {
         let mut agent = running_agent_local_only();
@@ -1138,11 +1125,11 @@ mod tests {
             InputOutcome::Action(Action::RunEditedQueuedCommand {
                 local_id,
                 server,
-                text,
+                submission,
             }) => {
                 assert_eq!(local_id, row_id);
                 assert_eq!(server, None);
-                assert_eq!(text, "/btw what is the default");
+                assert_eq!(submission.text, "/btw what is the default");
             }
             other => panic!("expected RunEditedQueuedCommand, got {other:?}"),
         }
@@ -1151,6 +1138,37 @@ mod tests {
             agent.session.pending_prompts[0].text, "local one",
             "the view must not remove the row: dispatch drops it after its guards pass"
         );
+    }
+
+    #[test]
+    fn edit_local_feedback_carries_the_submitted_images() {
+        let mut agent = enter_edit_local_row();
+        agent.prompt.set_text("/feedback report ");
+        let end = agent.prompt.text().len();
+        agent.prompt.set_cursor(end);
+        agent
+            .prompt
+            .insert_image(crate::prompt_images::from_clipboard_data(
+                &crate::clipboard::ImageData {
+                    data: vec![
+                        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0, 0, 0, 0,
+                    ],
+                    mime_type: "image/png".to_owned(),
+                },
+            ))
+            .expect("chip");
+
+        let outcome = agent.handle_prompt_key_for_test(&enter_key());
+
+        match outcome {
+            InputOutcome::Action(Action::RunEditedQueuedCommand { submission, .. }) => {
+                assert_eq!(submission.images.len(), 1);
+                assert_eq!(submission.text_without_image_chips(), "/feedback report  ");
+            }
+            other => panic!("expected RunEditedQueuedCommand, got {other:?}"),
+        }
+        assert!(matches!(agent.prompt_mode, PromptMode::Normal));
+        assert!(agent.prompt.images.is_empty());
     }
 
     #[test]
@@ -1199,12 +1217,10 @@ mod tests {
         );
     }
 
-    /// Fail-closed: only a complete builtin invocation at position 0 is hijacked. Everything else
-    /// saves as text exactly as before.
+    /// Fail-closed: only a complete builtin invocation at position 0 is hijacked. Everything else saves as text.
     #[test]
     fn incomplete_unknown_and_mid_text_slash_edits_still_save_as_text() {
-        // `/btw` alone requires args; `/nope` is unknown (agent pass-through); a mid-text token
-        // is not an invocation.
+        // `/btw` alone requires args; `/nope` is unknown (agent pass-through); a mid-text token is not an invocation
         for text in ["/btw", "/nope x", "great /compact go"] {
             let mut agent = enter_edit_local_row();
             agent.prompt.set_text(text);
@@ -1217,8 +1233,7 @@ mod tests {
         }
     }
 
-    /// A bash row edited into `/btw …` stays a bash command: the composer is in bash mode, so the
-    /// text is a shell string, not a pager command.
+    /// A bash row edited into `/btw …` stays a bash command: the composer is in bash mode, so the text is a shell string, not a pager command.
     #[test]
     fn edit_local_bash_row_into_builtin_saves_as_bash_text() {
         use crate::app::agent::QueueEntryKind;
@@ -1250,8 +1265,7 @@ mod tests {
         assert_eq!(row.kind, QueueEntryKind::BashCommand, "kind must survive");
     }
 
-    /// Server row: the hijack carries the row's `expected_version` and never mutates the shared
-    /// mirror (the rebroadcast is the source of truth).
+    /// Server row: the hijack carries the row's `expected_version` and never mutates the shared mirror (the rebroadcast is the source of truth).
     #[test]
     fn edit_server_row_into_builtin_carries_versioned_removal() {
         let mut agent = make_running_agent();
@@ -1263,7 +1277,9 @@ mod tests {
 
         let outcome = agent.handle_prompt_key_for_test(&enter_key());
         match outcome {
-            InputOutcome::Action(Action::RunEditedQueuedCommand { server, text, .. }) => {
+            InputOutcome::Action(Action::RunEditedQueuedCommand {
+                server, submission, ..
+            }) => {
                 assert_eq!(
                     server,
                     Some(SharedQueueTarget {
@@ -1271,13 +1287,74 @@ mod tests {
                         expected_version: 2,
                     })
                 );
-                assert_eq!(text, "/btw why");
+                assert_eq!(submission.text, "/btw why");
             }
             other => panic!("expected RunEditedQueuedCommand, got {other:?}"),
         }
         assert_eq!(agent.shared_queue.len(), 1);
         assert_eq!(agent.shared_queue[0].text, "server one");
         assert!(matches!(agent.prompt_mode, PromptMode::Normal));
+    }
+
+    /// Server-row builtins must not disarm edit-only pastes; a live queue row still owns its own temp.
+    #[test]
+    fn server_builtin_edit_keeps_cleanup_on_edit_only_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let owned_path = dir.path().join("owned.png");
+        let pasted_path = dir.path().join("pasted.png");
+        std::fs::write(&owned_path, b"owned").unwrap();
+        std::fs::write(&pasted_path, b"pasted").unwrap();
+
+        let png = crate::clipboard::ImageData {
+            data: vec![
+                0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+            mime_type: "image/png".to_owned(),
+        };
+        let mut owned = crate::prompt_images::from_clipboard_data(&png);
+        owned.staged_temp_path = Some(owned_path.clone());
+        let mut pasted = crate::prompt_images::from_clipboard_data(&png);
+        pasted.staged_temp_path = Some(pasted_path.clone());
+
+        let mut agent = make_running_agent();
+        let registry = non_vscode_registry();
+        agent.session.pending_prompts[0].images = vec![owned.clone()];
+        let ids = agent.queue.entry_ids();
+        agent.queue.list_state.select_by_id(ids[0]);
+        let _ = agent.handle_queue_key(&edit_key(), &registry);
+        agent.prompt.set_text("/btw why");
+        agent.prompt.insert_image(owned).expect("row-owned chip");
+        agent.prompt.insert_image(pasted).expect("edit-only chip");
+
+        let outcome = agent.handle_prompt_key_for_test(&enter_key());
+        match outcome {
+            InputOutcome::Action(Action::RunEditedQueuedCommand { submission, .. }) => {
+                let owned_id = agent.session.pending_prompts[0].images[0]
+                    .preview
+                    .identity();
+                let (disarmed, kept): (Vec<_>, Vec<_>) = submission
+                    .images
+                    .iter()
+                    .partition(|image| image.preview.identity() == owned_id);
+                assert_eq!(disarmed.len(), 1);
+                assert!(
+                    disarmed[0].staged_temp_path.is_none(),
+                    "row-owned temp must be disarmed so Drop cannot double-delete it"
+                );
+                assert_eq!(kept.len(), 1);
+                assert_eq!(
+                    kept[0].staged_temp_path.as_deref(),
+                    Some(pasted_path.as_path())
+                );
+                drop(submission);
+            }
+            other => panic!("expected RunEditedQueuedCommand, got {other:?}"),
+        }
+        assert!(owned_path.exists(), "row-owned temp must survive");
+        assert!(
+            !pasted_path.exists(),
+            "edit-only temp must be deleted on drop"
+        );
     }
 
     /// The hijack sends no edit, so the combine hold must be released exactly once.
@@ -1303,8 +1380,7 @@ mod tests {
         );
     }
 
-    /// Server row dropped by a rebroadcast mid-edit: there is no version to check, so the hijack
-    /// carries no removal instead of guessing one.
+    /// Server row dropped by a rebroadcast mid-edit: there is no version to check, so the hijack carries no removal instead of guessing one.
     #[test]
     fn edit_vanished_server_row_into_builtin_carries_no_removal() {
         let mut agent = make_running_agent();
@@ -1356,12 +1432,11 @@ mod tests {
         assert!(agent.stashed_prompt.is_none());
     }
 
-    /// Idempotent: the cleanup hook is a no-op when not in `EditingQueued`
-    /// with a server origin (e.g. local-origin edit, normal mode).
+    /// Idempotent: the cleanup hook is a no-op when not in `EditingQueued` with a server origin (e.g. local-origin edit, normal mode).
     #[test]
     fn cancel_editing_queued_for_lost_row_noop_for_local_or_normal() {
         let mut agent = make_running_agent();
-        // Local-origin: should NOT exit (the local row hasn't disappeared).
+        // Local-origin: must not exit (the local row hasn't disappeared)
         agent.prompt_mode = PromptMode::EditingQueued {
             id: 0,
             original: "local one".into(),
@@ -1380,8 +1455,7 @@ mod tests {
         assert!(matches!(agent.prompt_mode, PromptMode::Normal));
     }
 
-    /// A dirty pane switch must not arm the undrawn EditConfirm; lost-row cancel
-    /// restores the pre-edit draft.
+    /// A dirty pane switch must not arm the undrawn EditConfirm; lost-row cancel restores the pre-edit draft.
     #[test]
     fn dirty_pane_switch_blocks_without_modal_then_lost_row_restores_draft() {
         let mut agent = make_running_agent();
@@ -1409,8 +1483,7 @@ mod tests {
         assert_eq!(agent.prompt.text(), "draft");
     }
 
-    /// Ctrl+; (toggle_queue_pane) while dirty-editing must not brick: the switch
-    /// is blocked, no modal armed, and the queue overlay is not left focused.
+    /// Ctrl+; (toggle_queue_pane) while dirty-editing must not brick: the switch is blocked, no modal is armed, and the overlay is not left focused.
     #[test]
     fn toggle_queue_pane_while_dirty_editing_does_not_brick() {
         let mut agent = make_running_agent();
@@ -1441,10 +1514,8 @@ mod tests {
         );
     }
 
-    /// Interject key while editing a LOCAL queued row mid-turn: the row
-    /// leaves the queue, the EDITED text interjects, edit mode exits, and
-    /// the stashed composer draft is restored (the pre-fix bug stranded
-    /// `EditingQueued` with the row still queued).
+    /// Interject key while editing a LOCAL queued row mid-turn.
+    /// The row leaves the queue, the EDITED text interjects, edit mode exits, and the stashed composer draft is restored.
     #[test]
     fn edit_interject_local_row_interjects_edited_text() {
         let mut agent = make_running_agent();
@@ -1542,8 +1613,7 @@ mod tests {
         );
 
         agent.session.state = AgentState::Idle;
-        // Running server turn completed: its shared-queue row is gone, so the
-        // local edited row is the next turn (server-owns-next-turn gate clears).
+        // Running server turn completed: its shared-queue row is gone, so the local edited row is the next turn (server-owns-next-turn gate clears)
         agent.shared_queue.clear();
         let mut app = crate::app::app_view::tests::test_app();
         let id = agent.session.id;
@@ -1559,10 +1629,9 @@ mod tests {
         assert_eq!(in_flight.chip_elements.len(), 2);
     }
 
-    /// Lone-local-row agent with "draft" stashed, edit mode entered on the
-    /// row. Interjecting empties the queue → the pane auto-hide switch runs
-    /// mid-flow (the setup `make_running_agent` can't reach: its server row
-    /// keeps the pane open).
+    /// Lone-local-row agent with "draft" stashed and edit mode entered on the row.
+    /// Interjecting empties the queue, so the pane auto-hide switch runs mid-flow.
+    /// `make_running_agent` can't reach that: its server row keeps the pane open.
     fn edit_lone_local_row() -> AgentView {
         let mut agent = running_agent_local_only();
         let registry = non_vscode_registry();
@@ -1616,9 +1685,8 @@ mod tests {
         assert!(agent.toast.is_some(), "guard must explain itself");
     }
 
-    /// Interject a DIRTY edit of the last visible queue row: the auto-hide
-    /// pane switch must not strand an invisible `EditConfirm` modal that
-    /// silently consumes all subsequent input.
+    /// Interject a DIRTY edit of the last visible queue row.
+    /// The auto-hide pane switch must not strand an invisible `EditConfirm` modal that silently consumes all subsequent input.
     #[test]
     fn edit_interject_lone_local_row_dirty_leaves_no_orphaned_modal() {
         let mut agent = edit_lone_local_row();
@@ -1640,9 +1708,8 @@ mod tests {
         assert_eq!(agent.prompt.text(), "draft");
     }
 
-    /// Interject a CLEAN (unmodified) edit of the last visible queue row:
-    /// the auto-hide pane switch must not exit editing mode a second time
-    /// and wipe the just-restored composer draft.
+    /// Interject a CLEAN (unmodified) edit of the last visible queue row.
+    /// The auto-hide pane switch must not exit editing mode a second time and wipe the just-restored composer draft.
     #[test]
     fn edit_interject_lone_local_row_clean_restores_draft_once() {
         let mut agent = edit_lone_local_row();
@@ -1664,9 +1731,8 @@ mod tests {
         );
     }
 
-    /// Deleting the lone LOCAL row while it is being edited (dirty): the
-    /// delete discards the edit — it must not leave `EditingQueued` pointing
-    /// at a removed row or let the auto-hide arm the invisible modal.
+    /// Deleting the lone LOCAL row while it is being edited (dirty): the delete discards the edit.
+    /// It must not leave `EditingQueued` pointing at a removed row or let the auto-hide arm the invisible modal.
     #[test]
     fn delete_edited_lone_local_row_discards_edit_without_orphaned_modal() {
         let mut agent = edit_lone_local_row();
@@ -1694,9 +1760,20 @@ mod tests {
         }
     }
 
-    /// `exit_editing_mode` clears a stray `EditConfirm` (unreachable in-tree
-    /// after the reorder, so pin the backstop directly) and leaves every
-    /// other modal variant alone.
+    #[test]
+    fn exit_editing_mode_keeps_hook_block_hold() {
+        let mut agent = make_running_agent();
+        agent.session.hook_block_hold = true;
+        agent.prompt_mode = editing_lone_local();
+        agent.exit_editing_mode();
+        assert!(
+            agent.session.hook_block_hold,
+            "a plain edit exit resolves nothing: only saving or deleting the \
+             blocked row releases the hold"
+        );
+    }
+
+    /// `exit_editing_mode` clears a stray `EditConfirm` (unreachable in-tree, so pin the backstop directly) and leaves other modal variants alone.
     #[test]
     fn exit_editing_mode_clears_only_stray_edit_confirm() {
         let mut agent = make_running_agent();
@@ -1710,8 +1787,7 @@ mod tests {
         assert!(matches!(agent.prompt_mode, PromptMode::Normal));
 
         // Scoping: a non-EditConfirm modal survives the exit untouched.
-        // Re-enter edit mode so the guarded body (not the idempotency
-        // early-return) is what leaves the palette alone.
+        // Re-enter edit mode so the guarded body (not the idempotency early-return) is what leaves the palette alone
         agent.prompt_mode = editing_lone_local();
         agent.active_modal = Some(ActiveModal::CommandPalette {
             entries: crate::views::modal::default_palette_entries(
@@ -1728,9 +1804,8 @@ mod tests {
         ));
     }
 
-    /// `exit_editing_mode` outside `EditingQueued` is a no-op — the
-    /// remove-then-exit caller shape must not wipe the composer by
-    /// double-taking the spent stash.
+    /// `exit_editing_mode` outside `EditingQueued` is a no-op.
+    /// The remove-then-exit caller shape must not wipe the composer by double-taking the spent stash.
     #[test]
     fn exit_editing_mode_is_noop_when_not_editing() {
         let mut agent = make_running_agent();
@@ -1740,9 +1815,8 @@ mod tests {
         assert_eq!(agent.prompt.text(), "draft");
     }
 
-    /// Interject key while editing a SERVER queued row mid-turn routes to
-    /// `Action::QueueInterjectShared` with the edited text as `new_text`
-    /// and exits edit mode without touching the local mirror.
+    /// Interject key while editing a SERVER queued row mid-turn routes to `Action::QueueInterjectShared` with the edited text as `new_text`.
+    /// Exits edit mode without touching the local mirror.
     #[test]
     fn edit_interject_server_row_routes_to_queue_interject_shared_with_new_text() {
         let mut agent = make_running_agent();
@@ -1766,14 +1840,13 @@ mod tests {
             }
             other => panic!("expected QueueInterjectShared with new_text, got {other:?}"),
         }
-        // Shared mirror untouched — the rebroadcast is the source of truth.
+        // Shared mirror untouched; the rebroadcast is the source of truth
         assert_eq!(agent.shared_queue.len(), 1);
         assert_eq!(agent.shared_queue[0].text, "server one");
         assert!(matches!(agent.prompt_mode, PromptMode::Normal));
     }
 
-    /// Force-interject on a server row must not emit `QueueReleaseEdit` —
-    /// see `exit_editing_mode_keeping_hold`.
+    /// Force-interject on a server row must not emit `QueueReleaseEdit`; see `exit_editing_mode_keeping_hold`.
     #[test]
     fn edit_interject_server_row_keeps_combine_hold_until_interject() {
         use crate::app::actions::Effect;
@@ -1809,8 +1882,7 @@ mod tests {
         );
     }
 
-    /// Interject key while editing and IDLE behaves like the bare-Enter save
-    /// (row text updated + drain) instead of silently dropping the key.
+    /// Interject key while editing and IDLE behaves like the bare-Enter save (row text updated and drain) instead of silently dropping the key.
     #[test]
     fn edit_interject_while_idle_saves_local_edit() {
         let mut agent = make_running_agent();
@@ -1832,8 +1904,7 @@ mod tests {
         assert!(matches!(agent.prompt_mode, PromptMode::Normal));
     }
 
-    /// Interject key with an empty composer while editing is a no-op — no
-    /// empty interjection, and edit mode stays active.
+    /// Interject key with an empty composer while editing is a no-op: no empty interjection, and edit mode stays active.
     #[test]
     fn edit_interject_empty_composer_stays_in_edit_mode() {
         let mut agent = make_running_agent();
@@ -1856,8 +1927,7 @@ mod tests {
         assert_eq!(agent.session.pending_prompts.len(), 1);
     }
 
-    /// Modal Save with an empty composer keeps the original row text — a
-    /// queued prompt must never be blanked by Save.
+    /// Modal Save with an empty composer keeps the original row text; a queued prompt must never be blanked by Save.
     #[test]
     fn edit_confirm_save_empty_preserves_original_text() {
         let mut agent = make_running_agent();
@@ -1868,7 +1938,7 @@ mod tests {
         let _ = agent.handle_queue_key(&edit_key(), &registry);
         agent.prompt.set_text("");
 
-        // Arm the modal directly (the pane switch no longer arms it) to test empty-Save.
+        // Arm the modal directly (the pane switch never arms it) to test empty-Save
         agent.active_modal = Some(ActiveModal::EditConfirm {
             modal: ModalConfirmation::edit_confirm(),
             pending_target: AgentPane::Scrollback,
@@ -1879,9 +1949,8 @@ mod tests {
         assert!(matches!(agent.prompt_mode, PromptMode::Normal));
     }
 
-    /// Modal Save on a NON-front local row while idle saves the text but must
-    /// NOT dispatch `DrainQueue` — the modal advertised plain "save" (not
-    /// "save & send"), and draining would start the head prompt's turn.
+    /// Modal Save on a NON-front local row while idle saves the text but must NOT dispatch `DrainQueue`.
+    /// The modal advertised plain "save" (not "save & send"), and draining would start the head prompt's turn.
     #[test]
     fn edit_confirm_save_non_front_row_does_not_drain() {
         let mut agent = make_running_agent();
@@ -1897,7 +1966,7 @@ mod tests {
         );
         agent.session.state = AgentState::Idle;
 
-        // Edit the non-front row; arm the modal directly (the pane switch no longer arms it).
+        // Edit the non-front row; arm the modal directly (the pane switch never arms it)
         let ids = agent.queue.entry_ids();
         agent.queue.list_state.select_by_id(ids[1]);
         let _ = agent.handle_queue_key(&edit_key(), &registry);
@@ -1963,8 +2032,7 @@ mod tests {
         assert!(matches!(agent.prompt_mode, PromptMode::Normal));
     }
 
-    /// Server row vanished mid-edit (drained / removed by another client):
-    /// edit-interject falls back to a plain interjection of the edited text.
+    /// Server row vanished mid-edit (drained / removed by another client): edit-interject falls back to a plain interjection of the edited text.
     #[test]
     fn edit_interject_server_row_vanished_falls_back_to_plain_interject() {
         let mut agent = make_running_agent();
@@ -1995,8 +2063,7 @@ mod tests {
         assert!(matches!(agent.prompt_mode, PromptMode::Normal));
     }
 
-    /// Interject key while editing a SERVER row and IDLE saves via
-    /// `Action::QueueEditShared` (same route as bare-Enter save).
+    /// Interject key while editing a SERVER row and IDLE saves via `Action::QueueEditShared` (same route as bare-Enter save).
     #[test]
     fn edit_interject_while_idle_saves_server_edit() {
         let mut agent = make_running_agent();
@@ -2019,8 +2086,7 @@ mod tests {
         assert!(matches!(agent.prompt_mode, PromptMode::Normal));
     }
 
-    /// Composer images pasted while edit-interjecting a LOCAL row ride
-    /// along on the interjection instead of being dropped with a toast.
+    /// Composer images pasted while edit-interjecting a LOCAL row ride along on the interjection instead of being dropped with a toast.
     #[test]
     fn edit_interject_local_row_carries_composer_images() {
         let mut agent = make_running_agent();
@@ -2030,8 +2096,7 @@ mod tests {
         agent.queue.list_state.select_by_id(ids[1]);
         let _ = agent.handle_queue_key(&edit_key(), &registry);
         agent.prompt.set_text("local one EDITED");
-        // Insert via the widget so the chip element exists (drain_images
-        // reconciles against live elements).
+        // Insert via the widget so the chip element exists (drain_images reconciles against live elements)
         let len = agent.prompt.textarea().text().len();
         agent.prompt.textarea.set_cursor(len);
         agent
@@ -2055,10 +2120,8 @@ mod tests {
         assert!(agent.toast.is_none(), "no drop toast expected");
     }
 
-    /// Deciding test for the display_number-collision question: edit a LOCAL
-    /// row whose stored image is `[Image #1]`,
-    /// paste a NEW image mid-edit, interject — BOTH images must survive with
-    /// distinct display_numbers (no silent eviction via the dedup merge).
+    /// Edit a LOCAL row whose stored image is `[Image #1]`, paste a NEW image mid-edit, then interject.
+    /// BOTH images must survive with distinct display_numbers (no silent eviction via the dedup merge).
     #[test]
     fn edit_interject_pasted_image_does_not_collide_with_row_image() {
         let mut agent = make_running_agent();
@@ -2122,8 +2185,7 @@ mod tests {
         }
     }
 
-    /// Composer images on a SERVER-row edit-interject are still dropped with
-    /// an accurate toast — the queue wire's `newText` is text-only.
+    /// Composer images on a SERVER-row edit-interject are dropped with an accurate toast; the queue wire's `newText` is text-only.
     #[test]
     fn edit_interject_server_row_clears_images_with_toast() {
         let mut agent = make_running_agent();
@@ -2153,8 +2215,7 @@ mod tests {
         assert!(msg.contains("can't be attached"), "got toast {msg:?}");
     }
 
-    /// Modal Save with an empty composer on a SERVER row must not emit
-    /// `QueueEditShared` (the row text would be blanked agent-side).
+    /// Modal Save with an empty composer on a SERVER row must not emit `QueueEditShared` (the row text would be blanked agent-side).
     #[test]
     fn edit_confirm_save_empty_server_row_skips_queue_edit() {
         let mut agent = make_running_agent();
@@ -2165,7 +2226,7 @@ mod tests {
         let _ = agent.handle_queue_key(&edit_key(), &registry);
         agent.prompt.set_text("");
 
-        // Arm the modal directly (the pane switch no longer arms it).
+        // Arm the modal directly (the pane switch never arms it)
         agent.active_modal = Some(ActiveModal::EditConfirm {
             modal: ModalConfirmation::edit_confirm(),
             pending_target: AgentPane::Scrollback,

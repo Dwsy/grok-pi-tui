@@ -1,11 +1,45 @@
 //! Tests for async task-result application arms.
 
 use super::super::task_result::{
-    X11_PRIMARY_PASTE_HINT, maybe_show_x11_primary_paste_hint, show_clipboard_failure,
-    wrap_host_image_request_eligible,
+    LiveSessionKind, X11_PRIMARY_PASTE_HINT, live_session_kind, maybe_show_x11_primary_paste_hint,
+    show_clipboard_failure, wrap_host_image_request_eligible,
 };
 use super::*;
+use crate::app::subagent::{SubagentLifecycleReduction, SubagentLifecycleTransition};
+use xai_grok_shell::session::helpers::session_compact::COMPACT_CANCELLED_MSG;
 use xai_grok_shell::session::unified_list::ListScope;
+
+#[test]
+fn live_session_kind_distinguishes_missing_conversation_and_build_matches() {
+    let mut app = test_app_with_agent();
+    assert_eq!(live_session_kind(&app, "missing"), LiveSessionKind::Missing);
+
+    let session_id = app.agents[&AgentId(0)]
+        .session
+        .session_id
+        .as_ref()
+        .unwrap()
+        .0
+        .to_string();
+    app.agents.get_mut(&AgentId(0)).unwrap().conversation_entry = true;
+    assert_eq!(
+        live_session_kind(&app, &session_id),
+        LiveSessionKind::ConversationOnly
+    );
+
+    let duplicate = AgentId(1);
+    app.agents.insert(
+        duplicate,
+        crate::app::agent_view::test_fixtures::make_agent(),
+    );
+    app.agents.get_mut(&duplicate).unwrap().session.session_id =
+        Some(acp::SessionId::new(session_id.clone()));
+    app.agents.get_mut(&duplicate).unwrap().conversation_entry = false;
+    assert_eq!(
+        live_session_kind(&app, &session_id),
+        LiveSessionKind::IncludesBuild
+    );
+}
 
 fn doctor_target(app: &AppView, id: AgentId) -> crate::app::actions::DoctorFixTarget {
     let agent = &app.agents[&id];
@@ -82,6 +116,35 @@ fn doctor_planning_rejects_bind_replace_and_unbind_rebind() {
             "{replacement}"
         );
     }
+}
+
+#[test]
+fn doctor_planning_displaces_feedback_before_opening_question() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let target = doctor_target(&app, id);
+    app.agents.get_mut(&id).unwrap().feedback_modal =
+        Some(crate::views::feedback_modal::FeedbackModalState::new(
+            crate::views::feedback_modal::OpenFeedbackModal {
+                text: Some("unsent report".to_owned()),
+                ..Default::default()
+            },
+        ));
+
+    dispatch_task_result(
+        TaskResult::DoctorFixPlanned {
+            target,
+            result: Ok(crate::app::actions::DoctorPlanningOutcome::Plan(Box::new(
+                crate::diagnostics::test_fix_plan(temp.path()),
+            ))),
+        },
+        &mut app,
+    );
+
+    let agent = &app.agents[&id];
+    assert!(agent.feedback_modal.is_none());
+    assert!(agent.question_view.is_some());
 }
 
 #[test]
@@ -493,7 +556,6 @@ fn x11_primary_hint_requires_canonical_full_miss_outcome() {
     let target = ClipboardPasteTarget::AgentPrompt {
         agent_id: AgentId(0),
         images_dir: None,
-        from_feedback_pane: false,
     };
 
     for completion in [
@@ -523,8 +585,8 @@ fn x11_primary_hint_requires_canonical_full_miss_outcome() {
 fn wrap_host_image_request_eligible_covers_full_miss_and_attachment_error_only() {
     use crate::app::actions::{ClipboardPasteCompletion, ClipboardPasteFailure};
 
-    // A clean empty miss and a remote read *error* both fall through to the wrap
-    // host-image request — the headless-SSH `grok wrap` image-paste fix.
+    // A clean empty miss and a remote read *error* both fall through to the wrap host-image request
+    // That request is how `grok wrap` pastes images over headless SSH
     assert!(wrap_host_image_request_eligible(
         ClipboardPasteCompletion::FullMiss
     ));
@@ -532,8 +594,7 @@ fn wrap_host_image_request_eligible_covers_full_miss_and_attachment_error_only()
         ClipboardPasteCompletion::Failed(ClipboardPasteFailure::AttachmentRead)
     ));
 
-    // Every other outcome is a real dead end: it must keep toasting and never
-    // solicit the host image.
+    // Every other outcome is a real dead end: it must keep toasting and never solicit the host image
     for completion in [
         ClipboardPasteCompletion::Handled,
         ClipboardPasteCompletion::Dropped,
@@ -560,7 +621,6 @@ fn x11_primary_hint_routes_to_originating_agent() {
     let target = crate::app::actions::ClipboardPasteTarget::AgentPrompt {
         agent_id: origin,
         images_dir: None,
-        from_feedback_pane: false,
     };
 
     maybe_show_x11_primary_paste_hint(
@@ -620,7 +680,6 @@ fn clipboard_failure_routes_to_originating_agent_without_duplicate() {
     let target = crate::app::actions::ClipboardPasteTarget::AgentPrompt {
         agent_id: origin,
         images_dir: None,
-        from_feedback_pane: false,
     };
 
     show_clipboard_failure(
@@ -732,8 +791,7 @@ fn plugins_action_success_sets_result_notice_and_autoreload_preserves_it() {
         app.agents.get_mut(&id).unwrap().extensions_modal = Some(modal);
     }
 
-    // A successful update surfaces its message as a row-anchored result notice
-    // (the fix for "I can't tell what happened after r/u"), non-covering.
+    // A successful update surfaces its message as a row-anchored, non-covering result notice, so the user can tell what happened after r/u
     dispatch(
         Action::TaskComplete(TaskResult::PluginsActionResult {
             agent_id: id,
@@ -756,8 +814,7 @@ fn plugins_action_success_sets_result_notice_and_autoreload_preserves_it() {
         assert_eq!(n.entry_index, Some(2), "anchored to the acted row");
     }
 
-    // The auto-reload chained from `requires_reload` returns a generic message;
-    // it must NOT clobber the specific update notice already on screen.
+    // The auto-reload chained from `requires_reload` returns a generic message; it must NOT clobber the specific update notice already on screen
     dispatch(
         Action::TaskComplete(TaskResult::PluginsActionResult {
             agent_id: id,
@@ -817,7 +874,7 @@ fn uninstall_result_notice_is_footer_only_not_row_anchored() {
     let id = AgentId(0);
     {
         let mut modal = ExtensionsModalState::new(ExtensionsTab::Plugins);
-        // A row action was in flight, but it's an uninstall — the row goes away.
+        // A row action was in flight, but it's an uninstall, so the row goes away
         modal.pending_entry_index = Some(1);
         modal.last_plugins_action = Some(xai_hooks_plugins_types::PluginsAction::Uninstall {
             plugin_id: "user/ab12/gone".into(),
@@ -903,9 +960,8 @@ fn confirmation_required_builds_plugins_confirmation_with_confirmed_true() {
     }
 }
 
-/// Regression (Bugbot): a failed `x.ai/subagent/cancel` RPC must NOT
-/// finalize the row — the subagent may still be running. Only a shell
-/// response of "nothing live" finalizes it.
+/// Regression: a failed `x.ai/subagent/cancel` RPC must NOT finalize the row; the subagent may still be running.
+/// Only a shell response of "nothing live" finalizes it.
 #[test]
 fn kill_rpc_failure_does_not_finalize_but_nothing_live_does() {
     let mut app = test_app_with_agent();
@@ -914,41 +970,43 @@ fn kill_rpc_failure_does_not_finalize_but_nothing_live_does() {
     {
         let agent = app.agents.get_mut(&id).unwrap();
         let mut info = make_test_subagent("child-1", "sa-1");
-        info.pending_kill = true;
+        info.attempt.pending_kill = true;
         agent.subagent_sessions.insert("child-1".into(), info);
     }
 
-    // RPC failed → leave the row (the subagent may still be running).
+    // The RPC failed, so leave the row (the subagent may still be running)
     dispatch_task_result(
         TaskResult::KillSubagentComplete {
             session_id: sid.clone(),
             subagent_id: "sa-1".into(),
+            attempt_id: None,
             outcome: SubagentKillOutcome::RpcFailed,
         },
         &mut app,
     );
     assert!(
-        !app.agents[&id].subagent_sessions["child-1"].finished,
+        !app.agents[&id].subagent_sessions["child-1"].is_finished(),
         "a failed cancel RPC must not finalize the row"
     );
 
-    // Nothing live → no finish coming, so the pager finalizes the row.
+    // Nothing live means no finish is coming, so the pager finalizes the row
     dispatch_task_result(
         TaskResult::KillSubagentComplete {
             session_id: sid,
             subagent_id: "sa-1".into(),
+            attempt_id: None,
             outcome: SubagentKillOutcome::NothingLive { status: None },
         },
         &mut app,
     );
     assert!(
-        app.agents[&id].subagent_sessions["child-1"].finished,
+        app.agents[&id].subagent_sessions["child-1"].is_finished(),
         "nothing-live must finalize the orphan row"
     );
 }
 
-/// An already-finished orphan's real terminal status (`NothingLive { status:
-/// Some(..) }`) is forwarded to the finalized row, not flattened to "cancelled".
+/// An already-finished orphan's real terminal status (`NothingLive { status: Some(..) }`) is forwarded to the finalized row.
+/// It is not flattened to "cancelled".
 #[test]
 fn kill_nothing_live_with_status_stamps_real_terminal_status() {
     let mut app = test_app_with_agent();
@@ -957,7 +1015,7 @@ fn kill_nothing_live_with_status_stamps_real_terminal_status() {
     {
         let agent = app.agents.get_mut(&id).unwrap();
         let mut info = make_test_subagent("child-1", "sa-1");
-        info.pending_kill = true;
+        info.attempt.pending_kill = true;
         agent.subagent_sessions.insert("child-1".into(), info);
     }
 
@@ -965,6 +1023,7 @@ fn kill_nothing_live_with_status_stamps_real_terminal_status() {
         TaskResult::KillSubagentComplete {
             session_id: sid,
             subagent_id: "sa-1".into(),
+            attempt_id: None,
             outcome: SubagentKillOutcome::NothingLive {
                 status: Some("completed".into()),
             },
@@ -972,12 +1031,72 @@ fn kill_nothing_live_with_status_stamps_real_terminal_status() {
         &mut app,
     );
     let info = &app.agents[&id].subagent_sessions["child-1"];
-    assert!(info.finished, "already-finished orphan must be finalized");
+    assert!(
+        info.is_finished(),
+        "already-finished orphan must be finalized"
+    );
     assert_eq!(
-        info.status.as_deref(),
+        info.attempt.status.as_deref(),
         Some("completed"),
         "the shell's real terminal status must be stamped, not 'cancelled'"
     );
+}
+
+#[test]
+fn stale_kill_result_does_not_finish_replacement_attempt() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let sid = acp::SessionId::new("test-session".to_owned());
+    let mut info = make_test_subagent("child-1", "sa-1");
+    let first_attempt = "at1.first";
+    let second_attempt = "at1.second";
+    let SubagentLifecycleReduction::Accepted(first_spawn) = info.attempt.lifecycle.reduce(
+        SubagentLifecycleTransition::Spawned,
+        Some(first_attempt),
+        Some(1),
+    ) else {
+        panic!("first attempt spawn");
+    };
+    first_spawn.commit(&mut info.attempt.lifecycle);
+    let SubagentLifecycleReduction::Accepted(first_finish) = info.attempt.lifecycle.reduce(
+        SubagentLifecycleTransition::Finished,
+        Some(first_attempt),
+        Some(2),
+    ) else {
+        panic!("first attempt finish");
+    };
+    first_finish.commit(&mut info.attempt.lifecycle);
+    let SubagentLifecycleReduction::Accepted(second_spawn) = info.attempt.lifecycle.reduce(
+        SubagentLifecycleTransition::Spawned,
+        Some(second_attempt),
+        Some(3),
+    ) else {
+        panic!("second attempt spawn");
+    };
+    second_spawn.commit(&mut info.attempt.lifecycle);
+    info.attempt.pending_kill = false;
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .subagent_sessions
+        .insert("child-1".into(), info);
+
+    dispatch_task_result(
+        TaskResult::KillSubagentComplete {
+            session_id: sid,
+            subagent_id: "sa-1".into(),
+            attempt_id: Some(first_attempt.into()),
+            outcome: SubagentKillOutcome::NothingLive { status: None },
+        },
+        &mut app,
+    );
+
+    let info = &app.agents[&id].subagent_sessions["child-1"];
+    assert_eq!(
+        info.attempt.lifecycle.current_attempt_id(),
+        Some(second_attempt)
+    );
+    assert!(info.is_running());
 }
 
 #[test]
@@ -1023,9 +1142,7 @@ fn switch_model_complete_success_updates_model_and_pushes_message() {
         &mut app,
     );
 
-    // Pending flag cleared.
     assert!(!app.agents[&id].session.model_switch_pending);
-    // Current model updated.
     assert_eq!(
         app.agents[&id].session.models.current,
         Some(model_id.clone())
@@ -1232,9 +1349,7 @@ fn switch_model_complete_failure_pushes_error_and_clears_pending() {
     );
 
     assert!(effects.is_empty());
-    // Pending flag cleared.
     assert!(!app.agents[&id].session.model_switch_pending);
-    // Current model unchanged.
     assert_eq!(app.agents[&id].session.models.current, old_current);
     // Error message pushed to scrollback.
     assert_eq!(app.agents[&id].scrollback.len(), initial_scrollback + 1);
@@ -1276,7 +1391,6 @@ fn switch_model_incompatible_agent_shows_question_modal() {
 
     // No effects emitted (modal is synchronous state).
     assert!(effects.is_empty());
-    // Pending flag cleared.
     assert!(!app.agents[&id].session.model_switch_pending);
     // Question modal is open.
     assert!(app.agents[&id].question_view.is_some());
@@ -1291,9 +1405,8 @@ fn switch_model_incompatible_agent_shows_question_modal() {
 
 #[test]
 fn incompatible_agent_rollback_restores_previous_model() {
-    // When SetDefaultModel optimistically updates models.current and the
-    // shell rejects with IncompatibleAgent, the handler must roll back
-    // models.current to the prev_model_id.
+    // SetDefaultModel optimistically updates models.current
+    // When the shell rejects with IncompatibleAgent, the handler must roll back models.current to the prev_model_id
     let mut app = test_app_with_agent();
     let id = AgentId(0);
 
@@ -1337,7 +1450,6 @@ fn incompatible_agent_rollback_restores_previous_model() {
         &mut app,
     );
 
-    // models.current must be rolled back to the previous model.
     assert_eq!(
         app.agents[&id].session.models.current,
         Some(prev_model),
@@ -1383,12 +1495,10 @@ fn incompatible_agent_closes_active_modal() {
         &mut app,
     );
 
-    // Active modal must be closed.
     assert!(
         app.agents[&id].active_modal.is_none(),
         "active modal must be closed when IncompatibleAgent fires",
     );
-    // Question modal must be open.
     assert!(
         app.agents[&id].question_view.is_some(),
         "question modal must be open",
@@ -1397,14 +1507,13 @@ fn incompatible_agent_closes_active_modal() {
 
 #[test]
 fn same_agent_type_switch_no_modal() {
-    // Switching between two models with the same (or no) agent type
-    // should succeed normally — no modal, no IncompatibleAgent error.
+    // Switching between two models with the same (or no) agent type succeeds normally: no modal, no IncompatibleAgent error
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let model_a = acp::ModelId::new(std::sync::Arc::from("grok-build-a"));
     let model_b = acp::ModelId::new(std::sync::Arc::from("grok-build-b"));
 
-    // Add both models to the catalog (no agentType → both use grok-build).
+    // Add both models to the catalog (no agentType, so both use grok-build)
     let agent = app.agents.get_mut(&id).unwrap();
     agent.session.models.available.insert(
         model_a.clone(),
@@ -1429,10 +1538,9 @@ fn same_agent_type_switch_no_modal() {
         &mut app,
     );
 
-    // Model should be switched, no modal.
+    // The model switched and no modal opened
     assert_eq!(app.agents[&id].session.models.current, Some(model_b));
     assert!(app.agents[&id].question_view.is_none());
-    // Should emit PersistPreferredModel.
     assert!(
         effects
             .iter()
@@ -1442,7 +1550,7 @@ fn same_agent_type_switch_no_modal() {
 
 #[test]
 fn switch_model_pending_lifecycle() {
-    // Full lifecycle: false -> dispatch SwitchModel -> true -> SwitchModelComplete -> false
+    // Full lifecycle: pending starts false, SwitchModel sets it true, SwitchModelComplete clears it
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
@@ -1476,8 +1584,7 @@ fn switch_model_pending_lifecycle() {
 
 #[test]
 fn no_deferred_switch_means_no_extra_effect() {
-    // When there is no deferred model switch, SessionCreated should
-    // not produce a SwitchModel effect.
+    // When there is no deferred model switch, SessionCreated must not produce a SwitchModel effect
     let mut app = test_app_with_agent();
     let id = AgentId(0);
 
@@ -1490,7 +1597,6 @@ fn no_deferred_switch_means_no_extra_effect() {
             agent_id: id,
             session_id: "new-session".into(),
             models: None,
-            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1513,7 +1619,6 @@ fn session_success_arms_finish_startup_obligation() {
             agent_id: id,
             session_id: "new-session".into(),
             models: None,
-            scheduler_background_loops: None,
         },
         TaskResult::SessionLoaded {
             agent_id: id,
@@ -1523,7 +1628,6 @@ fn session_success_arms_finish_startup_obligation() {
             restore_summary: None,
             restore_degree: None,
             running_prompt_id: None,
-            scheduler_background_loops: None,
         },
         TaskResult::WorktreeSessionCreated {
             agent_id: id,
@@ -1531,7 +1635,7 @@ fn session_success_arms_finish_startup_obligation() {
             worktree_path: std::path::PathBuf::from("/tmp/wt"),
             session_cwd: std::path::PathBuf::from("/tmp/wt"),
             models: None,
-            scheduler_background_loops: None,
+            strategy_summary: None,
         },
         TaskResult::WorktreeForked {
             agent_id: id,
@@ -1542,6 +1646,7 @@ fn session_success_arms_finish_startup_obligation() {
             restore_summary: None,
             restore_degree: None,
             resume_session_id: None,
+            strategy_summary: None,
         },
     ];
 
@@ -1913,6 +2018,25 @@ fn delete_remote_session_clears_modal_and_welcome_content_hits() {
     use crate::views::modal::ActiveModal;
 
     let mut app = test_app_with_agent();
+    app.workspace_dashboard_enabled = true;
+    app.workspace_membership
+        .set_snapshot_for_test(xai_grok_dashboard_store::WorkspaceSnapshot {
+            grouping: xai_grok_dashboard_store::Grouping::State,
+            members: vec![xai_grok_dashboard_store::Member {
+                session_id: xai_grok_dashboard_store::SessionId::new("remote-only").unwrap(),
+                kind: xai_grok_dashboard_store::MemberKind::Build,
+                origin: xai_grok_dashboard_store::MemberOrigin::Remote,
+                cwd: Some("/r".into()),
+                title: Some("remote-only".into()),
+                model: None,
+                last_turn_summary: None,
+                is_worktree: false,
+                last_change_unix_ms: 1,
+                pin_rank: None,
+                order_rank: None,
+            }],
+            data_version: 1,
+        });
     let mut remote = make_picker_entry("remote-only", "/r");
     remote.source = "remote".into();
     open_session_picker_with(&mut app, vec![remote.clone()]);
@@ -1963,12 +2087,49 @@ fn delete_remote_session_clears_modal_and_welcome_content_hits() {
             .unwrap()
             .is_empty()
     );
+    assert!(
+        app.workspace_membership.view().unwrap().members.is_empty(),
+        "the derived view hides a pending removal"
+    );
+    assert_eq!(
+        app.workspace_membership.snapshot().unwrap().members.len(),
+        1,
+        "optimism must not mutate committed state"
+    );
+    assert!(app.workspace_membership.removal_pending_for_test(
+        &xai_grok_dashboard_store::SessionId::new("remote-only").unwrap()
+    ));
+    assert!(
+        !app.workspace_membership.removal_suppressed_for_test(
+            &xai_grok_dashboard_store::SessionId::new("remote-only").unwrap()
+        ),
+        "an unloaded picker row needs no live-adoption exclusion"
+    );
 }
 
 #[test]
 fn delete_session_failed_keeps_all_entries() {
     use crate::views::modal::ActiveModal;
     let mut app = test_app_with_agent();
+    app.workspace_dashboard_enabled = true;
+    app.workspace_membership
+        .set_snapshot_for_test(xai_grok_dashboard_store::WorkspaceSnapshot {
+            grouping: xai_grok_dashboard_store::Grouping::State,
+            members: vec![xai_grok_dashboard_store::Member {
+                session_id: xai_grok_dashboard_store::SessionId::new("s1").unwrap(),
+                kind: xai_grok_dashboard_store::MemberKind::Build,
+                origin: xai_grok_dashboard_store::MemberOrigin::Local,
+                cwd: Some("/r".into()),
+                title: Some("s1".into()),
+                model: None,
+                last_turn_summary: None,
+                is_worktree: false,
+                last_change_unix_ms: 1,
+                pin_rank: None,
+                order_rank: None,
+            }],
+            data_version: 1,
+        });
     open_session_picker_with(
         &mut app,
         vec![make_picker_entry("s0", "/r"), make_picker_entry("s1", "/r")],
@@ -1992,15 +2153,114 @@ fn delete_session_failed_keeps_all_entries() {
         panic!("expected SessionPicker modal");
     };
     assert_eq!(list.len(), 2, "a failed delete must not remove any entry");
+    assert_eq!(
+        app.workspace_membership.snapshot().unwrap().members.len(),
+        1,
+        "failed permanent delete must leave membership intact"
+    );
+    assert!(!app.workspace_membership.has_pending_removals_for_test());
+}
+
+#[test]
+fn picker_delete_of_open_build_suppresses_immediate_workspace_re_adoption() {
+    let mut app = test_app_with_agent();
+    let session_id = app.agents[&AgentId(0)]
+        .session
+        .session_id
+        .as_ref()
+        .unwrap()
+        .0
+        .to_string();
+    app.workspace_dashboard_enabled = true;
+    app.workspace_membership
+        .set_snapshot_for_test(xai_grok_dashboard_store::WorkspaceSnapshot {
+            grouping: xai_grok_dashboard_store::Grouping::State,
+            members: vec![],
+            data_version: 1,
+        });
+
+    let _ = dispatch_task_result(
+        TaskResult::DeleteSessionComplete {
+            source: "local".into(),
+            session_id: session_id.clone(),
+            after: crate::app::actions::AfterSessionDelete::Stay,
+        },
+        &mut app,
+    );
+
+    let id = xai_grok_dashboard_store::SessionId::new(session_id).unwrap();
+    assert!(
+        app.agents.contains_key(&AgentId(0)),
+        "Stay keeps the view open"
+    );
+    assert!(app.workspace_membership.removal_pending_for_test(&id));
+    assert!(
+        !app.workspace_membership.removal_suppressed_for_test(&id),
+        "suppression becomes a tombstone only after removal succeeds"
+    );
+}
+
+#[test]
+fn deleting_current_conversation_does_not_remove_build_membership_with_same_id() {
+    let mut app = test_app_with_agent();
+    let session_id = app.agents[&AgentId(0)]
+        .session
+        .session_id
+        .as_ref()
+        .unwrap()
+        .0
+        .to_string();
+    app.agents.get_mut(&AgentId(0)).unwrap().conversation_entry = true;
+    app.workspace_dashboard_enabled = true;
+
+    let _ = dispatch_task_result(
+        TaskResult::DeleteSessionComplete {
+            source: "current".into(),
+            session_id,
+            after: crate::app::actions::AfterSessionDelete::Stay,
+        },
+        &mut app,
+    );
+
+    assert!(!app.workspace_membership.has_pending_removals_for_test());
+}
+
+#[test]
+fn delete_completion_reports_membership_failure_if_store_became_read_only() {
+    let mut app = test_app_with_agent();
+    app.workspace_dashboard_enabled = true;
+    let temp = tempfile::tempdir().unwrap();
+    let store =
+        xai_grok_dashboard_store::WorkspaceStore::open(&temp.path().join("workspace.db")).unwrap();
+    app.workspace_membership.set_read_only_for_test(
+        store,
+        xai_grok_dashboard_store::WorkspaceSnapshot {
+            grouping: xai_grok_dashboard_store::Grouping::State,
+            members: vec![],
+            data_version: 1,
+        },
+    );
+
+    let _ = dispatch_task_result(
+        TaskResult::DeleteSessionComplete {
+            source: "local".into(),
+            session_id: "deleted-during-schema-race".into(),
+            after: crate::app::actions::AfterSessionDelete::Stay,
+        },
+        &mut app,
+    );
+
+    assert!(
+        read_toast(&app).contains("dashboard membership could not be removed"),
+        "the irreversible history deletion must not be reported as wholly successful"
+    );
 }
 
 #[test]
 fn rename_session_failed_keeps_local_display_name_and_pushes_system_block() {
-    // Pins the documented design decision: a failed on-disk rename
-    // does NOT roll back the local `display_name` cache (the cache
-    // is the source of truth for the modal's rendering and the
-    // disk write is best-effort). The user sees the failure via
-    // the system-block message instead.
+    // Pins the design decision: a failed on-disk rename does NOT roll back the local `display_name` cache
+    // The cache is the source of truth for the modal's rendering and the disk write is best-effort
+    // The user sees the failure via the system-block message instead
     let mut app = test_app_with_agent();
     // Seed the cache as the rename path would have done.
     if let Some(a) = app.agents.get_mut(&AgentId(0)) {
@@ -2016,7 +2276,6 @@ fn rename_session_failed_keeps_local_display_name_and_pushes_system_block() {
         &mut app,
     );
 
-    // No rollback.
     assert_eq!(
         app.agents[&AgentId(0)].display_name.as_deref(),
         Some("optimistic title"),
@@ -2169,15 +2428,13 @@ fn reset_session_title_complete_pushes_system_block() {
 
 // ── GateRefreshed subscription flow ─────────────────────────────
 
-/// Regression: when the 30s gate poll detects the subscription gate has
-/// been lifted, it must emit `CheckSubscription` so the shell refreshes
-/// the JWT. Without this the auth token still lacks the subscription
-/// claim and all API calls return 403.
+/// Regression: when the 30s gate poll detects the subscription gate has been lifted, it must emit `CheckSubscription` so the shell refreshes the JWT.
+/// Until that refresh the auth token lacks the subscription claim and all API calls return 403.
 #[test]
 fn gate_refreshed_emits_check_subscription_on_gate_lift() {
     let mut app = test_app();
     // User starts gated (no subscription).
-    app.gate = Some(xai_grok_shell::auth::GateInfo {
+    app.gate = Some(xai_grok_login::GateInfo {
         message: "SuperGrok subscription required".into(),
         url: Some("https://grok.com/supergrok".into()),
         label: Some("Subscribe".into()),
@@ -2197,7 +2454,6 @@ fn gate_refreshed_emits_check_subscription_on_gate_lift() {
     assert!(app.has_access(), "gate should be lifted");
     assert!(app.welcome_prompt_focused, "prompt should be focused");
 
-    // Must emit CheckSubscription to trigger shell-side JWT refresh.
     assert!(
         effects
             .iter()
@@ -2206,12 +2462,11 @@ fn gate_refreshed_emits_check_subscription_on_gate_lift() {
     );
 }
 
-/// When the gate poll returns settings that still have a gate, no
-/// effects should be emitted and the user stays blocked.
+/// When the gate poll returns settings that still have a gate, no effects are emitted and the user stays blocked.
 #[test]
 fn gate_refreshed_no_effect_when_still_gated() {
     let mut app = test_app();
-    app.gate = Some(xai_grok_shell::auth::GateInfo {
+    app.gate = Some(xai_grok_login::GateInfo {
         message: "Subscribe".into(),
         url: None,
         label: None,
@@ -2249,10 +2504,8 @@ fn gate_refreshed_no_effect_when_already_unblocked() {
     assert!(effects.is_empty(), "no effects when already unblocked");
 }
 
-/// A gate newly imposed by the 30s settings poll (possibly stale) must be
-/// deferred for live verification instead of painting the paywall directly:
-/// the gate is held out of `app.gate` and a `CheckSubscription` +
-/// verify-timeout pair is emitted.
+/// A gate newly imposed by the 30s settings poll (possibly stale) must be deferred for live verification instead of painting the paywall directly.
+/// The gate is held out of `app.gate`, and both `CheckSubscription` and a verify timeout are emitted.
 #[test]
 fn gate_refreshed_newly_blocked_defers_gate_for_verification() {
     let mut app = test_app();
@@ -2290,23 +2543,22 @@ fn gate_refreshed_newly_blocked_defers_gate_for_verification() {
 
 // ── Stale-gate verification resolution ──────────────────────────
 
-fn test_gate() -> xai_grok_shell::auth::GateInfo {
-    xai_grok_shell::auth::GateInfo {
+fn test_gate() -> xai_grok_login::GateInfo {
+    xai_grok_login::GateInfo {
         message: "Subscribe".into(),
         url: None,
         label: None,
     }
 }
 
-/// The live check confirmed access (meta without a gate): the deferred
-/// stale gate is dropped and the paywall never shows.
+/// The live check confirmed access (meta without a gate): the deferred stale gate is dropped and the paywall never shows.
 #[test]
 fn verify_check_with_meta_resolves_pending_gate() {
     let mut app = test_app();
     let _effs = app.impose_gate(test_gate());
     assert!(app.has_access());
 
-    let meta = serde_json::to_value(xai_grok_shell::auth::AuthMeta::default()).unwrap();
+    let meta = serde_json::to_value(xai_grok_login::AuthMeta::default()).unwrap();
     dispatch_task_result(
         TaskResult::CheckSubscriptionComplete {
             verify: Some(app.gate_verify_gen),
@@ -2319,14 +2571,13 @@ fn verify_check_with_meta_resolves_pending_gate() {
     assert!(app.pending_gate_verification.is_none());
 }
 
-/// The live check confirmed the block (meta WITH a gate): the paywall
-/// shows with the authoritative gate.
+/// The live check confirmed the block (meta WITH a gate): the paywall shows with the authoritative gate.
 #[test]
 fn verify_check_with_gated_meta_shows_gate() {
     let mut app = test_app();
     let _effs = app.impose_gate(test_gate());
 
-    let meta = serde_json::to_value(xai_grok_shell::auth::AuthMeta {
+    let meta = serde_json::to_value(xai_grok_login::AuthMeta {
         gate: Some(test_gate()),
         ..Default::default()
     })
@@ -2343,8 +2594,7 @@ fn verify_check_with_gated_meta_shows_gate() {
     assert!(app.pending_gate_verification.is_none());
 }
 
-/// The verification's own check failed (meta None) while its stale gate
-/// was deferred: err on blocking — the deferred gate is promoted.
+/// The verification's own check failed (meta None) while its stale gate was deferred: err on blocking, so the deferred gate is promoted.
 #[test]
 fn verify_check_failure_promotes_pending_gate() {
     let mut app = test_app();
@@ -2368,10 +2618,9 @@ fn verify_check_failure_promotes_pending_gate() {
     );
 }
 
-/// A failed GENERIC check (watch / focus / paywall chain — no generation)
-/// must never promote a deferred gate: only the deferral's own
-/// generation-scoped check or timeout may (a superseded or unrelated check
-/// failing is not evidence about the current verification).
+/// A failed GENERIC check (the watch, focus, or paywall chain; no generation) must never promote a deferred gate.
+/// Only the deferral's own generation-scoped check or timeout may promote it.
+/// A superseded or unrelated check failing is not evidence about the current verification.
 #[test]
 fn check_subscription_complete_failure_leaves_pending_gate_untouched() {
     let mut app = test_app();
@@ -2396,8 +2645,7 @@ fn check_subscription_complete_failure_leaves_pending_gate_untouched() {
     );
 }
 
-/// A failed verification check from a SUPERSEDED deferral (older
-/// generation) must not promote the newer pending gate.
+/// A failed verification check from a SUPERSEDED deferral (older generation) must not promote the newer pending gate.
 #[test]
 fn verify_check_stale_generation_failure_is_ignored() {
     let mut app = test_app();
@@ -2422,8 +2670,7 @@ fn verify_check_stale_generation_failure_is_ignored() {
     assert!(app.pending_gate_verification.is_some());
 }
 
-/// A check failure with no deferred gate (the plain paywall-poller path)
-/// must not invent a gate.
+/// A check failure with no deferred gate (the plain paywall-poller path) must not invent a gate.
 #[test]
 fn check_subscription_complete_failure_without_pending_gate_is_noop() {
     let mut app = test_app();
@@ -2437,9 +2684,8 @@ fn check_subscription_complete_failure_without_pending_gate_is_noop() {
     assert!(app.has_access());
 }
 
-/// The verification window expired before the live check resolved:
-/// err on blocking — the deferred gate is promoted, and the freshly shown
-/// paywall gets the 5s auto-lift chain.
+/// The verification window expired before the live check resolved: err on blocking.
+/// The deferred gate is promoted, and the freshly shown paywall gets the 5s auto-lift chain.
 #[test]
 fn gate_verify_timeout_promotes_pending_gate() {
     let mut app = test_app();
@@ -2474,7 +2720,7 @@ fn gate_verify_timeout_noop_when_already_resolved() {
     let _effs = app.impose_gate(test_gate());
     let generation = app.gate_verify_gen;
     // Live check resolved first (access confirmed).
-    let meta = serde_json::to_value(xai_grok_shell::auth::AuthMeta::default()).unwrap();
+    let meta = serde_json::to_value(xai_grok_login::AuthMeta::default()).unwrap();
     dispatch_task_result(
         TaskResult::CheckSubscriptionComplete {
             verify: None,
@@ -2490,15 +2736,14 @@ fn gate_verify_timeout_noop_when_already_resolved() {
     );
 }
 
-/// A timeout from a SUPERSEDED verification (older generation) must not
-/// promote a newer deferred gate whose own live check is still in flight.
+/// A timeout from a SUPERSEDED verification (older generation) must not promote a newer deferred gate whose own live check is still in flight.
 #[test]
 fn gate_verify_timeout_stale_generation_is_ignored() {
     let mut app = test_app();
-    // First deferral resolves (access confirmed) ...
+    // First deferral resolves (access confirmed)
     let _effs = app.impose_gate(test_gate());
     let stale_gen = app.gate_verify_gen;
-    let meta = serde_json::to_value(xai_grok_shell::auth::AuthMeta::default()).unwrap();
+    let meta = serde_json::to_value(xai_grok_login::AuthMeta::default()).unwrap();
     dispatch_task_result(
         TaskResult::CheckSubscriptionComplete {
             verify: None,
@@ -2506,12 +2751,11 @@ fn gate_verify_timeout_stale_generation_is_ignored() {
         },
         &mut app,
     );
-    // ... then a SECOND gate is deferred (check in flight).
+    // Then a SECOND gate is deferred (its check is in flight)
     let _effs = app.impose_gate(test_gate());
     assert!(app.has_access());
 
-    // The FIRST deferral's timer fires now — it must not promote the
-    // second deferral's pending gate.
+    // The FIRST deferral's timer fires now; it must not promote the second deferral's pending gate
     let effects = dispatch_task_result(
         TaskResult::GateVerifyTimeout {
             generation: stale_gen,
@@ -2530,15 +2774,14 @@ fn gate_verify_timeout_stale_generation_is_ignored() {
     );
 }
 
-/// A verified gate landing via `CheckSubscriptionComplete` (gated meta while
-/// ungated) must arm the 5s paywall auto-check chain — verify-before-paywall
-/// paths never went through the login-path chain start.
+/// A verified gate landing via `CheckSubscriptionComplete` (gated meta while ungated) must start the 5s paywall auto-check chain.
+/// Verify-before-paywall paths never went through the login-path chain start.
 #[test]
 fn verified_gate_via_check_complete_starts_paywall_chain() {
     let mut app = test_app();
     let _effs = app.impose_gate(test_gate());
 
-    let meta = serde_json::to_value(xai_grok_shell::auth::AuthMeta {
+    let meta = serde_json::to_value(xai_grok_login::AuthMeta {
         gate: Some(test_gate()),
         ..Default::default()
     })
@@ -2563,9 +2806,8 @@ fn verified_gate_via_check_complete_starts_paywall_chain() {
         "verified gate must schedule the 5s chain; got: {effects:?}"
     );
 
-    // Steady-state paywall-poller responses (already gated) must NOT fan
-    // out extra timers.
-    let meta = serde_json::to_value(xai_grok_shell::auth::AuthMeta {
+    // Steady-state paywall-poller responses (already gated) must NOT fan out extra timers
+    let meta = serde_json::to_value(xai_grok_login::AuthMeta {
         gate: Some(test_gate()),
         ..Default::default()
     })
@@ -2583,11 +2825,9 @@ fn verified_gate_via_check_complete_starts_paywall_chain() {
     );
 }
 
-/// `GateRefreshed` with gate-free settings while a deferred gate awaits
-/// verification must drop the pending copy — the fresh settings are newer
-/// than the stale snapshot that produced it — and still run the lift
-/// bookkeeping (`CheckSubscription` for the JWT refresh), since the pending
-/// deferral means the user was conceptually blocked.
+/// `GateRefreshed` with gate-free settings while a deferred gate awaits verification must drop the pending copy.
+/// The fresh settings are newer than the stale snapshot that produced it.
+/// It must still run the lift bookkeeping (`CheckSubscription` for the JWT refresh).
 #[test]
 fn gate_refreshed_without_gate_clears_pending_verification() {
     let mut app = test_app();
@@ -2629,8 +2869,7 @@ fn logout_clears_pending_gate_verification() {
     assert!(app.last_subscription_check_at.is_none());
 }
 
-/// `apply_setting_rollback` on a known key reverts the in-memory
-/// cache without emitting any new effects.
+/// `apply_setting_rollback` on a known key reverts the in-memory cache without emitting any new effects.
 #[test]
 fn rollback_known_key_reverts_cache_and_no_effect() {
     use crate::settings::SettingValue;
@@ -2651,12 +2890,10 @@ fn rollback_known_key_reverts_cache_and_no_effect() {
         effects.is_empty(),
         "rollback path must NOT emit any new Effects (would loop)",
     );
-    // Cache is reverted.
     assert!(!app.current_ui.compact_mode);
 }
 
-/// `apply_setting_rollback` on an unknown key surfaces a tracing
-/// error and a secondary toast, but does not panic.
+/// `apply_setting_rollback` on an unknown key surfaces a tracing error and a secondary toast, but does not panic.
 #[test]
 fn rollback_unknown_key_does_not_panic() {
     use crate::settings::SettingValue;
@@ -2670,8 +2907,7 @@ fn rollback_unknown_key_does_not_panic() {
         &mut app,
     );
     assert!(effects.is_empty());
-    // No assertion on cache state (no arm to rollback through);
-    // the toast surfaces the inconsistency to the user.
+    // No assertion on cache state (no arm to rollback through); the toast surfaces the inconsistency to the user
 }
 
 #[test]
@@ -2692,15 +2928,14 @@ fn persist_failed_toast_contains_key_and_error() {
     assert!(toast.contains('\u{2717}'));
 }
 
-/// Rollback path must revert BOTH `app.current_ui` AND the
-/// thread-local cache — failing only on one is the bug class
-/// the inner/outer split exists to prevent.
+/// The rollback path must revert BOTH `app.current_ui` AND the thread-local cache.
+/// Failing only on one is the bug class the inner/outer split exists to prevent.
 #[test]
 fn rollback_reverts_thread_local_cache_too() {
     use crate::settings::SettingValue;
     std::thread::spawn(|| {
         let mut app = test_app_with_agent();
-        // Optimistic set: cache → true.
+        // Optimistic set: the cache becomes true
         let _ = dispatch(Action::SetCompactMode(true), &mut app);
         assert!(crate::appearance::cache::load());
 
@@ -2727,8 +2962,7 @@ fn rollback_reverts_thread_local_cache_too() {
     .unwrap();
 }
 
-/// `set_yolo_mode_inner` is the backstop: even a (stale) rollback
-/// value of "always-approve" must not re-enable yolo under the pin.
+/// `set_yolo_mode_inner` is the backstop: even a (stale) rollback value of "always-approve" must not re-enable yolo under the pin.
 #[test]
 fn rollback_to_always_approve_blocked_by_policy_pin() {
     use crate::settings::SettingValue;
@@ -2754,14 +2988,15 @@ fn rollback_to_always_approve_blocked_by_policy_pin() {
 
 // -- Degraded conversations lane (SessionListLoaded.partial) ----------
 
-/// A degraded conversations lane surfaces an actionable notice instead of
-/// the misleading "No sessions found" toast.
+/// A degraded conversations lane surfaces an actionable notice instead of the misleading "No sessions found" toast.
 #[test]
 fn session_list_partial_no_oauth_surfaces_login_hint() {
     let mut app = test_app_with_agent();
     open_session_picker_with(&mut app, vec![]);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation: modal_picker_generation(&app),
             scope: ListScope::Cwd,
             sessions: vec![],
             partial: Some(crate::app::effects::ConversationsPartial::NoOauth),
@@ -2776,11 +3011,13 @@ fn session_list_partial_no_oauth_surfaces_login_hint() {
     );
 }
 
-/// Notice fires once per relaxed run; survives search, re-arms on a cwd-scoped browse.
+/// The notice fires once per relaxed run; it survives search and comes back on a cwd-scoped browse.
 #[test]
 fn session_list_relax_surfaces_notice_once() {
-    let relax_response = || {
+    let relax_response = |generation| {
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation,
             scope: ListScope::Repo,
             sessions: vec![make_picker_entry("local-other-cwd-1", "/elsewhere")],
             partial: None,
@@ -2791,14 +3028,15 @@ fn session_list_relax_surfaces_notice_once() {
 
     let mut app = test_app_with_agent();
     open_session_picker_with(&mut app, vec![]);
-    let _ = dispatch(relax_response(), &mut app);
+    let generation = modal_picker_generation(&app);
+    let _ = dispatch(relax_response(generation), &mut app);
     assert!(
         read_toast(&app).contains("this repo"),
         "the relaxed scope must be explained"
     );
 
     app.agents.get_mut(&AgentId(0)).unwrap().toast = None;
-    let _ = dispatch(relax_response(), &mut app);
+    let _ = dispatch(relax_response(generation), &mut app);
     assert!(
         app.agents[&AgentId(0)].toast.is_none(),
         "the relax notice must not repeat while the scope is unchanged"
@@ -2806,6 +3044,8 @@ fn session_list_relax_surfaces_notice_once() {
 
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation,
             scope: ListScope::Cwd,
             sessions: vec![],
             partial: None,
@@ -2814,7 +3054,7 @@ fn session_list_relax_surfaces_notice_once() {
         }),
         &mut app,
     );
-    let _ = dispatch(relax_response(), &mut app);
+    let _ = dispatch(relax_response(generation), &mut app);
     assert!(
         app.agents[&AgentId(0)].toast.is_none(),
         "a search response must not re-arm the relax notice"
@@ -2822,6 +3062,8 @@ fn session_list_relax_surfaces_notice_once() {
 
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation,
             scope: ListScope::Cwd,
             sessions: vec![make_picker_entry("local-here-1", "/here")],
             partial: None,
@@ -2830,7 +3072,7 @@ fn session_list_relax_surfaces_notice_once() {
         }),
         &mut app,
     );
-    let _ = dispatch(relax_response(), &mut app);
+    let _ = dispatch(relax_response(generation), &mut app);
     assert!(
         read_toast(&app).contains("this repo"),
         "a scope change back to relaxed must notify again"
@@ -2844,6 +3086,8 @@ fn session_list_relax_on_welcome_does_not_latch() {
     assert!(matches!(app.active_view, ActiveView::Welcome));
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::Welcome,
+            generation: app.session_picker_generation,
             scope: ListScope::All,
             sessions: vec![make_picker_entry("local-other-cwd-1", "/elsewhere")],
             partial: None,
@@ -2858,12 +3102,13 @@ fn session_list_relax_on_welcome_does_not_latch() {
     );
 }
 
-/// The notice is keyed by browse cwd: a different directory re-notifies even
-/// though the prior latch is set.
+/// The notice is keyed by browse cwd: a different directory re-notifies even though the prior latch is set.
 #[test]
 fn session_list_relax_renotifies_when_cwd_changes() {
-    let relax = || {
+    let relax = |generation| {
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation,
             scope: ListScope::Repo,
             sessions: vec![make_picker_entry("local-other-cwd-1", "/elsewhere")],
             partial: None,
@@ -2874,9 +3119,10 @@ fn session_list_relax_renotifies_when_cwd_changes() {
 
     let mut app = test_app_with_agent();
     open_session_picker_with(&mut app, vec![]);
+    let generation = modal_picker_generation(&app);
 
     app.cwd = std::path::PathBuf::from("/repo/a");
-    let _ = dispatch(relax(), &mut app);
+    let _ = dispatch(relax(generation), &mut app);
     assert!(
         read_toast(&app).contains("this repo"),
         "the first cwd must notify"
@@ -2884,7 +3130,7 @@ fn session_list_relax_renotifies_when_cwd_changes() {
 
     app.agents.get_mut(&AgentId(0)).unwrap().toast = None;
     app.cwd = std::path::PathBuf::from("/repo/b");
-    let _ = dispatch(relax(), &mut app);
+    let _ = dispatch(relax(generation), &mut app);
     assert!(
         read_toast(&app).contains("this repo"),
         "a different cwd must re-notify even with the prior latch set"
@@ -2898,6 +3144,8 @@ fn session_list_empty_without_partial_keeps_generic_toast() {
     open_session_picker_with(&mut app, vec![]);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation: modal_picker_generation(&app),
             scope: ListScope::Cwd,
             sessions: vec![],
             partial: None,
@@ -2909,14 +3157,15 @@ fn session_list_empty_without_partial_keeps_generic_toast() {
     assert!(read_toast(&app).contains("No sessions found"));
 }
 
-/// Non-empty degraded list under chat mode (welcome-fallback branch):
-/// entries land AND the retry notice surfaces; Build mode stays silent.
+/// Non-empty degraded list under chat mode (welcome-fallback branch): entries land AND the retry notice surfaces; Build mode stays silent.
 #[test]
 fn session_list_nonempty_partial_toasts_retry_in_chat_mode_only() {
     let mut app = test_app_with_agent();
     app.chat_mode = true;
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::Welcome,
+            generation: app.session_picker_generation,
             scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-part-1")],
             partial: Some(crate::app::effects::ConversationsPartial::Timeout),
@@ -2938,6 +3187,8 @@ fn session_list_nonempty_partial_toasts_retry_in_chat_mode_only() {
     let mut app = test_app_with_agent();
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::Welcome,
+            generation: app.session_picker_generation,
             scope: ListScope::Cwd,
             sessions: vec![make_picker_entry("local-part-1", "/r")],
             partial: Some(crate::app::effects::ConversationsPartial::Timeout),
@@ -2952,8 +3203,7 @@ fn session_list_nonempty_partial_toasts_retry_in_chat_mode_only() {
     );
 }
 
-/// Modal variant of the non-empty degraded-lane notice: same chat-mode-only
-/// gating as the welcome-fallback branch.
+/// Modal variant of the non-empty degraded-lane notice: same chat-mode-only gating as the welcome-fallback branch.
 #[test]
 fn session_list_nonempty_partial_modal_toasts_in_chat_mode_only() {
     use crate::views::modal::ActiveModal;
@@ -2962,6 +3212,8 @@ fn session_list_nonempty_partial_modal_toasts_in_chat_mode_only() {
     open_session_picker_with(&mut app, vec![]);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation: modal_picker_generation(&app),
             scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-part-m1")],
             partial: Some(crate::app::effects::ConversationsPartial::Timeout),
@@ -2991,6 +3243,8 @@ fn session_list_nonempty_partial_modal_toasts_in_chat_mode_only() {
     open_session_picker_with(&mut app, vec![]);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation: modal_picker_generation(&app),
             scope: ListScope::Cwd,
             sessions: vec![make_picker_entry("local-part-m1", "/r")],
             partial: Some(crate::app::effects::ConversationsPartial::Timeout),
@@ -3002,5 +3256,179 @@ fn session_list_nonempty_partial_modal_toasts_in_chat_mode_only() {
     assert!(
         app.agents[&AgentId(0)].toast.is_none(),
         "Build-mode modal non-empty degraded list stays silent"
+    );
+}
+
+/// Drive `CompactComplete` with a wire error mapped exactly as the `Effect::Compact` arm maps it, and return the resulting session events.
+fn compact_complete_events_for(wire_error: acp::Error) -> Vec<SessionEvent> {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .session
+        .start_command(crate::app::agent::AgentCommand::Compact);
+    dispatch_task_result(
+        TaskResult::CompactComplete {
+            agent_id: id,
+            result: Err(crate::app::effects::compact_error(&wire_error)),
+        },
+        &mut app,
+    );
+    let agent = &app.agents[&id];
+    (0..agent.scrollback.len())
+        .filter_map(|i| match agent.scrollback.entry(i).map(|e| &e.block) {
+            Some(RenderBlock::SessionEvent(ev)) => Some(ev.event.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn compaction_failed_message(events: &[SessionEvent]) -> Option<String> {
+    events.iter().find_map(|ev| match ev {
+        SessionEvent::CompactionFailed { error } => Some(error.clone()),
+        _ => None,
+    })
+}
+
+fn routed_to_cancelled(events: &[SessionEvent]) -> bool {
+    events
+        .iter()
+        .any(|ev| matches!(ev, SessionEvent::CompactionCancelled))
+        && !events
+            .iter()
+            .any(|ev| matches!(ev, SessionEvent::CompactionFailed { .. }))
+}
+
+#[test]
+fn compact_complete_error_surfaces_real_error_in_scrollback() {
+    use xai_grok_shell::session::helpers::session_compact::{CompactErrorKind, compact_error_data};
+    // Real wire shape: typed data carrying the shell-normalized detail.
+    let events =
+        compact_complete_events_for(acp::Error::internal_error().data(compact_error_data(
+            CompactErrorKind::Failed,
+            "API error (status 400 Bad Request): invalid_image: too big",
+        )));
+    let error = compaction_failed_message(&events);
+    assert_eq!(
+        error.as_deref(),
+        Some("API error (status 400 Bad Request): invalid_image: too big"),
+        "manual /compact failure must surface the real error, not an empty string"
+    );
+    assert_eq!(
+        SessionEvent::CompactionFailed {
+            error: error.unwrap_or_default(),
+        }
+        .message(),
+        "Compaction failed - API error (status 400 Bad Request): invalid_image: too big"
+    );
+}
+
+#[test]
+fn compact_complete_typed_detail_between_the_two_caps_is_not_retruncated() {
+    use xai_grok_shell::session::helpers::session_compact::{CompactErrorKind, compact_error_data};
+    // 250 chars: over the pager sanitize cap, under the shell's 300-byte cap
+    // It must reach scrollback byte-identical, exactly as the auto path renders it
+    let detail = format!(
+        "API error (status 500 Internal Server Error): {}",
+        "y".repeat(204)
+    );
+    assert_eq!(detail.chars().count(), 250);
+    let events = compact_complete_events_for(
+        acp::Error::internal_error().data(compact_error_data(CompactErrorKind::Failed, &detail)),
+    );
+    assert_eq!(
+        compaction_failed_message(&events).as_deref(),
+        Some(detail.as_str()),
+        "shell-normalized detail must not be re-truncated or rewritten by the pager"
+    );
+}
+
+#[test]
+fn compact_complete_typed_cancellation_routes_to_cancelled() {
+    use xai_grok_shell::session::helpers::session_compact::{CompactErrorKind, compact_error_data};
+    let events = compact_complete_events_for(acp::Error::internal_error().data(
+        compact_error_data(CompactErrorKind::Cancelled, COMPACT_CANCELLED_MSG),
+    ));
+    assert!(
+        routed_to_cancelled(&events),
+        "typed cancel kind must route to CompactionCancelled, got {events:?}"
+    );
+}
+
+#[test]
+fn compact_complete_old_shell_string_cancel_still_routes_to_cancelled() {
+    // Old shells send bare strings with no kind; the text fallback still routes.
+    let events =
+        compact_complete_events_for(acp::Error::internal_error().data(COMPACT_CANCELLED_MSG));
+    assert!(
+        routed_to_cancelled(&events),
+        "old-shell string cancel must route to CompactionCancelled, got {events:?}"
+    );
+}
+
+#[test]
+fn compact_complete_typed_failure_echoing_cancel_phrase_stays_a_failure() {
+    use xai_grok_shell::session::helpers::session_compact::{CompactErrorKind, compact_error_data};
+    // An upstream echo of the cancel phrase must not reroute a typed failure.
+    let echoing = format!("upstream rejected input containing '{COMPACT_CANCELLED_MSG}' marker");
+    let events = compact_complete_events_for(
+        acp::Error::internal_error().data(compact_error_data(CompactErrorKind::Failed, &echoing)),
+    );
+    assert_eq!(
+        compaction_failed_message(&events).as_deref(),
+        Some(echoing.as_str()),
+        "typed failure must render as a failure with its text, got {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|ev| matches!(ev, SessionEvent::CompactionCancelled)),
+        "an echoed cancel phrase must not misroute a typed failure"
+    );
+}
+
+#[test]
+fn compact_complete_renders_one_failure_line_per_completion() {
+    use xai_grok_shell::session::helpers::session_compact::{CompactErrorKind, compact_error_data};
+    // One /compact failure must paint exactly one line: `finish_command()` exits the compact state on the first completion
+    // A stray duplicate completion is dropped by the state guard instead of double-rendering
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .session
+        .start_command(crate::app::agent::AgentCommand::Compact);
+    let wire_error = acp::Error::internal_error().data(compact_error_data(
+        CompactErrorKind::Failed,
+        "API error (status 500 Internal Server Error): should never be seen",
+    ));
+    for _ in 0..2 {
+        dispatch_task_result(
+            TaskResult::CompactComplete {
+                agent_id: id,
+                result: Err(crate::app::effects::compact_error(&wire_error)),
+            },
+            &mut app,
+        );
+    }
+    let agent = &app.agents[&id];
+    let failure_lines = (0..agent.scrollback.len())
+        .filter(|&i| {
+            matches!(
+                agent.scrollback.entry(i).map(|e| &e.block),
+                Some(RenderBlock::SessionEvent(ev))
+                    if matches!(ev.event, SessionEvent::CompactionFailed { .. })
+            )
+        })
+        .count();
+    assert_eq!(
+        failure_lines, 1,
+        "duplicate CompactComplete must not render a second failure line"
+    );
+    assert!(
+        agent.session.state.is_idle(),
+        "compact state must be exited after the first completion"
     );
 }

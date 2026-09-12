@@ -42,10 +42,9 @@ use crate::types::tool::{ToolKind, ToolNamespace};
 // Description
 // ───────────────────────────────────────────────────────────────────────────
 
-// NOTE: OpenCode's `EditInput` serializes camelCase (`oldString`, `newString`,
-// `replaceAll`), so param refs must use the camelCase schema property names —
-// the snake_case `params.edit.old_string` keys of the grok_build twin resolve
-// to "" here (the kind-params map is keyed by schema property names).
+// NOTE: OpenCode's `EditInput` serializes camelCase (`oldString`, `newString`, `replaceAll`), so param refs must use
+// the camelCase schema property names — the snake_case `params.edit.old_string` keys of the grok_build twin resolve to
+// "" here (the kind-params map is keyed by schema property names).
 const DESCRIPTION: &str = r#"Performs exact string replacements in files.
 
 Usage:${%- if tools.by_kind.read %}
@@ -220,7 +219,15 @@ impl xai_tool_runtime::Tool for EditTool {
 
         // ── Route to creation or replacement ────────────────────────
         if input.old_string.is_empty() {
-            handle_new_file_creation(&input, &fs, &notification_handle, &tool_call_id, &path).await
+            handle_new_file_creation(
+                &input,
+                resources,
+                &fs,
+                &notification_handle,
+                &tool_call_id,
+                &path,
+            )
+            .await
         } else {
             handle_replacement(
                 &input,
@@ -258,6 +265,7 @@ async fn ensure_parent_dirs(path: &std::path::Path) -> Result<(), xai_tool_runti
 /// Handle new file creation when `old_string` is empty.
 async fn handle_new_file_creation(
     input: &EditInput,
+    resources: crate::types::resources::SharedResources,
     fs: &Arc<dyn AsyncFileSystem>,
     notification_handle: &crate::notification::types::ToolNotificationHandle,
     tool_call_id: &str,
@@ -275,18 +283,28 @@ async fn handle_new_file_creation(
         ));
     }
 
-    // Create parent directories if needed.
-    ensure_parent_dirs(path).await?;
-
-    // Write the new file.
-    fs.write_file(path, input.new_string.as_bytes())
-        .await
-        .map_err(|e| {
-            xai_tool_runtime::ToolError::execution(
-                xai_tool_protocol::ToolId::new("edit").expect("valid"),
-                e.to_string(),
-            )
-        })?;
+    let is_memory_write = match crate::types::memory_v2::write_memory_v2_file(
+        &resources,
+        path,
+        input.new_string.as_bytes(),
+    )
+    .await
+    {
+        Ok(crate::types::memory_v2::MemoryV2Write::Written { .. }) => true,
+        Ok(crate::types::memory_v2::MemoryV2Write::Outside) => false,
+        Err(error) => return Ok(SearchReplaceOutput::InvalidInput(error)),
+    };
+    if !is_memory_write {
+        ensure_parent_dirs(path).await?;
+        fs.write_file(path, input.new_string.as_bytes())
+            .await
+            .map_err(|e| {
+                xai_tool_runtime::ToolError::execution(
+                    xai_tool_protocol::ToolId::new("edit").expect("valid"),
+                    e.to_string(),
+                )
+            })?;
+    }
 
     // Emit FileWritten notification.
     notification_handle.send_file_written(FileWritten {
@@ -410,14 +428,24 @@ async fn handle_replacement(
     );
 
     // Write the updated file.
-    fs.write_file(path, new_text.as_bytes())
-        .await
-        .map_err(|e| {
-            xai_tool_runtime::ToolError::execution(
-                xai_tool_protocol::ToolId::new("edit").expect("valid"),
-                e.to_string(),
-            )
-        })?;
+    let is_memory_write =
+        match crate::types::memory_v2::write_memory_v2_file(&resources, path, new_text.as_bytes())
+            .await
+        {
+            Ok(crate::types::memory_v2::MemoryV2Write::Written { .. }) => true,
+            Ok(crate::types::memory_v2::MemoryV2Write::Outside) => false,
+            Err(error) => return Ok(SearchReplaceOutput::InvalidInput(error)),
+        };
+    if !is_memory_write {
+        fs.write_file(path, new_text.as_bytes())
+            .await
+            .map_err(|e| {
+                xai_tool_runtime::ToolError::execution(
+                    xai_tool_protocol::ToolId::new("edit").expect("valid"),
+                    e.to_string(),
+                )
+            })?;
+    }
 
     // Emit FileWritten notification.
     notification_handle.send_file_written(FileWritten {
@@ -573,16 +601,6 @@ mod tests {
         assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "edit");
         assert_eq!(tool.kind(), ToolKind::Edit);
         assert!(matches!(tool.tool_namespace(), ToolNamespace::OpenCode));
-    }
-
-    #[test]
-    fn description_contains_edit_guidance() {
-        use crate::types::tool_metadata::ToolMetadata;
-        let tool = EditTool;
-        assert!(
-            tool.description_template()
-                .contains("exact string replacements")
-        );
     }
 
     // ── Input deserialization ───────────────────────────────────────

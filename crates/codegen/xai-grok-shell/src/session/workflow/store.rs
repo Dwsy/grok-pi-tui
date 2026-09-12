@@ -142,7 +142,7 @@ impl WorkflowRunStore {
             let args_json = serde_json::to_vec_pretty(args).map_err(io::Error::other)?;
             atomic_write_new(&run_dir.join("args.json"), &args_json)?;
             if let Some(effort) = effort {
-                atomic_write_new(&run_dir.join("effort"), effort.as_str().as_bytes())?;
+                atomic_write_new(&run_dir.join("effort"), effort.as_ref().as_bytes())?;
             }
             atomic_write_new(&script_revision_path(&run_dir, 0), script.as_bytes())?;
             atomic_write_replace(&run_dir.join("script.rhai"), script.as_bytes())?;

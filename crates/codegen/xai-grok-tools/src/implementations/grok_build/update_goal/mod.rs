@@ -80,13 +80,9 @@ pub enum UpdateGoalAck {
         attempt: u32,
         max_runs: u32,
     },
-    /// Mid-turn `completed: true` was queued for classifier
-    /// verification at turn-end. The verdict arrives as a system
-    /// reminder in the next user turn; the model must NOT call
-    /// `update_goal(completed: true)` again until then.
-    ///
-    /// Invariant: the ack is resolved IMMEDIATELY at defer time, NOT
-    /// parked — parking deadlocks the single-task actor.
+    /// Mid-turn `completed: true` was queued for classifier verification at turn-end. The verdict arrives as a system
+    /// reminder in the next user turn; the model must NOT call `update_goal(completed: true)` again until then. Invariant:
+    /// the ack is resolved IMMEDIATELY at defer time, NOT parked — parking deadlocks the single-task actor.
     DeferredToTurnEnd { pending_depth: u32 },
     /// Update was rejected; `reason` discriminates the cause and
     /// drives the tool-error code, `detail` is the model-facing
@@ -111,13 +107,9 @@ pub enum RejectReason {
     /// `completed: true` against a non-Active goal for reasons OTHER
     /// than the classifier cap.
     NonActive,
-    /// The goal harness is not enabled for this session (no `/goal`
-    /// run in progress), so there is no orchestration to update. The
-    /// `update_goal` tool and its `GoalUpdateHandle` are always
-    /// exposed, so a model can call the tool outside goal mode; the
-    /// drain rejects cleanly with this reason instead of dropping the
-    /// ack oneshot (which would surface as the misleading
-    /// `harness_no_ack` "dropped the response channel" error).
+    /// The goal harness is not enabled for this session (no `/goal` run in progress), so there is no orchestration to update. The `update_goal`
+    /// tool and its `GoalUpdateHandle` are always exposed, so a model can call the tool outside goal mode; the drain rejects cleanly with this
+    /// reason instead of dropping the ack oneshot (which would surface as the misleading `harness_no_ack` "dropped the response channel" error).
     HarnessDisabled,
     /// Reserved for strict-mode eviction surfacing; not currently
     /// constructed (the new design acks evicted entries as
@@ -277,10 +269,9 @@ impl xai_tool_runtime::Tool for UpdateGoalTool {
             )
         })?;
 
-        // Block the tool reply on the actor's verdict-aware ack.
-        // An `Err` here means the actor dropped the sender without
-        // responding (harness bug) — surface a loud tool error
-        // instead of a misleading `success: true`.
+        // Block the tool reply on the actor's verdict-aware ack. An `Err` here means the actor
+        // dropped the sender without responding (harness bug) — surface a loud tool error instead
+        // of a misleading `success: true`.
         let ack = match ack_rx.await {
             Ok(ack) => ack,
             Err(_) => {

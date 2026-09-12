@@ -10,38 +10,22 @@
 use std::path::{Path, PathBuf};
 
 use crate::app::actions::Action;
-use crate::slash::command::{AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand};
+use crate::slash::command::{
+    AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand, slash_meta,
+};
 
 /// Export the current conversation to a file or clipboard.
 pub struct ExportCommand;
 
 impl SlashCommand for ExportCommand {
-    fn name(&self) -> &str {
-        "export"
-    }
-
-    fn description(&self) -> &str {
-        "Export the current conversation to a file or clipboard"
-    }
-
-    fn session_scoped(&self) -> bool {
-        true
-    }
-
-    fn usage(&self) -> &str {
-        "/export [filename]"
-    }
-
-    fn takes_args(&self) -> bool {
-        true
-    }
-
-    fn args_required(&self) -> bool {
-        false
-    }
-
-    fn arg_placeholder(&self) -> Option<&str> {
-        Some("[filename]")
+    slash_meta! {
+        name: "export",
+        description: "Export the current conversation to a file or clipboard",
+        usage: "/export [filename]",
+        takes_args: true,
+        args_required: false,
+        session_scoped: true,
+        arg_placeholder: "[filename]",
     }
 
     fn suggest_args(&self, ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
@@ -65,21 +49,9 @@ impl SlashCommand for ExportCommand {
     }
 }
 
-/// List filesystem entries for path completion in the `/export` args dropdown.
-///
-/// Parses the typed query to extract a directory prefix, lists its contents,
-/// and returns `ArgItem`s. Directories get a trailing `/` in `insert_text` so
-/// the dropdown stays open for drill-down (same trick `/model` uses with
-/// trailing space for effort chaining).
-///
-/// The `SlashController` handles nucleo fuzzy ranking on the returned items
-/// automatically — we just provide the candidates.
-///
-/// Synchronous `read_dir` — same pattern as `/model` and `/theme` which query
-/// `ModelState` synchronously. Local directory listing is sub-millisecond;
-/// the 1000-entry pre-sort cap guards against pathological directories.
-/// Moving to the `@`-style background daemon would require adding tick-based
-/// polling to the slash command system (which is currently event-driven only).
+/// Directories get a trailing `/` in `insert_text` so the dropdown stays open for drill-down (same trick `/model`
+/// uses with trailing space for effort chaining). Moving to the `@`-style background daemon would require adding
+/// tick-based polling to the slash command system (which is currently event-driven only).
 fn list_path_completions(cwd: &Path, query: &str) -> Vec<ArgItem> {
     let trimmed = query.trim_start();
     if trimmed.is_empty() {

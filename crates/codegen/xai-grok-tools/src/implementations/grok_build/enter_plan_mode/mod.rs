@@ -27,18 +27,14 @@ use crate::types::tool::{ToolKind, ToolNamespace};
 use std::path::Path;
 use std::sync::Arc;
 
-/// Input for the `EnterPlanMode` tool.
-///
-/// Empty object — no parameters. The decision to enter plan mode is a binary
-/// gate. All configuration (workflow variant, explore agent count, etc.) comes
+/// Input for the `EnterPlanMode` tool. Empty object — no parameters. The decision to enter plan
+/// mode is a binary gate. All configuration (workflow variant, explore agent count, etc.) comes
 /// from feature flags and environment variables, not from the tool call.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct EnterPlanModeInput {}
 
-/// `EnterPlanMode` tool: signals plan mode entry and seeds the session plan
-/// file, returning a [`PlanFileSeedStatus`].
-///
-/// Params: `()` — no per-tool configuration.
+/// `EnterPlanMode` tool: signals plan mode entry and seeds the session plan file, returning a
+/// [`PlanFileSeedStatus`]. Params: `()` — no per-tool configuration.
 #[derive(Debug, Default)]
 pub struct EnterPlanModeTool;
 
@@ -176,10 +172,9 @@ impl xai_tool_runtime::Tool for EnterPlanModeTool {
     }
 }
 
-/// Probe the plan file; create an empty one only on not-found.
-///
-/// Never truncates existing content. Non-NotFound read errors fail closed as
-/// [`PlanFileSeedStatus::Missing`] without calling `write_file`.
+/// Probe the plan file; create an empty one only on not-found. Never truncates existing content.
+/// Non-NotFound read errors fail closed as [`PlanFileSeedStatus::Missing`] without calling
+/// `write_file`.
 async fn probe_or_create_empty_plan_file(
     fs: &dyn AsyncFileSystem,
     path: &Path,
@@ -239,6 +234,25 @@ mod tests {
         (resources, plan)
     }
 
+    /// Compiled Empty-seed peer for the same path/hints, so seed-status
+    /// distinctness is checked without pinning instructional copy.
+    fn empty_seed_peer(output: &EnterPlanModeOutput) -> String {
+        match output {
+            EnterPlanModeOutput::Entered {
+                message,
+                plan_file_path,
+                tool_hints,
+                ..
+            } => ToolOutput::EnterPlanMode(EnterPlanModeOutput::Entered {
+                message: message.clone(),
+                plan_file_path: plan_file_path.clone(),
+                tool_hints: tool_hints.clone(),
+                plan_file_seed: PlanFileSeedStatus::Empty,
+            })
+            .to_prompt_format(),
+        }
+    }
+
     /// Parametrized FS mock: injects the read/write outcomes and counts calls
     /// so a test can assert the tool never touched the FS.
     struct ProbeMockFs {
@@ -287,8 +301,6 @@ mod tests {
             xai_tool_runtime::Tool::id(&tool).as_str(),
             "enter_plan_mode"
         );
-        let desc = crate::types::tool_metadata::ToolMetadata::description_template(&tool);
-        assert!(desc.contains("plan mode"));
     }
 
     #[test]
@@ -322,14 +334,10 @@ mod tests {
         .unwrap();
 
         let EnterPlanModeOutput::Entered {
-            ref message,
             ref plan_file_path,
             plan_file_seed,
             ..
         } = result;
-        assert!(message.contains("entered plan mode"));
-        assert!(message.contains("exploring the codebase"));
-        assert!(message.contains("implementation plan"));
         assert!(plan_file_path.contains("plan.md"));
         assert_eq!(plan_file_seed, PlanFileSeedStatus::Empty);
     }
@@ -396,15 +404,17 @@ mod tests {
             PlanFileSeedStatus::Missing(PlanFileSeedFailure::Unavailable)
         );
 
-        let output: ToolOutput = result.into();
-        let prompt = output.to_prompt_format();
+        let empty_peer = empty_seed_peer(&result);
+        let prompt = ToolOutput::EnterPlanMode(result).to_prompt_format();
         assert!(
-            prompt.contains("The plan file location is unavailable."),
-            "expected not-ready status: {prompt}"
+            prompt.contains(".grok/plan.md"),
+            "expected plan path: {prompt}"
         );
-        assert!(
-            prompt.contains("5. Write your plan to the plan file above"),
-            "expected constant write-plan step: {prompt}"
+        assert!(prompt.contains("exit_plan_mode"), "{prompt}");
+        assert!(prompt.contains("ask_user_question"), "{prompt}");
+        assert_ne!(
+            prompt, empty_peer,
+            "unavailable seed must change compiled status"
         );
     }
 
@@ -459,22 +469,9 @@ mod tests {
 
         let output: ToolOutput = result.into();
         let prompt = output.to_prompt_format();
-        assert!(prompt.contains("entered plan mode"));
         assert!(prompt.contains("plan.md"));
-        assert!(
-            prompt.contains("The file exists and is empty."),
-            "expected empty plan status: {prompt}"
-        );
         assert!(prompt.contains("exit_plan_mode"));
         assert!(prompt.contains("ask_user_question"));
-        assert!(prompt.contains("5. Write your plan to the plan file above"));
-        assert!(
-            prompt.contains("6. When ready, use exit_plan_mode to present your plan to the user")
-        );
-        assert!(
-            !prompt.contains("create it at that path first if needed"),
-            "ready path should not include not-ready create hint: {prompt}"
-        );
     }
 
     #[tokio::test]
@@ -500,11 +497,13 @@ mod tests {
         let bytes = fs.read_file(&plan_path).await.unwrap();
         assert_eq!(bytes, b"# prior plan\n");
 
-        let output: ToolOutput = result.into();
-        let prompt = output.to_prompt_format();
-        assert!(
-            prompt.contains("The file exists but is not empty."),
-            "expected nonempty status: {prompt}"
+        let empty_peer = empty_seed_peer(&result);
+        let prompt = ToolOutput::EnterPlanMode(result).to_prompt_format();
+        assert!(prompt.contains("plan.md"), "{prompt}");
+        assert!(prompt.contains("exit_plan_mode"), "{prompt}");
+        assert_ne!(
+            prompt, empty_peer,
+            "non-empty seed must change compiled status"
         );
     }
 

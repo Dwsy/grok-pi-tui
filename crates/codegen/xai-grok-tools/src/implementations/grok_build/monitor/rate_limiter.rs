@@ -2,10 +2,8 @@ use std::time::{Duration, Instant};
 
 use super::types::{AUTO_KILL_THRESHOLD_MS, RATE_LIMIT_REFILL_MS};
 
-/// Token bucket rate limiter.
-///
-/// Starts full at `capacity` tokens. Each `try_consume()` takes one token.
-/// Tokens refill at 1 per `refill_interval_ms`.
+/// Token bucket rate limiter. Starts full at `capacity` tokens. Each `try_consume()` takes one
+/// token. Tokens refill at 1 per `refill_interval_ms`.
 pub struct TokenBucket {
     capacity: u32,
     tokens: u32,
@@ -41,10 +39,8 @@ impl TokenBucket {
     }
 }
 
-/// Tracks rate-limit suppression state and auto-kill logic.
-///
-/// Used alongside `TokenBucket` to detect sustained overload and generate
-/// catch-up notices when the rate subsides.
+/// Tracks rate-limit suppression state and auto-kill logic. Used alongside `TokenBucket` to detect
+/// sustained overload and generate catch-up notices when the rate subsides.
 #[derive(Default)]
 pub struct SuppressionTracker {
     pub suppressed_count: u64,

@@ -1,0 +1,256 @@
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+
+use crate::app::app_view::SessionPickerEntry;
+use crate::theme::Theme;
+
+/// Which surface a picker fetch was issued for.
+/// Results route back to the requesting host's storage only; a live picker on another host never absorbs them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPickerHost {
+    /// Welcome-screen picker (`session_picker_*` fields on `AppView`).
+    Welcome,
+    /// `/resume` modal on the active agent (`ActiveModal::SessionPicker`).
+    AgentModal,
+    /// Dashboard picker (`AppView::dashboard_session_picker`).
+    Dashboard,
+}
+
+/// Shared by dashboard picker paint and input so a copy change cannot update only one site.
+pub(crate) const DASHBOARD_PICKER_TITLE: &str = "Open session";
+
+/// State for one session-picker incarnation.
+/// Host-agnostic: everything a picker accumulates between open and dismiss, nothing about how a host renders it or maps its keys.
+#[derive(Debug)]
+pub struct SessionPickerSurface {
+    /// Incarnation identity; results apply only when it matches.
+    pub generation: u64,
+    pub state: crate::views::picker::PickerState,
+    pub window: crate::views::modal_window::ModalWindowState,
+    pub entries: Option<Vec<crate::app::app_view::SessionPickerEntry>>,
+    pub loading: bool,
+    pub lanes: crate::views::session_picker::SessionPickerLanes,
+    pub content_results: Option<Vec<xai_grok_shell::extensions::session_search::SearchSessionHit>>,
+    pub content_loading: bool,
+    /// Per-surface counters; the dashboard host does not share the welcome picker's `session_picker_list_seq` / `session_picker_deep_search_seq`.
+    pub list_seq: u64,
+    pub deep_search_seq: u64,
+    /// Invalidates in-flight card-detail reads when this surface's rows or filters change.
+    pub detail_seq: u64,
+    pub entries_query: Option<String>,
+    pub source_filter: crate::views::session_picker::SourceFilter,
+    pub pending_delete: Option<crate::views::session_picker::PendingDelete>,
+}
+
+impl SessionPickerSurface {
+    #[must_use]
+    pub fn new(generation: u64) -> Self {
+        Self {
+            generation,
+            state: crate::views::picker::PickerState::default(),
+            window: crate::views::modal_window::ModalWindowState::new(),
+            entries: None,
+            loading: false,
+            lanes: Default::default(),
+            content_results: None,
+            content_loading: false,
+            list_seq: 0,
+            deep_search_seq: 0,
+            detail_seq: 0,
+            entries_query: None,
+            source_filter: Default::default(),
+            pending_delete: None,
+        }
+    }
+}
+
+pub(crate) enum SessionPickerRenderMode<'a> {
+    Fullscreen,
+    Modal {
+        window: &'a mut crate::views::modal_window::ModalWindowState,
+        title: &'a str,
+    },
+}
+
+pub(crate) struct SessionPickerRenderCtx<'a> {
+    pub(crate) state: &'a mut crate::views::picker::PickerState,
+    pub(crate) sessions: Option<&'a [SessionPickerEntry]>,
+    pub(crate) cwd: &'a std::path::Path,
+    pub(crate) loading: bool,
+    pub(crate) pending_hint: Option<crate::views::shortcuts_bar::PendingHint>,
+    pub(crate) shortcuts_area: Option<Rect>,
+    pub(crate) content_results:
+        Option<&'a [xai_grok_shell::extensions::session_search::SearchSessionHit]>,
+    pub(crate) content_loading: bool,
+    pub(crate) entries_query: Option<&'a str>,
+    pub(crate) tick: u64,
+    pub(crate) grouped: bool,
+    pub(crate) source_filter: crate::views::session_picker::SourceFilter,
+    pub(crate) pending_delete: bool,
+    pub(crate) chat_mode: bool,
+}
+
+pub(crate) fn render_session_picker(
+    area: Rect,
+    buf: &mut Buffer,
+    theme: &Theme,
+    mode: SessionPickerRenderMode<'_>,
+    ctx: &mut SessionPickerRenderCtx<'_>,
+) -> crate::views::picker::PickerHitAreas {
+    match mode {
+        SessionPickerRenderMode::Fullscreen => {
+            crate::views::welcome::render_session_picker_body(area, buf, theme, ctx)
+        }
+        SessionPickerRenderMode::Modal { window, title } => {
+            render_simple_session_picker_modal(area, buf, theme, window, title, ctx)
+        }
+    }
+}
+
+fn empty_hit_areas() -> crate::views::picker::PickerHitAreas {
+    crate::views::picker::PickerHitAreas {
+        close_button: Rect::default(),
+        search_bar: Rect::default(),
+        item_rects: vec![],
+        entry_indices: vec![],
+        tab_rects: vec![],
+        filter_rect: None,
+    }
+}
+
+fn render_simple_session_picker_modal(
+    area: Rect,
+    buf: &mut Buffer,
+    theme: &Theme,
+    window: &mut crate::views::modal_window::ModalWindowState,
+    title: &str,
+    ctx: &mut SessionPickerRenderCtx<'_>,
+) -> crate::views::picker::PickerHitAreas {
+    use crate::views::modal_window::{ModalSizing, ModalWindowConfig, Shortcut};
+    use crate::views::picker::{self, PickerField};
+
+    let mut shortcuts = vec![
+        Shortcut {
+            label: "\u{2191}\u{2193} nav",
+            clickable: false,
+            id: 0,
+        },
+        Shortcut {
+            label: "Enter select",
+            clickable: false,
+            id: 0,
+        },
+        Shortcut {
+            label: "Esc close",
+            clickable: false,
+            id: 0,
+        },
+    ];
+    crate::views::modal_window::push_vim_nav_search_hint(&mut shortcuts, ctx.state.search_active);
+    let modal_config = ModalWindowConfig {
+        title,
+        tabs: None,
+        shortcuts: &shortcuts,
+        sizing: ModalSizing {
+            width_pct: 0.65,
+            max_width: 120,
+            min_width: 48,
+            v_margin: 4,
+            h_pad: 2,
+            v_pad: 1,
+            footer_lines: 2,
+        },
+        fold_info: None,
+    };
+    let Some(modal) =
+        crate::views::modal_window::render_modal_window(buf, area, window, &modal_config, theme)
+    else {
+        ctx.state.hit_areas = None;
+        return empty_hit_areas();
+    };
+
+    let content = modal.content;
+    picker::render_picker_search_bar(
+        buf,
+        content.x,
+        content.y,
+        content.width,
+        theme,
+        ctx.state,
+        ctx.state.search_active,
+        true,
+        Some(theme.bg_base),
+    );
+    ctx.state.filter_area = None;
+    let separator_y = content.y + 1;
+    if separator_y < content.y + content.height {
+        picker::render_divider(
+            buf,
+            modal.inner_x,
+            separator_y,
+            modal.inner_width,
+            theme,
+            Some(theme.bg_base),
+        );
+    }
+
+    let query =
+        crate::views::session_picker::effective_filter_query(ctx.state.query(), ctx.entries_query);
+    let sessions = ctx.sessions.unwrap_or(&[]);
+    let filtered =
+        crate::app::app_view::filter_session_entries(ctx.sessions, query, ctx.source_filter);
+    let built = crate::views::session_picker::build_session_entry_data(
+        sessions,
+        &filtered,
+        ctx.state,
+        content.width,
+    );
+    let fields: Vec<Vec<PickerField<'_>>> = built
+        .iter()
+        .map(|entry| {
+            entry
+                .field_data
+                .iter()
+                .map(|(label, value)| PickerField { label, value })
+                .collect()
+        })
+        .collect();
+    let current_repo = crate::views::session_picker::repo_name_from_cwd(&ctx.cwd.to_string_lossy());
+    let (entries, non_selectable) = crate::views::session_picker::build_grouped_picker_entries(
+        sessions,
+        &filtered,
+        &built,
+        &fields,
+        ctx.state,
+        Some(current_repo.as_str()),
+    );
+    let entries_area = Rect {
+        x: content.x,
+        y: separator_y + 1,
+        width: content.width,
+        height: content
+            .height
+            .saturating_sub(separator_y.saturating_add(1).saturating_sub(content.y)),
+    };
+    let content_hit = picker::render_picker_content_with_scrollbar_x(
+        buf,
+        entries_area,
+        theme,
+        ctx.state,
+        &entries,
+        &non_selectable,
+        &[],
+        Some(theme.bg_base),
+        ctx.loading,
+        ctx.tick,
+        modal.inner_x + modal.inner_width - 1,
+    );
+    crate::views::picker::PickerHitAreas {
+        close_button: Rect::default(),
+        search_bar: Rect::new(content.x, content.y, content.width, 1),
+        item_rects: content_hit.item_rects,
+        entry_indices: content_hit.entry_indices,
+        tab_rects: vec![],
+        filter_rect: None,
+    }
+}

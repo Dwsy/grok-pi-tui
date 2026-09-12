@@ -43,6 +43,7 @@ fn remove_nfs_worktree(worktree_path: &Path) -> Result<Option<RemoveReport>> {
             }
         }
     }
+    let mut did_unmount = false;
     if dest_is_mountpoint(worktree_path) {
         if lookup_from_markers(worktree_path).is_none() {
             bail!(
@@ -51,6 +52,7 @@ fn remove_nfs_worktree(worktree_path: &Path) -> Result<Option<RemoveReport>> {
             );
         }
         plain_umount(worktree_path)?;
+        did_unmount = true;
     }
     if !super::dest_is_known_unmounted(worktree_path) {
         bail!(
@@ -94,18 +96,21 @@ fn remove_nfs_worktree(worktree_path: &Path) -> Result<Option<RemoveReport>> {
         );
     }
     if worktree_path.is_dir() {
+        if did_unmount && std::fs::remove_dir(worktree_path).is_ok() {
+            return Ok(Some(grove_remove_report()));
+        }
         return Ok(None);
     }
-    Ok(Some(RemoveReport {
+    Ok(Some(grove_remove_report()))
+}
+fn grove_remove_report() -> RemoveReport {
+    RemoveReport {
+        method: crate::metrics::DisposeMethod::Grove,
         used_btrfs_delete: false,
         unmounted_bind: false,
         unmounted_overlay: false,
-    }))
+    }
 }
-/// After a successful daemon `RemoveWorktree`, dest is no longer a mount.
-/// The daemon already deleted backing/pin; a leftover dest directory must
-/// be `Ok(None)` so the caller `rm -rf`s and unregisters. When dest is fully
-/// gone, return `Ok(Some(...))` so the caller does not need a second delete.
 fn report_after_daemon_unmount(worktree_path: &Path) -> Result<Option<RemoveReport>> {
     if !super::dest_is_known_unmounted(worktree_path) {
         bail!(
@@ -114,13 +119,12 @@ fn report_after_daemon_unmount(worktree_path: &Path) -> Result<Option<RemoveRepo
         );
     }
     if worktree_path.is_dir() {
+        if std::fs::remove_dir(worktree_path).is_ok() {
+            return Ok(Some(grove_remove_report()));
+        }
         return Ok(None);
     }
-    Ok(Some(RemoveReport {
-        used_btrfs_delete: false,
-        unmounted_bind: false,
-        unmounted_overlay: false,
-    }))
+    Ok(Some(grove_remove_report()))
 }
 fn plain_umount(dest: &Path) -> Result<()> {
     {
@@ -396,17 +400,44 @@ mod tests {
         assert_eq!(found.data_dir.as_deref(), Some(data.as_path()));
     }
     #[test]
-    fn leftover_dest_after_daemon_unmount_is_ok_none() {
+    fn empty_mountpoint_after_daemon_unmount_records_grove() {
         let tmp = TempDir::new().unwrap();
         let dest = tmp.path().join("wt");
         std::fs::create_dir(&dest).unwrap();
-        assert!(report_after_daemon_unmount(&dest).unwrap().is_none());
-        assert!(dest.is_dir(), "helper must not delete leftover dest");
+        let report = report_after_daemon_unmount(&dest)
+            .unwrap()
+            .expect("grove teardown must report, not fall through to rm");
+        assert_eq!(
+            report.dispose_method(),
+            crate::metrics::DisposeMethod::Grove
+        );
+        assert!(
+            !dest.exists(),
+            "empty mount-point dir is removed by the grove path"
+        );
     }
     #[test]
-    fn absent_dest_after_daemon_unmount_is_some() {
+    fn nonempty_leftover_after_daemon_unmount_falls_through_to_rm() {
+        let tmp = TempDir::new().unwrap();
+        let dest = tmp.path().join("wt");
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("stray"), b"x").unwrap();
+        assert!(report_after_daemon_unmount(&dest).unwrap().is_none());
+        assert!(
+            dest.is_dir(),
+            "non-empty dest is left for the caller's rm -rf"
+        );
+    }
+    #[test]
+    fn absent_dest_after_daemon_unmount_records_grove() {
         let tmp = TempDir::new().unwrap();
         let dest = tmp.path().join("gone");
-        assert!(report_after_daemon_unmount(&dest).unwrap().is_some());
+        let report = report_after_daemon_unmount(&dest)
+            .unwrap()
+            .expect("fully-gone dest reports Grove");
+        assert_eq!(
+            report.dispose_method(),
+            crate::metrics::DisposeMethod::Grove
+        );
     }
 }

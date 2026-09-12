@@ -12,7 +12,7 @@ pub struct ConfigOverrideEntry<M> {
     pub patch: toml::Table,
 }
 
-/// Strip `key` from the root table; each element is `M` + remaining keys as patch.
+/// Strip `key` from the root table; each element splits into `M` and the remaining keys as the patch.
 pub fn take_patch_array<M>(
     config: &mut toml::Value,
     key: &str,
@@ -45,11 +45,9 @@ where
         .collect())
 }
 
-/// Whether `patch` affects the value at `path`: it sets a value there (any leaf
-/// under it counts), **or** it sets a non-table ancestor — deep-merge replaces
-/// the whole subtree in that case, so every leaf beneath is touched (a patch
-/// like `models = "oops"` wipes `models.default` and must still be dismissable
-/// / flagged as driving it).
+/// Whether `patch` affects the value at `path`: it sets a value there (any leaf under it counts), **or** it sets a non-table ancestor.
+/// In that case deep-merge replaces the whole subtree, so every leaf beneath is touched.
+/// A patch like `models = "oops"` wipes `models.default` and must still be dismissable and flagged as driving it.
 pub fn patch_touches_path(patch: &toml::Table, path: PatchPath) -> bool {
     let Some(first) = path.first() else {
         return false;
@@ -70,14 +68,12 @@ pub fn patch_touches_path(patch: &toml::Table, path: PatchPath) -> bool {
     true
 }
 
-/// Whether `patch` touches any of `paths`.
 pub fn patch_touches_any(patch: &toml::Table, paths: &[PatchPath]) -> bool {
     paths.iter().any(|p| patch_touches_path(patch, p))
 }
 
-/// Keys stripped from every applied patch: an override cannot re-inject nested
-/// `version_overrides`/`campaigns` or define `[auth_provider.*]` /
-/// `[model_providers.*]` command tables.
+/// Keys stripped from every applied patch.
+/// An override cannot re-inject nested `version_overrides`/`campaigns` or define `[auth_provider.*]` / `[model_providers.*]` command tables.
 pub const PATCH_STRIP_KEYS: &[&str] = &[
     "version_overrides",
     "campaigns",
@@ -85,12 +81,13 @@ pub const PATCH_STRIP_KEYS: &[&str] = &[
     "model_providers",
 ];
 
-/// Stripped like [`PATCH_STRIP_KEYS`]: these carry a command the client would
-/// execute. The whole table goes, so a new key in it needs no second edit.
+/// Stripped like [`PATCH_STRIP_KEYS`]: these carry a command the client would execute.
+/// The whole table goes, so a new key in it needs no second edit.
 pub const PATCH_STRIP_PATHS: &[PatchPath] =
     &[&["ui", "status_line"], &["ui", "notifications", "hooks"]];
 
-/// Additionally stripped from campaign and remote patches: those patches cannot set auth policy tables (`preferred_method`, `force_login_team_uuid`, `disable_api_key_auth`), while trusted version_overrides may.
+/// Additionally stripped from campaign and remote patches: those patches cannot set auth policy tables, while trusted version_overrides may.
+/// The stripped tables carry `preferred_method`, `force_login_team_uuid`, and `disable_api_key_auth`.
 pub const CAMPAIGN_STRIP_KEYS: &[&str] = &[
     "version_overrides",
     "campaigns",
@@ -100,52 +97,36 @@ pub const CAMPAIGN_STRIP_KEYS: &[&str] = &[
     "grok_com_config",
 ];
 
-/// Dotted paths the `GROK_CONFIG` / `GROK_CONFIG_PATH` overlay may set, applied
-/// at [`crate::env_overlay`]'s finalize step by [`retain_overlay_allowed`]. A
-/// length-1 path keeps the whole soft top-level table; a deeper path keeps only
-/// that leaf. No entry is a prefix of another (a top-level key is either a
-/// whole-subtree keep or deeper-only, never both), so `retain_allowed_paths`'s
-/// whole-subtree-versus-recurse branch is unambiguous and its deeper
-/// whole-subtree case is defensive. Fail-closed: anything not listed is dropped,
-/// so a newly added table stays out until it is allowlisted here. The overlay's
-/// reach and the security gates that read it overlay-free are documented
-/// canonically on [`crate::config_layers::ConfigLayers::env_overlay`].
+/// Dotted paths the `GROK_CONFIG` / `GROK_CONFIG_PATH` overlay may set.
+/// No entry is a prefix of another: a top-level key is either a whole-subtree keep or deeper-only, never both.
+/// Fail-closed: anything not listed is dropped, so a newly added table stays out until it is allowlisted here.
 pub const OVERLAY_ALLOW_PATHS: &[&[&str]] = &[
-    // Global model block (`default_reasoning_effort`, picker filters), not the
-    // per-model `[model.<id>]` block; and the soft `[features]` toggles.
+    // Global model block (`default_reasoning_effort`, picker filters), not the per-model `[model.<id>]` block; and the soft `[features]` toggles
     &["models"],
     &["features"],
-    // `[toolset]` is not soft wholesale: its sinks (`web_search` base_url /
-    // api_key, `web_fetch` proxy_endpoint, `bash` cmd_prefix) stay out. Only
-    // `login_shell_capture` (runs the user's own `$SHELL`) and the web-search
-    // domain lists (widen or narrow the user's own allowlist, capped and
-    // requirements-clamped downstream) survive.
+    // `[toolset]` is not soft wholesale: its sinks (`web_search` base_url / api_key, `web_fetch` proxy_endpoint, `bash` cmd_prefix) stay out
+    // Only `login_shell_capture` (runs the user's own `$SHELL`) and the web-search domain lists survive
+    // The domain lists widen or narrow the user's own allowlist and are capped and requirements-clamped downstream
     &["toolset", "bash", "login_shell_capture"],
     &["toolset", "web_search", "allowed_domains"],
     &["toolset", "web_search", "excluded_domains"],
-    // `[shell_environment_policy]` cannot inject an env value: `set` adds env
-    // values (`LD_PRELOAD`, `BASH_ENV`, `PATH`), an indirect way to run code in a
-    // tool subprocess, so it is dropped. The remaining fields only select among
-    // env names the launcher already controls, so relative to a lower layer they
-    // may loosen or tighten what a subprocess inherits but never introduce a
-    // value. A launcher that must add an env var sets it on the process directly.
+    // `[shell_environment_policy]` cannot inject an env value
+    // Relative to a lower layer they may loosen or tighten what a subprocess inherits but never introduce a value
+    // A launcher that must add an env var sets it on the process directly
     &["shell_environment_policy", "inherit"],
     &["shell_environment_policy", "ignore_default_excludes"],
     &["shell_environment_policy", "exclude"],
     &["shell_environment_policy", "include_only"],
 ];
 
-/// Confine `overlay` to [`OVERLAY_ALLOW_PATHS`], dropping every other key and any
-/// table left empty. Fail-closed: anything not listed is removed.
+/// Confine `overlay` to [`OVERLAY_ALLOW_PATHS`], dropping every other key and any table left empty.
 pub fn retain_overlay_allowed(overlay: &mut toml::Table) {
     retain_allowed_paths(overlay, OVERLAY_ALLOW_PATHS, true);
 }
 
-/// Retain only `paths` (nested dotted leaves) in `table`, pruning every other
-/// key and any table left empty. At the top level a whole-subtree entry (a
-/// length-1 path) keeps its value only when it is a table: a scalar or array
-/// there would clobber the subtree on deep-merge, so it is dropped. A deeper
-/// leaf keeps whatever value it holds (a bool, an array, an inline table).
+/// Retain only `paths` (nested dotted leaves) in `table`, pruning every other key and any table left empty.
+/// At the top level a whole-subtree entry (a length-1 path) keeps its value only when it is a table.
+/// A scalar or array there would clobber the subtree on deep-merge, so it is dropped.
 fn retain_allowed_paths(table: &mut toml::Table, paths: &[&[&str]], top_level: bool) {
     table.retain(|key, value| {
         let nested: Vec<&[&str]> = paths
@@ -156,8 +137,7 @@ fn retain_allowed_paths(table: &mut toml::Table, paths: &[&[&str]], top_level: b
         if nested.is_empty() {
             return false;
         }
-        // An allowed path ends at this key: keep the subtree/leaf, but a
-        // top-level whole-subtree key must be a table (else it clobbers on merge).
+        // An allowed path ends at this key: keep the subtree/leaf, but a top-level whole-subtree key must be a table (else it clobbers on merge)
         if nested.iter().any(|p| p.is_empty()) {
             return !top_level || value.is_table();
         }
@@ -172,14 +152,9 @@ fn retain_allowed_paths(table: &mut toml::Table, paths: &[&[&str]], top_level: b
     });
 }
 
-/// Deep-merge each patch in iteration order (later wins on a leaf), stripping
-/// `strip_keys` (top level) and [`PATCH_STRIP_PATHS`] first. The caller picks
-/// the key list; the paths go from every patch, whoever sent it.
-///
-/// A patch is another input to the same merge as the disk layers, so it gets the same pre-merge
-/// normalization ([`crate::loader::normalize_config_layer`]). Otherwise a patch that flips
-/// `[toolset.web_search]` from an allowlist to a blocklist would leave both keys set, and the
-/// resolver would drop the blocklist and let the layer the patch overlays win.
+/// Deep-merge each patch in iteration order (later wins on a leaf), stripping `strip_keys` (top level) and [`PATCH_STRIP_PATHS`] first.
+/// Otherwise a patch that flips `[toolset.web_search]` from an allowlist to a blocklist would leave both keys set.
+/// The resolver would then drop the blocklist and let the layer the patch overlays win.
 pub fn apply_patches(
     config: &mut toml::Value,
     patches: impl IntoIterator<Item = toml::Table>,
@@ -188,6 +163,24 @@ pub fn apply_patches(
     for mut patch in patches {
         for key in strip_keys {
             patch.remove(*key);
+        }
+        let config_models = config.get("model").and_then(toml::Value::as_table);
+        if let Some(patch_models) = patch.get_mut("model").and_then(toml::Value::as_table_mut) {
+            for (id, patch_model) in patch_models {
+                let has_mtls_identity = config_models
+                    .and_then(|models| models.get(id))
+                    .and_then(toml::Value::as_table)
+                    .is_some_and(|model| model.contains_key("mtls_cert_dir"));
+                if let Some(patch_model) = patch_model.as_table_mut() {
+                    // A patch may tune the model, but it cannot select a local identity
+                    // or change the explicit destination to which that identity is bound.
+                    patch_model.remove("mtls_cert_dir");
+                    if has_mtls_identity {
+                        patch_model.remove("base_url");
+                        patch_model.remove("api_base_url");
+                    }
+                }
+            }
         }
         for path in PATCH_STRIP_PATHS {
             strip_path(&mut patch, path);
@@ -224,10 +217,9 @@ mod tests {
         toml::from_str(s).unwrap()
     }
 
-    /// A patch that replaces a parent table with a scalar (`models = "oops"`)
-    /// wipes every leaf beneath it on merge, so it must count as touching those
-    /// leaves — otherwise the campaign that destroyed `models.default` would be
-    /// neither dismissable nor flagged as driving the field.
+    /// A patch that replaces a parent table with a scalar (`models = "oops"`) wipes every leaf beneath it on merge.
+    /// It must count as touching those leaves.
+    /// Otherwise the campaign that destroyed `models.default` would be neither dismissable nor flagged as driving the field.
     #[test]
     fn non_table_ancestor_counts_as_touching_leaves_beneath() {
         let patch = table("models = \"oops\"\n");
@@ -241,11 +233,9 @@ mod tests {
         assert!(!patch_touches_path(&tbl, &["models", "other"]));
     }
 
-    /// Allowlisted tables survive; `[toolset]` and `[shell_environment_policy]`
-    /// keep only their filter/soft leaves (the shell-env `set` injector, the
-    /// `[toolset]` sinks, the per-model `[model.<id>]` block, and any code-exec /
-    /// auth / egress table are dropped). Fail-closed by construction, so this
-    /// catches any future dangerous table automatically.
+    /// Allowlisted tables survive; `[toolset]` and `[shell_environment_policy]` keep only their filter/soft leaves.
+    /// The shell-env `set` injector, the `[toolset]` sinks, the per-model `[model.<id>]` block, and any code-exec / auth / egress table are dropped.
+    /// This is fail-closed by construction, so it catches any future dangerous table automatically.
     #[test]
     fn retain_overlay_allowed_confines_to_allowlist() {
         let mut overlay = table(
@@ -272,8 +262,8 @@ mod tests {
         assert_eq!(overlay, expected);
     }
 
-    /// A top-level allowlisted key whose value is not a table (`models = "oops"`,
-    /// `toolset = []`) would clobber that subtree on deep-merge, so it is dropped.
+    /// A top-level allowlisted key whose value is not a table (`models = "oops"`, `toolset = []`) is dropped.
+    /// Such a value would clobber that subtree on deep-merge.
     /// Non-table leaves reached via a deeper path stay put.
     #[test]
     fn retain_overlay_allowed_drops_non_table_top_level_keys() {
@@ -298,8 +288,7 @@ mod tests {
         );
     }
 
-    /// A `[toolset]` overlay that carries only sinks (no soft leaf) drops the
-    /// whole table, so it never finalizes as a set-but-empty layer.
+    /// A `[toolset]` overlay that carries only sinks (no soft leaf) drops the whole table, so it never finalizes as a set-but-empty layer.
     #[test]
     fn retain_overlay_allowed_drops_toolset_with_no_soft_leaf() {
         let mut overlay = table(
@@ -365,6 +354,59 @@ mod tests {
             cfg["ui"]["notifications"]["enabled"].as_bool(),
             Some(false),
             "siblings still apply"
+        );
+    }
+
+    #[test]
+    fn apply_patches_cannot_inject_or_retarget_mtls_identities() {
+        let mut cfg = toml::Value::Table(table(
+            "[model.secure]\n\
+             base_url = \"https://trusted.example\"\n\
+             mtls_cert_dir = \"/trusted/identity\"\n\
+             temperature = 0.1\n",
+        ));
+        let patch = table(
+            "[model.secure]\n\
+             base_url = \"https://retargeted.example\"\n\
+             api_base_url = \"https://retargeted-api.example\"\n\
+             mtls_cert_dir = \"/tmp/replacement\"\n\
+             temperature = 0.7\n\
+             [model.injected]\n\
+             base_url = \"https://injected.example\"\n\
+             api_base_url = \"https://injected-api.example\"\n\
+             mtls_cert_dir = \"/tmp/injected\"\n",
+        );
+        apply_patches(&mut cfg, std::iter::once(patch), PATCH_STRIP_KEYS);
+
+        assert_eq!(
+            cfg["model"]["secure"]["base_url"].as_str(),
+            Some("https://trusted.example")
+        );
+        assert_eq!(
+            cfg["model"]["secure"]["mtls_cert_dir"].as_str(),
+            Some("/trusted/identity"),
+        );
+        assert!(
+            cfg["model"]["secure"].get("api_base_url").is_none(),
+            "patches must not add an alternate destination to a local mTLS identity: {cfg:?}"
+        );
+        assert_eq!(
+            cfg["model"]["secure"]["temperature"].as_float(),
+            Some(0.7),
+            "unrelated model settings still apply"
+        );
+        assert!(
+            cfg["model"]["injected"].get("mtls_cert_dir").is_none(),
+            "patches must not select a local mTLS identity: {cfg:?}"
+        );
+        assert_eq!(
+            cfg["model"]["injected"]["base_url"].as_str(),
+            Some("https://injected.example"),
+        );
+        assert_eq!(
+            cfg["model"]["injected"]["api_base_url"].as_str(),
+            Some("https://injected-api.example"),
+            "ordinary model destinations remain patchable"
         );
     }
 

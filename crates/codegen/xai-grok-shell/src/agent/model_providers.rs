@@ -15,11 +15,10 @@ pub struct ModelProviderConfig {
     pub extra_headers: IndexMap<String, String>,
     /// Query parameters folded into every request URL; inherited by models.
     pub query_params: IndexMap<String, String>,
-    /// Header name to environment variable; inherited by models, resolved at
-    /// client build.
+    /// Header name to environment variable; inherited by models, resolved at client build.
     pub env_http_headers: IndexMap<String, String>,
     pub auth_provider: Option<String>,
-    pub auth: Option<crate::auth::AuthProviderConfig>,
+    pub auth: Option<xai_grok_config_types::AuthProviderConfig>,
     pub context_window: Option<u64>,
 }
 
@@ -28,7 +27,7 @@ pub(crate) fn model_provider_auth_name(provider_id: &str) -> String {
 }
 
 pub(crate) fn auth_config_issues(
-    config: &crate::auth::AuthProviderConfig,
+    config: &xai_grok_config_types::AuthProviderConfig,
 ) -> Vec<(&'static str, ConfigWarningKind, String)> {
     let mut issues = Vec::new();
     if !config.is_usable() {
@@ -38,7 +37,7 @@ pub(crate) fn auth_config_issues(
             "missing or empty command; models resolve with no credential".to_owned(),
         ));
     }
-    let skew = crate::auth::PROVIDER_TOKEN_EXPIRY_SKEW_SECS;
+    let skew = xai_grok_login::PROVIDER_TOKEN_EXPIRY_SKEW_SECS;
     if config.token_ttl_secs.is_some_and(|ttl| ttl <= skew) {
         issues.push((
             "token_ttl_secs",
@@ -49,9 +48,9 @@ pub(crate) fn auth_config_issues(
         ));
     }
     if let Some(timeout) = config.timeout_secs
-        && !(1..=crate::auth::PROVIDER_TIMEOUT_CEILING_SECS).contains(&timeout)
+        && !(1..=xai_grok_login::PROVIDER_TIMEOUT_CEILING_SECS).contains(&timeout)
     {
-        let ceiling = crate::auth::PROVIDER_TIMEOUT_CEILING_SECS;
+        let ceiling = xai_grok_login::PROVIDER_TIMEOUT_CEILING_SECS;
         issues.push((
             "timeout_secs",
             ConfigWarningKind::InvalidValue,

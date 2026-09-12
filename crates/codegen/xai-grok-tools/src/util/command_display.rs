@@ -12,14 +12,9 @@
 use std::borrow::Cow;
 use std::path::Path;
 
-/// Peel a leading `cd <session_cwd> &&|;` (or Windows `cd /d`) when the target
-/// equals session cwd so TUI chrome shows the real command first.
-///
-/// Only absolute-shaped path tokens are considered (Unix `/…`, Windows `X:\` /
-/// `X:/`, or `\\` UNC) so relative `cd proj` cannot false-match `/proj`.
-/// Fail-closed on ambiguous quotes, empty remainder, pipes-only, or path mismatch.
-/// Does not canonicalize; works with Windows-shaped paths on any host OS.
-/// Single outer `(cd … &&|;) …)` is supported; nested parens are not peeled.
+/// Peel a leading `cd <session_cwd> &&|;` (or Windows `cd /d`) when the target equals session cwd so TUI chrome shows the real command first.
+/// Only absolute-shaped path tokens are considered (Unix `/…`, Windows `X:\` / `X:/`, or `\\` UNC) so relative `cd proj` cannot false-match
+/// `/proj`. Fail-closed on ambiguous quotes, empty remainder, pipes-only, or path mismatch.
 pub fn strip_redundant_session_cd<'a>(command: &'a str, session_cwd: &Path) -> Cow<'a, str> {
     let trimmed = command.trim_start();
     let inner = trim_wrapping_parens(trimmed).unwrap_or(trimmed);
@@ -30,14 +25,9 @@ pub fn strip_redundant_session_cd<'a>(command: &'a str, session_cwd: &Path) -> C
     }
 }
 
-/// Path equality for display peel: segment-wise with `/` and `\` as separators,
-/// trailing-separator tolerant, case-insensitive for Windows-shaped drive paths.
-/// No canonicalize; works for Windows fixtures on Unix hosts.
-///
-/// **Not general path equality.** Call only after both sides are known
-/// absolute-shaped (`is_absolute_shaped_path_token`); otherwise `proj` and
-/// `/proj` compare equal by segments alone. Peel enforces that gate in
-/// [`peel_cd_prefix`] before invoking this helper.
+/// Path equality for display peel: segment-wise with `/` and `\` as separators, trailing-separator tolerant, case-insensitive for
+/// Windows-shaped drive paths. No canonicalize; works for Windows fixtures on Unix hosts. **Not general path equality.** Call only after both
+/// sides are known absolute-shaped (`is_absolute_shaped_path_token`); otherwise `proj` and `/proj` compare equal by segments alone.
 fn paths_equal_for_display(a: &Path, b: &Path) -> bool {
     let a_str = a.to_string_lossy();
     let b_str = b.to_string_lossy();
@@ -370,9 +360,8 @@ mod tests {
             Path::new("/proj"),
             Path::new("/other")
         ));
-        // Relative vs absolute segment-"equality" is intentionally *not*
-        // asserted here (would trip the absolute-shaped debug_assert). Peel
-        // fail-closed coverage for `cd proj` vs session `/proj` lives in
-        // `matrix_no_peel_fail_closed`.
+        // Relative vs absolute segment-"equality" is intentionally *not* asserted here (would trip
+        // the absolute-shaped debug_assert). Peel fail-closed coverage for `cd proj` vs session
+        // `/proj` lives in `matrix_no_peel_fail_closed`.
     }
 }

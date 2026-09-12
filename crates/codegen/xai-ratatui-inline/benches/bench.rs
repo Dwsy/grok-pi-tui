@@ -116,10 +116,9 @@ fn fill_rows(
     }
 }
 
-/// Build a terminal in a "ready to flush" state: a previous full-screen frame,
-/// then a partial-redraw current frame (a few changed rows, like streaming
-/// output) with `num_links` hyperlinks set. The returned terminal is cloned per
-/// benchmark iteration so the measured call is just the flush.
+/// Build a terminal in a "ready to flush" state: a previous full-screen frame, then a partial-redraw current frame (a few
+/// changed rows, like streaming output) with `num_links` hyperlinks set. The returned terminal is cloned per benchmark
+/// iteration so the measured call is just the flush.
 fn dirty_terminal(
     width: u16,
     height: u16,

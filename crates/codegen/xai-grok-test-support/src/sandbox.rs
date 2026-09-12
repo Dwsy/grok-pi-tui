@@ -11,11 +11,9 @@ use tempfile::TempDir;
 const TEST_API_KEY: &str = "test-key-for-ci";
 const REDACTED: &str = "<redacted>";
 
-/// One test's isolated filesystem tree and canonical child environment.
-///
-/// Construction never mutates the process environment. Child commands start
-/// from `env_clear()` and receive only platform essentials, sandbox paths,
-/// grok network kill switches, and explicit overrides.
+/// One test's isolated filesystem tree and canonical child environment. Construction never mutates the process
+/// environment. Child commands start from `env_clear()` and receive only platform essentials, sandbox paths, grok network
+/// kill switches, and explicit overrides.
 pub struct TestSandbox {
     root: TempDir,
     home: PathBuf,
@@ -51,8 +49,8 @@ impl TestSandbox {
         &self.grok_home
     }
 
-    /// Isolated working directory. When built with [`TestSandboxBuilder::git`],
-    /// this contains a repository with one committed `README.md`.
+    /// Isolated working directory.
+    /// When built with [`TestSandboxBuilder::git`], this contains a repository with one committed `README.md`.
     pub fn workspace(&self) -> &Path {
         &self.workspace
     }
@@ -62,8 +60,8 @@ impl TestSandbox {
         &self.temp
     }
 
-    /// Override one child variable after the hermetic baseline. This is the
-    /// supported seam for feature flags and simulated terminal brands.
+    /// Override one child variable after the hermetic baseline.
+    /// Use this for feature flags and simulated terminal brands.
     pub fn set_env(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> &mut Self {
         self.env
             .insert(key.as_ref().to_owned(), value.as_ref().to_owned());
@@ -105,8 +103,8 @@ impl TestSandbox {
             .collect()
     }
 
-    /// Apply the effective environment to a Tokio child command. Explicit
-    /// command-level `.env(...)` calls made afterward have final precedence.
+    /// Apply the effective environment to a Tokio child command.
+    /// Explicit command-level `.env(...)` calls made afterward have final precedence.
     pub fn apply_to_tokio_command(&self, cmd: &mut tokio::process::Command) {
         cmd.env_clear().envs(self.env());
     }
@@ -119,14 +117,13 @@ impl TestSandbox {
         }
     }
 
-    /// Apply the effective environment to a standard child command. Explicit
-    /// command-level `.env(...)` calls made afterward have final precedence.
+    /// Apply the effective environment to a standard child command.
+    /// Explicit command-level `.env(...)` calls made afterward have final precedence.
     pub fn apply_to_std_command(&self, cmd: &mut Command) {
         cmd.env_clear().envs(self.env());
     }
 
-    /// Build a detached, non-interactive Git command using this sandbox's
-    /// selected binary and cleared child environment.
+    /// Build a detached, non-interactive Git command using this sandbox's selected binary and cleared child environment.
     pub fn git_command(&self) -> Command {
         let git = self
             .env
@@ -143,11 +140,9 @@ impl TestSandbox {
         cmd
     }
 
-    /// Values that must be removed from captured child-output diagnostics.
-    ///
-    /// This intentionally returns values only, never keys. Endpoint URLs,
-    /// credentials, and sandbox-owned private paths can be echoed by a failing
-    /// child even though process diagnostics never print its environment.
+    /// Values that must be removed from captured child-output diagnostics. This intentionally returns values only, never
+    /// keys. Process diagnostics never print the child's environment. A failing child can still echo endpoint URLs,
+    /// credentials, and sandbox-owned private paths.
     pub(crate) fn diagnostic_redactions(&self) -> Vec<String> {
         self.env
             .iter()
@@ -189,8 +184,8 @@ impl Default for TestSandbox {
     }
 }
 
-/// Minimal construction-time choices for [`TestSandbox`]. Runtime feature
-/// variables belong on [`TestSandbox::set_env`] instead of a growing config.
+/// Minimal construction-time choices for [`TestSandbox`].
+/// Runtime feature variables belong on [`TestSandbox::set_env`] instead of a growing config.
 #[derive(Default)]
 pub struct TestSandboxBuilder {
     mock_url: Option<String>,
@@ -198,8 +193,7 @@ pub struct TestSandboxBuilder {
 }
 
 impl TestSandboxBuilder {
-    /// Wire grok API, models, feedback, trace, conversation, and web traffic to
-    /// a loopback mock endpoint and install the fake CI API key.
+    /// Wire grok API, models, feedback, trace, conversation, and web traffic to a loopback mock endpoint and install the fake CI API key.
     pub fn mock_url(mut self, url: impl Into<String>) -> Self {
         self.mock_url = Some(url.into());
         self
@@ -211,7 +205,7 @@ impl TestSandboxBuilder {
         self
     }
 
-    /// Materialize the filesystem tree and canonical child environment.
+    /// Create the filesystem tree and canonical child environment.
     pub fn build(self) -> TestSandbox {
         let root = TempDir::new().expect("create test sandbox root");
         let home = root.path().join("home");
@@ -334,6 +328,11 @@ fn baseline_env_from_parent(
     }
     for (key, value) in [
         ("GROK_TELEMETRY_ENABLED", "false"),
+        // A test that re-enables the mode must still have no production sink: the pager bakes in the analytics token and events URL.
+        ("GROK_TELEMETRY_MIXPANEL_ENABLED", "false"),
+        ("GROK_TELEMETRY_MIXPANEL_TOKEN", ""),
+        ("GROK_TELEMETRY_EVENTS_URL", ""),
+        ("GROK_TELEMETRY_EVENTS_API_KEY", ""),
         ("GROK_TELEMETRY_TRACE_UPLOAD", "false"),
         ("GROK_FEEDBACK_ENABLED", "false"),
         ("GROK_TRACE_UPLOAD", "false"),
@@ -343,13 +342,9 @@ fn baseline_env_from_parent(
         ("DISABLE_FEEDBACK_COMMAND", "1"),
         ("GROK_DISABLE_AUTOUPDATER", "1"),
         ("GROK_PROMPT_SUGGESTIONS", "false"),
-        // The sandbox's empty home is exactly the "no mode configured" state
-        // that soft-defaults interactive launches into auto. Pin the gate off
-        // for deterministic ask-mode behavior; auto-mode tests re-enable it
-        // via `set_env` (later overrides win).
-        ("GROK_AUTO_PERMISSION_MODE", "0"),
-        // Post-turn summary side-calls would add unscripted requests to the
-        // mock server and break exact wire-traffic assertions.
+        // Pin so a developer-exported override cannot flake empty-home launch tests.
+        ("GROK_DEFAULT_PERMISSION_MODE", "ask"),
+        // The post-turn summary would send unscripted requests to the mock server and break exact wire-traffic assertions
         ("GROK_TURN_SUMMARY", "0"),
         ("NO_PROXY", "127.0.0.1,localhost,::1"),
         ("no_proxy", "127.0.0.1,localhost,::1"),
@@ -719,6 +714,18 @@ mod tests {
             env_value(&sandbox, "GROK_TELEMETRY_TRACE_UPLOAD").as_deref(),
             Some(OsStr::new("false"))
         );
+        for (sink, value) in [
+            ("GROK_TELEMETRY_MIXPANEL_ENABLED", "false"),
+            ("GROK_TELEMETRY_MIXPANEL_TOKEN", ""),
+            ("GROK_TELEMETRY_EVENTS_URL", ""),
+            ("GROK_TELEMETRY_EVENTS_API_KEY", ""),
+        ] {
+            assert_eq!(
+                env_value(&sandbox, sink).as_deref(),
+                Some(OsStr::new(value)),
+                "{sink} must be pinned off so GROK_TELEMETRY_ENABLED=true cannot reach a production sink"
+            );
+        }
         assert_eq!(
             env_value(&sandbox, "NO_PROXY").as_deref(),
             Some(OsStr::new("127.0.0.1,localhost,::1"))

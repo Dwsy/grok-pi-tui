@@ -1,14 +1,13 @@
 //! Agent view layout and rendering helpers.
 //!
 //! This module provides:
-//! - [`AgentViewLayout`] — pure layout computation (screen area → pane rects)
-//! - [`ActivePane`] / [`PaneAreas`] — pane identity and hit-testing
-//! - Overlay helpers — small focused functions for selection/hover chrome
-//! - [`build_hints`] — shortcuts bar hint generation
+//! - [`AgentViewLayout`]: pure layout computation (screen area to pane rects)
+//! - [`ActivePane`] / [`PaneAreas`]: pane identity and hit-testing
+//! - Overlay helpers: small focused functions for selection/hover chrome
+//! - [`build_hints`]: shortcuts bar hint generation
 //!
-//! The actual rendering orchestration lives in [`AgentView::draw()`](crate::app::agent_view::AgentView::draw),
-//! which calls shared widgets (StatusBar, ScrollbackPane, PromptWidget,
-//! ShortcutsBar) and uses these helpers for the agent-specific glue.
+//! The drawing itself happens in [`AgentView::draw()`](crate::app::agent_view::AgentView::draw).
+//! It renders the shared widgets (StatusBar, ScrollbackPane, PromptWidget, ShortcutsBar) and uses these helpers for the agent-specific glue.
 use crate::actions::{ActionId, ActionRegistry, When};
 use crate::appearance::{LayoutConfig, ScrollbarConfig};
 use crate::render::SafeBuf;
@@ -35,6 +34,8 @@ pub enum ActivePane {
     Prompt,
     Tasks,
     Catalog,
+    /// Consolidated panel dock above the prompt (remote `dock_enabled`).
+    Dock,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum InputMode {
@@ -51,6 +52,9 @@ pub struct PaneAreas {
     pub prompt: Rect,
     pub tasks: Rect,
     pub catalog: Rect,
+    /// Consolidated panel dock (remote `dock_enabled`); the embedded
+    /// queue body inside it hit-tests as `Queue` (checked first).
+    pub dock: Rect,
 }
 impl PaneAreas {
     /// Determine which pane a screen position falls in, if any.
@@ -68,6 +72,9 @@ impl PaneAreas {
         if self.queue.area() > 0 && self.queue.contains(pos) {
             return Some(ActivePane::Queue);
         }
+        if self.dock.area() > 0 && self.dock.contains(pos) {
+            return Some(ActivePane::Dock);
+        }
         if self.scrollback.contains(pos) {
             return Some(ActivePane::Scrollback);
         }
@@ -77,43 +84,31 @@ impl PaneAreas {
         None
     }
 }
-/// Terminals at or below this height suppress the optional rows above the
-/// prompt (plugin CTA, follow-ups, banner/tip) so the prompt and scrollback
-/// are never starved.
+/// Terminals at or below this height suppress the optional rows above the prompt (plugin CTA, follow-ups, banner/tip).
+/// This keeps the prompt and the scrollback from being starved.
 pub const SHORT_TERMINAL_ROWS: u16 = 16;
-/// The scrollback's floor, pushed as the layout's only `Min`. The solver ranks
-/// it above every `Length`, so an over-committed layout shrinks another row.
+/// The scrollback's floor, pushed as the layout's only `Min`.
+/// The solver ranks it above every `Length`, so an over-committed layout shrinks another row.
 pub const SCROLLBACK_MIN_ROWS: u16 = 5;
-/// Auto-compact threshold: at or below this height the render-value compact
-/// flag is forced on. Deliberately above [`SHORT_TERMINAL_ROWS`], which stays
-/// the hard-degradation gate (tip-row renderability, CTA/follow-up trims).
+/// Auto-compact threshold: at or below this height the compact flag handed to rendering is forced on.
+/// Deliberately above [`SHORT_TERMINAL_ROWS`], which still gates the harder cuts (tip-row rendering, dropping the CTA and follow-up rows).
 pub const AUTO_COMPACT_MAX_ROWS: u16 = 20;
 const _: () = assert!(SHORT_TERMINAL_ROWS < AUTO_COMPACT_MAX_ROWS);
-/// Render-value derivation for compact mode: the user setting, force-enabled
-/// while the terminal is [`AUTO_COMPACT_MAX_ROWS`] or shorter (auto-compact).
-///
-/// Derived only — never persisted and never written back to the user setting
-/// (`current_ui.compact_mode` / the render cache / disk), so growing the
-/// window restores the user's choice. `terminal_rows == 0` means "not yet
+/// The result is never written back to `current_ui.compact_mode`, the render cache, or disk.
+/// Growing the window therefore restores the user's choice. `terminal_rows == 0` means "not yet
 /// measured" and never forces compact.
 pub fn effective_compact(user_compact: bool, terminal_rows: u16) -> bool {
     user_compact || (terminal_rows > 0 && terminal_rows <= AUTO_COMPACT_MAX_ROWS)
 }
-/// Every input [`AgentViewLayout::compute`] reads: the screen area, the
-/// appearance config it lays out under, and the requested height of each row
-/// it stacks.
-///
-/// An optional pane at height 0 is omitted along with the gap above it. The
-/// prompt, the shortcuts bar and their gaps follow their own rules; on a frame
-/// with bottom padding a `status_line_height` of 0 adds the gap above the
-/// shortcuts bar.
+/// Every input [`AgentViewLayout::compute`] reads: the screen area, the appearance config, and the
+/// requested height of each row it stacks.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AgentViewLayoutParams {
     pub area: Rect,
     pub layout_cfg: LayoutConfig,
     pub scrollbar_cfg: ScrollbarConfig,
-    /// Rail columns taken in place of the scrollbar (0 = hidden). Requires the
-    /// scrollbar's gutter geometry, so a disabled scrollbar forces it to 0.
+    /// Rail columns taken in place of the scrollbar (0 means hidden).
+    /// The rail needs the scrollbar's gutter geometry, so a disabled scrollbar forces this to 0.
     pub timeline_width: u16,
     pub prompt_height: u16,
     pub tasks_height: u16,
@@ -125,26 +120,25 @@ pub struct AgentViewLayoutParams {
     pub startup_warning_height: u16,
     pub external_widgets_above_editor_height: u16,
     pub banner_height: u16,
-    /// Forced to 0 on short terminals (`area.height <= SHORT_TERMINAL_ROWS`)
-    /// so the prompt and scrollback are never starved.
+    /// Forced to 0 on short terminals (`area.height <= SHORT_TERMINAL_ROWS`) so the prompt and scrollback are never starved.
     pub cta_height: u16,
     /// Force-suppressed on short terminals on the same rule as `cta_height`.
     pub follow_ups_height: u16,
+    /// Consolidated panel dock (Subagents/Tasks/Watchers/Queued) directly
+    /// above the prompt. 0 = hidden (the default; remote `dock_enabled`).
+    pub dock_height: u16,
     /// 0 or 1: the gap row between turn status (or scrollback) and the prompt.
     pub prompt_gap: u16,
     pub voice_recording_height: u16,
     pub external_widgets_below_editor_height: u16,
     pub shortcuts_height: u16,
-    /// Clamped to the rows left over once every other row and the scrollback
-    /// minimum are counted, so a tall script loses its own rows rather than
-    /// the prompt or the shortcuts bar losing theirs.
+    /// Clamped to the rows left over once every other row and the scrollback minimum are counted.
+    /// A tall script loses its own rows rather than the prompt or the shortcuts bar losing theirs.
     pub status_line_height: u16,
     pub compact: bool,
 }
-/// Computed screen layout for the agent view.
-///
-/// Pure data — no rendering. Computed from [`AgentViewLayoutParams`]. Shared
-/// widgets use these rects to render into.
+/// Computed screen layout for the agent view. Pure data, no rendering. Computed from
+/// [`AgentViewLayoutParams`]. Shared widgets use these rects to render into.
 pub struct AgentViewLayout {
     pub status_bar: Rect,
     pub startup_warnings: Rect,
@@ -153,7 +147,7 @@ pub struct AgentViewLayout {
     pub scrollback: Rect,
     pub todo: Rect,
     pub queue: Rect,
-    /// Inline /btw side question panel (above queue / turn status / prompt).
+    /// Inline panel for /btw side questions (above the queue, turn status, and prompt rows).
     pub btw: Rect,
     pub turn_status: Rect,
     /// Persistent Pi RPC widget rows above the editor.
@@ -164,8 +158,10 @@ pub struct AgentViewLayout {
     pub plugin_cta: Rect,
     /// Follow-up suggestion chips row (below the plugin CTA, above the prompt).
     pub follow_ups: Rect,
-    /// Single-row record indicator ("◉ Recording") directly above the prompt,
-    /// shown only while voice capture is active.
+    /// Consolidated panel dock (Subagents/Tasks/Watchers/Queued) directly
+    /// above the prompt; zero-area when hidden.
+    pub dock: Rect,
+    /// Single-row record indicator ("◉ Recording") directly above the prompt, shown only while voice capture is active.
     pub voice_recording: Rect,
     pub prompt: Rect,
     /// Persistent Pi RPC widget rows below the editor.
@@ -180,12 +176,13 @@ pub struct AgentViewLayout {
     /// Timeline rail left edge.
     pub timeline_x: u16,
     /// Columns reserved for the timeline rail (0 = hidden).
+
     pub timeline_width: u16,
 }
 impl AgentViewLayout {
     /// Stack the rows described by `params` into the screen area.
     ///
-    /// Row-by-row semantics live on [`AgentViewLayoutParams`].
+    /// Each row's rules are documented on [`AgentViewLayoutParams`].
     pub fn compute(params: AgentViewLayoutParams) -> Self {
         let AgentViewLayoutParams {
             area,
@@ -204,6 +201,7 @@ impl AgentViewLayout {
             banner_height,
             cta_height,
             follow_ups_height,
+            dock_height,
             prompt_gap,
             voice_recording_height,
             external_widgets_below_editor_height,
@@ -284,6 +282,10 @@ impl AgentViewLayout {
         if follow_ups_height > 0 {
             constraints.push(Constraint::Length(1));
             constraints.push(Constraint::Length(follow_ups_height));
+        }
+        if dock_height > 0 {
+            constraints.push(Constraint::Length(1));
+            constraints.push(Constraint::Length(dock_height));
         }
         if prompt_gap > 0 {
             constraints.push(Constraint::Length(prompt_gap));
@@ -407,6 +409,14 @@ impl AgentViewLayout {
         } else {
             Rect::default()
         };
+        let dock = if dock_height > 0 {
+            i += 1;
+            let r = chunks[i];
+            i += 1;
+            r
+        } else {
+            Rect::default()
+        };
         if prompt_gap > 0 {
             i += 1;
         }
@@ -473,6 +483,7 @@ impl AgentViewLayout {
             banner,
             plugin_cta,
             follow_ups,
+            dock,
             voice_recording,
             prompt,
             external_widgets_below_editor,
@@ -484,13 +495,8 @@ impl AgentViewLayout {
             timeline_width,
         }
     }
-    /// Rows a prompt may take before it starts pushing other rows off their
-    /// requested height, given every other row in `params`.
-    ///
-    /// Measured through [`Self::compute`] rather than re-summed: a probe
-    /// layout with a zero-row prompt hands the scrollback every row nothing
-    /// else claimed, so the scrollback's surplus over [`SCROLLBACK_MIN_ROWS`]
-    /// is the most a prompt can take. `params.prompt_height` is ignored.
+    /// Measured through [`Self::compute`] rather than re-summed: a probe with a zero-row prompt hands
+    /// the scrollback every row nothing else claimed.
     pub fn rows_available_for_prompt(params: AgentViewLayoutParams) -> u16 {
         let probe = Self::compute(AgentViewLayoutParams {
             prompt_height: 0,
@@ -500,8 +506,7 @@ impl AgentViewLayout {
     }
     /// Inner area width (for prompt height computation before full layout).
     ///
-    /// This computes just the inner width without the full layout split,
-    /// since prompt height is needed as input to `compute()`.
+    /// This computes just the inner width without the full layout split, since prompt height is needed as input to `compute()`.
     pub fn inner_width(area: Rect, layout_cfg: &LayoutConfig, compact: bool) -> u16 {
         let vpad = layout_cfg.eff_outer_vpad(compact);
         let outer_block = Block::default().padding(Padding::new(
@@ -521,6 +526,7 @@ impl AgentViewLayout {
             prompt: self.prompt,
             tasks: self.tasks,
             catalog: self.catalog,
+            dock: self.dock,
         }
     }
 }
@@ -544,19 +550,7 @@ pub fn fill_background(
         .style(Style::default().bg(theme.bg_base));
     outer_styled.render(area, buf);
 }
-/// Render follow-up suggestion chips into a single row, returning the
-/// clickable rect of each rendered chip.
-///
-/// Chips render left-to-right and rendering STOPS at the first chip that does
-/// not fit the row width — the result is a rendered prefix of `suggestions`
-/// (index-aligned), not a filtered subset. A transient, mouse-clickable
-/// affordance above the prompt — the same row slot family as the plugin CTA.
-/// Suggestion text is server-controlled and already sanitized at ingestion;
-/// here it is additionally length-clamped per chip and written through
-/// `set_span_safe`, so a label can neither overflow the row nor inject
-/// terminal escape sequences.
-///
-/// `hovered` highlights the chip under the mouse (`theme.bg_hover` + primary text).
+/// The result is therefore an index-aligned prefix of `suggestions`, not a filtered subset.
 pub(crate) fn render_follow_ups(
     area: Rect,
     buf: &mut Buffer,
@@ -579,7 +573,7 @@ pub(crate) fn render_follow_ups(
     }
     const MAX_CHIP_LABEL: usize = 48;
     let chip_style = Style::default().fg(theme.link_fg);
-    let hover_style = Style::default().fg(theme.text_primary).bg(theme.bg_hover);
+    let hover_style = theme.hover_overlay().fg(theme.text_primary);
     let row_end = area.x + area.width;
     let mut x = area.x;
     for (i, label) in suggestions.iter().enumerate() {
@@ -1034,6 +1028,7 @@ pub fn render_write_edit_hover_popup(
     })
 }
 /// Selection/hover chrome for a side pane (todo / queue / tasks). Focused panes get a dismiss control.
+
 pub fn render_todo_chrome(
     buf: &mut Buffer,
     todo_area: Rect,
@@ -1085,11 +1080,9 @@ pub fn render_todo_chrome_with_close_label(
     sel.render(buf);
     Some(sel)
 }
-/// Render the scrollbar track and thumb.
-///
-/// When `is_following` is true, the scrollbar thumb is dimmed to indicate
-/// the viewport is locked to the bottom. This makes G / follow state
-/// immediately visible in the scrollbar.
+/// Render the scrollbar track and thumb. When `is_following` is true, the scrollbar thumb is dimmed
+/// to show the viewport is locked to the bottom. That makes follow mode (G) visible in the
+/// scrollbar itself.
 pub fn render_scrollbar(
     buf: &mut Buffer,
     scrollback_area: Rect,
@@ -1136,8 +1129,8 @@ pub fn render_scrollbar(
         );
     }
 }
-/// The scrollback's default focus hint: `Space` leaves for the prompt. A
-/// parked blocking card replaces it with its own (pinned) route back.
+/// The scrollback's default focus hint: `Space` leaves for the prompt.
+/// A parked blocking card replaces it with its own (pinned) route back.
 pub fn prompt_focus_hint() -> HintItem {
     use crate::input::key::KeyShortcut;
     use crossterm::event::{KeyCode, KeyModifiers};
@@ -1149,21 +1142,8 @@ pub fn prompt_focus_hint() -> HintItem {
         pinned: false,
     }
 }
-/// Build the hints list for the shortcuts bar based on current state.
-///
-/// Each pane contributes its own hints dynamically. The registry provides
-/// the key bindings; the view decides which ones are visible.
-///
-/// `fold_label` is the dynamic label for the fold action based on selected
-/// entry state: "expand", "collapse", or "fold" (no foldable entry selected).
-///
-/// `group_header_label` ("expand"/"collapse") marks a selected group header;
-/// it replaces the fold and Enter:open hints with a single Enter toggle hint.
-///
-/// `focus_hint` is how the scrollback says the keyboard can leave it —
-/// [`prompt_focus_hint`], or a caller-supplied replacement. A pinned one
-/// leads the bar and is offered once; an unpinned one is offered only in the
-/// selection states where moving on is the useful next step.
+/// A pinned one leads the bar and is offered once; an unpinned one is offered only in the selection
+/// states where moving on is the useful next step.
 #[allow(clippy::too_many_arguments)]
 pub fn build_hints(
     active_pane: ActivePane,
@@ -1173,6 +1153,7 @@ pub fn build_hints(
     is_editing_queued: bool,
     fold_label: Option<&'static str>,
     group_header_label: Option<&'static str>,
+    tab_label: &'static str,
     thinking_label: &'static str,
     show_done: bool,
     selected_supports_copy: bool,
@@ -1184,11 +1165,9 @@ pub fn build_hints(
     vim_mode: bool,
     is_subagent_view: bool,
     is_turn_running: bool,
-    esc_would_cancel_turn: bool,
     has_queued_follow_up: bool,
     selected_is_user_prompt: bool,
     selected_is_agent_message: bool,
-    selected_is_credit_limit: bool,
     shift_enter_unavailable: bool,
     scrollback_search: Option<&ScrollbackSearchState>,
 ) -> Vec<HintItem> {
@@ -1199,6 +1178,22 @@ pub fn build_hints(
                 crate::key!('h'),
                 if show_done { "hide done" } else { "show done" },
             ));
+            hints
+        }
+        ActivePane::Dock => {
+            let mut hints = vec![HintItem::paired(
+                crate::key!('j'),
+                crate::key!('k'),
+                "navigate",
+            )];
+            hints.push(HintItem::new(
+                crate::key!(Enter),
+                group_header_label.unwrap_or("open"),
+            ));
+            if group_header_label.is_none() {
+                hints.push(HintItem::new(crate::key!('x'), "kill"));
+            }
+            hints.push(HintItem::new(crate::key!(Tab), tab_label));
             hints
         }
         ActivePane::Queue => {
@@ -1340,17 +1335,10 @@ pub fn build_hints(
             };
             let nothing_special = !selected_is_agent_message
                 && !selected_is_user_prompt
-                && !selected_is_credit_limit
                 && fold_label.is_none()
                 && group_header_label.is_none()
                 && !selected_supports_fullscreen;
             if nothing_special {
-                offer_focus_hint(&mut hints);
-            }
-            if selected_is_credit_limit {
-                if let Some(key) = registry.key_for(ActionId::OpenBlockViewer) {
-                    hints.push(HintItem::new(key, "open"));
-                }
                 offer_focus_hint(&mut hints);
             }
             if selected_is_agent_message {
@@ -1456,11 +1444,7 @@ pub fn build_hints(
         }
     };
     if is_turn_running && let Some(def) = registry.find(ActionId::CancelTurn) {
-        let mut hint = def.hint();
-        if esc_would_cancel_turn {
-            hint.keys = vec![crate::key!(Esc)];
-        }
-        hints.push(hint);
+        hints.push(def.hint());
     }
     let has_composer_payload = !prompt.text().trim().is_empty() || is_editing_queued;
     if matches!(active_pane, ActivePane::Prompt)
@@ -1519,6 +1503,7 @@ mod tests {
             false,
             fold_label,
             None,
+            "prompt",
             "expand thinking",
             false,
             selected_supports_copy,
@@ -1531,10 +1516,8 @@ mod tests {
             false,
             false,
             false,
-            false,
             selected_is_user_prompt,
             selected_is_agent_message,
-            false,
             false,
             None,
         )
@@ -1681,6 +1664,7 @@ mod tests {
         hover_hook_badge(&mut buf, &state, viewport, 0);
         assert!(!frame_text(&buf).contains("hover-hook"));
     }
+
     #[test]
     fn demotion_hint_uses_registered_ctrl_b_binding() {
         let registry = ActionRegistry::defaults();
@@ -1692,6 +1676,7 @@ mod tests {
             false,
             None,
             None,
+            "prompt",
             "expand thinking",
             false,
             false,
@@ -1701,8 +1686,6 @@ mod tests {
             false,
             false,
             true,
-            false,
-            false,
             false,
             false,
             false,
@@ -1728,6 +1711,7 @@ mod tests {
             false,
             Some("expand"),
             Some("expand"),
+            "prompt",
             "expand thinking",
             false,
             false,
@@ -1737,8 +1721,6 @@ mod tests {
             false,
             false,
             true,
-            false,
-            false,
             false,
             false,
             false,
@@ -1894,6 +1876,7 @@ mod tests {
             false,
             None,
             None,
+            "prompt",
             "expand thinking",
             false,
             false,
@@ -1903,8 +1886,6 @@ mod tests {
             false,
             false,
             vim_mode,
-            false,
-            false,
             false,
             false,
             false,
@@ -1999,6 +1980,7 @@ mod tests {
             false,
             None,
             None,
+            "prompt",
             "expand thinking",
             false,
             false,
@@ -2008,8 +1990,6 @@ mod tests {
             false,
             false,
             true,
-            false,
-            false,
             false,
             false,
             false,
@@ -2045,6 +2025,7 @@ mod tests {
             false,
             None,
             None,
+            "prompt",
             "expand thinking",
             false,
             false,
@@ -2056,8 +2037,6 @@ mod tests {
             true,
             false,
             is_turn_running,
-            false,
-            false,
             false,
             false,
             false,
@@ -2091,8 +2070,8 @@ mod tests {
             "mid-turn with composer text must advertise the send-now (interject) chord; got {labels:?}"
         );
     }
-    /// Empty composer + mid-turn queue: bare Enter is send-now in both normal
-    /// and multiline modes (multiline only inserts newline when there is text).
+    /// Empty composer with a mid-turn queue: bare Enter is send-now in both normal and multiline modes.
+    /// Multiline only inserts a newline when there is text.
     #[test]
     fn prompt_empty_mid_turn_queue_advertises_send_now_including_multiline() {
         for multiline in [false, true] {
@@ -2106,6 +2085,7 @@ mod tests {
                 false,
                 None,
                 None,
+                "prompt",
                 "expand thinking",
                 false,
                 false,
@@ -2117,9 +2097,7 @@ mod tests {
                 true,
                 false,
                 true,
-                false,
                 true,
-                false,
                 false,
                 false,
                 false,
@@ -2133,27 +2111,25 @@ mod tests {
             );
         }
     }
-    /// Running-turn cancel hint key tracks `esc_would_cancel_turn` — the
-    /// input-routing predicate computed by the caller: Esc when a bare press
-    /// would reach the policy's mid-turn cancel, the registry Ctrl+C binding
-    /// otherwise. (The predicate itself — gate, panes, and higher-priority
-    /// Esc consumers — is pinned by `esc_would_cancel_turn_tests` in
-    /// `agent_view::input`.)
+    /// The running-turn cancel hint always names the registry Ctrl+C binding: Esc never cancels a turn (it only hints at this key), in every mode and pane.
     #[test]
-    fn running_turn_cancel_hint_key_tracks_esc_predicate() {
+    fn running_turn_cancel_hint_is_always_ctrl_c() {
         let prompt = PromptWidget::default();
         let registry = ActionRegistry::defaults();
-        for (esc_would_cancel_turn, expected) in
-            [(true, crate::key!(Esc)), (false, crate::key!('c', CONTROL))]
-        {
+        for (vim_mode, pane) in [
+            (false, ActivePane::Prompt),
+            (true, ActivePane::Prompt),
+            (false, ActivePane::Scrollback),
+        ] {
             let hints = build_hints(
-                ActivePane::Prompt,
+                pane,
                 prompt_focus_hint(),
                 &prompt,
                 &registry,
                 false,
                 None,
                 None,
+                "prompt",
                 "expand thinking",
                 false,
                 false,
@@ -2162,11 +2138,9 @@ mod tests {
                 false,
                 false,
                 false,
-                true,
+                vim_mode,
                 false,
                 true,
-                esc_would_cancel_turn,
-                false,
                 false,
                 false,
                 false,
@@ -2178,16 +2152,21 @@ mod tests {
                 .find(|h| h.label == "cancel")
                 .expect("running turn must surface the cancel hint");
             assert_eq!(
+                vec![crate::key!('c', CONTROL)],
                 cancel.keys,
-                vec![expected],
-                "cancel hint key for esc_would_cancel_turn={esc_would_cancel_turn}"
+                "cancel hint key for vim_mode={vim_mode} pane={pane:?}"
+            );
+            assert!(
+                !hints
+                    .iter()
+                    .any(|h| h.label == "cancel" && h.keys == vec![crate::key!(Esc)]),
+                "no hint may advertise Esc as the turn cancel (vim_mode={vim_mode} pane={pane:?})"
             );
         }
     }
-    /// Running turn + open scrollback search: the search's own `Esc cancel`
-    /// hint stays the ONLY Esc hint — the CancelTurn hint keeps Ctrl+C (the
-    /// caller's predicate is false while the search would steal Esc), so the
-    /// bar never shows two different `Esc cancel` meanings at once.
+    /// Running turn with an open scrollback search: the search's own `Esc cancel` hint stays the only Esc hint.
+    /// The CancelTurn hint keeps Ctrl+C.
+    /// The bar therefore never shows two different `Esc cancel` meanings at once.
     #[test]
     fn running_turn_with_scrollback_search_keeps_ctrl_c_cancel_hint() {
         let registry = ActionRegistry::defaults();
@@ -2200,6 +2179,7 @@ mod tests {
             false,
             None,
             None,
+            "prompt",
             "expand thinking",
             false,
             false,
@@ -2211,8 +2191,6 @@ mod tests {
             false,
             false,
             true,
-            false,
-            false,
             false,
             false,
             false,
@@ -2235,10 +2213,9 @@ mod tests {
             "CancelTurn hint must stay on Ctrl+C while the search owns Esc"
         );
     }
-    /// Running turn + editing a queued prompt: the edit's own `Esc cancel`
-    /// (discard) hint is the ONLY Esc-keyed row — the CancelTurn hint keeps
-    /// Ctrl+C (the caller's predicate is false while the edit owns Esc), so
-    /// the bar never shows two contradictory `Esc cancel` rows.
+    /// Running turn while editing a queued prompt: the edit's own `Esc cancel` (discard) hint is the only Esc-keyed row.
+    /// The CancelTurn hint keeps Ctrl+C.
+    /// The bar therefore never shows two contradictory `Esc cancel` rows.
     #[test]
     fn running_turn_editing_queued_keeps_ctrl_c_cancel_hint() {
         let registry = ActionRegistry::defaults();
@@ -2252,6 +2229,7 @@ mod tests {
             true,
             None,
             None,
+            "prompt",
             "expand thinking",
             false,
             false,
@@ -2263,8 +2241,6 @@ mod tests {
             false,
             false,
             true,
-            false,
-            false,
             false,
             false,
             false,
@@ -2627,8 +2603,7 @@ mod tests {
         assert_eq!(layout.plugin_cta, Rect::default());
         assert!(layout.scrollback.height >= 5);
     }
-    /// Banner row (mode banner / ephemeral tip slot): height 1 reserves a
-    /// one-row rect directly above the prompt (gap row in between).
+    /// Banner row (mode banner / ephemeral tip slot): height 1 reserves a one-row rect directly above the prompt (gap row in between).
     #[test]
     fn banner_row_present_above_prompt() {
         let area = Rect::new(0, 0, 80, 40);

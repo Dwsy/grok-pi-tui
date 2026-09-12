@@ -50,26 +50,22 @@ pub struct ServerSummary {
     pub tool_names: Vec<String>,
 }
 
-/// Backend-agnostic interface for searching tools by keyword.
-///
-/// Implementations must be `Send + Sync` to be stored as `Arc<dyn ToolSearchIndex>`
-/// in `Resources`. No MCP-specific concepts — the concrete implementation
-/// in `xai-grok-shell` maps `mcp_initialized` to `is_ready`.
+/// Backend-agnostic interface for searching tools by keyword. Implementations must be `Send + Sync`
+/// to be stored as `Arc<dyn ToolSearchIndex>` in `Resources`. No MCP-specific concepts — the
+/// concrete implementation in `xai-grok-shell` maps `mcp_initialized` to `is_ready`.
 pub trait ToolSearchIndex: Send + Sync {
     /// Search and return results + metadata from a single consistent snapshot.
     fn search_snapshot(&self, query: &str, limit: usize) -> SearchSnapshot;
 
-    /// List the unique MCP servers in the index with their tool counts.
-    ///
-    /// Used to build the system-reminder listing connected servers, so
-    /// the model knows which integrations are available.
+    /// List the unique MCP servers in the index with their tool counts. Used to build the
+    /// system-reminder listing connected servers, so the model knows which integrations are
+    /// available.
     fn list_server_summaries(&self) -> Vec<ServerSummary>;
 }
 
-/// Resource wrapper for injecting a `ToolSearchIndex` into `Resources`.
-///
-/// Same pattern as `MemoryBackend` — stored as an ephemeral resource (not
-/// serialized), injected by `xai-grok-shell` after MCP initialization.
+/// Resource wrapper for injecting a `ToolSearchIndex` into `Resources`. Same pattern as
+/// `MemoryBackend` — stored as an ephemeral resource (not serialized), injected by `xai-grok-shell`
+/// after MCP initialization.
 #[derive(Clone)]
 pub struct ToolIndex(pub Arc<dyn ToolSearchIndex>);
 

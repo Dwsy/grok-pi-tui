@@ -26,20 +26,9 @@ use tokio::sync::{Notify, mpsc, oneshot};
 use tracing::Instrument;
 use xai_circuit_breaker::{Disposition, RetryPolicy};
 use xai_grok_auth::AuthCredentialProvider;
-/// Resolves current upload credentials at upload time, plus optional
-/// hooks the queue worker uses to wire refresh-aware credentials and
-/// `auth_401_attribution` emission into the per-upload `StorageClient`.
-///
-/// The agent implements this by delegating to its AuthManager, ensuring fresh
-/// tokens even when items have been queued for minutes. This avoids stale-token
-/// failures on retried items whose original credentials may have expired.
-///
-/// `proxy_attribution`, `proxy_credentials`, and `proxy_http_client` mirror
-/// the same-named methods on [`StorageConfig`]. They default to `None` so existing
-/// implementors (tests, no-auth direct-mode resolvers) keep compiling without
-/// changes; the queue worker calls them on every dispatch and stitches the
-/// returned `Option`s onto the resolved [`TraceExportConfig`] before handing
-/// it to the upload helpers.
+/// Resolves upload credentials at upload time, plus hooks for refresh-aware creds and 401 attribution.
+/// The agent delegates to AuthManager so queued items do not retry with expired tokens.
+/// Optional hooks default to `None` so existing implementors keep compiling.
 pub trait TraceExportSource: Send + Sync {
     fn resolve(&self) -> TraceExportConfig;
     /// Async variant. Override to drive auth refresh; default delegates to sync.
@@ -64,14 +53,9 @@ pub trait TraceExportSource: Send + Sync {
     fn proxy_http_client(&self) -> Option<reqwest::Client> {
         None
     }
-    /// Park-on-401 recovery signal: a future resolving `true` iff credentials
-    /// changed within `timeout`. `failed_bearer` is the token the rejected
-    /// attempt used — implementations must resolve `true` immediately when
-    /// the current credential already differs, or a rotation landing between
-    /// wait slices is missed and retry stalls until the probe interval.
-    /// `None` (the default) means no recovery is possible — static creds,
-    /// S3/direct mode, or IdP-confirmed permanent failure — and the worker
-    /// drops the auth-failed item immediately instead of parking it.
+    /// Park-on-401 recovery: a future resolving `true` iff credentials changed within `timeout`.
+    /// Must resolve immediately when the current credential already differs, or a mid-wait rotation is missed.
+    /// `None` means no recovery is possible — the worker drops the auth-failed item instead of parking.
     fn wait_for_auth_recovery(
         &self,
         failed_bearer: Option<&str>,
@@ -87,10 +71,8 @@ pub trait TraceExportSource: Send + Sync {
         true
     }
 }
-/// Worker-side wrapper that bundles a resolved `TraceExportConfig` with the
-/// optional attribution / credentials / http_client provided by the
-/// `TraceExportSource`. Constructed once per dispatch attempt so a token
-/// rotation between attempts is reflected on the next try.
+/// Worker-side wrapper bundling a resolved `TraceExportConfig` with optional attribution/creds/client.
+/// Constructed once per dispatch attempt so a token rotation is reflected on the next try.
 struct ResolvedStorageConfig {
     config: TraceExportConfig,
     attribution: Option<Arc<dyn Auth401AttributionCallback>>,
@@ -144,11 +126,7 @@ impl StorageConfig for ResolvedStorageConfig {
     }
 }
 /// Default max age for upload queue items (2 hours).
-///
-/// Used by both the retry policy (`max_age`) and the startup orphan cleanup
-/// (`cleanup_orphaned_uploads`). Kept as a constant so the two stay in sync —
-/// if the cleanup threshold is shorter than the retry max_age, a process restart
-/// can delete temp files that the previous worker was still trying to upload.
+/// Shared by retry policy and startup orphan cleanup so a restart cannot delete files still being retried.
 pub const DEFAULT_MAX_AGE: Duration = Duration::from_secs(2 * 60 * 60);
 /// Retry policy for individual queue items.
 #[derive(Clone, Debug)]
@@ -163,22 +141,18 @@ pub struct UploadRetryPolicy {
     pub multiplier: f64,
     /// Max age — items older than this are dropped to prevent unbounded growth.
     pub max_age: Duration,
-    /// Minimum wall time between wire probe attempts while parked for auth
-    /// recovery — the fallback for 401s that heal server-side without a
-    /// client credential rotation. Env override:
-    /// `GROK_UPLOAD_QUEUE_AUTH_PROBE_SECS`.
+    /// Minimum wall time between wire probe attempts while parked for auth recovery.
+    /// Fallback for 401s that heal server-side without a client credential rotation.
+    /// Env override: `GROK_UPLOAD_QUEUE_AUTH_PROBE_SECS`.
     pub auth_park_probe_interval: Duration,
 }
 pub const DEFAULT_AUTH_PARK_PROBE_INTERVAL: Duration = Duration::from_secs(300);
-/// Smallest probe interval a `GROK_UPLOAD_QUEUE_AUTH_PROBE_SECS` override may
-/// set. Probes can't fire faster than `AUTH_PARK_WAIT_INTERVAL` regardless, so
-/// this exists mainly to reject the degenerate `0` (whole-second granularity
-/// means a non-zero value already floors at one second).
+/// Smallest probe interval a `GROK_UPLOAD_QUEUE_AUTH_PROBE_SECS` override may set.
+/// Rejects the degenerate `0` (probes cannot fire faster than `AUTH_PARK_WAIT_INTERVAL` anyway).
 const MIN_AUTH_PARK_PROBE_INTERVAL: Duration = Duration::from_secs(1);
-/// Resolve a `GROK_UPLOAD_QUEUE_AUTH_PROBE_SECS` override (seconds) into a probe
-/// interval. `0` is rejected (`None`) so a misconfiguration can't turn every
-/// parked upload into a per-wait-slice retry storm; other values are floored at
-/// [`MIN_AUTH_PARK_PROBE_INTERVAL`].
+/// Resolve a `GROK_UPLOAD_QUEUE_AUTH_PROBE_SECS` override into a probe interval.
+/// `0` is rejected so a misconfiguration cannot turn every parked upload into a per-slice retry storm.
+/// Other values are floored at [`MIN_AUTH_PARK_PROBE_INTERVAL`].
 fn auth_park_probe_override(secs: u64) -> Option<Duration> {
     (secs > 0).then(|| Duration::from_secs(secs).max(MIN_AUTH_PARK_PROBE_INTERVAL))
 }
@@ -220,10 +194,8 @@ const INLINE_FALLBACK_PERMIT_BYTES: u64 = 1024 * 1024;
 /// Total permits held by the inline-fallback semaphore (= 256).
 const INLINE_FALLBACK_TOTAL_PERMITS: u32 =
     (MAX_INLINE_FALLBACK_INFLIGHT_BYTES / INLINE_FALLBACK_PERMIT_BYTES) as u32;
-/// Map an upload size to inline-fallback permits: 1 MiB units rounded up, floor
-/// of 1, clamped to the total. The clamp keeps a multi-GB file from requesting
-/// more permits than the semaphore holds (which would deadlock `acquire_many`)
-/// or overflowing `u32`.
+/// Map an upload size to inline-fallback permits: 1 MiB units rounded up, floor of 1, clamped to the total.
+/// The clamp keeps a multi-GB file from requesting more permits than the semaphore holds (deadlock) or overflowing `u32`.
 fn inline_fallback_permits(size_bytes: u64) -> u32 {
     let units = size_bytes.div_ceil(INLINE_FALLBACK_PERMIT_BYTES);
     units.clamp(1, INLINE_FALLBACK_TOTAL_PERMITS as u64) as u32
@@ -235,10 +207,8 @@ enum UploadSource {
     /// A temp file whose real disk cost equals its size (in-memory artifacts
     /// written to disk, or files copied into the queue dir).
     OwnedTemp(PathBuf),
-    /// A reflink/CoW (or real-copy fallback) snapshot of a working-tree file,
-    /// taken at enqueue (see `enqueue_file_reference`). `disk_bytes` is its REAL
-    /// disk cost — 0 for a reflink (CoW shares blocks), the file size for a copy
-    /// — used for budget accounting instead of the (large) logical size.
+    /// A reflink/CoW (or real-copy fallback) snapshot of a working-tree file, taken at enqueue.
+    /// `disk_bytes` is the real disk cost (0 for a reflink) used for budget accounting, not the logical size.
     OwnedSnapshot { path: PathBuf, disk_bytes: u64 },
 }
 impl UploadSource {
@@ -260,11 +230,9 @@ impl UploadSource {
 /// Schema version stamped on every [`QueueItemSidecar`]; bumped only on
 /// breaking manifest-shape changes.
 pub const QUEUE_ITEM_SIDECAR_SCHEMA_VERSION: u32 = 1;
-/// Sidecar manifest written as `<temp>.meta.json` next to a queue temp file by
-/// [`UploadQueue::enqueue_bytes_blocking`] (the fire-and-forget paths write the
-/// temp file alone). It carries everything a fresh process needs to re-enqueue
-/// the upload after a restart — the temp-file name alone is lossy (truncated
-/// `session_id`, no GCS path). Read by `xai_grok_workspace::recovery`.
+/// Sidecar manifest written as `<temp>.meta.json` next to a queue temp file.
+/// Carries everything a fresh process needs to re-enqueue after restart — the temp name alone is lossy.
+/// Read by `xai_grok_workspace::recovery`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueueItemSidecar {
     /// Manifest schema version (see [`QUEUE_ITEM_SIDECAR_SCHEMA_VERSION`]).
@@ -451,11 +419,8 @@ struct DrainState {
     shutdown_tx: oneshot::Sender<()>,
     worker_handle: tokio::task::JoinHandle<()>,
 }
-/// Handle for submitting artifacts to the background upload queue.
-///
-/// Clone-able — share across the agent struct and upload call sites.
-/// The background worker is spawned once at creation time and runs until
-/// the sender side is dropped (or `drain()` is called on shutdown).
+/// Handle for submitting artifacts to the background upload queue. Clone-able.
+/// The worker is spawned once and runs until the sender is dropped or `drain()` is called.
 #[derive(Clone)]
 pub struct UploadQueue {
     tx: mpsc::Sender<UploadQueueItem>,
@@ -467,10 +432,8 @@ pub struct UploadQueue {
     /// Enables per-version breakdown of upload failures in analytics dashboards.
     pub client_version: Option<String>,
     drain_state: Arc<Mutex<Option<DrainState>>>,
-    /// Byte-budget semaphore for inline-fallback uploads (disk budget exhausted /
-    /// channel full); each upload acquires [`inline_fallback_permits`] for its
-    /// size. Bounds memory + concurrency for the path-streaming variants, and
-    /// concurrency only for the bytes variant (`spawn_inline_upload`).
+    /// Byte-budget semaphore for inline-fallback uploads (disk budget exhausted / channel full).
+    /// Bounds memory + concurrency for path-streaming variants, concurrency only for the bytes variant.
     inline_fallback_semaphore: Arc<tokio::sync::Semaphore>,
     /// Destinations currently queued or uploading, so a duplicate enqueue is
     /// dropped before it spills a second copy to disk.
@@ -499,10 +462,8 @@ fn is_content_addressed(gcs_path: &str) -> bool {
         .next()
         .is_some_and(|object| object.starts_with("sha256_"))
 }
-/// Marker error for [`UploadQueue::enqueue_blocking`] when the worker is shut
-/// down (channel closed, or worker aborted before sending a completion).
-/// Downcastable so callers can distinguish "queue unavailable" (retry another
-/// way) from a genuine upload failure (already retried by the worker).
+/// Marker error for [`UploadQueue::enqueue_blocking`] when the worker is shut down.
+/// Downcastable so callers can distinguish "queue unavailable" from a genuine upload failure.
 #[derive(Debug)]
 pub struct QueueClosed;
 impl std::fmt::Display for QueueClosed {
@@ -512,23 +473,16 @@ impl std::fmt::Display for QueueClosed {
 }
 impl std::error::Error for QueueClosed {}
 /// Structured outcome of [`UploadQueue::enqueue_bytes_blocking`].
-///
-/// Distinguishes the three terminal states of an enqueue attempt so callers
-/// can report a truthful per-artifact status without inspecting queue
-/// internals. The value is returned once the worker has accepted the item
-/// (durably on disk) or a fallback / failure has been decided — it does NOT
-/// reflect cloud-upload completion. Use [`UploadQueue::enqueue_blocking`] when
-/// you need to await the upload itself.
+/// Distinguishes terminal enqueue states so callers can report truthful status without inspecting internals.
+/// Returned once the worker has accepted the item or a fallback is decided — not cloud-upload completion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnqueueOutcome {
     /// Bytes were written to `upload_queue/` as a `.tmp` file AND accepted by
     /// the background worker channel. The worker owns the cloud upload and its
     /// retry policy from here on.
     Enqueued,
-    /// The disk budget was exceeded or the worker channel was full, so an
-    /// inline fallback upload was spawned (bounded by the inline-fallback
-    /// byte-budget semaphore). The bytes are not on the queue's disk spill but
-    /// an upload is in flight.
+    /// Disk budget exceeded or worker channel full, so an inline fallback upload was spawned.
+    /// The bytes are not on the queue's disk spill, but an upload is in flight.
     FellBackToInline,
     /// The temp file could not be written, or the worker is shut down. The
     /// artifact was not handed off anywhere; the caller should log and skip.
@@ -539,15 +493,9 @@ pub enum EnqueueOutcome {
     /// queue failure; after-turn reduction must not treat this as `Failed`.
     Skipped { reason: String },
 }
-/// Internal outcome of [`UploadQueue::enqueue_core`], the shared body behind
-/// [`UploadQueue::enqueue`] and [`UploadQueue::enqueue_bytes_blocking`].
-///
-/// The core performs all the common bookkeeping (temp-file write, disk-budget
-/// check, item construction, stats, `try_send`) and the inline fallback for the
-/// over-budget / channel-full branches. The *closed-channel* branch is the one
-/// place the two public methods diverge, so the core stops there and lets each
-/// caller decide (`enqueue` inline-falls-back; `enqueue_bytes_blocking` reports
-/// `Failed`).
+/// Internal outcome of [`UploadQueue::enqueue_core`], shared by the two public enqueue methods.
+/// The core does bookkeeping and inline fallback for over-budget / channel-full.
+/// The closed-channel branch is left to the caller: `enqueue` falls back, `enqueue_bytes_blocking` reports `Failed`.
 enum EnqueueAttempt {
     /// The temp file could not be written; nothing was enqueued.
     WriteError(anyhow::Error),
@@ -667,10 +615,8 @@ impl UploadQueue {
         self.max_queue_bytes = max_bytes;
         self
     }
-    /// Enqueue bytes for background upload. Writes to temp file, returns immediately.
-    ///
-    /// Falls back to inline upload (current behavior) if the queue channel is full
-    /// or the disk budget is exceeded.
+    /// Enqueue bytes for background upload. Writes a temp file and returns immediately.
+    /// Falls back to inline upload if the channel is full or the disk budget is exceeded.
     pub async fn enqueue(
         &self,
         content: &[u8],
@@ -701,21 +647,9 @@ impl UploadQueue {
             }
         }
     }
-    /// Enqueue bytes for background upload, reporting a structured
-    /// [`EnqueueOutcome`] instead of `Result<()>`.
-    ///
-    /// Mirrors [`Self::enqueue`] — same temp-file write, over-budget check and
-    /// channel handling — but maps each terminal branch to a distinct
-    /// [`EnqueueOutcome`] so callers can surface a truthful per-artifact
-    /// status. Returns once the worker has accepted the item (durably on disk);
-    /// it does NOT block on the cloud upload. Use [`Self::enqueue_blocking`] for
-    /// the await-upload-completion contract.
-    ///
-    /// The one behavioural difference from [`Self::enqueue`]: a *closed* worker
-    /// channel maps to [`EnqueueOutcome::Failed`] (no inline fallback) because a
-    /// shut-down worker means the artifact is lost. A *full* channel still falls
-    /// back to inline upload ([`EnqueueOutcome::FellBackToInline`]), exactly as
-    /// [`Self::enqueue`] does.
+    /// Enqueue bytes, reporting a structured [`EnqueueOutcome`] instead of `Result<()>`.
+    /// Returns once the worker has accepted the item; does not block on the cloud upload.
+    /// A closed channel is `Failed` (no inline fallback); a full channel still falls back to inline.
     pub async fn enqueue_bytes_blocking(
         &self,
         content: &[u8],
@@ -748,19 +682,9 @@ impl UploadQueue {
             }
         }
     }
-    /// Re-enqueue an existing on-disk pair (temp + sidecar) left by a prior
-    /// process life, without rewriting either file. Used by startup recovery.
-    ///
-    /// Reusing the original pair keeps the sidecar's `enqueued_at` anchored to
-    /// the first spill, so repeated restarts cannot slide the recovery max-age
-    /// window indefinitely (a fresh pair per boot would reset the clock each
-    /// time). The worker owns the pair from `Enqueued` onward and deletes both
-    /// files on every terminal outcome, exactly as for a normal enqueue.
-    ///
-    /// On `Failed` (worker shut down, channel full, or over the disk budget)
-    /// the pair is left untouched so a later startup can retry; no inline
-    /// fallback is attempted — recovery runs pre-hub-connect where blocking on
-    /// cloud I/O would delay registration.
+    /// Re-enqueue an existing on-disk pair left by a prior process, without rewriting either file.
+    /// Reusing the pair keeps `enqueued_at` anchored so restarts cannot slide the recovery max-age window.
+    /// On `Failed` the pair is left untouched; no inline fallback (recovery must not block on cloud I/O).
     pub fn enqueue_recovered(
         &self,
         temp_path: &Path,
@@ -808,19 +732,8 @@ impl UploadQueue {
         }
     }
     /// Shared body behind [`Self::enqueue`] and [`Self::enqueue_bytes_blocking`].
-    ///
-    /// Writes the temp file, checks the disk budget, builds the queue item, and
-    /// `try_send`s it — performing all stats bookkeeping and the inline fallback
-    /// for the over-budget / channel-full branches. The closed-channel branch is
-    /// left to the caller (the two methods diverge only there), so its
-    /// `enqueue_fallbacks`/inline decision is NOT taken here. See
-    /// [`EnqueueAttempt`].
-    ///
-    /// When `write_sidecar` is true, a [`QueueItemSidecar`] is written next to
-    /// the temp file — but only after the disk-budget gate passes, so the
-    /// over-budget fallback never pays for a sidecar it would immediately
-    /// delete. All cleanup branches remove temp and sidecar together,
-    /// preserving the pair invariant.
+    /// Writes the temp, checks the disk budget, and `try_send`s. Closed-channel is left to the caller.
+    /// Sidecar is written only after the budget gate, so over-budget fallback never pays for one it would delete.
     fn enqueue_core(
         &self,
         content: &[u8],
@@ -910,13 +823,9 @@ impl UploadQueue {
             }
         }
     }
-    /// Enqueue bytes and block until upload completes. Returns the upload URL on success.
-    ///
-    /// Used for `block_for_upload` mode where the caller must await completion
-    /// (e.g., metadata.json enrichment on the proxy). Writes the recovery
-    /// sidecar like [`Self::enqueue_bytes_blocking`], so an item outliving the
-    /// waiter (cancelled confirmation, process exit mid-retry) spills as a
-    /// pair the next run re-enqueues.
+    /// Enqueue bytes and block until upload completes. Used for `block_for_upload`.
+    /// Writes the recovery sidecar so an item outliving the waiter spills as a re-enqueueable pair.
+    /// A full channel diverts to inline and drops the sidecar — set `diverted_inline` before parking on confirmation.
     pub async fn enqueue_blocking(
         &self,
         content: &[u8],
@@ -925,6 +834,7 @@ impl UploadQueue {
         artifact_name: &str,
         session_id: &str,
         turn_number: u64,
+        diverted_inline: Option<&std::sync::atomic::AtomicBool>,
     ) -> anyhow::Result<String> {
         let temp_path = self.write_temp_file(content, artifact_name, session_id, turn_number)?;
         let sidecar_path = match self.write_sidecar_file(
@@ -976,6 +886,9 @@ impl UploadQueue {
                 }
                 if let Some(sidecar) = &rejected.sidecar_path {
                     try_remove_temp(sidecar, Some(&self.stats));
+                }
+                if let Some(flag) = diverted_inline {
+                    flag.store(true, Ordering::Relaxed);
                 }
                 self.stats.enqueue_fallbacks.fetch_add(1, Ordering::Relaxed);
                 self.spawn_inline_upload_owned_snapshot(
@@ -1153,18 +1066,9 @@ impl UploadQueue {
             original_size,
         })
     }
-    /// Enqueue a working-tree file by taking an immutable reflink/CoW snapshot of
-    /// it into the queue dir, verifying that snapshot against `expected_sha256`,
-    /// then uploading the snapshot (never the live source).
-    ///
-    /// Snapshotting at enqueue closes the verify-then-upload corruption window:
-    /// verify and upload operate on the SAME bytes, so a later mutation of the
-    /// working-tree file cannot poison the content-addressed object.
-    ///
-    /// Reflink-vs-copy disk budgeting is handled at the `snapshot_route` gate
-    /// below. A stale snapshot (source changed since the manifest hash) is
-    /// discarded and the completion resolves to a non-fatal `Err`. Mirrors
-    /// `enqueue_file`'s channel-full/closed fallback. Returns an [`EnqueueResult`].
+    /// Enqueue a working-tree file by snapshotting it (reflink/CoW), verifying against `expected_sha256`, then uploading the snapshot.
+    /// Snapshotting at enqueue closes the verify-then-upload corruption window: verify and upload share the same bytes.
+    /// A stale snapshot is discarded (non-fatal `Err`). Returns an [`EnqueueResult`].
     pub async fn enqueue_file_reference(
         &self,
         source_path: &Path,
@@ -1306,15 +1210,9 @@ impl UploadQueue {
             original_size,
         })
     }
-    /// Bounded, NON-terminal flush: wait until every queued item has reached a
-    /// terminal outcome (`pending == 0`) or `timeout` elapses, and return the
-    /// remaining pending count (0 = flushed). Unlike [`Self::drain`] the
-    /// worker keeps running either way, so later enqueues proceed normally —
-    /// this is the per-turn flush; `drain` is for process shutdown.
-    ///
-    /// `pending == 0` means every accepted item settled (uploaded, or dropped
-    /// by retry/terminal policy); it does not cover inline-fallback tasks,
-    /// which leave `pending` at spawn.
+    /// Bounded, non-terminal flush: wait until `pending == 0` or `timeout`, and return the remaining count.
+    /// Unlike [`Self::drain`], the worker keeps running — this is the per-turn flush.
+    /// `pending == 0` does not cover inline-fallback tasks, which leave `pending` at spawn.
     pub async fn wait_idle(&self, timeout: Duration) -> usize {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
@@ -1337,13 +1235,7 @@ impl UploadQueue {
         }
     }
     /// Drain remaining items with a deadline. Called on graceful shutdown.
-    ///
-    /// Signals the worker to stop accepting new items, process all remaining
-    /// channel items, and wait for in-flight uploads to complete.
-    /// Returns 0 on success, or the pending count if the deadline is exceeded.
-    /// On timeout the worker task is aborted, which also aborts any still-running
-    /// upload tasks (they live in the worker's `JoinSet`); their artifacts stay
-    /// on disk for next-session orphan recovery.
+    /// On timeout the worker is aborted; artifacts stay on disk for next-session orphan recovery.
     /// Double drain is a no-op (returns 0).
     pub async fn drain(&self, deadline: Duration) -> usize {
         let span = tracing::info_span!(
@@ -1398,18 +1290,12 @@ impl UploadQueue {
         &self.stats
     }
     /// Get a shared reference to the stats Arc for cross-component sharing.
-    ///
-    /// Used to pass the stats to the feedback manager's periodic signal sync,
-    /// which snapshots upload queue metrics into the session signals.
+    /// Used so the feedback manager can snapshot upload-queue metrics into session signals.
     pub fn stats_arc(&self) -> Arc<UploadQueueStats> {
         self.stats.clone()
     }
-    /// Clean up orphaned entries from previous sessions.
-    ///
-    /// Called at startup to remove files and directories older than `max_age`
-    /// that were left behind by crashes or ungraceful shutdowns. Deleted lone
-    /// queue files (temp without sidecar, or vice versa) are counted in
-    /// `cleanup_orphan_mismatched`.
+    /// Clean up orphaned entries from previous sessions older than `max_age`.
+    /// Deleted lone queue files (temp without sidecar, or vice versa) are counted in `cleanup_orphan_mismatched`.
     pub fn cleanup_orphans(&self, max_age: Duration) {
         cleanup_queue_dir(&self.queue_dir, max_age, Some(&self.stats));
     }
@@ -1426,11 +1312,8 @@ impl UploadQueue {
             .with_context(|| format!("Failed to write temp file {}", path.display()))?;
         Ok(path)
     }
-    /// Write the [`QueueItemSidecar`] manifest for `temp_path` atomically
-    /// (write `<final>.tmp` → fsync → rename). Only the manifest is written
-    /// atomically — the temp file itself is a plain write; that asymmetry is
-    /// fine because recovery re-hashes the temp bytes and drops the pair on a
-    /// `sha256` mismatch, so a torn temp is detected rather than re-uploaded.
+    /// Write the [`QueueItemSidecar`] manifest atomically (tmp → fsync → rename).
+    /// Only the manifest is atomic; a torn temp is detected by recovery re-hash, not re-uploaded.
     fn write_sidecar_file(
         &self,
         temp_path: &Path,
@@ -1460,10 +1343,9 @@ impl UploadQueue {
     fn over_disk_budget(&self, additional_bytes: u64) -> bool {
         self.stats.pending_bytes.load(Ordering::Relaxed) + additional_bytes > self.max_queue_bytes
     }
-    /// Inline-upload fallback for `enqueue_file_blocking` when over the disk
-    /// budget. Streams from `source_path` via `upload_file` and resolves the
-    /// caller's `oneshot`. Always uncompressed. Streaming from disk means the
-    /// byte semaphore bounds both resident memory and upload concurrency.
+    /// Inline-upload fallback for `enqueue_file_blocking` when over the disk budget.
+    /// Streams from `source_path` and resolves the caller's `oneshot`. Always uncompressed.
+    /// Streaming from disk means the byte semaphore bounds both memory and concurrency.
     fn spawn_inline_upload_blocking(
         &self,
         source_path: PathBuf,
@@ -1514,11 +1396,8 @@ impl UploadQueue {
                 .instrument(parent_span),
         );
     }
-    /// Inline fallback for `enqueue_file_reference` when the channel is full /
-    /// closed or an over-budget copy-fallback snapshot must not accumulate in the
-    /// queue. Streams the queue-OWNED snapshot via `upload_file` (bounded by the
-    /// byte-budget semaphore), resolves `completion_tx`, and ALWAYS deletes the
-    /// snapshot afterward.
+    /// Inline fallback for `enqueue_file_reference` when the channel is full/closed or an over-budget snapshot must not accumulate.
+    /// Streams the queue-owned snapshot, resolves `completion_tx`, and always deletes the snapshot afterward.
     fn spawn_inline_upload_owned_snapshot(
         &self,
         snapshot: PathBuf,
@@ -1573,10 +1452,8 @@ impl UploadQueue {
                 .instrument(parent_span),
         );
     }
-    /// Fire-and-forget inline fallback for `enqueue_file` (over-budget /
-    /// channel-full), streaming from `source_path` via `upload_file` (multipart
-    /// for large files) rather than reading the file into memory. Streaming from
-    /// disk means the byte semaphore bounds both resident memory and concurrency.
+    /// Fire-and-forget inline fallback for `enqueue_file`, streaming from `source_path` rather than reading into memory.
+    /// Streaming from disk means the byte semaphore bounds both resident memory and concurrency.
     fn spawn_inline_upload_from_path(
         &self,
         source_path: PathBuf,
@@ -1614,11 +1491,8 @@ impl UploadQueue {
                 .instrument(parent_span),
         );
     }
-    /// Fire-and-forget inline fallback for the bytes-based `enqueue`
-    /// (over-budget / channel-full). The owned `Vec` must be allocated before the
-    /// spawn (the borrow can't cross it), so the semaphore bounds only upload
-    /// concurrency, not memory — acceptable because this path carries only small
-    /// in-memory artifacts; multi-GB files use the path-streaming variants above.
+    /// Fire-and-forget inline fallback for bytes-based `enqueue`. The owned `Vec` is allocated before spawn.
+    /// The semaphore bounds only concurrency, not memory — acceptable because this path carries only small artifacts.
     fn spawn_inline_upload(&self, content: &[u8], gcs_path: &str, content_type: &str) {
         use tracing::Instrument;
         let resolver = self.resolver.clone();
@@ -1654,12 +1528,9 @@ impl UploadQueue {
         );
     }
 }
-/// A worker concurrency slot paired with its semaphore so a parked item can
-/// release the slot (parking does zero wire I/O) and re-acquire it before
-/// resuming. Without release, `max_concurrent` parked items would pin every
-/// slot for up to `max_age` — collapsing throughput and stalling drain, since
-/// the dispatch loop blocks on `acquire_owned()` and stops polling the
-/// shutdown signal.
+/// A worker concurrency slot paired with its semaphore so a parked item can release and re-acquire it.
+/// Without release, `max_concurrent` parked items would pin every slot for up to `max_age`.
+/// That collapses throughput and stalls drain, which blocks on `acquire_owned()` and stops polling shutdown.
 struct ConcurrencyPermit {
     semaphore: Arc<tokio::sync::Semaphore>,
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
@@ -1731,10 +1602,8 @@ async fn dispatch_item(
         .instrument(span),
     );
 }
-/// Hold the circuit breaker open for one [`CIRCUIT_BREAKER_COOLDOWN`] period,
-/// returning `true` if a shutdown interrupted it. Sets `circuit_breaker_active`
-/// on entry and always clears it before returning (even on shutdown, so the
-/// gauge never stays stuck `true` while draining).
+/// Hold the circuit breaker open for one [`CIRCUIT_BREAKER_COOLDOWN`] period.
+/// Returns `true` if shutdown interrupted it. Always clears `circuit_breaker_active` before returning.
 async fn circuit_breaker_cooldown(
     stats: &Arc<UploadQueueStats>,
     mut shutdown_rx: Pin<&mut oneshot::Receiver<()>>,
@@ -1752,20 +1621,9 @@ async fn circuit_breaker_cooldown(
     stats.notify_transition();
     interrupted
 }
-/// Concurrent background worker that processes the upload queue.
-///
-/// Dispatches up to `max_concurrent` items in parallel using a semaphore.
-/// Each item is processed in its own spawned task with an independent retry loop.
-/// The circuit breaker pauses the dispatch loop (preventing new tasks from starting)
-/// while in-flight tasks continue to completion.
-///
-/// The worker exits when either:
-/// - The channel is closed (all senders dropped)
-/// - A shutdown signal is received via `shutdown_rx` (from `drain()`)
-///
-/// On shutdown signal, the worker closes the receiver, drains all remaining
-/// buffered items (bypassing the circuit breaker), and waits for all in-flight
-/// tasks to complete via semaphore.
+/// Concurrent background worker. Dispatches up to `max_concurrent` items; the breaker pauses new dispatch only.
+/// Exits when the channel closes or `drain()` signals shutdown.
+/// On shutdown, drains remaining items (bypassing the breaker) and waits for in-flight tasks.
 async fn upload_worker(
     mut rx: mpsc::Receiver<UploadQueueItem>,
     shutdown_rx: oneshot::Receiver<()>,
@@ -1884,10 +1742,8 @@ fn snapshot_route(disk_bytes: u64, over_budget: bool) -> SnapshotRoute {
         SnapshotRoute::Queue
     }
 }
-/// Verify the (immutable) snapshot at `path`. Streamed in 8 KB chunks via the
-/// shared `sha256_hex_from_file` — never a whole-file read, so multi-GB
-/// snapshots stay off the heap. Distinguishes a genuine mismatch/missing
-/// (→ `Stale`) from a transient read error (→ `Io`).
+/// Verify the immutable snapshot at `path`. Streamed in 8 KB chunks — never a whole-file read.
+/// Distinguishes a genuine mismatch/missing (`Stale`) from a transient read error (`Io`).
 fn check_snapshot(path: &Path, expected_sha256: &str) -> SnapshotCheck {
     match crate::sha256_hex_from_file(path, None) {
         Ok(actual) if actual == expected_sha256 => SnapshotCheck::Match,
@@ -1988,13 +1844,9 @@ async fn process_item(
 }
 /// Shared status-code classifier for the storage upload queue.
 const STORAGE_RETRY_POLICY: RetryPolicy = RetryPolicy::client_storage();
-/// Returns `true` if the error indicates an HTTP 401 or 403 response.
-///
-/// These auth errors will never succeed with the same request — retrying
-/// wastes time and generates log noise. This is the direct-mode (`gcloud-storage`)
-/// string fallback: direct-mode errors are unstructured anyhow messages, so we
-/// scrape for 401/403. Proxy-mode errors carry a structured `HttpUploadError`
-/// and are classified by status code in `upload_disposition`.
+/// Returns `true` if the error indicates an HTTP 401 or 403.
+/// Auth errors will never succeed with the same request. Direct-mode errors are unstructured, so we scrape the message.
+/// Proxy-mode errors are classified by status code in `upload_disposition`.
 fn is_non_retryable_error(error: &anyhow::Error) -> bool {
     let msg = format!("{:#}", error);
     msg.contains("HTTP 401")
@@ -2002,10 +1854,8 @@ fn is_non_retryable_error(error: &anyhow::Error) -> bool {
         || msg.contains("401 Unauthorized")
         || msg.contains("403 Forbidden")
 }
-/// Disposition for a failed storage upload. Proxy-mode errors carry a
-/// structured `HttpUploadError` and are classified by the shared
-/// `RetryPolicy`; direct-mode (gcloud) errors are unstructured strings, so
-/// 401/403 are detected by message scraping as a safety net.
+/// Disposition for a failed storage upload.
+/// Proxy-mode errors are classified by the shared `RetryPolicy`; direct-mode 401/403 are scraped as a safety net.
 fn upload_disposition(error: &anyhow::Error) -> Disposition {
     if let Some(http) = error.downcast_ref::<HttpUploadError>() {
         return STORAGE_RETRY_POLICY
@@ -2020,18 +1870,8 @@ fn upload_disposition(error: &anyhow::Error) -> Disposition {
 /// Park-loop iteration granularity: bounds how long a parked task takes to
 /// notice `draining` / `max_age`.
 const AUTH_PARK_WAIT_INTERVAL: Duration = Duration::from_secs(5);
-/// Upload with retries, exponential backoff, and credential refresh.
-///
-/// On each attempt, resolves fresh credentials from the resolver and uploads the
-/// queue-owned temp/snapshot via `upload_file` (which streams from disk on every
-/// backend and keeps the multipart / signed-URL path for large files), or, for
-/// compressible owned temps, streams through a zstd encoder. Snapshots are
-/// immutable and already verified at enqueue, so the worker just uploads them.
-///
-/// On a terminal status (400/403/404, origin-TLS 525/526), aborts immediately.
-/// On 401, re-resolves credentials and
-/// retries once; if the retry also 401s, the item parks until auth recovers
-/// (releasing its concurrency permit while parked) rather than dropping.
+/// Upload with retries, exponential backoff, and credential refresh. Streams the queue-owned temp from disk.
+/// Terminal statuses abort immediately. A repeated 401 parks until auth recovers, releasing the concurrency permit.
 async fn upload_with_retries(
     item: &mut UploadQueueItem,
     resolver: &Arc<dyn TraceExportSource>,
@@ -2203,9 +2043,7 @@ fn notify_completion(item: &mut UploadQueueItem, result: anyhow::Result<UploadCo
     }
 }
 /// Generate a unique temp file name for a queued artifact.
-///
-/// Includes a random suffix to avoid collisions when multiple blobs with the
-/// same SHA256 prefix are enqueued within the same millisecond.
+/// Random suffix avoids collisions when multiple blobs with the same SHA256 prefix enqueue in the same millisecond.
 fn temp_file_name(artifact_name: &str, session_id: &str, turn_number: u64) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -2323,24 +2161,16 @@ static LAST_ORPHANS_CLEANED: AtomicU64 = AtomicU64::new(0);
 pub fn last_orphans_cleaned() -> u64 {
     LAST_ORPHANS_CLEANED.load(Ordering::Relaxed)
 }
-/// Clean up orphaned upload queue entries from previous sessions.
-///
-/// Called at agent startup to remove files and directories older than `max_age`
-/// that were left behind by crashes or ungraceful shutdowns. Returns the number
-/// of entries removed.
+/// Clean up orphaned upload queue entries from previous sessions older than `max_age`.
+/// Called at agent startup. Returns the number of entries removed.
 pub fn cleanup_orphaned_uploads(grok_home: &Path, max_age: Duration) -> u64 {
     let cleaned = cleanup_queue_dir(&grok_home.join("upload_queue"), max_age, None);
     LAST_ORPHANS_CLEANED.store(cleaned, Ordering::Relaxed);
     cleaned
 }
-/// Sweep entries older than `max_age`. `scratch/` is treated specially:
-/// recurse one level so per-session subdirs are aged independently (its own
-/// mtime stays fresh as new sessions land). `scratch/` itself is preserved.
-///
-/// When `stats` is `Some`, each deleted lone queue file (temp without sidecar
-/// or vice versa) bumps `cleanup_orphan_mismatched`. Pairing is decided against
-/// a name snapshot taken before any deletion, so the count is independent of
-/// visit order.
+/// Sweep entries older than `max_age`. `scratch/` recurses one level so per-session subdirs age independently.
+/// `scratch/` itself is preserved. Lone queue files bump `cleanup_orphan_mismatched`.
+/// Pairing is decided against a name snapshot taken before deletion, so the count is independent of visit order.
 fn cleanup_queue_dir(queue_dir: &Path, max_age: Duration, stats: Option<&UploadQueueStats>) -> u64 {
     let entries: Vec<std::fs::DirEntry> = match std::fs::read_dir(queue_dir) {
         Ok(e) => e.flatten().collect(),
@@ -2400,12 +2230,9 @@ fn cleanup_queue_dir(queue_dir: &Path, max_age: Duration, stats: Option<&UploadQ
     }
     cleaned
 }
-/// True when `name` is a queue file whose temp↔sidecar partner is absent from
-/// `all_names`.
-/// Age of a queue file derived from its (or its companion's) sidecar
-/// `enqueued_at`, or `None` when the file has no parseable sidecar — the
-/// caller then falls back to mtime. Future-dated timestamps (clock skew) map
-/// to `Duration::ZERO` so skew never expires live data.
+/// True when `name` is a queue file whose temp↔sidecar partner is absent from `all_names`.
+/// Age comes from the sidecar `enqueued_at`, or `None` (caller falls back to mtime) when unparseable.
+/// Future-dated timestamps map to `Duration::ZERO` so clock skew never expires live data.
 fn pair_age(
     path: &Path,
     name: &std::ffi::OsStr,
@@ -2443,12 +2270,8 @@ fn is_mismatched_queue_file(
         !all_names.contains(std::ffi::OsStr::new(sidecar.as_str()))
     }
 }
-/// Reap `scratch/<sid>/` subdirs older than `max_age`. Returns
-/// `(removed_count, removed_bytes)`.
-///
-/// Assumes `scratch/<sid>/` is flat: a nested layer would mask in-use
-/// directories from the mtime check. Generalise to recursive probing when
-/// that assumption changes.
+/// Reap `scratch/<sid>/` subdirs older than `max_age`. Returns `(removed_count, removed_bytes)`.
+/// Assumes `scratch/<sid>/` is flat: a nested layer would mask in-use directories from the mtime check.
 fn cleanup_scratch_subdirs(scratch_dir: &Path, max_age: Duration) -> (u64, u64) {
     let entries = match std::fs::read_dir(scratch_dir) {
         Ok(e) => e,

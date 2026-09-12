@@ -1,14 +1,9 @@
+use super::{ConnectAttempt, Context, EarlierAttempt, Reason, StartupFailure};
+use crate::app::connect_timeout::CONNECT_UI_TIMEOUT_TRY_COMMAND;
 use std::fmt::Write as _;
 use std::time::Duration;
-
 use xai_grok_telemetry::startup::{AgentKind, PhaseSnapshot, StartupPhase, format_duration};
-
-use crate::app::connect_timeout::CONNECT_UI_TIMEOUT_TRY_COMMAND;
-
-use super::{ConnectAttempt, Context, EarlierAttempt, Reason, StartupFailure};
-
 const WRAP_WIDTH: usize = 76;
-
 pub(super) fn render(failure: &StartupFailure) -> String {
     let context = &failure.context;
     let mut rows = vec![
@@ -28,24 +23,23 @@ pub(super) fn render(failure: &StartupFailure) -> String {
                 whole_seconds(*waited)
             )
         }
-        Reason::Cancelled => format!(
-            "Startup cancelled while connecting to the {}.",
-            agent_name(context.target)
-        ),
+        Reason::Cancelled => {
+            format!(
+                "Startup cancelled while connecting to the {}.",
+                agent_name(context.target)
+            )
+        }
     };
     rows.push(("Log", context.log_path.display().to_string()));
     let _ = write!(report, "\n\n{}", label_rows(&rows));
     report
 }
-
 struct Advice {
     doing: Option<&'static str>,
     earlier: Option<EarlierAttempt>,
     next_step: NextStep,
 }
-
-/// A wedged leader is only ever the earlier attempt: the fallback that renders
-/// this message never enters `LeaderConnect` itself.
+/// A wedged leader is only ever the earlier attempt: the fallback that renders this message never enters `LeaderConnect` itself.
 fn advice_for(timings: &PhaseSnapshot, attempt: ConnectAttempt) -> Advice {
     let step = timings.longest_step().map(step_advice);
     let earlier = attempt.earlier();
@@ -59,7 +53,6 @@ fn advice_for(timings: &PhaseSnapshot, attempt: ConnectAttempt) -> Advice {
         },
     }
 }
-
 impl Advice {
     fn explanation(&self) -> String {
         let mut explanation = match self.doing {
@@ -75,8 +68,6 @@ impl Advice {
             );
         }
         let _ = write!(explanation, " {}", self.next_step.text());
-        // Only where waiting longer can help: a wedged leader never becomes
-        // ready, so pairing this with "stop the leader" would contradict it.
         if matches!(
             self.next_step,
             NextStep::Retry | NextStep::CheckNetworkThenRetry
@@ -90,7 +81,6 @@ impl Advice {
         explanation
     }
 }
-
 fn format_steps(timings: &PhaseSnapshot) -> String {
     let completed = timings
         .completed
@@ -112,7 +102,6 @@ fn format_steps(timings: &PhaseSnapshot) -> String {
     }
     steps.join(", ")
 }
-
 /// Values hang under their label, so a wrapped one never reads as a new field.
 fn label_rows(rows: &[(&str, String)]) -> String {
     let column_width = rows
@@ -129,8 +118,6 @@ fn label_rows(rows: &[(&str, String)]) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-
-// A path or a command has to survive a paste, so words are never split.
 fn fill_indented(text: &str, initial_indent: &str, subsequent_indent: &str) -> String {
     textwrap::fill(
         text,
@@ -141,14 +128,12 @@ fn fill_indented(text: &str, initial_indent: &str, subsequent_indent: &str) -> S
             .wrap_algorithm(textwrap::WrapAlgorithm::FirstFit),
     )
 }
-
 #[derive(Clone, Copy)]
 enum NextStep {
     Retry,
     CheckNetworkThenRetry,
     RestartSharedLeader,
 }
-
 impl NextStep {
     fn text(self) -> &'static str {
         match self {
@@ -160,7 +145,6 @@ impl NextStep {
             }
         }
     }
-
     /// Kept out of the prose so wrapping can never split it.
     fn command(self) -> Option<&'static str> {
         match self {
@@ -169,18 +153,15 @@ impl NextStep {
         }
     }
 }
-
 /// Reads as the object of "The longest step was".
 fn step_advice(phase: StartupPhase) -> (&'static str, NextStep) {
     use NextStep::{CheckNetworkThenRetry as Network, RestartSharedLeader, Retry};
     match phase {
-        StartupPhase::LoadConfig => ("reading your local configuration", Retry),
+        StartupPhase::ConfigLoad => ("reading your local configuration", Retry),
         StartupPhase::ManagedPolicy => ("checking your organization's managed policy", Network),
         StartupPhase::Bootstrap => ("loading your account settings", Network),
-        // A disk cache read; the network fetch is the background refresh.
         StartupPhase::ModelCatalog => ("reading the list of available models", Retry),
-        StartupPhase::SpawnWorker => ("starting the local agent", Retry),
-        // A Unix socket and a local spawn, never the network.
+        StartupPhase::WorkerSpawn => ("starting the local agent", Retry),
         StartupPhase::LeaderConnect => ("connecting to the shared leader", RestartSharedLeader),
         StartupPhase::AcpInitialize => ("waiting for the agent to respond", Retry),
         StartupPhase::EagerAuth => ("refreshing your sign-in", Network),
@@ -188,7 +169,6 @@ fn step_advice(phase: StartupPhase) -> (&'static str, NextStep) {
         StartupPhase::SessionCreate => ("creating the session", Retry),
     }
 }
-
 fn attempted_agents(context: &Context) -> String {
     let target = agent_name(context.target);
     match context.attempt {
@@ -198,14 +178,12 @@ fn attempted_agents(context: &Context) -> String {
         }
     }
 }
-
 fn agent_name(agent: AgentKind) -> &'static str {
     match agent {
         AgentKind::Embedded => "local agent",
         AgentKind::Leader => "shared leader",
     }
 }
-
 /// Rounded: a truncated total can print smaller than the steps it sums.
 pub(super) fn whole_seconds(wait: Duration) -> String {
     format!("{}s", (wait.as_millis() + 500) / 1000)

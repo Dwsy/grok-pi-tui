@@ -91,6 +91,10 @@ mod tests {
         TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn test_client() -> reqwest::Client {
+        xai_grok_extra_ca::build_reqwest_client(|builder| builder).expect("test client builds")
+    }
+
     #[test]
     fn any_changed_header_misses_the_cache() {
         let _g = lock();
@@ -102,12 +106,12 @@ mod tests {
         let mut extra = h1.clone();
         extra.insert("x-extra", HeaderValue::from_static("v2"));
 
-        let _ = cached_client::<()>(cache_key("rot", &h1), || Ok(reqwest::Client::new()));
+        let _ = cached_client::<()>(cache_key("rot", &h1), || Ok(test_client()));
         for headers in [&rotated, &extra] {
             let mut built = false;
             let _ = cached_client::<()>(cache_key("rot", headers), || {
                 built = true;
-                Ok(reqwest::Client::new())
+                Ok(test_client())
             });
             assert!(built, "changed header must miss the cache");
         }
@@ -122,7 +126,7 @@ mod tests {
         let mut built = false;
         let ok = cached_client::<&str>(key, || {
             built = true;
-            Ok(reqwest::Client::new())
+            Ok(test_client())
         });
         assert!(ok.is_ok() && built, "error must not poison the key");
     }
@@ -140,7 +144,7 @@ mod tests {
                 cached_client::<()>(cache_key("k-flight", &HeaderMap::new()), || {
                     builds.fetch_add(1, Ordering::SeqCst);
                     gate.wait();
-                    Ok(reqwest::Client::new())
+                    Ok(test_client())
                 })
                 .unwrap();
             })
@@ -162,17 +166,17 @@ mod tests {
         let _g = lock();
         for i in 0..MAX_ENTRIES {
             let _ = cached_client::<()>(cache_key(&format!("lru-{i}"), &HeaderMap::new()), || {
-                Ok(reqwest::Client::new())
+                Ok(test_client())
             });
         }
         let _ = cached_client::<()>(cache_key("lru-0", &HeaderMap::new()), || panic!("must hit"));
         let _ = cached_client::<()>(cache_key("lru-overflow", &HeaderMap::new()), || {
-            Ok(reqwest::Client::new())
+            Ok(test_client())
         });
         let mut rebuilt_0 = false;
         let _ = cached_client::<()>(cache_key("lru-0", &HeaderMap::new()), || {
             rebuilt_0 = true;
-            Ok(reqwest::Client::new())
+            Ok(test_client())
         });
         assert!(!rebuilt_0, "recently-used entry must survive the cap");
     }

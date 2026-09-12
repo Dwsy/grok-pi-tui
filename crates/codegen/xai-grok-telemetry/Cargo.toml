@@ -30,15 +30,14 @@ git2 = { version = "0.20", default-features = false, features = [
     "vendored-libgit2",
 ] }
 reqwest = { workspace = true }
-url = { workspace = true }
-xai-grok-env = { workspace = true }
 xai-grok-secrets = { workspace = true }
 xai-mixpanel = { workspace = true }
 xai-grok-config = { workspace = true }
 xai-grok-extra-ca = { workspace = true }
 xai-grok-sampler = { workspace = true }
 xai-token-estimation = { workspace = true }
-dirs = { workspace = true }
+xai-dirs = { workspace = true }
+xai-grok-env = { workspace = true }
 sentry = { version = "0.42.0", default-features = false, features = [
     "panic",
     "anyhow",
@@ -66,6 +65,8 @@ mid = "4.0.0"
 tokio = { workspace = true, features = ["macros", "sync", "rt", "time"] }
 parking_lot = { workspace = true }
 xai-grok-auth = { workspace = true }
+# OTEL foundation: OTLP HTTP client + span layer/provider + trace-context + shared redaction.
+xai-grok-otel = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = [
     "experimental_logs_batch_log_processor_with_async_runtime",
@@ -78,7 +79,6 @@ opentelemetry_sdk = { workspace = true, features = [
 # gRPC collector endpoint is rejected at exporter build time (GB-4580).
 # aws-lc matches the TLS backend the workspace `tonic` already uses.
 opentelemetry-otlp = { workspace = true, features = ["tls-aws-lc"] }
-opentelemetry-http = { workspace = true }
 # Embedded Mozilla trust anchors for the gRPC TLS fallback: keeps `https://`
 # collectors working on hosts with no readable system CA store (parity with
 # the HTTP transport's embedded-roots reqwest client in `otlp_http.rs`).
@@ -87,13 +87,11 @@ webpki-roots = { workspace = true }
 # `Certificate::from_pem` (the gRPC transport's extra-CA parity with HTTP).
 base64 = { workspace = true }
 http = { workspace = true }
-bytes = { workspace = true }
-async-trait = { workspace = true }
-futures-executor = "0.3"
 tokio-stream = { workspace = true }
-tracing-opentelemetry = { workspace = true }
 
 [dev-dependencies]
+# `#[async_trait]` on the in-process OTLP collector test fixture.
+async-trait = { workspace = true }
 # Pre-main unified-log redirect for this crate's own test binary.
 ctor = { workspace = true }
 tonic = { workspace = true, features = ["transport"] }
@@ -113,7 +111,6 @@ prost = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"] }
 # Sets a symlink's own mtime (std's `set_modified` follows links) for prune tests.
 filetime = { workspace = true }
-futures-executor = "0.3"
 tempfile = { workspace = true }
 
 [lints]

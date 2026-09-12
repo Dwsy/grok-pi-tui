@@ -15,36 +15,19 @@ use std::time::{Duration, Instant};
 
 use super::diagnostics::DiagnosticsStore;
 
-/// How long we hold on to a file waiting for a verdict.
-///
-/// Bounds the pending set: a file nobody ever answers for is let go rather than
-/// carried for the rest of the session. Generous, because the cost of holding
-/// one is two integers and the cost of dropping one too early is a missed
-/// diagnostic.
+/// How long we hold on to a file waiting for a verdict. Bounds the pending set: a file nobody ever answers for is let
+/// go rather than carried for the rest of the session. Generous, because the cost of holding one is two integers and
+/// the cost of dropping one too early is a missed diagnostic.
 pub const VERDICT_TTL: Duration = Duration::from_secs(30);
 
-/// How long a server gets to say *something* before we stop blocking on it.
-///
-/// Measured only while we are actually waiting on it — see
-/// [`PendingEdits::asking_since`] — so an idle stretch with nothing outstanding
-/// does not count against a server, and any answer starts it over. A server
-/// that has been asked for this long without a word is not about to answer
-/// within the drain's budget, and waiting out that budget on every later turn
-/// just makes every turn slower.
-///
-/// It measures *silence*, not "no problems found": a server reporting that a
-/// file is clean has answered. Conflating the two writes a healthy server off
-/// after a few clean edits, which is the common case.
+/// How long a server gets to say *something* before we stop blocking on it. Measured only while we are actually waiting on it — see
+/// [`PendingEdits::asking_since`] — so an idle stretch with nothing outstanding does not count against a server, and any answer starts it over.
+/// It measures *silence*, not "no problems found": a server reporting that a file is clean has answered.
 pub const SERVER_PATIENCE: Duration = Duration::from_secs(10);
 
-/// The two durations, together, so a caller that wants to change one is
-/// choosing between two named things rather than editing a constant that also
-/// means something else.
-///
-/// They answer different questions — how long we hold on to a file, and
-/// whether the server is worth blocking on — which is why they are separate.
-/// One number doing both jobs is how a server that answered three clean edits
-/// in a row came to be written off.
+/// The two durations, together, so a caller that wants to change one is choosing between two named things rather than editing a constant that
+/// also means something else. They answer different questions — how long we hold on to a file, and whether the server is worth blocking on —
+/// which is why they are separate. One number doing both jobs is how a server that answered three clean edits in a row came to be written off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingPolicy {
     pub verdict_ttl: Duration,
@@ -76,11 +59,9 @@ pub struct PendingEdits {
     policy: PendingPolicy,
     lifecycle_id: u64,
     by_uri: BTreeMap<String, PendingEdit>,
-    /// When the current stretch of asking-without-an-answer began.
-    ///
-    /// Set while something is outstanding, cleared by any answer. That is what
-    /// makes it a measure of the server rather than of the clock: a session
-    /// spent reading code does not make a healthy server look dead.
+    /// When the current stretch of asking-without-an-answer began. Set while something is
+    /// outstanding, cleared by any answer. That is what makes it a measure of the server rather
+    /// than of the clock: a session spent reading code does not make a healthy server look dead.
     asking_since: Option<Instant>,
 }
 
@@ -92,10 +73,9 @@ impl PendingEdits {
         }
     }
 
-    /// Start waiting for a verdict on `version` of `uri`.
-    ///
-    /// A restart makes every outstanding question meaningless — the fresh
-    /// server was never asked them — so a new lifecycle starts from nothing.
+    /// Start waiting for a verdict on `version` of `uri`. A restart makes every outstanding
+    /// question meaningless — the fresh server was never asked them — so a new lifecycle starts
+    /// from nothing.
     pub fn mark(&mut self, lifecycle_id: u64, uri: &str, version: i32, now: Instant) {
         if self.lifecycle_id != lifecycle_id {
             *self = Self {
@@ -116,14 +96,8 @@ impl PendingEdits {
         );
     }
 
-    /// The server has spoken of its own accord — it has asked us to read its
-    /// answers again — which is proof of life whatever it was about, so any
-    /// stretch of silence it was in is over.
-    ///
-    /// Without this the case the refresh exists for is the one it fails on: a
-    /// server that spends a long time loading has already been written off as
-    /// silent by the time it announces it is ready, so the very drain that
-    /// should wait for the re-pull it just asked for would not wait at all.
+    /// The server has spoken of its own accord — it has asked us to read its answers again — which
+    /// is proof of life whatever it was about, so any stretch of silence it was in is over.
     pub fn note_server_spoke(&mut self) {
         self.asking_since = None;
     }
@@ -151,10 +125,8 @@ impl PendingEdits {
         self.by_uri.contains_key(uri)
     }
 
-    /// Take the files the server has now given a verdict on, and let go of the
-    /// ones that have waited long enough.
-    ///
-    /// Returned in URI order, so what a reader sees does not depend on the
+    /// Take the files the server has now given a verdict on, and let go of the ones that have
+    /// waited long enough. Returned in URI order, so what a reader sees does not depend on the
     /// order edits happened to arrive in.
     pub fn take_answered(
         &mut self,
@@ -183,19 +155,9 @@ impl PendingEdits {
                 "no verdict on these files in time; no longer waiting"
             );
         }
-        // An answer about any file is proof the server is working, whatever it
-        // was about, so the stretch of silence is over. It does not restart for
-        // whatever is still outstanding: a server that answers for most files
-        // and never for one would then be judged silent on the strength of the
-        // one, and stop being waited on while it was plainly working. The cost
-        // of erring this way is bounded — the stuck file leaves on its own
-        // deadline — and it errs towards waiting for a server we have evidence
-        // is alive, which is the right direction.
-        //
-        // Only an answer does this. Letting go of a file because it ran out of
-        // time is the opposite of evidence, and treating an empty set as a
-        // fresh start would hand a server that has never said a word a clean
-        // slate every time its files expired.
+        // An answer about any file is proof the server is working, whatever it was about, so the stretch of silence is over. It does not restart for
+        // whatever is still outstanding: a server that answers for most files and never for one would then be judged silent on the strength of the
+        // one, and stop being waited on while it was plainly working. Only an answer does this.
         if !answered.is_empty() {
             self.asking_since = None;
         }
@@ -365,10 +327,9 @@ mod tests {
         );
     }
 
-    /// A server that answers for most files and never for one must not be
-    /// judged silent on the strength of the one. The stuck file leaves on its
-    /// own deadline; until then the server keeps being waited on, because it is
-    /// plainly working.
+    /// A server that answers for most files and never for one must not be judged silent on the
+    /// strength of the one. The stuck file leaves on its own deadline; until then the server keeps
+    /// being waited on, because it is plainly working.
     #[test]
     fn one_file_nobody_answers_for_does_not_make_a_busy_server_look_dead() {
         let store = DiagnosticsStore::new();
@@ -399,10 +360,9 @@ mod tests {
         );
     }
 
-    /// Roslyn goes quiet for as long as it takes to load a solution, and then
-    /// says it is ready. Asking for a refresh is the server speaking, so it
-    /// starts the clock over — otherwise the drain that should wait for the
-    /// re-pull the server just asked for would return without waiting.
+    /// Roslyn goes quiet for as long as it takes to load a solution, and then says it is ready. Asking for a refresh is the
+    /// server speaking, so it starts the clock over — otherwise the drain that should wait for the re-pull the server just
+    /// asked for would return without waiting.
     #[test]
     fn a_server_that_asks_for_a_refresh_is_worth_waiting_for_again() {
         let mut pending = PendingEdits::default();
@@ -426,10 +386,9 @@ mod tests {
         assert!(!pending.worth_blocking(Instant::now()));
     }
 
-    /// Letting go of a file is not the server saying something. If running out
-    /// of time counted as the end of a stretch of silence, a server that never
-    /// speaks would get a clean slate every time its files expired, and every
-    /// later turn would block on it for the full drain budget again.
+    /// Letting go of a file is not the server saying something. If running out of time counted as the end of a stretch of
+    /// silence, a server that never speaks would get a clean slate every time its files expired, and every later turn would
+    /// block on it for the full drain budget again.
     #[test]
     fn running_out_of_time_is_not_evidence_of_life() {
         let store = DiagnosticsStore::new();

@@ -1,7 +1,6 @@
 //! Shared overlay pane state machine.
 //!
-//! [`OverlayState`] encapsulates the three-state visibility/focus/fullscreen
-//! logic shared by all toggleable panes (tracing, todo, bg tasks).
+//! [`OverlayState`] holds the three-state visibility/focus/fullscreen logic shared by all toggleable panes (tracing, todo, bg tasks).
 //!
 //! [`handle_overlay_key`] processes structural keys (Tab, Esc, q, Space,
 //! Ctrl-F) consistently across all overlay panes, so each pane only needs
@@ -27,13 +26,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// What the caller should do after an overlay state change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayAction {
-    /// No state change — key not consumed.
+    /// No state change; the key was not consumed.
     Ignored,
     /// State changed, redraw needed.
     Changed,
-    /// Unfocused → move focus to scrollback.
+    /// The pane unfocused itself; move focus to scrollback.
     FocusScrollback,
-    /// Unfocused → move focus to prompt.
+    /// The pane unfocused itself; move focus to the prompt.
     FocusPrompt,
 }
 
@@ -44,10 +43,8 @@ impl OverlayAction {
     }
 }
 
-/// Shared visibility / focus / fullscreen state for overlay panes.
-///
-/// Embedded in each toggleable pane (TracingPane, TodoPane, etc.).
-/// The pane's shortcut handler calls [`toggle()`], and the shared
+/// Shared visibility / focus / fullscreen state for overlay panes. Embedded in each toggleable pane
+/// (TracingPane, TodoPane, etc.). The pane's shortcut handler calls [`toggle()`], and the shared
 /// [`handle_overlay_key()`] handles Tab/Esc/q/Space/Ctrl-F.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OverlayState {
@@ -71,11 +68,8 @@ impl OverlayState {
         Self::default()
     }
 
-    /// Pane shortcut: three-state toggle.
-    ///
-    /// Hidden → show + focus.
-    /// Visible + unfocused → focus.
-    /// Visible + focused → hide.
+    /// Pane shortcut: three-state toggle. When hidden: show and focus. When visible but unfocused:
+    /// focus. When visible and focused: hide.
     pub fn toggle(&mut self) -> OverlayAction {
         if !self.visible {
             self.visible = true;
@@ -90,17 +84,15 @@ impl OverlayState {
         OverlayAction::Changed
     }
 
-    /// Tab: exit fullscreen if active, unfocus, keep visible → scrollback.
+    /// Tab: exit fullscreen if active, unfocus, keep visible; focus moves to scrollback.
     pub fn tab_out(&mut self) -> OverlayAction {
         self.fullscreen = false;
         self.focused = false;
         OverlayAction::FocusScrollback
     }
 
-    /// Esc / q: exit one nesting level.
-    ///
-    /// Fullscreen → exit fullscreen (stay visible + focused).
-    /// Non-fullscreen → hide entirely.
+    /// Esc / q: exit one nesting level. When fullscreen: exit fullscreen, stay visible and focused.
+    /// Otherwise: hide entirely.
     pub fn escape(&mut self) -> OverlayAction {
         if self.fullscreen {
             self.fullscreen = false;
@@ -111,7 +103,7 @@ impl OverlayState {
         OverlayAction::Changed
     }
 
-    /// Space: exit fullscreen if active, unfocus, keep visible → prompt.
+    /// Space: exit fullscreen if active, unfocus, keep visible; focus moves to the prompt.
     pub fn space(&mut self) -> OverlayAction {
         self.fullscreen = false;
         self.focused = false;
@@ -138,14 +130,8 @@ impl OverlayState {
     }
 }
 
-/// Handle structural keys for any focused overlay pane.
-///
-/// Processes Tab, Esc, q, Space, and Ctrl-F consistently. Returns
-/// `Some(action)` if a structural key was consumed, `None` to let the
-/// pane's content handler process the key.
-///
-/// When `has_input_bar` is true, only Ctrl-F is processed (the input
-/// bar handles Esc/Tab/etc. itself).
+/// When `has_input_bar` is true, only. CtrlCtrl-F is processed (the input bar handles. EscEsc/Tab/etc.
+/// itself).
 pub fn handle_overlay_key(state: &mut OverlayState, key: &KeyEvent) -> Option<OverlayAction> {
     // Ctrl-F: toggle fullscreen (works even with input bar open).
     if key.code == KeyCode::Char('f') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -157,8 +143,7 @@ pub fn handle_overlay_key(state: &mut OverlayState, key: &KeyEvent) -> Option<Ov
 
 /// Handle structural keys that should only fire when no input bar is open.
 ///
-/// Split from [`handle_overlay_key`] so callers can check `has_input_bar`
-/// before calling this.
+/// Split from [`handle_overlay_key`] so callers can check `has_input_bar` before calling this.
 pub fn handle_overlay_nav_key(state: &mut OverlayState, key: &KeyEvent) -> Option<OverlayAction> {
     match key.code {
         KeyCode::Tab => Some(state.tab_out()),

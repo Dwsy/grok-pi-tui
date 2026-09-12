@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use xai_grok_sampling_types::ReasoningEffort;
+use xai_grok_tools::implementations::grok_build::workflow::WorkflowControl;
 use xai_workflow::{Journal, WorkflowOutcome, WorkflowRunParams};
 
 use super::backend::{HostDrainOutcome, WorkflowAgentBackend};
@@ -13,10 +14,15 @@ use super::host_service::{TelemetryHook, WorkflowHostParams, spawn_workflow_host
 use super::notify::WorkflowNotifySender;
 use super::registry::{ResolvedWorkflow, WorkflowSource};
 use super::store::WorkflowRunStore;
-use super::tracker::WorkflowTracker;
+use super::tracker::{WorkflowRunState, WorkflowRunStatus, WorkflowTracker};
 
 pub(crate) const WORKFLOW_MAX_ACTIVE_RUNS_PER_SESSION: usize = 4;
 pub(crate) const WORKFLOW_DEFAULT_AGENT_BUDGET: u64 = xai_workflow::DEFAULT_AGENT_BUDGET;
+
+static WORKFLOW_RUNS_ACTIVE: xai_grok_telemetry::activity::ActivityGauge =
+    xai_grok_telemetry::activity::ActivityGauge::work(
+        xai_grok_telemetry::activity::WORKFLOW_RUNS_ACTIVE_KEY,
+    );
 
 struct ActiveRun {
     cancel: CancellationToken,
@@ -53,11 +59,27 @@ pub enum LaunchError {
     TooManyActiveRuns,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum ControlError {
+    #[error("no workflow run in this session matches '{0}'")]
+    UnknownRun(String),
+    #[error("run '{name}' is {} and cannot be {}", status.as_ref(), match control {
+        WorkflowControl::Pause => "paused",
+        WorkflowControl::Stop => "stopped",
+    })]
+    NotApplicable {
+        name: String,
+        status: WorkflowRunStatus,
+        control: WorkflowControl,
+    },
+}
+
 pub(crate) struct WorkflowManager {
     session_id: String,
     session_dir: Option<PathBuf>,
     cwd: PathBuf,
     tracker: Arc<parking_lot::Mutex<WorkflowTracker>>,
+    active_work: Arc<std::sync::atomic::AtomicUsize>,
     store: WorkflowRunStore,
     notify: WorkflowNotifySender,
     backend: Arc<dyn WorkflowAgentBackend>,
@@ -76,6 +98,7 @@ impl WorkflowManager {
         session_dir: Option<PathBuf>,
         cwd: PathBuf,
         tracker: Arc<parking_lot::Mutex<WorkflowTracker>>,
+        active_work: Arc<std::sync::atomic::AtomicUsize>,
         store: WorkflowRunStore,
         notify: WorkflowNotifySender,
         backend: Arc<dyn WorkflowAgentBackend>,
@@ -89,6 +112,7 @@ impl WorkflowManager {
             session_dir,
             cwd,
             tracker,
+            active_work,
             store,
             notify,
             backend,
@@ -135,7 +159,7 @@ impl WorkflowManager {
                     .ok_or_else(|| LaunchError::UnknownRun(run_id.clone()))?;
                 if !existing.status.is_resumable() {
                     return Err(LaunchError::NotResumable(
-                        existing.status.as_str().to_string(),
+                        existing.status.as_ref().to_string(),
                     ));
                 }
                 if existing.status
@@ -194,7 +218,7 @@ impl WorkflowManager {
                             limit: existing.agent_budget.unwrap_or(0),
                         }
                     } else {
-                        LaunchError::NotResumable(existing.status.as_str().into())
+                        LaunchError::NotResumable(existing.status.as_ref().into())
                     }
                 })?;
 
@@ -239,9 +263,10 @@ impl WorkflowManager {
         self.notify
             .emit(&state, self.tracker.lock().elapsed_ms(&run_id), 0);
 
-        let active = xai_grok_telemetry::activity::WORKFLOW_RUNS_ACTIVE.enter();
+        let active = WORKFLOW_RUNS_ACTIVE.enter();
+        let work = crate::session::handle::WorkGuard::new(self.active_work.clone());
         debug_assert!(
-            xai_grok_telemetry::activity::WORKFLOW_RUNS_ACTIVE.get() >= 1,
+            WORKFLOW_RUNS_ACTIVE.get() >= 1,
             "WorkflowRunStarted must stamp a self-inclusive count"
         );
         log_run_started(
@@ -322,6 +347,7 @@ impl WorkflowManager {
         let execution_epoch = self.tracker.lock().execution_epoch(&run_id).unwrap_or(0);
         tokio::spawn(async move {
             let _active = active;
+            let _work = work;
             let mut outcome = exec.await.unwrap_or_else(|e| WorkflowOutcome::Failed {
                 error: format!("workflow executor panicked: {e}"),
             });
@@ -343,8 +369,7 @@ impl WorkflowManager {
                             .into(),
                 };
             }
-            // Epoch check and lifecycle mutation stay under one lock, or a
-            // quick resume could let this stale watcher stomp the successor.
+            // Epoch check and lifecycle mutation stay under one lock, or a quick resume could let this stale watcher stomp the successor
             let (epoch_matches, state) = {
                 let mut tracker = tracker.lock();
                 if tracker.execution_epoch(&watcher_run_id) != Some(execution_epoch) {
@@ -370,8 +395,7 @@ impl WorkflowManager {
                 }
             };
             if !epoch_matches {
-                // A quick resume took over; close this episode as superseded
-                // (cumulative fields may reflect the successor).
+                // A quick resume took over; close this episode as superseded (cumulative fields may reflect the successor)
                 let (elapsed, agents_used, agent_budget) = {
                     let tracker = tracker.lock();
                     let run = tracker.get(&watcher_run_id);
@@ -397,8 +421,7 @@ impl WorkflowManager {
                 return;
             }
             if state.is_none() {
-                // The run left the tracker; close the episode so its
-                // `workflow_run_started` is not orphaned.
+                // The run left the tracker; close the episode so its `workflow_run_started` is not orphaned
                 log_run_ended(
                     RunEndMetadata {
                         run_id: &watcher_run_id,
@@ -434,7 +457,7 @@ impl WorkflowManager {
                         tracing::error!(run_id = %watcher_run_id, %interrupt_error, "failed to persist workflow interruption marker");
                     }
                 }
-                // Emit before the persist-failure return: starts always pair.
+                // Emit before the persist-failure return: every start event gets an end event
                 let elapsed = tracker.lock().elapsed_ms(&watcher_run_id);
                 log_run_ended(
                     RunEndMetadata {
@@ -499,6 +522,7 @@ impl WorkflowManager {
             session_dir,
             std::env::temp_dir(),
             tracker.clone(),
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             store,
             notify,
             Arc::new(super::backend::MockWorkflowAgentBackend {
@@ -636,6 +660,45 @@ impl WorkflowManager {
         }
     }
 
+    /// Pause or stop the run whose id or display name is `key`, returning its
+    /// state as of before the op.
+    pub(crate) fn control_run(
+        &mut self,
+        key: &str,
+        control: WorkflowControl,
+    ) -> Result<WorkflowRunState, ControlError> {
+        let run = {
+            let tracker = self.tracker.lock();
+            tracker
+                .find_run_id(key)
+                .and_then(|run_id| tracker.get(&run_id))
+        }
+        .ok_or_else(|| ControlError::UnknownRun(key.to_owned()))?;
+        let not_applicable = |status: WorkflowRunStatus| ControlError::NotApplicable {
+            name: run.name.clone(),
+            status,
+            control,
+        };
+        if !run.status.accepts(control) {
+            return Err(not_applicable(run.status));
+        }
+        let applied = match control {
+            WorkflowControl::Pause => self.pause(&run.run_id),
+            WorkflowControl::Stop => self.cancel(&run.run_id),
+        };
+        if applied {
+            Ok(run)
+        } else {
+            // The run finished between the gate and the op; report the status it reached.
+            let status = self
+                .tracker
+                .lock()
+                .get(&run.run_id)
+                .map_or(run.status, |state| state.status);
+            Err(not_applicable(status))
+        }
+    }
+
     pub(crate) async fn cancel_all_and_drain(
         &mut self,
         timeout: std::time::Duration,
@@ -746,8 +809,7 @@ fn log_run_started(
             WorkflowSource::Inline => WorkflowSourceKind::Inline,
             WorkflowSource::File(_) => WorkflowSourceKind::File,
         },
-        // Only built-in workflow names leave the machine; user script names
-        // and paths stay local.
+        // Only built-in workflow names leave the machine; user script names and paths stay local
         workflow_name: (*source == WorkflowSource::Builtin).then(|| state.name.clone()),
         agent_budget: state.agent_budget,
         max_concurrent_agents: u32::try_from(max_concurrent_agents).unwrap_or(u32::MAX),
@@ -870,6 +932,7 @@ mod tests {
             session_dir,
             std::env::temp_dir(),
             tracker,
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             store,
             notify,
             Arc::new(crate::session::workflow::backend::GrokSubagentBackend {
@@ -958,6 +1021,45 @@ mod tests {
                 .join(&run_id)
                 .join("script.rhai")
                 .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn running_workflow_keeps_session_active_work_nonzero() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut manager, mut rx) = test_manager(Some(dir.path().to_path_buf()));
+
+        assert_eq!(
+            manager.active_work.load(Ordering::Acquire),
+            0,
+            "no active work before any run launches"
+        );
+
+        let (_run_id, outcome_rx) = manager
+            .launch(resolve_inline(parallel_n_script(1)).unwrap(), spec())
+            .unwrap();
+        let req = recv_spawn(&mut rx).await;
+        assert!(
+            manager.active_work.load(Ordering::Acquire) > 0,
+            "a running workflow must count toward the session's active work (GBT-6282)"
+        );
+
+        complete_spawn(req);
+        assert!(matches!(
+            outcome_rx.await.unwrap(),
+            WorkflowOutcome::Completed { .. }
+        ));
+        for _ in 0..200 {
+            if manager.active_work.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            manager.active_work.load(Ordering::Acquire),
+            0,
+            "active work returns to zero once the run completes"
         );
     }
 
@@ -1819,6 +1921,175 @@ mod tests {
                 SubagentCancelTarget::WorkflowRunId(id) if id == &run_id
             )),
             "cancellation must emit an explicit run-owned cancel event"
+        );
+    }
+
+    #[tokio::test]
+    async fn control_run_stops_by_run_id_and_pauses_by_display_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
+        let script = "let meta = #{ name: \"t\", description: \"d\" };\n\
+                      let r = agent(\"work\");\ncomplete(r.output);";
+
+        let (stopped_id, stopped_outcome) = manager
+            .launch(resolve_inline(script.into()).unwrap(), spec())
+            .unwrap();
+        let stopped_child = recv_spawn(&mut subagent_rx).await;
+        let (paused_id, paused_outcome) = manager
+            .launch(resolve_inline(script.into()).unwrap(), spec())
+            .unwrap();
+        let paused_child = recv_spawn(&mut subagent_rx).await;
+        let paused_name = manager.tracker.lock().get(&paused_id).unwrap().name;
+
+        assert_eq!(
+            manager
+                .control_run("wf_missing", WorkflowControl::Stop)
+                .unwrap_err(),
+            ControlError::UnknownRun("wf_missing".to_owned())
+        );
+
+        let stopped = manager
+            .control_run(&stopped_id, WorkflowControl::Stop)
+            .unwrap();
+        assert_eq!(
+            (stopped.run_id.as_str(), stopped.name.as_str()),
+            (stopped_id.as_str(), "t")
+        );
+        assert!(matches!(
+            stopped_outcome.await.unwrap(),
+            WorkflowOutcome::Cancelled
+        ));
+        assert!(stopped_child.cancel_token.is_cancelled());
+        let stopped_state = manager.tracker.lock().get(&stopped_id).unwrap();
+        assert_eq!(stopped_state.status, WorkflowRunStatus::Cancelled);
+        // The slash path relies on the completion wake to tell the model about a user stop.
+        assert!(
+            manager
+                .tracker
+                .lock()
+                .is_unreported_completion(&stopped_id, stopped_state.revision)
+        );
+        assert_eq!(
+            manager
+                .control_run(&stopped_id, WorkflowControl::Stop)
+                .unwrap_err(),
+            ControlError::NotApplicable {
+                name: "t".to_owned(),
+                status: WorkflowRunStatus::Cancelled,
+                control: WorkflowControl::Stop,
+            }
+        );
+
+        let paused = manager
+            .control_run(&paused_name, WorkflowControl::Pause)
+            .unwrap();
+        assert_eq!(paused.run_id, paused_id);
+        // A user pause cancels the engine; the pause intent maps that outcome to UserPaused.
+        assert!(matches!(
+            paused_outcome.await.unwrap(),
+            WorkflowOutcome::Cancelled
+        ));
+        assert!(paused_child.cancel_token.is_cancelled());
+        assert_eq!(
+            manager.tracker.lock().get(&paused_id).unwrap().status,
+            WorkflowRunStatus::UserPaused
+        );
+        assert_eq!(
+            manager
+                .control_run(&paused_name, WorkflowControl::Pause)
+                .unwrap_err(),
+            ControlError::NotApplicable {
+                name: paused_name.clone(),
+                status: WorkflowRunStatus::UserPaused,
+                control: WorkflowControl::Pause,
+            }
+        );
+        assert!(
+            manager
+                .control_run(&paused_name, WorkflowControl::Stop)
+                .is_ok()
+        );
+        assert_eq!(
+            manager.tracker.lock().get(&paused_id).unwrap().status,
+            WorkflowRunStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn control_run_refuses_to_stop_a_budget_limited_run_so_resume_still_needs_a_raised_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
+        let script = "let meta = #{ name: \"t\", description: \"d\" };\n\
+                      let r = agent(\"work\");\ncomplete(r.output);";
+        let (run_id, _outcome) = manager
+            .launch(resolve_inline(script.into()).unwrap(), spec())
+            .unwrap();
+        let _child = recv_spawn(&mut subagent_rx).await;
+        manager.tracker.lock().apply_outcome(
+            &run_id,
+            &WorkflowOutcome::BudgetExceeded {
+                message: "budget".into(),
+            },
+        );
+
+        assert_eq!(
+            manager
+                .control_run(&run_id, WorkflowControl::Stop)
+                .unwrap_err(),
+            ControlError::NotApplicable {
+                name: "t".to_owned(),
+                status: WorkflowRunStatus::BudgetLimited,
+                control: WorkflowControl::Stop,
+            }
+        );
+        assert_eq!(
+            manager.tracker.lock().get(&run_id).unwrap().status,
+            WorkflowRunStatus::BudgetLimited
+        );
+        let resume = LaunchSpec {
+            resume_run_id: Some(run_id.clone()),
+            ..spec()
+        };
+        assert!(matches!(
+            manager
+                .launch(resolve_inline(script.into()).unwrap(), resume)
+                .unwrap_err(),
+            LaunchError::BudgetNotRaised { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn control_run_refuses_to_pause_an_engine_paused_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
+        let script = "let meta = #{ name: \"t\", description: \"d\" };\n\
+                      let r = agent(\"work\");\ncomplete(r.output);";
+        let (run_id, _outcome) = manager
+            .launch(resolve_inline(script.into()).unwrap(), spec())
+            .unwrap();
+        let _child = recv_spawn(&mut subagent_rx).await;
+        manager.tracker.lock().apply_outcome(
+            &run_id,
+            &WorkflowOutcome::Paused {
+                kind: xai_workflow::PauseKind::BackOff,
+                message: "backing off".into(),
+            },
+        );
+
+        // The run is still in `active`, so a bare pause() would report success without changing anything.
+        assert_eq!(
+            manager
+                .control_run(&run_id, WorkflowControl::Pause)
+                .unwrap_err(),
+            ControlError::NotApplicable {
+                name: "t".to_owned(),
+                status: WorkflowRunStatus::BackOffPaused,
+                control: WorkflowControl::Pause,
+            }
+        );
+        assert_eq!(
+            manager.tracker.lock().get(&run_id).unwrap().status,
+            WorkflowRunStatus::BackOffPaused
         );
     }
 

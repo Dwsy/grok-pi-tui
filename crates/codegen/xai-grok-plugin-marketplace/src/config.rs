@@ -17,7 +17,6 @@ use serde::Deserialize;
 
 use crate::types::{MarketplaceSource, SourceKind};
 
-/// Raw TOML source entry.
 #[derive(Debug, serde::Deserialize)]
 struct RawSource {
     name: String,
@@ -30,11 +29,8 @@ struct RawSource {
 }
 
 /// Whether remote plugin installs/updates must pin a full commit sha.
-///
-/// `[marketplace] require_sha = true` in config.toml, or
-/// `GROK_MARKETPLACE_REQUIRE_SHA=1`. Tighten-only: either source can enable,
-/// neither can override the other off. Defaults off so existing unpinned
-/// catalogs keep installing.
+/// Tighten-only: either `[marketplace] require_sha = true` in config.toml or `GROK_MARKETPLACE_REQUIRE_SHA=1` enables it; neither can turn it off.
+/// Defaults off so existing unpinned catalogs keep installing.
 pub fn load_require_sha(config: &toml::Value) -> bool {
     env_require_sha()
         || config
@@ -85,7 +81,7 @@ pub fn load_sources(config: &toml::Value) -> Vec<MarketplaceSource> {
             } else if let Some(path_str) = raw.path {
                 // Expand ~ to home directory.
                 let expanded = if let Some(rest) = path_str.strip_prefix('~') {
-                    dirs::home_dir()
+                    xai_dirs::home_dir()
                         .map(|h| {
                             h.join(rest.strip_prefix('/').unwrap_or(rest))
                                 .to_string_lossy()
@@ -114,11 +110,7 @@ pub fn load_sources(config: &toml::Value) -> Vec<MarketplaceSource> {
 }
 
 /// Source descriptor from settings JSON.
-///
-/// Discriminated by the inner `"source"` field:
-/// - `{ "source": "git", "url": "..." }`
-/// - `{ "source": "github", "repo": "owner/repo" }`
-/// - `{ "source": "local", "path": "..." }`
+/// `{ "source": "git", "url": "..." }`; `{ "source": "github", "repo": "owner/repo" }`; `{ "source": "local", "path": "..." }`.
 #[derive(Debug, serde::Deserialize)]
 #[serde(tag = "source", rename_all = "lowercase")]
 enum SettingsSource {
@@ -133,7 +125,7 @@ struct SettingsEntry {
     source: SettingsSource,
 }
 
-/// Extract marketplace entries from a JSON object map (name -> config).
+/// Extract marketplace entries from a JSON object map of marketplace name to config.
 fn extract_marketplace_entries(
     marketplaces: &serde_json::Map<String, serde_json::Value>,
     seen_urls: &mut std::collections::HashSet<String>,
@@ -160,7 +152,7 @@ fn extract_marketplace_entries(
             }
             SettingsSource::Local { path: path_str } => {
                 let expanded = if let Some(rest) = path_str.strip_prefix('~') {
-                    dirs::home_dir()
+                    xai_dirs::home_dir()
                         .map(|h| {
                             h.join(rest.strip_prefix('/').unwrap_or(rest))
                                 .to_string_lossy()
@@ -181,24 +173,32 @@ fn extract_marketplace_entries(
         });
     }
 }
+/// Settings roots grok itself owns (`~/.grok`); sources found here are
+/// grok-native for policy scoping.
+pub fn native_settings_roots() -> Vec<PathBuf> {
+    xai_grok_config::user_grok_home().into_iter().collect()
+}
+
+/// Settings roots owned by other tools (`~/.claude`); sources found here are
+/// foreign for policy scoping.
+pub fn foreign_settings_roots() -> Vec<PathBuf> {
+    xai_dirs::home_dir()
+        .map(|h| h.join(".claude"))
+        .into_iter()
+        .collect()
+}
+
 /// Loads additional marketplace sources from `settings.json` (`extraKnownMarketplaces`)
 /// and `known_marketplaces.json` files under `~/.grok/` and `~/.claude/`.
 pub fn load_extra_sources_from_settings(existing: &[MarketplaceSource]) -> Vec<MarketplaceSource> {
-    let roots: Vec<PathBuf> = [
-        xai_grok_config::user_grok_home(),
-        dirs::home_dir().map(|h| h.join(".claude")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+    let roots: Vec<PathBuf> = native_settings_roots()
+        .into_iter()
+        .chain(foreign_settings_roots())
+        .collect();
     load_extra_sources_from_settings_in(existing, &roots)
 }
 
-/// Like [`load_extra_sources_from_settings`] but reads from explicit `roots`
-/// instead of `~/.grok`/`~/.claude`. Each root is checked for
-/// `settings.local.json`, `settings.json` (`extraKnownMarketplaces` key), and
-/// `plugins/known_marketplaces.json`. Lets callers (e.g. first-run auto-register
-/// tests) stay isolated from the developer's real home dir.
+/// Like [`load_extra_sources_from_settings`] but reads from explicit `roots` instead of `~/.grok`/`~/.claude`. Each root is checked for `settings.local.json`, `settings.json` (`extraKnownMarketplaces` key), and `plugins/known_marketplaces.json`. Lets callers stay isolated from the developer's real home dir.
 pub fn load_extra_sources_from_settings_in(
     existing: &[MarketplaceSource],
     roots: &[PathBuf],
@@ -213,9 +213,9 @@ pub fn load_extra_sources_from_settings_in(
         })
         .collect();
 
-    // Order matters: all settings files across roots, then all
-    // known_marketplaces.json across roots — preserves the first-wins URL dedup
-    // in extract_marketplace_entries. Don't reorder without auditing UI impact.
+    // Order matters: all settings files across roots, then all known_marketplaces.json across roots
+    // That order preserves the first-wins URL dedup in extract_marketplace_entries
+    // Don't reorder without auditing UI impact
     for root in roots {
         for settings_name in ["settings.local.json", "settings.json"] {
             let path = root.join(settings_name);
@@ -253,8 +253,7 @@ pub fn load_extra_sources_from_settings_in(
                 continue;
             }
         };
-        // known_marketplaces.json is a top-level object with the same shape as
-        // extraKnownMarketplaces (map of name → { source, ... }).
+        // known_marketplaces.json is a top-level object with the same shape as extraKnownMarketplaces: a map of name to { source, ... }.
         let Some(marketplaces) = json.as_object() else {
             continue;
         };
@@ -268,8 +267,7 @@ pub fn load_extra_sources_from_settings_in(
 mod tests {
     use super::*;
 
-    /// Serializes every test that touches the process-global
-    /// `GROK_MARKETPLACE_REQUIRE_SHA`, so they cannot race each other.
+    /// Serializes every test that touches the process-global `GROK_MARKETPLACE_REQUIRE_SHA`, so they cannot race each other.
     static REQUIRE_SHA_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
@@ -333,11 +331,9 @@ mod tests {
         assert!(load_sources(&config).is_empty());
     }
 
-    /// Drives the shipped composition: config alone, env alone, and the
-    /// tighten-only rule (falsy env cannot relax config-set true).
+    /// Exercises config alone, env alone, and the tighten-only rule (a falsy env cannot relax config-set true).
     #[test]
     fn require_sha_policy_composition() {
-        // Process-global env: serialize against any other env-touching test.
         let _guard = REQUIRE_SHA_ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());

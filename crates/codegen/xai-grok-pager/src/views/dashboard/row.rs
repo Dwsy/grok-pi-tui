@@ -6,11 +6,11 @@ use crate::app::agent_view::AgentView;
 use crate::app::roster::{RosterActivity, RosterEntry};
 use crate::app::subagent::{SubagentInfo, format_activity_label, format_subagent_label};
 use indexmap::IndexMap;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime};
-/// Title prefix for a session that has no name / generated title / prompt
-/// yet. The renderer paints this part in the primary colour and the trailing
-/// ` #<id>` suffix in dim gray (see `render::render_row`).
+/// Title prefix for a session that has no name / generated title / prompt yet.
+/// The renderer paints this part in the primary colour and the trailing ` #<id>` suffix in dim gray (see `render::render_row`).
 pub(crate) const NEW_SESSION_LABEL: &str = "New session";
 /// A single row in the dashboard. Built per-frame from `app.agents`.
 #[derive(Debug, Clone)]
@@ -18,58 +18,36 @@ pub struct DashboardRow {
     pub id: DashboardRowId,
     /// Display label (e.g. `"implementer · fix login bug"`).
     pub label: String,
-    /// Right-of-label subtitle painted after a ` · ` separator in
-    /// dim text (e.g. `"xai my-branch-2 worktree"`). `None` when the
-    /// row has no repo / branch context worth surfacing.
+    /// Right-of-label subtitle painted after a ` · ` separator in dim text (e.g. `"xai my-branch-2 worktree"`).
+    /// `None` when the row has no repo / branch context worth showing.
     pub subtitle: Option<String>,
     /// Coarse state used for grouping.
     pub state: RowState,
-    /// Activity summary (e.g. `"Running: cargo test"`). `None` when
-    /// idle or finished.
+    /// Activity summary (e.g. `"Running: cargo test"`). `None` when idle or finished.
     pub activity: Option<String>,
-    /// Secondary dim line painted directly below the title row —
-    /// holds the last tool call, the last assistant message, or
-    /// (for `NeedsInput`) a "Pending: …" preview of the front-most
-    /// permission request. `None` collapses the row to a single
-    /// line (e.g. very recently created with no activity yet).
+    /// Secondary dim line painted directly below the title row.
+    /// Holds the last tool call, the last assistant message, or (for `NeedsInput`) a "Pending: …" preview of the front-most permission request.
+    /// `None` collapses the row to a single line (e.g. very recently created with no activity yet).
     pub secondary_line: Option<String>,
     /// Working directory display string (already compacted to `~/...`).
     pub cwd_display: String,
     /// Raw cwd for downstream filter / grouping consumers.
     pub cwd: PathBuf,
-    /// Wall-clock moment of the row's last change — drives the age column and
-    /// is the recency tiebreaker for sort (more recent floats higher in its
-    /// group).
-    ///
-    /// Wall-clock [`SystemTime`], not a monotonic [`Instant`]: roster
-    /// timestamps can predate this process — even the machine's boot — which
-    /// an `Instant` cannot represent (its floor is system boot, so an older
-    /// moment underflows and collapses back to "just now"). Local rows project
-    /// their live `Instant` anchors onto the wall clock via
-    /// [`crate::util::system_time_from_instant`].
+    /// Wall-clock moment of the row's last change. A wall-clock [`SystemTime`]: roster timestamps can
+    /// predate this process, even the machine's boot, which an [`Instant`] cannot represent.
     pub last_change_at: SystemTime,
     /// True when this row is pinned (always floats above non-pinned).
     pub pinned: bool,
-    /// True when this row is currently the active view target (so the
-    /// renderer can highlight it). Reserved — wired through but
-    /// always `false` in v1; populated when we eventually support
-    /// "the agent you came from" highlighting from the dashboard.
-    #[allow(dead_code)]
-    pub is_active: bool,
     /// Optional row badges (e.g. `worktree`, `needs-input`).
     pub badges: Vec<RowBadge>,
     /// Context window usage percent, when known. Drives the mini gauge.
     pub context_pct: Option<u8>,
-    /// Indent level for nested subagent rendering. 0 = top-level,
-    /// 1 = subagent under its parent.
+    /// Indent level for nested subagent rendering: 0 for a top-level row, 1 for a subagent under its parent.
     pub indent: u8,
-    /// Display title for the parent agent — used to scope group
-    /// headers in `Grouping::Directory` mode where subagents must
-    /// sort with their parent.
+    /// Display title for the parent agent, used to scope group headers in `Grouping::Directory` mode where subagents must sort with their parent.
     pub parent_label: Option<String>,
-    /// True when this row is a "… N more" collapse placeholder. The
-    /// renderer paints it dimmed and the cursor cannot land on it
-    /// (selectable=false).
+    /// True when this row is a "… N more" collapse placeholder.
+    /// The renderer paints it dimmed and the cursor cannot land on it (selectable=false).
     pub is_more_placeholder: bool,
     /// Number of rolled-up rows when `is_more_placeholder == true`.
     pub more_count: usize,
@@ -94,104 +72,221 @@ impl RowBadge {
         }
     }
 }
-/// Maximum number of subagents to show per parent before collapsing
-/// completed/failed ones into a "… N more" row (edge case 6).
+/// Maximum number of subagents to show per parent before collapsing completed/failed ones into a "… N more" row.
 pub const MAX_VISIBLE_SUBAGENTS: usize = 8;
-/// Process-wide fallback anchor for the age column when an agent
-/// somehow lacks both `turn_started_at` AND `last_active_at` (rare —
-/// `AgentView::new` always stamps the latter, but a hypothetical
-/// future caller could omit it). Initialised lazily on first call so
-/// the fallback is genuinely frozen rather than re-anchoring every
-/// frame.
+/// Process-wide fallback anchor for the age column when an agent lacks both `turn_started_at` and `last_active_at`.
+/// Rare: `AgentView::new` always stamps the latter, but a future caller could omit it.
+/// Initialised lazily on first call so the fallback stays frozen instead of re-anchoring every frame.
 fn fallback_epoch() -> Instant {
     static FALLBACK: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     *FALLBACK.get_or_init(Instant::now)
 }
-/// Build the dashboard row list from the live `app.agents` map.
-///
-/// Iterates `agents` so a stale `AgentId` can never panic (edge case 2).
-/// Subagents are appended directly after their parent — never reordered
-/// across parents — and a `… N more` collapse placeholder appears at
-/// the parent's scope once more than [`MAX_VISIBLE_SUBAGENTS`] rows
-/// exist (edge case 6).
+/// Iterates `agents` so a stale `AgentId` can never panic. Subagents are appended directly after
+/// their parent, never reordered across parents.
 pub fn build_rows(
     agents: &IndexMap<AgentId, AgentView>,
     pinned: &std::collections::BTreeSet<DashboardRowId>,
     reorder: &[DashboardRowId],
-    active: Option<AgentId>,
     grouping: super::state::Grouping,
     filter: &Filter,
     home: Option<&str>,
 ) -> Vec<DashboardRow> {
-    let mut rows = build_local_rows(agents, pinned, active, home, true);
+    let mut rows = build_local_rows(agents, pinned, home, true);
     apply_filter(&mut rows, filter, home);
     sort_rows(&mut rows, grouping, reorder);
     rows
 }
-/// Build the row list shown by the live dashboard (rendering in
-/// [`super::render::render_dashboard`] and keyboard navigation in
-/// `dispatch_dashboard_select` both go through here).
-///
-/// Like [`build_rows`] but (a) appends "roster-only" rows for leader
-/// sessions this client is NOT locally attached to (FleetView dashboard)
-/// and (b) does NOT surface subagents as their own rows — only top-level
-/// agents and roster sessions are listed (see [`build_local_rows`]).
-///
-/// Local `AgentView` rows are built first (richest data). Then, for each
-/// [`RosterEntry`] whose `session_id` is not already represented by a
-/// local agent, a synthetic [`DashboardRow`] is appended. In non-leader
-/// mode `roster` is empty.
-#[allow(clippy::too_many_arguments)]
+/// It appends "roster-only" rows for leader sessions this client is not locally attached to (the
+/// FleetView dashboard). It does not list subagents as their own rows; only top-level agents and
+/// roster sessions appear (see [`build_local_rows`]).
 pub fn build_rows_with_roster(
     agents: &IndexMap<AgentId, AgentView>,
     pinned: &std::collections::BTreeSet<DashboardRowId>,
     reorder: &[DashboardRowId],
-    active: Option<AgentId>,
     grouping: super::state::Grouping,
     filter: &Filter,
     home: Option<&str>,
     roster: &[RosterEntry],
 ) -> Vec<DashboardRow> {
-    let mut rows = build_local_rows(agents, pinned, active, home, false);
+    let mut rows = build_local_rows(agents, pinned, home, false);
     append_roster_rows(&mut rows, roster, agents, pinned, home);
     apply_filter(&mut rows, filter, home);
     sort_rows(&mut rows, grouping, reorder);
     rows
 }
-/// Build the local-agent rows WITHOUT applying filter or sort. Shared by
-/// [`build_rows`] and [`build_rows_with_roster`].
-///
-/// `include_subagents` controls whether each parent's subagent sessions are
-/// appended as nested rows. The live dashboard passes `false` (subagents are
-/// not surfaced as their own rows — see [`build_rows_with_roster`]); callers
-/// that want the full tree (and the row-building unit tests) pass `true` via
-/// [`build_rows`].
+pub(crate) fn workspace_member_is_pinned(member: &xai_grok_dashboard_store::Member) -> bool {
+    member.pin_rank.is_some()
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct WorkspaceRowInputs<'a> {
+    /// `None` until the store snapshot has loaded, or when the store failed to open.
+    pub workspace: Option<&'a crate::app::workspace_layout::WorkspaceView>,
+    /// Live top-level agents with no committed member yet; `crate::app::workspace_sync` decides which qualify.
+    pub provisional: &'a [AgentId],
+}
+impl WorkspaceRowInputs<'_> {
+    pub fn grouping(&self) -> super::state::Grouping {
+        self.workspace
+            .map_or(super::state::Grouping::State, |view| view.grouping.into())
+    }
+}
+/// The store is authoritative for membership, layout, and sessions this process has not loaded.
+pub(crate) fn build_rows_with_workspace(
+    agents: &IndexMap<AgentId, AgentView>,
+    inputs: WorkspaceRowInputs<'_>,
+    filter: &Filter,
+    home: Option<&str>,
+) -> Vec<DashboardRow> {
+    let live_by_session: HashMap<&str, (AgentId, &AgentView)> = agents
+        .iter()
+        .filter_map(|(id, agent)| {
+            agent
+                .session
+                .session_id
+                .as_ref()
+                .map(|session_id| (session_id.0.as_ref(), (*id, agent)))
+        })
+        .collect();
+    let reorder = inputs
+        .workspace
+        .map(|workspace| workspace.manual_order())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|key| {
+            live_by_session.get(key.session_id.as_ref()).map_or_else(
+                || DashboardRowId::Workspace {
+                    session_id: key.session_id.to_string(),
+                },
+                |(id, _)| DashboardRowId::TopLevel(*id),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut rows = inputs
+        .workspace
+        .into_iter()
+        .flat_map(|workspace| workspace.members.iter())
+        .filter(|member| matches!(member.kind, xai_grok_dashboard_store::MemberKind::Build))
+        .filter_map(|member| {
+            let live = live_by_session.get(member.session_id.as_ref()).copied();
+            let is_pinned = workspace_member_is_pinned(member);
+            if !workspace_member_is_visible(member, live.map(|(_, agent)| agent), is_pinned) {
+                return None;
+            }
+            if let Some((id, agent)) = live {
+                return Some(top_level_row(id, agent, is_pinned, home));
+            }
+            Some(workspace_member_row(member, is_pinned, home))
+        })
+        .collect::<Vec<_>>();
+    rows.extend(inputs.provisional.iter().filter_map(|id| {
+        let agent = agents.get(id)?;
+        if is_empty_idle_top_level(agent) {
+            return None;
+        }
+        Some(top_level_row(*id, agent, false, home))
+    }));
+    apply_filter(&mut rows, filter, home);
+    sort_rows(&mut rows, inputs.grouping(), &reorder);
+    rows
+}
+pub(crate) fn workspace_member_is_visible(
+    member: &xai_grok_dashboard_store::Member,
+    live_agent: Option<&AgentView>,
+    pinned: bool,
+) -> bool {
+    if !matches!(member.kind, xai_grok_dashboard_store::MemberKind::Build) {
+        return false;
+    }
+    if pinned {
+        return true;
+    }
+    match live_agent {
+        Some(agent) => !is_empty_idle_top_level(agent),
+        None => workspace_member_has_content(member),
+    }
+}
+fn workspace_member_has_content(member: &xai_grok_dashboard_store::Member) -> bool {
+    let has_text = |value: Option<&str>| value.is_some_and(|text| !text.trim().is_empty());
+    has_text(member.title.as_deref()) || has_text(member.last_turn_summary.as_deref())
+}
+fn workspace_member_row(
+    member: &xai_grok_dashboard_store::Member,
+    pinned: bool,
+    home: Option<&str>,
+) -> DashboardRow {
+    let session_id = member.session_id.as_ref();
+    let cwd = member
+        .cwd
+        .as_deref()
+        .filter(|cwd| !cwd.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let label = member
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(sanitize)
+        .or_else(|| {
+            cwd.file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+                .map(sanitize)
+        })
+        .unwrap_or_else(|| sanitize(session_id));
+    let mut badges = Vec::new();
+    if member.is_worktree {
+        badges.push(RowBadge::Worktree);
+    }
+    if pinned {
+        badges.push(RowBadge::Pinned);
+    }
+    DashboardRow {
+        id: DashboardRowId::Workspace {
+            session_id: session_id.to_owned(),
+        },
+        label,
+        subtitle: None,
+        state: RowState::Idle,
+        activity: None,
+        secondary_line: member
+            .last_turn_summary
+            .as_deref()
+            .or(member.model.as_deref())
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(sanitize),
+        cwd_display: if cwd.as_os_str().is_empty() {
+            String::new()
+        } else {
+            super::state::compact_cwd(&cwd, home)
+        },
+        cwd,
+        last_change_at: crate::util::system_time_from_unix_ms(member.last_change_unix_ms),
+        pinned,
+        badges,
+        context_pct: None,
+        indent: 0,
+        parent_label: None,
+        is_more_placeholder: false,
+        more_count: 0,
+    }
+}
+/// Build the local-agent rows WITHOUT applying filter or sort. Shared by [`build_rows`] and
+/// [`build_rows_with_roster`].
 fn build_local_rows(
     agents: &IndexMap<AgentId, AgentView>,
     pinned: &std::collections::BTreeSet<DashboardRowId>,
-    active: Option<AgentId>,
     home: Option<&str>,
     include_subagents: bool,
 ) -> Vec<DashboardRow> {
     let mut rows = Vec::new();
     for (id, agent) in agents.iter() {
         let top_id = DashboardRowId::TopLevel(*id);
-        if is_empty_top_level(agent)
-            && !pinned.contains(&top_id)
-            && !matches!(
-                classify_top_level(agent),
-                RowState::Working | RowState::NeedsInput
-            )
-        {
+        if is_empty_idle_top_level(agent) && !pinned.contains(&top_id) {
             continue;
         }
-        let row = top_level_row(
-            *id,
-            agent,
-            pinned.contains(&top_id),
-            active == Some(*id),
-            home,
-        );
+        let row = top_level_row(*id, agent, pinned.contains(&top_id), home);
         rows.push(row);
         if !include_subagents {
             continue;
@@ -199,15 +294,15 @@ fn build_local_rows(
         let mut subagents: Vec<&SubagentInfo> = agent
             .subagent_sessions
             .values()
-            .filter(|info| info.workflow_run_id.is_none())
+            .filter(|info| info.attempt.workflow_run_id.is_none())
             .collect();
         subagents.sort_by(|a, b| {
-            let a_running = !a.finished;
-            let b_running = !b.finished;
+            let a_running = a.is_running();
+            let b_running = b.is_running();
             match (a_running, b_running) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
-                _ => b.started_at.cmp(&a.started_at),
+                _ => b.attempt.started_at.cmp(&a.attempt.started_at),
             }
         });
         let total = subagents.len();
@@ -240,7 +335,6 @@ fn build_local_rows(
                 cwd: agent.session.cwd.clone(),
                 last_change_at: SystemTime::now(),
                 pinned: false,
-                is_active: false,
                 badges: Vec::new(),
                 context_pct: None,
                 indent: 1,
@@ -253,8 +347,7 @@ fn build_local_rows(
     rows
 }
 /// Map a leader [`RosterActivity`] to the dashboard's coarse [`RowState`].
-/// Public so the dispatcher can gate roster-row deletion through the very
-/// same `RowState::allows_delete` predicate the renderer paints `[✗]` with.
+/// Public so the dispatcher can gate roster-row deletion through the same `RowState::allows_delete` predicate the renderer paints `[✗]` with.
 pub fn roster_activity_to_state(activity: RosterActivity) -> RowState {
     match activity {
         RosterActivity::Working => RowState::Working,
@@ -264,10 +357,8 @@ pub fn roster_activity_to_state(activity: RosterActivity) -> RowState {
         RosterActivity::Dead => RowState::Failed,
     }
 }
-/// Append "roster-only" rows for leader sessions not represented by a
-/// local `AgentView`. Skips any roster entry whose `session_id` already
-/// matches a locally-attached agent (those carry richer data via
-/// [`build_local_rows`]).
+/// Append "roster-only" rows for leader sessions not represented by a local `AgentView`.
+/// Skips any roster entry whose `session_id` already matches a locally-attached agent (those carry richer data via [`build_local_rows`]).
 fn append_roster_rows(
     rows: &mut Vec<DashboardRow>,
     roster: &[RosterEntry],
@@ -347,7 +438,6 @@ fn append_roster_rows(
             cwd,
             last_change_at: crate::util::system_time_from_unix_ms(entry.last_change_unix_ms),
             pinned: is_pinned,
-            is_active: false,
             badges,
             context_pct: None,
             indent: 0,
@@ -357,22 +447,9 @@ fn append_roster_rows(
         });
     }
 }
-/// Classify a top-level agent.
-///
-/// Returns one of [`RowState::NeedsInput`], [`RowState::Working`],
-/// [`RowState::Idle`].
-///
-/// `NeedsInput` triggers on pending permission OR pending
-/// `QuestionView` (`ask_user_question` tool). `Working` covers any
-/// non-idle session state, including command runs (compaction,
-/// worktree create, etc.) — which is why edge case 14 (compaction)
-/// works: a row in `AgentState::CommandRunning { Compact, .. }` is
-/// "Working" and the activity label reads `Compacting`. A turn-idle
-/// agent still classifies as `Working` while it has live background work
-/// (`has_background_work`): a running background task / `monitor` or an
-/// active scheduled `/loop`. Each is ongoing, user-dispatched work — and
-/// monitors / loops can wake the agent for a fresh turn — so the agent
-/// isn't meaningfully idle while any are running.
+/// Classify a top-level agent. A row in `AgentState::CommandRunning { Compact, .. }` is therefore
+/// "Working" and its activity label reads `Compacting`. Each is ongoing, user-dispatched work, and
+/// monitors and loops can wake the agent for a fresh turn, so the agent isn't meaningfully idle.
 pub fn classify_top_level(agent: &AgentView) -> RowState {
     if !agent.permission_queue.is_empty() || agent.question_view.is_some() {
         return RowState::NeedsInput;
@@ -392,14 +469,8 @@ pub fn classify_top_level(agent: &AgentView) -> RowState {
     }
     RowState::Idle
 }
-/// Whether `agent` has live background work that keeps it out of the
-/// `Idle` group even when its turn is idle: a running background task
-/// (`run_terminal_command` with `background=true`), a running `monitor`
-/// (a background task with `is_monitor`), or an active scheduled `/loop`.
-/// Mirrors the agent view's idle "watching" cue
-/// (`crate::views::turn_status::Watchers`, minus subagents — the dashboard
-/// lists those as their own rows) — any in-flight background work the user
-/// dispatched should read as "Working" on the dashboard.
+/// Whether `agent` has live background work that keeps it out of the `Idle` group even when its
+/// turn is idle.
 pub fn has_background_work(agent: &AgentView) -> bool {
     agent
         .session
@@ -408,15 +479,7 @@ pub fn has_background_work(agent: &AgentView) -> bool {
         .any(|t| t.status == crate::app::agent::BgTaskStatus::Running)
         || !agent.session.scheduled_tasks.is_empty()
 }
-/// Compact `"… still running"` label summarising a turn-idle agent's live
-/// background work — e.g. `"1 monitor · 2 loops still running"` or
-/// `"1 task still running"`. `None` when there's no background work (the
-/// caller then falls back to a bare `"Working"`). Shares the format
-/// mechanics with the agent view's idle cue
-/// ([`crate::views::turn_status::format_still_running`]) but keeps the
-/// dashboard's own nouns ("task", not "command") and omits subagents —
-/// dashboard rows list those separately. Counts come from local state (not
-/// backend content), so no sanitise.
+/// `None` when there's no background work (the caller then falls back to a bare `"Working"`).
 fn background_work_label(agent: &AgentView) -> Option<String> {
     let w = agent.watchers();
     crate::views::turn_status::format_still_running([
@@ -427,11 +490,10 @@ fn background_work_label(agent: &AgentView) -> Option<String> {
 }
 /// Classify a subagent.
 ///
-/// Subagents never enter `NeedsInput` in v1 — they have no user-prompt
-/// channel. Asserted in tests.
+/// Subagents never enter `NeedsInput` in v1; they have no way to ask the user for input. A test asserts this.
 pub fn classify_subagent(info: &SubagentInfo) -> RowState {
-    if info.finished {
-        match info.status.as_deref() {
+    if info.is_finished() {
+        match info.attempt.status.as_deref() {
             Some("failed") | Some("cancelled") | Some("error") => RowState::Failed,
             _ => RowState::Completed,
         }
@@ -439,22 +501,14 @@ pub fn classify_subagent(info: &SubagentInfo) -> RowState {
         RowState::Working
     }
 }
-/// Issues 30 + 31 fix — sanitise every string derived from
-/// backend / model-controlled content before returning. The
-/// dashboard's renderer paints raw via `set_string`, which preserves
-/// embedded escape sequences in the ratatui buffer.
+/// Sanitise every string derived from backend / model-controlled content before returning.
+/// The dashboard's renderer paints raw via `set_string`, which preserves embedded escape sequences in the ratatui buffer.
 fn sanitize(s: &str) -> String {
     crate::views::session_title::sanitize_display_text(s).into_owned()
 }
-/// Whether a top-level agent has no real conversation yet: no display name, no
-/// generated title, no queued prompt, and no user-typed message in scrollback.
-///
-/// These are the exact conditions under which [`top_level_label`] falls back to
-/// `New session #<id>`. A session created on pager launch carries only the
-/// system prompt plus injected `<system-reminder>` context (which are not real
-/// user turns and never render as `UserPrompt` blocks), so it reads as empty
-/// here until the user actually sends something. Used by [`build_local_rows`]
-/// to keep such sessions off the dashboard.
+/// Whether a top-level agent has no real conversation yet. These are the exact conditions under
+/// which [`top_level_label`] falls back to `New session #<id>`. A session created on pager launch
+/// carries only the system prompt and injected `<system-reminder>` context.
 fn is_empty_top_level(agent: &AgentView) -> bool {
     let has_text = |s: Option<&str>| s.map(str::trim).is_some_and(|t| !t.is_empty());
     if has_text(agent.display_name.as_deref()) {
@@ -473,6 +527,13 @@ fn is_empty_top_level(agent: &AgentView) -> bool {
         return false;
     }
     true
+}
+pub(crate) fn is_empty_idle_top_level(agent: &AgentView) -> bool {
+    is_empty_top_level(agent)
+        && !matches!(
+            classify_top_level(agent),
+            RowState::Working | RowState::NeedsInput
+        )
 }
 fn top_level_label(agent: &AgentView) -> String {
     if let Some(name) = agent.display_name.as_deref() {
@@ -505,31 +566,13 @@ fn top_level_label(agent: &AgentView) -> String {
     }
     NEW_SESSION_LABEL.to_string()
 }
-fn top_level_row(
-    id: AgentId,
-    agent: &AgentView,
-    pinned: bool,
-    is_active: bool,
-    home: Option<&str>,
-) -> DashboardRow {
+fn top_level_row(id: AgentId, agent: &AgentView, pinned: bool, home: Option<&str>) -> DashboardRow {
     let state = classify_top_level(agent);
     let label = top_level_label(agent);
     let subtitle = top_level_subtitle(agent);
     let activity = top_level_activity(agent, state);
     let secondary_line = top_level_secondary_line(agent, state, activity.as_deref());
-    let anchor: Instant = match state {
-        RowState::Working => agent
-            .turn_started_at
-            .or(agent.last_active_at)
-            .unwrap_or_else(fallback_epoch),
-        RowState::NeedsInput
-        | RowState::Idle
-        | RowState::Inactive
-        | RowState::Completed
-        | RowState::Failed
-        | RowState::Blocked => agent.last_active_at.unwrap_or_else(fallback_epoch),
-    };
-    let last_change_at = crate::util::system_time_from_instant(anchor);
+    let last_change_at = top_level_last_change_at(agent, state);
     let mut badges = Vec::new();
     if agent.is_worktree {
         badges.push(RowBadge::Worktree);
@@ -560,7 +603,6 @@ fn top_level_row(
         cwd: agent.session.cwd.clone(),
         last_change_at,
         pinned,
-        is_active,
         badges,
         context_pct: agent.context_state.as_ref().map(|c| c.usage_pct),
         indent: 0,
@@ -568,6 +610,21 @@ fn top_level_row(
         is_more_placeholder: false,
         more_count: 0,
     }
+}
+/// Wall-clock anchor used by both dashboard rows and workspace metadata sync.
+pub(crate) fn top_level_last_change_at(agent: &AgentView, state: RowState) -> SystemTime {
+    let anchor: Instant = match state {
+        RowState::Working => agent
+            .turn_started_at
+            .or(agent.last_active_at)
+            .unwrap_or_else(fallback_epoch),
+        RowState::NeedsInput
+        | RowState::Idle
+        | RowState::Inactive
+        | RowState::Completed
+        | RowState::Failed => agent.last_active_at.unwrap_or_else(fallback_epoch),
+    };
+    crate::util::system_time_from_instant(anchor)
 }
 fn subagent_row(
     parent: AgentId,
@@ -594,7 +651,7 @@ fn subagent_row(
         .map(PathBuf::from)
         .unwrap_or_else(|| parent_view.session.cwd.clone());
     let cwd_display = super::state::compact_cwd(&cwd, home);
-    let last_change_at = crate::util::system_time_from_instant(info.last_progress_at);
+    let last_change_at = crate::util::system_time_from_instant(info.attempt.last_progress_at);
     let mut badges = Vec::new();
     if info.worktree_path.is_some() {
         badges.push(RowBadge::Worktree);
@@ -622,38 +679,21 @@ fn subagent_row(
         cwd,
         last_change_at,
         pinned,
-        is_active: false,
         badges,
-        context_pct: info.context_usage_pct,
+        context_pct: info.attempt.context_usage_pct,
         indent: 1,
         parent_label,
         is_more_placeholder: false,
         more_count: 0,
     }
 }
-/// Basename of a directory (the leaf folder name), or `None` for the
-/// filesystem root / an empty path.
+/// Basename of a directory (the leaf folder name), or `None` for the filesystem root / an empty path.
 fn cwd_basename(cwd: &std::path::Path) -> Option<String> {
     cwd.file_name()
         .and_then(|n| n.to_str())
         .map(|s| s.to_string())
 }
-/// Build the dim right-of-label subtitle for a top-level row.
-///
-/// Format: `{branch} {location} [worktree]` where `location` is the
-/// worktree's human label when the agent's cwd is a managed worktree
-/// (falling back to the cwd's folder name), and the cwd's folder name
-/// otherwise. Branch first, then the worktree/dir name, then the
-/// `worktree` marker. Examples:
-///
-/// - Worktree: `alice/feature location-picker worktree`
-/// - Plain repo / subdir: `main foo`
-/// - No branch (detached / non-git): just the folder name, or `None`
-///   when even that is unavailable.
-///
-/// `current_branch` / `is_worktree` / `worktree_label` are refreshed when
-/// the dashboard opens (see `dispatch_open_dashboard`) so the branch is
-/// the latest, not a stale notification value.
+/// The branch shown is therefore the latest, not a stale notification value.
 fn top_level_subtitle(agent: &AgentView) -> Option<String> {
     let lazy = crate::git_info::cwd_git_info_lazy(&agent.session.cwd);
     let trimmed = |s: &str| {
@@ -699,23 +739,9 @@ fn top_level_subtitle(agent: &AgentView) -> Option<String> {
     }
     Some(parts.join(" "))
 }
-/// Compose the dim "last tool / message" line painted directly below
-/// the title row. Driven by row state so the most relevant detail
-/// surfaces:
-///
-/// - **NeedsInput** — front-most permission's title (`"Pending: {title}"`)
-///   or the question view's prompt. Falls back to `activity` if both
-///   are absent (shouldn't happen in practice; defensive).
-/// - **Working** — the activity string (`"read foo.rs"`, etc.).
-/// - **Idle / Completed / Failed / Blocked** — the last
-///   `AgentMessage` block in scrollback, trimmed to a single line.
-///   When no message is available yet (e.g. a session whose
-///   scrollback hasn't been replayed because the user hasn't opened
-///   it) it falls back to the model name so the line isn't blank;
-///   `None` only when the model is also unknown.
-///
-/// All strings are sanitised before returning — the renderer paints
-/// the result directly via `set_string` with no escape filtering.
+/// Compose the dim "last tool / message" line painted directly below the title row. Falls back to
+/// `activity` if both are absent (shouldn't happen in practice; defensive). `None` only when the
+/// model is also unknown.
 fn top_level_secondary_line(
     agent: &AgentView,
     state: RowState,
@@ -735,20 +761,15 @@ fn top_level_secondary_line(
             activity.map(sanitize)
         }
         RowState::Working => activity.map(sanitize),
-        RowState::Idle
-        | RowState::Inactive
-        | RowState::Completed
-        | RowState::Failed
-        | RowState::Blocked => agent
+        RowState::Idle | RowState::Inactive | RowState::Completed | RowState::Failed => agent
             .last_turn_summary
             .as_deref()
             .map(sanitize)
             .or_else(|| last_agent_message_preview(agent)),
     }
 }
-/// Walk the scrollback from the end, returning the first
-/// `AgentMessage` block's text trimmed to a single line. Returns
-/// `None` when no agent message has been produced yet.
+/// Walk the scrollback from the end, returning the first `AgentMessage` block's text trimmed to a single line.
+/// Returns `None` when no agent message has been produced yet.
 fn last_agent_message_preview(agent: &AgentView) -> Option<String> {
     use crate::scrollback::block::RenderBlock;
     let len = agent.scrollback.len();
@@ -762,8 +783,7 @@ fn last_agent_message_preview(agent: &AgentView) -> Option<String> {
     }
     None
 }
-/// Return the first non-empty trimmed line of `s`, or `None` when
-/// every line is blank.
+/// Return the first non-empty trimmed line of `s`, or `None` when every line is blank.
 fn first_nonempty_line(s: &str) -> Option<&str> {
     for line in s.lines() {
         let trimmed = line.trim();
@@ -773,10 +793,9 @@ fn first_nonempty_line(s: &str) -> Option<&str> {
     }
     None
 }
-/// Subagent equivalent of `top_level_subtitle`. Subagents don't carry
-/// their own branch / repo metadata, so we show the cwd's folder name
-/// (which is the worktree folder name when running in a worktree) plus a
-/// `worktree` suffix when one is set.
+/// Subagent equivalent of `top_level_subtitle`.
+/// Subagents don't carry their own branch / repo metadata, so we show the cwd's folder name plus a `worktree` suffix when one is set.
+/// In a worktree the cwd's folder name is the worktree folder name.
 fn subagent_subtitle(info: &SubagentInfo, cwd: &std::path::Path) -> Option<String> {
     let name = cwd_basename(cwd)?;
     if info.worktree_path.is_some() {
@@ -785,8 +804,7 @@ fn subagent_subtitle(info: &SubagentInfo, cwd: &std::path::Path) -> Option<Strin
         Some(name)
     }
 }
-/// Secondary line for subagent rows: the running tool (working) or
-/// the duration summary (finished).
+/// Secondary line for subagent rows: the running tool (working) or the duration summary (finished).
 fn subagent_secondary_line(
     _info: &SubagentInfo,
     _state: RowState,
@@ -816,6 +834,7 @@ fn top_level_activity(agent: &AgentView, state: RowState) -> Option<String> {
 fn subagent_activity(info: &SubagentInfo, state: RowState) -> Option<String> {
     if state == RowState::Working {
         if let Some(label) = info
+            .attempt
             .activity_label
             .as_deref()
             .map(str::trim)
@@ -823,7 +842,12 @@ fn subagent_activity(info: &SubagentInfo, state: RowState) -> Option<String> {
         {
             return Some(sanitize(label));
         }
-        let last_tool = info.tools_used.last().map(|s| s.as_ref()).unwrap_or("");
+        let last_tool = info
+            .attempt
+            .tools_used
+            .last()
+            .map(|s| s.as_ref())
+            .unwrap_or("");
         if last_tool.is_empty() {
             Some("Working".to_string())
         } else {
@@ -834,10 +858,10 @@ fn subagent_activity(info: &SubagentInfo, state: RowState) -> Option<String> {
                 },
             )))
         }
-    } else if info.finished {
-        let turns = info.turns.unwrap_or(0);
-        let tools = info.tool_calls.unwrap_or(0);
-        let toks = info.tokens_used.unwrap_or(0);
+    } else if info.is_finished() {
+        let turns = info.attempt.turns.unwrap_or(0);
+        let tools = info.attempt.tool_calls.unwrap_or(0);
+        let toks = info.attempt.tokens_used.unwrap_or(0);
         Some(format!("{tools} tools · {toks} tok · {turns} turns"))
     } else {
         None
@@ -845,11 +869,7 @@ fn subagent_activity(info: &SubagentInfo, state: RowState) -> Option<String> {
 }
 /// Apply a filter to the list in place.
 ///
-/// Filter cases — see edge case 11.
-///
-/// Needle is lowercased once outside `retain` instead
-/// of per-row, so a 100-row list doesn't allocate 100 fresh
-/// lowercase Strings per keystroke.
+/// Needle is lowercased once outside `retain` instead of per-row, so a 100-row list doesn't allocate 100 fresh lowercase Strings per keystroke.
 pub fn apply_filter(rows: &mut Vec<DashboardRow>, filter: &Filter, _home: Option<&str>) {
     if matches!(filter, Filter::None) {
         return;
@@ -882,24 +902,9 @@ pub fn apply_filter(rows: &mut Vec<DashboardRow>, filter: &Filter, _home: Option
         }
     });
 }
-/// Sort rows in place.
-///
-/// Order:
-///  1. Pinned first (regardless of group).
-///  2. Group primitive: descending state-priority in `State` grouping;
-///     `cwd` in `Directory` grouping.
-///  3. `reorder` overrides (Shift+↑/↓) float a row to its declared index
-///     INSIDE its group only — never across groups. In `State` grouping
-///     this means within the same state (so the group can't be split
-///     into `Idle → Working → Idle`); in `Directory` grouping it means
-///     within the same cwd. See [`sort_cluster_key`].
-///  4. Then descending by `last_change_at`.
-///  5. Final tiebreak by `DashboardRowId` so the order is
-///     deterministic across rebuilds even when every other field
-///     ties. Asserted by `sort_rows_tiebreaks_by_id_when_keys_equal`.
-///  6. Subagents stay glued to their parent (we never sort the row
-///     vector across parents — that's already enforced by the build
-///     step which emits subagents immediately after their parent).
+/// Sort rows in place. `reorder` overrides (Shift+↑/↓) float a row to its declared index INSIDE its
+/// group only, never across groups. In `State` grouping that means within the same state, so the
+/// group can't be split into `Idle → Working → Idle`.
 pub fn sort_rows(
     rows: &mut [DashboardRow],
     grouping: super::state::Grouping,
@@ -975,32 +980,12 @@ struct ClusterKey {
     state: u8,
     last_change_at: SystemTime,
     reorder_idx: Option<usize>,
-    /// Final tiebreak: when every other field is equal,
-    /// fall back to the parent row's id so the order is deterministic
-    /// across rebuilds (no reliance on `sort_by`'s stable-on-equal
-    /// pass-through).
+    /// Final tiebreak: when every other field is equal, fall back to the parent row's id so the order is deterministic across rebuilds.
+    /// This avoids relying on `sort_by`'s stable-on-equal pass-through.
     id: DashboardRowId,
 }
-/// Compare two cluster sort keys.
-///
-/// `state_before_reorder` decides where the explicit-reorder override
-/// (Shift+↑/↓) sits relative to the state-priority key — and that choice
-/// is what keeps the rendered groups contiguous:
-///
-/// - **State grouping (`true`)** — state is the grouping primitive AND
-///   the primary sort key, so a reorder must only float a row *within*
-///   its own state group. Ranking `reorder_idx` above `state` (the old
-///   behaviour) let a reordered Idle row jump above the Working group,
-///   which made the renderer emit a second "Idle" header below the
-///   Working one (Idle → Working → Idle). Keeping `state` first confines
-///   the reorder to one group, matching the documented contract
-///   ("float to position inside the row's group") in
-///   [`super::super::app::dispatch`]'s `dispatch_dashboard_reorder`.
-/// - **Directory grouping (`false`)** — the cwd is the grouping
-///   primitive (sorted ahead of this key in
-///   [`sort_within_directory_groups`]), so within a cwd the reorder is
-///   free to float across states; there are no state sub-headers to
-///   split.
+/// Compare two cluster sort keys. State grouping (`true`): state is the grouping primitive and the
+/// primary sort key, so a reorder may only float a row within its state group.
 fn sort_cluster_key(
     a: &ClusterKey,
     b: &ClusterKey,
@@ -1038,8 +1023,7 @@ fn sort_cluster_key(
         .cmp(&a.last_change_at)
         .then_with(|| a.id.cmp(&b.id))
 }
-/// Identify `(start, end)` ranges of clustered rows — each cluster is
-/// one top-level row followed by zero or more subagents.
+/// Identify `(start, end)` ranges of clustered rows: each cluster is one top-level row followed by zero or more subagents.
 fn build_clusters(rows: &[DashboardRow]) -> Vec<(usize, usize)> {
     let mut clusters = Vec::new();
     let mut i = 0;
@@ -1056,49 +1040,251 @@ fn build_clusters(rows: &[DashboardRow]) -> Vec<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::workspace_test_fixtures::snapshot as workspace_snapshot;
+    use agent_client_protocol as acp;
     use std::sync::Arc;
     use std::time::{Duration, UNIX_EPOCH};
+    /// Row tests render the model and summary and sort by a realistic timestamp.
+    fn workspace_member(
+        session_id: &str,
+        title: &str,
+        summary: Option<&str>,
+    ) -> xai_grok_dashboard_store::Member {
+        let mut member = crate::app::workspace_test_fixtures::member(session_id, title);
+        member.model = Some("grok-test".to_owned());
+        member.last_turn_summary = summary.map(str::to_owned);
+        member.last_change_unix_ms = 1_725_000_000_000;
+        member
+    }
+    fn workspace_rows(
+        agents: &IndexMap<AgentId, AgentView>,
+        snapshot: &xai_grok_dashboard_store::WorkspaceSnapshot,
+    ) -> Vec<DashboardRow> {
+        workspace_rows_with_provisional(agents, Some(snapshot), &[])
+    }
+    fn workspace_rows_with_provisional(
+        agents: &IndexMap<AgentId, AgentView>,
+        snapshot: Option<&xai_grok_dashboard_store::WorkspaceSnapshot>,
+        provisional: &[AgentId],
+    ) -> Vec<DashboardRow> {
+        let workspace = snapshot.map(crate::app::workspace_layout::WorkspaceView::from_snapshot);
+        build_rows_with_workspace(
+            agents,
+            WorkspaceRowInputs {
+                workspace: workspace.as_ref(),
+                provisional,
+            },
+            &Filter::None,
+            None,
+        )
+    }
+    #[test]
+    fn live_match_enriches_member_row_and_non_provisional_live_agents_stay_hidden() {
+        let mut matched = crate::app::agent_view::test_fixtures::make_agent();
+        matched.session.session_id = Some(acp::SessionId::new("saved"));
+        matched.display_name = Some("Live title".to_owned());
+        let mut unadopted = crate::app::agent_view::test_fixtures::make_agent();
+        unadopted.session.session_id = Some(acp::SessionId::new("not-saved"));
+        unadopted.display_name = Some("Hidden title".to_owned());
+        let agents = IndexMap::from([(AgentId(7), matched), (AgentId(8), unadopted)]);
+        let snapshot = workspace_snapshot(vec![workspace_member(
+            "saved",
+            "Stored title",
+            Some("Stored summary"),
+        )]);
+        let rows = workspace_rows(&agents, &snapshot);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, DashboardRowId::TopLevel(AgentId(7)));
+        assert_eq!(rows[0].label, "Live title");
+    }
+    #[test]
+    fn provisional_dispatch_row_shows_before_session_id_binds() {
+        let mut dispatched = crate::app::agent_view::test_fixtures::make_agent();
+        dispatched
+            .session
+            .enqueue_prompt("fix the login bug before lunch".into());
+        assert!(dispatched.session.session_id.is_none());
+        let agents = IndexMap::from([(AgentId(3), dispatched)]);
+        let snapshot = workspace_snapshot(vec![workspace_member("other", "Other", None)]);
+        let rows = workspace_rows_with_provisional(&agents, Some(&snapshot), &[AgentId(3)]);
+        assert_eq!(rows.len(), 2);
+        let row = &rows[0];
+        assert_eq!(row.id, DashboardRowId::TopLevel(AgentId(3)));
+        assert_eq!(row.state, RowState::Working);
+        assert_eq!(row.label, "fix the login bug before lunch");
+        assert!(!row.pinned);
+    }
+    #[test]
+    fn provisional_worktree_row_reports_creation_activity() {
+        let mut creating = crate::app::agent_view::test_fixtures::make_agent();
+        creating
+            .session
+            .start_command(crate::app::agent::AgentCommand::CreateWorktree);
+        creating.session.enqueue_prompt("queued".into());
+        let agents = IndexMap::from([(AgentId(4), creating)]);
+        let rows = workspace_rows_with_provisional(&agents, None, &[AgentId(4)]);
+        assert_eq!(rows.len(), 1, "live rows render before the snapshot loads");
+        assert_eq!(rows[0].state, RowState::Working);
+        assert_eq!(rows[0].activity.as_deref(), Some("Creating worktree…"));
+    }
+    #[test]
+    fn empty_idle_provisional_agent_stays_hidden() {
+        let agents = IndexMap::from([(
+            AgentId(6),
+            crate::app::agent_view::test_fixtures::make_agent(),
+        )]);
+        let rows = workspace_rows_with_provisional(&agents, None, &[AgentId(6)]);
+        assert!(rows.is_empty());
+    }
+    #[test]
+    fn workspace_rows_sort_working_first_then_by_descending_time() {
+        let mut working = crate::app::agent_view::test_fixtures::make_agent();
+        working.session.session_id = Some(acp::SessionId::new("working"));
+        working.session.enqueue_prompt("queued work".into());
+        let agents = IndexMap::from([(AgentId(7), working)]);
+        let mut old_idle = workspace_member("old-idle", "Old idle", None);
+        old_idle.last_change_unix_ms = 1_000;
+        let mut fresh_idle = workspace_member("fresh-idle", "Fresh idle", None);
+        fresh_idle.last_change_unix_ms = 3_000;
+        let mut working_member = workspace_member("working", "Stored working", None);
+        working_member.last_change_unix_ms = 500;
+        let snapshot = workspace_snapshot(vec![old_idle, working_member, fresh_idle]);
+        let rows = workspace_rows(&agents, &snapshot);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].id, DashboardRowId::TopLevel(AgentId(7)));
+        assert_eq!(rows[0].state, RowState::Working);
+        assert_eq!(
+            rows[1].id,
+            DashboardRowId::Workspace {
+                session_id: "fresh-idle".into()
+            }
+        );
+        assert_eq!(
+            rows[2].id,
+            DashboardRowId::Workspace {
+                session_id: "old-idle".into()
+            }
+        );
+    }
+    #[test]
+    fn workspace_rows_ignore_non_build_members() {
+        let mut conversation = workspace_member("shared", "Conversation", None);
+        conversation.kind = xai_grok_dashboard_store::MemberKind::Conversation;
+        let snapshot = workspace_snapshot(vec![
+            workspace_member("shared", "Build", None),
+            conversation,
+        ]);
+        let rows = workspace_rows(&IndexMap::new(), &snapshot);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].id,
+            DashboardRowId::Workspace {
+                session_id: "shared".to_owned()
+            }
+        );
+        assert_eq!(rows[0].label, "Build");
+    }
+    #[test]
+    fn workspace_rows_hide_empty_startup_members_like_v1() {
+        let mut stale = workspace_member("empty", "", None);
+        stale.title = None;
+        assert_eq!(stale.model.as_deref(), Some("grok-test"));
+        let snapshot = workspace_snapshot(vec![stale]);
+        let rows = workspace_rows(&IndexMap::new(), &snapshot);
+        assert!(
+            rows.is_empty(),
+            "an unloaded startup placeholder must not resurface as a cwd row"
+        );
+    }
+    #[test]
+    fn workspace_rows_hide_matching_empty_idle_live_agent() {
+        let mut member = workspace_member("empty-live", "", None);
+        member.title = None;
+        let snapshot = workspace_snapshot(vec![member]);
+        let mut empty = crate::app::agent_view::test_fixtures::make_agent();
+        empty.session.session_id = Some(acp::SessionId::new("empty-live"));
+        let agents = IndexMap::from([(AgentId(9), empty)]);
+        let rows = workspace_rows(&agents, &snapshot);
+        assert!(
+            rows.is_empty(),
+            "v2 must apply v1's empty-idle suppression to live matches"
+        );
+    }
+    #[test]
+    fn unloaded_workspace_members_render_idle_metadata() {
+        let mut second = workspace_member("second", "Second", None);
+        second.is_worktree = true;
+        let snapshot = workspace_snapshot(vec![
+            workspace_member("first", "First", Some("First summary")),
+            second,
+        ]);
+        let rows = workspace_rows(&IndexMap::new(), &snapshot);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].id,
+            DashboardRowId::Workspace {
+                session_id: "first".to_owned()
+            }
+        );
+        assert_eq!(rows[0].state, RowState::Idle);
+        assert_eq!(rows[0].secondary_line.as_deref(), Some("First summary"));
+        assert_eq!(
+            rows[1].id,
+            DashboardRowId::Workspace {
+                session_id: "second".to_owned()
+            }
+        );
+        assert_eq!(rows[1].secondary_line.as_deref(), Some("grok-test"));
+        assert!(rows[1].badges.contains(&RowBadge::Worktree));
+    }
     fn make_subagent(child_id: &str, finished: bool, status: Option<&str>) -> SubagentInfo {
         let now = Instant::now();
-        SubagentInfo {
+        let mut info = SubagentInfo {
             subagent_id: Arc::from(format!("sa-{child_id}")),
             child_session_id: Arc::from(child_id),
             description: Arc::from("test task"),
             subagent_type: Arc::from("explore"),
-            persona: None,
-            role: None,
-            model: None,
-            context_source: None,
-            resumed_from: None,
-            capability_mode: None,
-            workflow_run_id: None,
-            context_normalized: false,
-            transcript: Default::default(),
-            parent_prompt_id: None,
-            started_at: now,
-            last_progress_at: now,
-            finished,
-            status: status.map(Arc::from),
-            error: None,
-            duration_ms: None,
-            tool_calls: None,
-            turns: None,
-            turn_count: None,
-            tool_call_count: None,
-            tokens_used: None,
-            context_window_tokens: None,
-            context_usage_pct: None,
-            tools_used: Vec::new(),
-            error_count: None,
-            activity_label: None,
-            is_background: false,
-            pending_kill: false,
-            kill_requested_at: None,
-            scrollback_entry_id: None,
+            attempt: crate::app::subagent::SubagentAttemptInfo {
+                lifecycle: crate::app::subagent::SubagentLifecycleState::running_legacy_for_test(),
+                persona: None,
+                role: None,
+                model: None,
+                context_source: None,
+                resumed_from: None,
+                capability_mode: None,
+                workflow_run_id: None,
+                context_normalized: false,
+                parent_prompt_id: None,
+                started_at: now,
+                last_progress_at: now,
+                status: status.map(Arc::from),
+                error: None,
+                duration_ms: None,
+                tool_calls: None,
+                turns: None,
+                turn_count: None,
+                tool_call_count: None,
+                tokens_used: None,
+                context_window_tokens: None,
+                context_usage_pct: None,
+                tools_used: Vec::new(),
+                error_count: None,
+                activity_label: None,
+                is_background: false,
+                pending_kill: false,
+                kill_requested_at: None,
+                scrollback_entry_id: None,
+                terminal_entry_id: None,
+            },
+            completed_attempt_tokens: 0,
+            sealed_attempt_tokens: Default::default(),
             prompt: None,
             child_cwd: None,
             worktree_path: None,
-        }
+            transcript: Default::default(),
+        };
+        info.set_finished_for_test(finished);
+        info
     }
     #[test]
     fn classify_subagent_running() {
@@ -1110,7 +1296,7 @@ mod tests {
         let mut agents = IndexMap::new();
         let mut agent = crate::app::agent_view::test_fixtures::make_agent();
         let mut workflow_child = make_subagent("workflow-child", false, None);
-        workflow_child.workflow_run_id = Some(Arc::from("wf_1"));
+        workflow_child.attempt.workflow_run_id = Some(Arc::from("wf_1"));
         agent
             .subagent_sessions
             .insert("workflow-child".into(), workflow_child);
@@ -1119,7 +1305,6 @@ mod tests {
             &agents,
             &Default::default(),
             &[],
-            Some(AgentId(0)),
             super::super::state::Grouping::State,
             &Filter::default(),
             None,
@@ -1147,19 +1332,19 @@ mod tests {
     #[test]
     fn subagent_activity_prefers_live_label_over_tool_reconstruction() {
         let mut info = make_subagent("a", false, None);
-        info.tools_used = vec![Arc::from("bash")];
-        info.activity_label = Some("Running: cargo build".into());
+        info.attempt.tools_used = vec![Arc::from("bash")];
+        info.attempt.activity_label = Some("Running: cargo build".into());
         assert_eq!(
             subagent_activity(&info, RowState::Working).as_deref(),
             Some("Running: cargo build")
         );
-        info.activity_label = None;
+        info.attempt.activity_label = None;
         assert_eq!(
             subagent_activity(&info, RowState::Working).as_deref(),
             Some("Running: bash")
         );
     }
-    /// Edge case 7: subagent rows never reach `NeedsInput` in v1.
+    /// Subagent rows never reach `NeedsInput` in v1.
     #[test]
     fn subagent_classifier_never_emits_needs_input() {
         for finished in [false, true] {
@@ -1205,7 +1390,6 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             last_change_at: SystemTime::now(),
             pinned: false,
-            is_active: false,
             badges: Vec::new(),
             context_pct: None,
             indent,
@@ -1226,7 +1410,6 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             last_change_at: SystemTime::now(),
             pinned: false,
-            is_active: false,
             badges: Vec::new(),
             context_pct: None,
             indent,
@@ -1270,10 +1453,9 @@ mod tests {
         assert_eq!(rows[1].state, RowState::Working);
         assert_eq!(rows[2].state, RowState::Idle);
     }
-    /// Renamed from `sort_deterministic_with_equal_keys`.
-    /// The original name implied a tiebreak guarantee that
-    /// `sort_cluster_key` does NOT provide; documents the actual
-    /// behavioural contract: idempotent on identical inputs.
+    /// Renamed from `sort_deterministic_with_equal_keys`. The original name implied a tiebreak
+    /// guarantee that `sort_cluster_key` does NOT provide; documents the actual behavioural contract:
+    /// idempotent on identical inputs.
     #[test]
     fn sort_is_idempotent_for_identical_inputs() {
         let now = SystemTime::now();
@@ -1295,10 +1477,8 @@ mod tests {
             rows2.iter().map(|r| r.id.clone()).collect::<Vec<_>>()
         );
     }
-    /// When every other field ties, the sort tiebreaks
-    /// by id, producing a fully deterministic order independent of
-    /// the input row order. AgentId(1) sorts before AgentId(2)
-    /// regardless of which appears first in the input vector.
+    /// When every other field ties, the sort tiebreaks by id, producing a fully deterministic order independent of the input row order.
+    /// AgentId(1) sorts before AgentId(2) regardless of which appears first in the input vector.
     #[test]
     fn sort_rows_tiebreaks_by_id_when_keys_equal() {
         let now = SystemTime::now();
@@ -1384,9 +1564,8 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].state, RowState::Idle);
     }
-    /// Sort: explicit reorderings (Shift+↑/↓) float a row to its
-    /// declared position WITHIN its state group. Two Working rows: the
-    /// older one (id2) is reordered above the more-recent one (id1).
+    /// Sort: explicit reorderings (Shift+↑/↓) float a row to its declared position WITHIN its state group.
+    /// Two Working rows: the older one (id2) is reordered above the more-recent one (id1).
     #[test]
     fn sort_reorder_floats_within_state_group() {
         let id1 = DashboardRowId::TopLevel(AgentId(1));
@@ -1411,11 +1590,8 @@ mod tests {
         assert_eq!(rows[0].id, id2, "reorder must float id2 to the top");
         assert_eq!(rows[1].id, id1);
     }
-    /// Regression: reordering must NOT split a state group. With Working
-    /// and Idle rows interleaved in the input, reordering an Idle row
-    /// keeps every Working row above every Idle row — the renderer would
-    /// otherwise emit `Idle → Working → Idle` headers (the reported bug).
-    /// The reorder only floats the Idle row WITHIN the Idle group.
+    /// Regression: reordering must NOT split a state group. The renderer would otherwise emit `Idle →
+    /// Working → Idle` headers. The reorder only floats the Idle row WITHIN the Idle group.
     #[test]
     fn reorder_does_not_split_state_groups() {
         let w1 = DashboardRowId::TopLevel(AgentId(1));
@@ -1451,8 +1627,7 @@ mod tests {
             .collect();
         assert_eq!(idle_order, vec![i1, i2], "reorder must order within Idle");
     }
-    /// Sort: when both rows are pinned, ordering falls back to the
-    /// secondary key (state).
+    /// Sort: when both rows are pinned, ordering falls back to the secondary key (state).
     #[test]
     fn sort_two_pinned_rows_order_by_state() {
         let mut rows = vec![
@@ -1471,8 +1646,7 @@ mod tests {
         assert!(rows[0].pinned);
         assert_eq!(rows[0].state, RowState::Working);
     }
-    /// Filter: agent prefix with empty needle keeps everything (treated
-    /// as `Filter::None` upstream by `Filter::from_value`).
+    /// Filter: agent prefix with empty needle keeps everything (treated as `Filter::None` upstream by `Filter::from_value`).
     #[test]
     fn filter_agent_with_empty_string_does_not_hide_rows() {
         let mut rows = vec![
@@ -1482,7 +1656,7 @@ mod tests {
         apply_filter(&mut rows, &Filter::Agent(String::new()), None);
         assert_eq!(rows.len(), 2);
     }
-    /// Edge case 6: more-placeholder rows survive filtering.
+    /// More-placeholder rows survive filtering.
     #[test]
     fn filter_keeps_more_placeholders() {
         let mut rows = vec![
@@ -1525,8 +1699,7 @@ mod tests {
             .unwrap()
             .as_millis() as i64
     }
-    /// The age rendered for a roster row (`render` uses
-    /// `last_change_at.elapsed()`).
+    /// The age rendered for a roster row (`render` uses `last_change_at.elapsed()`).
     fn roster_row_age(entry: RosterEntry) -> Duration {
         let mut rows = Vec::new();
         append_roster_rows(
@@ -1539,10 +1712,9 @@ mod tests {
         assert_eq!(rows.len(), 1);
         rows[0].last_change_at.elapsed().unwrap_or_default()
     }
-    /// A roster entry touched a while ago must NOT render as "just now":
-    /// its `last_change_at` is derived from `last_change_unix_ms`, so the
-    /// age reflects the real wall-clock age (regression guard for the bug
-    /// where every roster row stamped `Instant::now()`).
+    /// A roster entry touched a while ago must NOT render as "just now".
+    /// Its `last_change_at` is derived from `last_change_unix_ms`, so the age reflects the real wall-clock age.
+    /// Regression guard for the bug where every roster row stamped `Instant::now()`.
     #[test]
     fn roster_row_age_reflects_last_change_unix_ms() {
         let two_hours_ago = now_unix_ms() - 2 * 3_600_000;
@@ -1553,8 +1725,7 @@ mod tests {
         );
         assert_eq!(crate::util::format_time_ago(elapsed), "2h");
     }
-    /// Roster rows sort by their real `last_change_unix_ms`: a session
-    /// touched long ago floats below a recently-touched one.
+    /// Roster rows sort by their real `last_change_unix_ms`: a session touched long ago floats below a recently-touched one.
     #[test]
     fn roster_rows_sort_by_real_timestamp() {
         let now_ms = now_unix_ms();
@@ -1585,8 +1756,7 @@ mod tests {
             }
         );
     }
-    /// Build a roster entry with an explicit title + activity for the
-    /// empty-session filtering tests.
+    /// Build a roster entry with an explicit title and activity for the empty-session filtering tests.
     fn roster_entry_with(
         session_id: &str,
         title: Option<&str>,
@@ -1606,8 +1776,7 @@ mod tests {
         append_roster_rows(&mut rows, entries, &IndexMap::new(), pinned, None);
         rows
     }
-    /// An untitled, inactive roster session is the "New session" noise the
-    /// dashboard hides — every pager launch leaves one behind.
+    /// An untitled, inactive roster session is the "New session" noise the dashboard hides; every pager launch leaves one behind.
     #[test]
     fn append_roster_rows_hides_untitled_idle_entry() {
         let empty = std::collections::BTreeSet::new();
@@ -1624,8 +1793,7 @@ mod tests {
             );
         }
     }
-    /// An untitled session that is actively working / awaiting input stays
-    /// visible: its title hasn't been generated yet but it is doing real work.
+    /// An untitled session that is actively working / awaiting input stays visible: its title hasn't been generated yet but it is doing real work.
     #[test]
     fn append_roster_rows_keeps_untitled_active_entry() {
         let empty = std::collections::BTreeSet::new();
@@ -1658,7 +1826,7 @@ mod tests {
         );
         assert!(rows.is_empty(), "blank-title idle entry must be hidden");
     }
-    /// A user-pinned row is always shown, even untitled + idle.
+    /// A user-pinned row is always shown, even untitled and idle.
     #[test]
     fn append_roster_rows_keeps_pinned_untitled_entry() {
         let mut pinned = std::collections::BTreeSet::new();
@@ -1671,9 +1839,8 @@ mod tests {
         );
         assert_eq!(rows.len(), 1, "pinned untitled entries are kept");
     }
-    /// A roster session with a known model surfaces it on the otherwise
-    /// blank second line (the wire carries no last-message preview, so
-    /// the model is the only per-session detail left to show).
+    /// A roster session with a known model shows it on the otherwise blank second line.
+    /// The wire carries no last-message preview, so the model is the only per-session detail left to show.
     #[test]
     fn append_roster_rows_uses_model_id_as_secondary_line() {
         let empty = std::collections::BTreeSet::new();
@@ -1701,8 +1868,7 @@ mod tests {
             Some("Fixed the roster merge")
         );
     }
-    /// Without a model id there's genuinely nothing to show, so the
-    /// second line stays empty rather than rendering a placeholder.
+    /// Without a model id there's nothing to show, so the second line stays empty rather than rendering a placeholder.
     #[test]
     fn append_roster_rows_secondary_line_none_without_model() {
         let empty = std::collections::BTreeSet::new();
@@ -1717,9 +1883,8 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].secondary_line, None);
     }
-    /// Build a minimal idle local agent with an empty scrollback (no
-    /// replayed messages) and an optional current model — mirrors a
-    /// session listed on the dashboard that the user hasn't opened yet.
+    /// Build a minimal idle local agent with an empty scrollback (no replayed messages) and an optional current model.
+    /// It mirrors a session listed on the dashboard that the user hasn't opened yet.
     fn make_idle_agent_with_model(model: Option<&str>) -> AgentView {
         use crate::acp::model_state::ModelState;
         use crate::app::agent::{AgentSession, AgentState};
@@ -1756,6 +1921,8 @@ mod tests {
             available_commands_generation: 0,
             available_tools: None,
             model_switch_pending: false,
+            hook_block_hold: false,
+            blocked_prompt: None,
             user_model_preference: None,
             deferred_model_switch: None,
             bg_tasks: std::collections::BTreeMap::new(),
@@ -1768,30 +1935,26 @@ mod tests {
         };
         AgentView::new(session, ScrollbackState::new())
     }
-    /// An idle local agent with no last message has a BLANK second line —
-    /// the model is no longer used as a fallback there (it now shows in
-    /// the peek panel's bottom-border badge for the selected row, keeping
-    /// the list uncluttered).
+    /// An idle local agent with no last message has a BLANK second line.
+    /// The model now shows in the peek panel's bottom-border badge for the selected row instead, keeping the list uncluttered.
     #[test]
     fn idle_local_agent_without_message_has_blank_secondary() {
         let agent = make_idle_agent_with_model(Some("grok-4.5"));
         assert_eq!(classify_top_level(&agent), RowState::Idle);
-        let row = top_level_row(AgentId(0), &agent, false, false, None);
+        let row = top_level_row(AgentId(0), &agent, false, None);
         assert_eq!(
             row.secondary_line, None,
             "the model must not appear on the list row anymore",
         );
     }
-    /// When neither a message nor a model is known the second line is
-    /// left empty (no placeholder).
+    /// When neither a message nor a model is known the second line is left empty (no placeholder).
     #[test]
     fn idle_local_agent_without_message_or_model_has_no_secondary() {
         let agent = make_idle_agent_with_model(None);
-        let row = top_level_row(AgentId(0), &agent, false, false, None);
+        let row = top_level_row(AgentId(0), &agent, false, None);
         assert_eq!(row.secondary_line, None);
     }
-    /// A worktree agent's subtitle shows the branch + the worktree's
-    /// human label + a `worktree` marker.
+    /// A worktree agent's subtitle shows the branch, the worktree's human label, and a `worktree` marker.
     #[test]
     fn subtitle_worktree_shows_label_branch_and_marker() {
         let mut agent = make_idle_agent_with_model(None);
@@ -1817,8 +1980,7 @@ mod tests {
             Some("main my-wt-dir worktree"),
         );
     }
-    /// A non-worktree agent shows the branch + the cwd folder name (the
-    /// actual working subdir, not the repo root), no worktree marker.
+    /// A non-worktree agent shows the branch and the cwd folder name (the actual working subdir, not the repo root), with no worktree marker.
     #[test]
     fn subtitle_non_worktree_shows_branch_and_folder() {
         let mut agent = make_idle_agent_with_model(None);
@@ -1836,10 +1998,8 @@ mod tests {
         agent.current_branch = None;
         assert_eq!(top_level_subtitle(&agent).as_deref(), Some("bar"));
     }
-    /// The `[bg]` badge reflects RUNNING background tasks only —
-    /// `bg_tasks` retains finished (`Done` / `Failed`) tasks for the
-    /// tasks-pane history, and those must not pin a stale badge on the
-    /// row forever.
+    /// The `[bg]` badge reflects RUNNING background tasks only.
+    /// `bg_tasks` retains finished (`Done` / `Failed`) tasks for the tasks-pane history, and those must not pin a stale badge on the row forever.
     #[test]
     fn bg_badge_only_for_running_tasks() {
         use crate::app::agent::{BgTaskState, BgTaskStatus};
@@ -1874,7 +2034,7 @@ mod tests {
                 .session
                 .bg_tasks
                 .insert("t1".into(), make_task(status));
-            let row = top_level_row(AgentId(0), &agent, false, false, None);
+            let row = top_level_row(AgentId(0), &agent, false, None);
             assert_eq!(
                 row.badges.contains(&RowBadge::BgTask),
                 expect_badge,
@@ -1918,9 +2078,8 @@ mod tests {
             last_subagent_id: None,
         }
     }
-    /// A turn-idle agent with a RUNNING background task is `Working`, not
-    /// `Idle`. Finished tasks (Done / Failed) don't keep it Working — they
-    /// linger in `bg_tasks` only for the tasks-pane history.
+    /// A turn-idle agent with a RUNNING background task is `Working`, not `Idle`.
+    /// Finished tasks (Done / Failed) don't keep it Working; they linger in `bg_tasks` only for the tasks-pane history.
     #[test]
     fn running_bg_task_classifies_as_working() {
         use crate::app::agent::BgTaskStatus;
@@ -1940,8 +2099,7 @@ mod tests {
             );
         }
     }
-    /// A running `monitor` (a bg task with `is_monitor`) keeps the agent
-    /// `Working`, and the activity line names it.
+    /// A running `monitor` (a bg task with `is_monitor`) keeps the agent `Working`, and the activity line names it.
     #[test]
     fn running_monitor_classifies_as_working_with_label() {
         let mut agent = make_idle_agent_with_model(None);
@@ -1950,11 +2108,10 @@ mod tests {
             .bg_tasks
             .insert("m1".into(), running_bg_task("m1", true));
         assert_eq!(classify_top_level(&agent), RowState::Working);
-        let row = top_level_row(AgentId(0), &agent, false, false, None);
+        let row = top_level_row(AgentId(0), &agent, false, None);
         assert_eq!(row.activity.as_deref(), Some("1 monitor still running"));
     }
-    /// An active scheduled `/loop` keeps the agent `Working` even with a
-    /// fully idle turn, labelled as a loop.
+    /// An active scheduled `/loop` keeps the agent `Working` even with a fully idle turn, labelled as a loop.
     #[test]
     fn scheduled_loop_classifies_as_working_with_label() {
         let mut agent = make_idle_agent_with_model(None);
@@ -1963,11 +2120,10 @@ mod tests {
             .scheduled_tasks
             .insert("l1".into(), scheduled_loop("l1"));
         assert_eq!(classify_top_level(&agent), RowState::Working);
-        let row = top_level_row(AgentId(0), &agent, false, false, None);
+        let row = top_level_row(AgentId(0), &agent, false, None);
         assert_eq!(row.activity.as_deref(), Some("1 loop still running"));
     }
-    /// The background-work label lists every non-zero kind (monitors,
-    /// then loops, then plain tasks) with correct singular/plural nouns.
+    /// The background-work label lists every non-zero kind (monitors, then loops, then plain tasks) with correct singular/plural nouns.
     #[test]
     fn background_work_label_lists_all_kinds() {
         let mut agent = make_idle_agent_with_model(None);
@@ -1988,15 +2144,14 @@ mod tests {
             .scheduled_tasks
             .insert("l1".into(), scheduled_loop("l1"));
         assert_eq!(classify_top_level(&agent), RowState::Working);
-        let row = top_level_row(AgentId(0), &agent, false, false, None);
+        let row = top_level_row(AgentId(0), &agent, false, None);
         assert_eq!(
             row.activity.as_deref(),
             Some("1 monitor · 1 loop · 2 tasks still running"),
         );
     }
-    /// The background-work label is the LAST activity fallback: a more
-    /// specific Working signal (here, replay loading) still wins over
-    /// "… still running", so a real turn is never masked by it.
+    /// The background-work label is the LAST activity fallback.
+    /// A more specific Working signal (here, replay loading) still wins over "… still running", so a real turn is never masked by it.
     #[test]
     fn specific_working_activity_wins_over_background_label() {
         let mut agent = make_idle_agent_with_model(None);
@@ -2006,18 +2161,16 @@ mod tests {
             .bg_tasks
             .insert("m1".into(), running_bg_task("m1", true));
         assert_eq!(classify_top_level(&agent), RowState::Working);
-        let row = top_level_row(AgentId(0), &agent, false, false, None);
+        let row = top_level_row(AgentId(0), &agent, false, None);
         assert_eq!(
             row.activity.as_deref(),
             Some("Loading…"),
             "loading-replay activity must win over the background label",
         );
     }
-    /// Roster-only idle / dormant sessions classify as `Inactive` — the
-    /// dedicated section for sessions not loaded in this pager — while
-    /// the active roster states keep their existing mapping. (Local
-    /// idle agents stay `Idle`; `classify_top_level` never returns
-    /// `Inactive` — pinned by `idle_local_agent_without_message_has_blank_secondary`.)
+    /// Roster-only idle / dormant sessions classify as `Inactive`, the dedicated section for sessions
+    /// not loaded in this pager. Local idle agents stay `Idle`; `classify_top_level` never returns
+    /// `Inactive`.
     #[test]
     fn roster_idle_and_dormant_classify_as_inactive() {
         let empty = std::collections::BTreeSet::new();
@@ -2034,9 +2187,8 @@ mod tests {
             assert_eq!(rows[0].state, expected, "activity={activity:?}");
         }
     }
-    /// In state grouping, `Inactive` sorts below `Idle` (not loaded
-    /// here → less immediately actionable) but above `Done` / `Failed`
-    /// (still live, resumable sessions).
+    /// In state grouping, `Inactive` sorts below `Idle`: not loaded here, so less immediately actionable.
+    /// It sorts above `Done` / `Failed`: still live, resumable sessions.
     #[test]
     fn sort_rows_places_inactive_between_idle_and_done() {
         let mut rows = vec![
@@ -2056,5 +2208,55 @@ mod tests {
                 RowState::Failed,
             ],
         );
+    }
+    #[test]
+    fn workspace_manual_order_is_global_and_survives_filtering() {
+        let mut a = workspace_member("a", "Alpha", None);
+        a.order_rank = Some(2 * xai_grok_dashboard_store::RANK_GAP);
+        let b = workspace_member("b", "Beta", None);
+        let mut c = workspace_member("c", "Charlie", None);
+        c.order_rank = Some(xai_grok_dashboard_store::RANK_GAP);
+        let snapshot = workspace_snapshot(vec![a, b, c]);
+        let rows = workspace_rows(&IndexMap::new(), &snapshot);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Charlie", "Alpha", "Beta"]
+        );
+        let workspace = crate::app::workspace_layout::WorkspaceView::from_snapshot(&snapshot);
+        let rows = build_rows_with_workspace(
+            &IndexMap::new(),
+            WorkspaceRowInputs {
+                workspace: Some(&workspace),
+                provisional: &[],
+            },
+            &Filter::Substring("l".into()),
+            None,
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Charlie", "Alpha"]
+        );
+    }
+    #[test]
+    fn workspace_rows_use_store_layout_for_loaded_and_unloaded_pins() {
+        let mut stored = workspace_member("saved", "", None);
+        stored.pin_rank = Some(7);
+        stored.order_rank = Some(9);
+        let snapshot = workspace_snapshot(vec![stored]);
+        let rows = workspace_rows(&IndexMap::new(), &snapshot);
+        assert!(rows[0].pinned);
+        assert!(rows[0].badges.contains(&RowBadge::Pinned));
+        let agent_id = AgentId(9);
+        let mut agent = crate::app::agent_view::test_fixtures::make_agent();
+        agent.session.session_id = Some(acp::SessionId::new("saved"));
+        agent.session.created_via_new = true;
+        let agents = IndexMap::from([(agent_id, agent)]);
+        let rows = workspace_rows(&agents, &snapshot);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].pinned);
     }
 }

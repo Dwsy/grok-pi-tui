@@ -8,13 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use super::Range;
 
-/// A location in the codebase, used for query results.
-///
-/// Following LSP protocol conventions:
-/// - `file_path`: Absolute path to the file
-/// - `line`: 1-indexed line number
-/// - `column`: 1-indexed column number
-/// - `range`: Full range information (0-indexed internally)
+/// A location in the codebase, used for query results. LSP conventions.
+/// `line`/`column` are 1-indexed; `range` is 0-indexed internally.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct Location {

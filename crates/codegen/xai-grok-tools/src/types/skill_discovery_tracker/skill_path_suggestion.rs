@@ -17,13 +17,9 @@ pub(crate) struct SkillPathSuggestion {
 }
 
 impl SkillManager {
-    /// Find one registered skill whose command or directory identity matches the
-    /// parent directory of `requested_path`. Ambiguous matches return `None`.
-    ///
-    /// Candidates come from the current collections in precedence order — the
-    /// listing baseline, held conditional skills, then dynamic discoveries — so
-    /// a baseline reload that removes, moves, or disables a skill immediately
-    /// stops suggesting it.
+    /// Find one registered skill whose command or directory identity matches the parent directory of `requested_path`. Ambiguous matches return
+    /// `None`. Candidates come from the current collections in precedence order — the listing baseline, held conditional skills, then dynamic
+    /// discoveries — so a baseline reload that removes, moves, or disables a skill immediately stops suggesting it.
     pub(crate) fn suggest_skill_path(&self, requested_path: &Path) -> Option<SkillPathSuggestion> {
         let requested_name = skill_name_from_path(requested_path.to_str()?)?;
         // Fork/display state must be coherent before any path is surfaced:

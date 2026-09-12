@@ -2,7 +2,9 @@
 
 use std::sync::OnceLock;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::EnumCount, strum::IntoStaticStr)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, strum::EnumCount, strum::AsRefStr, strum::IntoStaticStr,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum Entrypoint {
     /// Agent inside the interactive client, or the dedicated stdio agent.
@@ -28,15 +30,21 @@ impl Entrypoint {
         Entrypoint::Headless,
         Entrypoint::Workspace,
     ];
-
-    pub(crate) fn as_str(self) -> &'static str {
-        self.into()
-    }
 }
 
 const _: () = assert!(Entrypoint::ALL.len() == <Entrypoint as strum::EnumCount>::COUNT);
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, strum::EnumCount, strum::IntoStaticStr)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    strum::EnumCount,
+    strum::AsRefStr,
+    strum::IntoStaticStr,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum ReleaseChannel {
     Stable,
@@ -51,10 +59,6 @@ impl ReleaseChannel {
         ReleaseChannel::Alpha,
         ReleaseChannel::Unknown,
     ];
-
-    pub(crate) fn as_str(self) -> &'static str {
-        self.into()
-    }
 
     pub fn from_label(label: &str) -> ReleaseChannel {
         match label.trim().trim_start_matches('[').trim_end_matches(']') {
@@ -102,8 +106,7 @@ pub(crate) fn entrypoint() -> Option<Entrypoint> {
 
 static RELEASE_CHANNEL: OnceLock<ReleaseChannel> = OnceLock::new();
 
-/// The updater owns the channel truth but depends on this crate, so entry
-/// points pass the channel in.
+/// The updater is the source of truth for the channel but depends on this crate, so entry points pass the channel in.
 pub fn set_release_channel(channel: ReleaseChannel) {
     if channel == ReleaseChannel::Unknown {
         return;

@@ -23,21 +23,15 @@ fn demote_dispatch_keeps_turn_session_and_execute_guards() {
     assert!(dispatch(Action::DemoteToBackground, &mut app).is_empty());
 }
 
-/// Regression (leader mode): a queued prompt's parked `session/prompt` RPC
-/// can resolve as an *error* — e.g. its `respond_to` is dropped on the
-/// leader when the prompt is removed from the shared queue, surfacing as
-/// `Internal error: "session failed to respond"`. An `acp::Error` carries
-/// no `promptId`, so before the Err-arm gate this error was misattributed
-/// to the running turn and rendered as a spurious "Turn failed", detonating
-/// an unrelated in-flight turn. The handler now gates the Err arm on the
-/// `prompt_id` the pager minted for that RPC: an error whose id is NOT the
-/// running turn is discarded; the running turn is left untouched.
+/// Regression (leader mode): a queued prompt's parked `session/prompt` RPC can resolve as an *error*.
+/// That surfaces as `Internal error: "session failed to respond"`.
+/// An `acp::Error` carries no `promptId`, so before the Err-arm gate this error was misattributed to the running turn.
 #[test]
 fn queued_prompt_rpc_error_does_not_kill_running_turn() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
 
-    // First prompt drains immediately → Running. Capture its prompt_id.
+    // First prompt drains immediately to Running. Capture its prompt_id.
     let effects = dispatch(Action::SendPrompt("running".into()), &mut app);
     let running_pid = match &effects[0] {
         Effect::SendPrompt { prompt_id, .. } => prompt_id.clone(),
@@ -49,8 +43,7 @@ fn queued_prompt_rpc_error_does_not_kill_running_turn() {
         Some(running_pid.as_str())
     );
 
-    // Second prompt typed while running → immediate server-authoritative
-    // send (queued at the leader). Capture its prompt_id.
+    // A second prompt typed while running sends immediately (server-authoritative, queued at the leader). Capture its prompt_id.
     let effects = dispatch(Action::SendPrompt("queued".into()), &mut app);
     let queued_pid = match &effects[0] {
         Effect::SendPrompt { prompt_id, .. } => prompt_id.clone(),
@@ -91,8 +84,7 @@ fn queued_prompt_rpc_error_does_not_kill_running_turn() {
         "no TurnFailed block may be pushed for a non-running prompt's error"
     );
 
-    // Sanity: an error for the ACTUAL running prompt is NOT discarded — it
-    // ends the turn and renders the failure.
+    // Sanity: an error for the ACTUAL running prompt is NOT discarded; it ends the turn and renders the failure
     let _ = dispatch(
         Action::TaskComplete(TaskResult::PromptResponse {
             agent_id: id,
@@ -275,9 +267,8 @@ fn cancel_turn_dismisses_open_ask_question_as_cancelled() {
     );
 }
 
-/// Cancel inside a subagent drill-in view kills the focused running subagent
-/// instead of resolving the root turn. The root is idle here, so only the kill
-/// path reaches the coordinator-run child.
+/// Cancel inside a subagent drill-in view kills the focused running subagent instead of resolving the root turn.
+/// The root is idle here, so only the kill path reaches the coordinator-run child.
 #[test]
 fn cancel_turn_in_subagent_view_kills_focused_subagent() {
     let mut app = test_app_with_agent();
@@ -300,12 +291,15 @@ fn cancel_turn_in_subagent_view_kills_focused_subagent() {
         ),
         "stop in a subagent view must kill the focused subagent, got {effects:?}"
     );
-    assert!(app.agents[&id].subagent_sessions["child-1"].pending_kill);
+    assert!(
+        app.agents[&id].subagent_sessions["child-1"]
+            .attempt
+            .pending_kill
+    );
 }
 
-/// The kill routing keys off the focused running subagent, not root idleness:
-/// with the root turn running, cancel still kills the child and leaves the root
-/// turn running (never cancelling).
+/// The kill routing keys off the focused running subagent, not root idleness.
+/// With the root turn running, cancel still kills the child and leaves the root turn running (never cancelling).
 #[test]
 fn cancel_turn_in_subagent_view_kills_child_even_with_running_root() {
     let mut app = test_app_with_agent();
@@ -335,8 +329,7 @@ fn cancel_turn_in_subagent_view_kills_child_even_with_running_root() {
     assert!(!app.agents[&id].session.state.is_cancelling());
 }
 
-/// A finished focused subagent must NOT swallow the cancel into a kill: the
-/// stop falls through to normal root-turn cancellation.
+/// A finished focused subagent must NOT swallow the cancel into a kill: the stop falls through to normal root-turn cancellation.
 #[test]
 fn cancel_turn_in_finished_subagent_view_falls_through_to_root() {
     let mut app = test_app_with_agent();
@@ -345,7 +338,7 @@ fn cancel_turn_in_finished_subagent_view_falls_through_to_root() {
         let agent = app.agents.get_mut(&id).unwrap();
         agent.session.state = AgentState::TurnRunning;
         let mut info = make_test_subagent("child-1", "sa-1");
-        info.finished = true;
+        info.set_finished_for_test(true);
         agent.subagent_sessions.insert("child-1".to_string(), info);
         agent.active_subagent = Some("child-1".into());
     }
@@ -360,18 +353,16 @@ fn cancel_turn_in_finished_subagent_view_falls_through_to_root() {
 
 #[test]
 fn cancel_turn_forwards_trigger_hint_to_effect() {
-    // The key/mouse producer sets `cancel_trigger_hint` (here ESC) before
-    // dispatching CancelTurn; `do_cancel_turn` must forward it onto
-    // `Effect::CancelTurn.trigger` (→ `_meta.cancelTrigger`) and consume it.
-    // This is the same plumbing the Ctrl+C end-to-end test exercises; only
-    // the `CancelTrigger` value differs across producers (esc/ctrl_c/mouse).
+    // The key/mouse producer sets `cancel_trigger_hint` (here the dashboard stop) before dispatching CancelTurn
+    // `do_cancel_turn` must forward it onto `Effect::CancelTurn.trigger` (which becomes `_meta.cancelTrigger`) and consume it
+    // The Ctrl+C end-to-end test exercises the same path; only the `CancelTrigger` value differs across producers (ctrl_c/mouse/dashboard_stop)
     use crate::app::actions::CancelTrigger;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {
         let agent = app.agents.get_mut(&id).unwrap();
         agent.session.state = AgentState::TurnRunning;
-        agent.cancel_trigger_hint = Some(CancelTrigger::Esc);
+        agent.cancel_trigger_hint = Some(CancelTrigger::DashboardStop);
     }
 
     let effects = dispatch(Action::CancelTurn, &mut app);
@@ -379,7 +370,7 @@ fn cancel_turn_forwards_trigger_hint_to_effect() {
     assert!(matches!(
         &effects[0],
         Effect::CancelTurn {
-            trigger: Some(CancelTrigger::Esc),
+            trigger: Some(CancelTrigger::DashboardStop),
             ..
         }
     ));
@@ -450,9 +441,8 @@ fn lost_cancel_is_resent_while_still_cancelling() {
         2
     );
 
-    // A received `prompt_complete` broadcast proves the cancel landed: the
-    // resend stops even though the pane is still cancelling, so it can
-    // never race the turn-end reconcile and cancel a promoted queued prompt.
+    // A received `prompt_complete` broadcast proves the cancel landed: the resend stops even though the pane is still cancelling
+    // So it can never race the turn-end reconcile and cancel a promoted queued prompt
     {
         let agent = app.agents.get_mut(&id).unwrap();
         agent.pending_cancel_resend.as_mut().unwrap().sent_at =
@@ -463,12 +453,13 @@ fn lost_cancel_is_resent_while_still_cancelling() {
             agent_result: None,
             cancel_trigger: None,
             cancellation_category: None,
+            cancellation_context: None,
+            error_kind: None,
             received_at: std::time::Instant::now(),
         });
     }
     assert!(reconcile_overdue_cancels(&mut app).is_none());
-    // The record survives, confirmed: the auto-resend is dead, but a manual
-    // retry can still read the recorded subagent choice.
+    // The record survives, confirmed: the auto-resend is dead, but a manual retry can still read the recorded subagent choice
     assert!(
         app.agents[&id]
             .pending_cancel_resend
@@ -526,8 +517,7 @@ fn cancel_retry_reuses_recorded_subagent_choice() {
         "the retry must not escalate past the one-shot choice, got {effects:?}"
     );
 
-    // The turn-end broadcast stands the auto-resend down; a retry after it
-    // must still reuse the recorded choice instead of escalating.
+    // The turn-end broadcast stops the auto-resend; a retry after it must still reuse the recorded choice instead of escalating
     app.agents.get_mut(&id).unwrap().pending_turn_end_reconcile =
         Some(crate::app::agent_view::PendingTurnEnd {
             prompt_id: "p1".into(),
@@ -535,6 +525,8 @@ fn cancel_retry_reuses_recorded_subagent_choice() {
             agent_result: None,
             cancel_trigger: None,
             cancellation_category: None,
+            cancellation_context: None,
+            error_kind: None,
             received_at: std::time::Instant::now(),
         });
     assert!(reconcile_overdue_cancels(&mut app).is_none());
@@ -580,6 +572,8 @@ fn confirmed_stop_retry_does_not_rearm_auto_resend() {
             agent_result: None,
             cancel_trigger: None,
             cancellation_category: None,
+            cancellation_context: None,
+            error_kind: None,
             received_at: std::time::Instant::now(),
         });
     }
@@ -635,12 +629,12 @@ fn hintless_retry_replays_recorded_trigger() {
     {
         let agent = app.agents.get_mut(&id).unwrap();
         agent.session.state = AgentState::TurnRunning;
-        agent.cancel_trigger_hint = Some(CancelTrigger::Esc);
+        agent.cancel_trigger_hint = Some(CancelTrigger::DashboardStop);
     }
     assert!(matches!(
         dispatch(Action::CancelTurn, &mut app).as_slice(),
         [Effect::CancelTurn {
-            trigger: Some(CancelTrigger::Esc),
+            trigger: Some(CancelTrigger::DashboardStop),
             ..
         }]
     ));
@@ -650,7 +644,7 @@ fn hintless_retry_replays_recorded_trigger() {
         matches!(
             effects.as_slice(),
             [Effect::CancelTurn {
-                trigger: Some(CancelTrigger::Esc),
+                trigger: Some(CancelTrigger::DashboardStop),
                 ..
             }]
         ),
@@ -673,7 +667,7 @@ fn cancel_turn_stops_compact_even_with_stale_wake_marker() {
             prompt_id: "task-completed-bg1".into(),
             cancel_sent: false,
         });
-        agent.cancel_trigger_hint = Some(CancelTrigger::Esc);
+        agent.cancel_trigger_hint = Some(CancelTrigger::DashboardStop);
     }
 
     let effects = dispatch(Action::CancelTurn, &mut app);
@@ -709,7 +703,7 @@ fn cancel_after_local_send_during_wake_does_not_arm_resend() {
         });
         agent.start_turn_boundary(Some("user-1"));
         agent.session.current_prompt_id = Some("user-1".into());
-        agent.cancel_trigger_hint = Some(CancelTrigger::Esc);
+        agent.cancel_trigger_hint = Some(CancelTrigger::DashboardStop);
     }
 
     let effects = dispatch(Action::CancelTurn, &mut app);
@@ -717,7 +711,7 @@ fn cancel_after_local_send_during_wake_does_not_arm_resend() {
         matches!(
             effects.as_slice(),
             [Effect::CancelTurn {
-                trigger: Some(CancelTrigger::Esc),
+                trigger: Some(CancelTrigger::DashboardStop),
                 rewind_prompt_id: None,
                 ..
             }]
@@ -758,7 +752,7 @@ fn stale_cancel_resend_clears_once_pane_is_idle() {
             attempts: 3,
             confirmed: true,
             cancel_subagents: false,
-            trigger: CancelTrigger::Esc,
+            trigger: CancelTrigger::DashboardStop,
         });
     }
     assert!(reconcile_overdue_cancels(&mut app).is_none());
@@ -782,7 +776,11 @@ fn do_cancel_turn_cancels_running_wake_turn() {
         });
     }
 
-    let effects = super::super::turn::do_cancel_turn(&mut app, true);
+    let effects = super::super::turn::do_cancel_turn(
+        &mut app,
+        true,
+        crate::app::cancel_latency::CancelOrigin::UserGesture,
+    );
     assert!(
         matches!(
             effects.as_slice(),
@@ -845,8 +843,7 @@ fn stop_click_cancels_running_wake_turn() {
         Some(AgentState::TurnCancelling)
     ));
 
-    // The fire-and-forget cancel is loss-prone: the resend reconcile must
-    // stay armed even though the pane never left Idle.
+    // The fire-and-forget cancel is loss-prone: the resend reconcile must stay armed even though the pane never left Idle
     app.agents
         .get_mut(&id)
         .unwrap()
@@ -860,12 +857,9 @@ fn stop_click_cancels_running_wake_turn() {
 #[test]
 fn cancel_turn_leaves_shared_queue_for_agent_to_drain() {
     use crate::app::prompt_queue::QueueEntryWire;
-    // Prompts typed while a turn runs live on the server-authoritative
-    // shared queue (broadcast to all attached clients). The agent owns the
-    // drain: on cancel the FRONT queued prompt runs next (promoted
-    // server-side), so the pager must NOT pull it back into the input or
-    // mutate the queue locally — the `x.ai/queue/changed` rebroadcast is the
-    // source of truth.
+    // Prompts typed while a turn runs live on the server-authoritative shared queue (broadcast to all attached clients)
+    // The agent owns the drain: on cancel the FRONT queued prompt runs next (promoted server-side)
+    // So the pager must NOT pull it back into the input or mutate the queue locally; the `x.ai/queue/changed` rebroadcast is the source of truth
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {
@@ -898,14 +892,12 @@ fn cancel_turn_leaves_shared_queue_for_agent_to_drain() {
 
     let effects = dispatch(Action::CancelTurn, &mut app);
 
-    // The input box is left untouched — the front queued prompt is NOT
-    // pulled back into it (it runs next on the agent instead).
+    // The input box is left untouched: the front queued prompt is NOT pulled back into it (it runs next on the agent instead)
     assert!(
         app.agents[&id].prompt.text().is_empty(),
         "cancel must not restore a queued prompt into the input"
     );
-    // The local mirror is left intact; the agent's rebroadcast drives the
-    // queue, so the pager must not predict the post-cancel order.
+    // The local mirror is left intact; the agent's rebroadcast drives the queue, so the pager must not predict the post-cancel order
     let q = &app.agents[&id].shared_queue;
     assert_eq!(
         q.len(),
@@ -914,9 +906,8 @@ fn cancel_turn_leaves_shared_queue_for_agent_to_drain() {
     );
     assert_eq!(q[0].id, "q1");
     assert_eq!(q[1].id, "q2");
-    // A plain CancelTurn is emitted (no queued-prompt id threaded, no
-    // separate QueueRemove) — the agent tears down the running turn and
-    // promotes q1 as the next turn.
+    // A plain CancelTurn is emitted (no queued-prompt id threaded, no separate QueueRemove)
+    // The agent tears down the running turn and promotes q1 as the next turn
     assert!(
         effects
             .iter()
@@ -1031,7 +1022,7 @@ fn cancel_turn_choice_after_subagents_finished_still_cancels() {
     app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnRunning;
 
     let mut info = make_test_subagent("child-1", "sa-1");
-    info.finished = true;
+    info.set_finished_for_test(true);
     app.agents
         .get_mut(&id)
         .unwrap()
@@ -1497,11 +1488,8 @@ fn cancel_turn_without_overlay_while_idle_is_noop_even_with_running_child() {
 
 #[test]
 fn cancel_turn_when_already_cancelling_resends_cancel() {
-    // A cancel that was sent but never resolved (lost notification or
-    // lost turn-end response) used to make every further
-    // Esc a silent no-op, permanently stranding the pane on
-    // "Cancelling…". Cancelling again must RE-SEND the (idempotent)
-    // cancel instead.
+    // A cancel that was sent but never resolved (lost notification or lost turn-end response) used to make every further Esc a silent no-op
+    // That permanently stranded the pane on "Cancelling…". Cancelling again must RE-SEND the (idempotent) cancel instead.
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnCancelling;
@@ -1523,8 +1511,7 @@ fn cancel_turn_when_already_cancelling_resends_cancel() {
 
 #[test]
 fn cancel_turn_retry_honors_subagent_preference() {
-    // The retry skips the subagent panel (the choice was already made on
-    // the first cancel) but must reuse the remembered preference.
+    // The retry skips the subagent panel (the choice was already made on the first cancel) but must reuse the remembered preference
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {
@@ -1544,10 +1531,8 @@ fn cancel_turn_retry_honors_subagent_preference() {
     ));
 }
 
-/// The latched-cancel deadlock: cancel sent → state
-/// `TurnCancelling` → the turn's PromptResponse RPC is lost → nothing can
-/// ever exit the state. The armed broadcast marker must finish the turn
-/// after the grace window.
+/// The latched-cancel deadlock: the cancel is sent, the state becomes `TurnCancelling`, then the turn's PromptResponse RPC is lost.
+/// Nothing can ever exit the state, so the armed broadcast marker must finish the turn after the grace window.
 #[test]
 fn reconcile_finishes_cancelling_turn_after_grace() {
     let mut app = test_app_with_agent();
@@ -1629,9 +1614,8 @@ fn reconcile_suppresses_send_now_cancel_marker() {
     );
 }
 
-/// A lost-RPC reconcile for a hook-denied cancel consumes the parked
-/// `cancellationCategory` and renders the blocked-by-a-hook marker, not
-/// "cancelled by user".
+/// A lost-RPC reconcile for a hook-denied cancel consumes the parked `cancellationCategory`.
+/// It renders the blocked-by-a-hook marker, not "cancelled by user".
 #[test]
 fn reconcile_renders_hook_denied_marker_from_parked_category() {
     let mut app = test_app_with_agent();
@@ -1708,9 +1692,8 @@ fn reconcile_suppresses_expected_send_now_cancel_without_wire_trigger() {
 
 #[test]
 fn reconcile_waits_for_grace_window() {
-    // A freshly-armed marker means the RPC response may still be in
-    // flight (healthy path: it lands milliseconds after the broadcast) —
-    // do not touch the turn yet.
+    // A freshly-armed marker means the RPC response may still be in flight (healthy path: it lands milliseconds after the broadcast)
+    // Do not touch the turn yet
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {
@@ -1739,9 +1722,8 @@ fn reconcile_waits_for_grace_window() {
 
 #[test]
 fn reconcile_drops_stale_marker_when_turn_already_resolved() {
-    // The normal path won the race (PromptResponse finished the turn, or
-    // a new turn was adopted): the marker is stale and must be dropped
-    // without touching state or pushing a marker.
+    // The normal path won the race (PromptResponse finished the turn, or a new turn was adopted)
+    // The marker is stale and must be dropped without touching state or pushing a marker
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let scrollback_before = app.agents[&id].scrollback.len();
@@ -1764,9 +1746,8 @@ fn reconcile_drops_stale_marker_when_turn_already_resolved() {
 
 #[test]
 fn reconcile_applies_stashed_running_adoption() {
-    // The failing sequence: queued prompt promoted server-side while the
-    // cancelled turn's response was lost. The reconcile must hand the pane
-    // to the promoted prompt (turn-start shim), not strand it Idle.
+    // The failing sequence: a queued prompt was promoted server-side while the cancelled turn's response was lost
+    // The reconcile must hand the pane to the promoted prompt (turn-start shim), not strand it Idle
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {
@@ -1774,8 +1755,7 @@ fn reconcile_applies_stashed_running_adoption() {
         agent.session.state = AgentState::TurnCancelling;
         agent.session.current_prompt_id = Some("pid-stuck".into());
     }
-    // The leader's running_prompt_id broadcast arrived mid-teardown and
-    // was stashed (same as the PromptResponse path).
+    // The leader's running_prompt_id broadcast arrived mid-teardown and was stashed (same as the PromptResponse path)
     app.pending_running_adoptions.insert(
         id,
         crate::app::acp_handler::PendingRunningAdoption {
@@ -1810,9 +1790,8 @@ fn reconcile_applies_stashed_running_adoption() {
     assert!(!app.pending_running_adoptions.contains_key(&id));
 }
 
-/// The reconcile rail's `stop_reason == "error"` arm: formats the raw
-/// agent_result and skips the marker when a dedicated banner already
-/// explains the failure.
+/// The reconcile rail's `stop_reason == "error"` arm formats the raw agent_result.
+/// It skips the marker when a dedicated banner already explains the failure.
 #[test]
 fn reconcile_error_formats_marker_and_defers_to_banner() {
     fn run(with_banner: bool) -> Option<String> {
@@ -1837,6 +1816,8 @@ fn reconcile_error_formats_marker_and_defers_to_banner() {
                 agent_result: Some("boom".into()),
                 cancel_trigger: None,
                 cancellation_category: None,
+                cancellation_context: None,
+                error_kind: None,
                 received_at: std::time::Instant::now()
                     - (TURN_END_RECONCILE_GRACE + std::time::Duration::from_secs(1)),
             });
@@ -1867,6 +1848,59 @@ fn reconcile_error_formats_marker_and_defers_to_banner() {
         run(true),
         None,
         "a dedicated banner must suppress the reconcile's TurnFailed marker"
+    );
+}
+
+/// The typed kind survives the full lost-RPC path: the driver's live terminal signal arms the reconcile (the stash).
+/// The overdue sweep then renders the truncation copy from it.
+#[test]
+fn reconcile_error_kind_renders_truncation_copy() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.state = AgentState::TurnRunning;
+        agent.session.current_prompt_id = Some("pid-stuck".into());
+        let outcome = crate::app::turn_completion::finalize_turn_from_terminal(
+            agent,
+            "sess",
+            crate::app::turn_completion::TerminalSignal {
+                prompt_id: Some("pid-stuck"),
+                stop_reason: Some("error"),
+                agent_result: Some("turn ended early"),
+                error_kind: Some(crate::app::error_display::WireErrorType::MaxTokensTruncation),
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            outcome,
+            crate::app::turn_completion::TerminalApply::ReconcileArmed
+        ));
+        // Backdate past the grace window so the sweep fires now.
+        agent
+            .pending_turn_end_reconcile
+            .as_mut()
+            .unwrap()
+            .received_at = std::time::Instant::now()
+            - (TURN_END_RECONCILE_GRACE + std::time::Duration::from_secs(1));
+    }
+    assert!(
+        reconcile_overdue_turn_ends(&mut app).is_some(),
+        "the overdue reconcile must finish the turn"
+    );
+    let agent = &app.agents[&id];
+    let marker = (0..agent.scrollback.len()).find_map(|i| {
+        match agent.scrollback.entry(i).map(|e| &e.block) {
+            Some(RenderBlock::SessionEvent(ev)) => match &ev.event {
+                SessionEvent::TurnFailed { error, .. } => Some(error.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    });
+    assert_eq!(
+        marker.as_deref(),
+        Some("Response truncated: turn ended early")
     );
 }
 
@@ -2009,21 +2043,19 @@ fn cancel_after_first_activity_does_not_restore() {
 
     dispatch(Action::SendPrompt("keep me".into()), &mut app);
     assert!(app.agents[&id].session.in_flight_prompt.is_some());
-    // Simulate that the server emitted activity (the acp_handler
-    // clear-on-first-activity hook would have cleared this).
+    // Simulate that the server emitted activity (the acp_handler clear-on-first-activity hook would have cleared this)
     app.agents.get_mut(&id).unwrap().session.in_flight_prompt = None;
 
     let effects = dispatch(Action::CancelTurn, &mut app);
     assert_eq!(effects.len(), 1);
     assert!(matches!(&effects[0], Effect::CancelTurn { .. }));
 
-    // Prompt was NOT restored; user-prompt block stays; state is
-    // the normal TurnCancelling (not the rewind-Idle).
+    // Prompt was NOT restored; user-prompt block stays; state is the normal TurnCancelling (not the rewind-Idle)
     assert!(app.agents[&id].prompt.text().is_empty());
     assert_eq!(app.agents[&id].scrollback.len(), 1);
     assert!(app.agents[&id].session.state.is_cancelling());
 
-    // PromptResponse arrives — TurnCancelled banner is pushed.
+    // PromptResponse arrives: the TurnCancelled banner is pushed
     dispatch(
         Action::TaskComplete(TaskResult::PromptResponse {
             agent_id: id,
@@ -2033,12 +2065,11 @@ fn cancel_after_first_activity_does_not_restore() {
         }),
         &mut app,
     );
-    // user_prompt + TurnCancelled banner.
+    // The user_prompt block and the TurnCancelled banner
     assert_eq!(app.agents[&id].scrollback.len(), 2);
 }
 
-/// Ctrl+C rewind of a locally-drained combined turn must remove *every*
-/// per-segment user bubble (not just the last) and restore the joined text.
+/// Ctrl+C rewind of a locally-drained combined turn must remove *every* per-segment user bubble (not just the last) and restore the joined text.
 #[test]
 fn cancel_rewind_removes_all_combined_segment_blocks() {
     let mut app = test_app_with_agent();
@@ -2082,11 +2113,9 @@ fn cancel_rewind_removes_all_combined_segment_blocks() {
     );
 }
 
-/// A cancel landing before first server activity must NOT rewind the stashed
-/// in-flight prompt over a NEWER composer draft. Esc (and the mouse stop /
-/// palette cancel) fire with the draft intact — unlike keyboard Ctrl+C,
-/// which only cancels on an empty prompt — so the no-output rewind falls back
-/// to the standard cancel and the draft survives.
+/// A cancel landing before first server activity must NOT rewind the stashed in-flight prompt over a NEWER composer draft.
+/// Esc, the mouse stop, and the palette cancel fire with the draft intact (keyboard Ctrl+C only cancels on an empty prompt).
+/// So the no-output rewind falls back to the standard cancel and the draft survives.
 #[test]
 fn cancel_with_newer_draft_skips_no_output_rewind_and_keeps_draft() {
     let mut app = test_app_with_agent();
@@ -2105,7 +2134,7 @@ fn cancel_with_newer_draft_skips_no_output_rewind_and_keeps_draft() {
             combined_scrollback_entries: Vec::new(),
             chip_elements: Vec::new(),
         });
-        // Typed WHILE the turn was starting — newer than the stash.
+        // Typed WHILE the turn was starting: newer than the stash
         agent.prompt.set_text("newer draft");
         sent_id
     };
@@ -2229,10 +2258,9 @@ fn bg_task_killed_not_found_removes_task_from_inactive_agent() {
     );
 }
 
-/// Resume regression: a stale row restored by replay keeps a
-/// running "Task started" scrollback entry. When the ✗ kill resolves
-/// `not_found`, the entry must be finished alongside the row removal so
-/// the started block doesn't keep its running accent forever.
+/// Resume regression: a stale row restored by replay keeps a running "Task started" scrollback entry.
+/// When the ✗ kill resolves `not_found`, the entry must be finished alongside the row removal.
+/// Otherwise the started block keeps its running accent forever.
 #[test]
 fn bg_task_killed_not_found_finishes_scrollback_entry() {
     let mut app = two_agent_app_with_bg_task();
@@ -2268,8 +2296,7 @@ fn bg_task_killed_not_found_finishes_scrollback_entry() {
     );
 }
 
-/// `outcome: None` (error envelope / unparseable payload) clears the
-/// pending state so the user can retry, and keeps the row.
+/// `outcome: None` (error envelope or unparseable payload) clears the pending state so the user can retry, and keeps the row.
 #[test]
 fn bg_task_killed_missing_outcome_clears_pending_kill() {
     let mut app = two_agent_app_with_bg_task();
@@ -2301,7 +2328,7 @@ fn bg_task_killed_keeps_pending_kill_on_killed_outcome() {
         &mut app,
     );
 
-    // "killed" means signal sent, wait for task_completed — pending_kill stays
+    // "killed" means the signal was sent and task_completed is still awaited, so pending_kill stays
     let task = &app.agents[&AgentId(1)].session.bg_tasks["task-B-1"];
     assert!(task.pending_kill);
 }
@@ -2368,7 +2395,6 @@ fn build_rows_collapses_many_subagents() {
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
-        None,
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
@@ -2379,9 +2405,8 @@ fn build_rows_collapses_many_subagents() {
     assert_eq!(rows.last().unwrap().more_count, 1);
 }
 
-/// Pin the threshold neighbour just BELOW the
-/// `MAX_VISIBLE_SUBAGENTS = 8` cap. 7 subagents fit without a
-/// placeholder.
+/// Pin the threshold neighbour just BELOW the `MAX_VISIBLE_SUBAGENTS = 8` cap.
+/// 7 subagents fit without a placeholder.
 #[test]
 fn build_rows_seven_subagents_no_placeholder() {
     use crate::views::dashboard::build_rows;
@@ -2397,7 +2422,6 @@ fn build_rows_seven_subagents_no_placeholder() {
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
-        None,
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
@@ -2423,7 +2447,6 @@ fn build_rows_eight_subagents_no_placeholder() {
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
-        None,
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
@@ -2433,8 +2456,7 @@ fn build_rows_eight_subagents_no_placeholder() {
     assert!(!rows.last().unwrap().is_more_placeholder);
 }
 
-/// Well over the threshold (16), placeholder counts
-/// the trailing 8 hidden rows.
+/// Well over the threshold (16), the placeholder counts the trailing 8 hidden rows.
 #[test]
 fn build_rows_sixteen_subagents_placeholder_counts_remainder() {
     use crate::views::dashboard::build_rows;
@@ -2450,7 +2472,6 @@ fn build_rows_sixteen_subagents_placeholder_counts_remainder() {
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
-        None,
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
@@ -2462,9 +2483,8 @@ fn build_rows_sixteen_subagents_placeholder_counts_remainder() {
     assert_eq!(rows.last().unwrap().more_count, 8);
 }
 
-/// The live dashboard builder (`build_rows_with_roster`, used by both
-/// rendering and keyboard navigation) hides subagents: only the parent
-/// row is listed. The full-tree `build_rows` still emits them.
+/// The live dashboard builder (`build_rows_with_roster`, used by both rendering and keyboard navigation) hides subagents.
+/// Only the parent row is listed; the full-tree `build_rows` still emits them.
 #[test]
 fn build_rows_with_roster_hides_subagent_rows() {
     use crate::views::dashboard::{build_rows, build_rows_with_roster};
@@ -2480,7 +2500,6 @@ fn build_rows_with_roster_hides_subagent_rows() {
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
-        None,
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
@@ -2496,7 +2515,6 @@ fn build_rows_with_roster_hides_subagent_rows() {
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
-        None,
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
@@ -2505,17 +2523,15 @@ fn build_rows_with_roster_hides_subagent_rows() {
     assert!(full.iter().any(|r| r.indent == 1));
 }
 
-/// Subagent labels also sanitise ANSI escapes
-/// out of the persona.
+/// Subagent labels also sanitise ANSI escapes out of the persona.
 #[test]
 fn subagent_label_strips_control_characters() {
     use crate::views::dashboard::build_rows;
     let mut app = test_app_with_agent();
     let agent = app.agents.get_mut(&AgentId(0)).unwrap();
     let mut info = make_test_subagent("child-evil", "sa-evil");
-    // Inject an ANSI escape into the persona — this is what flows
-    // through `format_subagent_label` → row builder sanitisation.
-    info.persona = Some(Arc::from("a\x1b[31mevil\x1b[0m"));
+    // Inject an ANSI escape into the persona: this is what flows through `format_subagent_label` into the row builder sanitisation
+    info.attempt.persona = Some(Arc::from("a\x1b[31mevil\x1b[0m"));
     agent
         .subagent_sessions
         .insert(info.child_session_id.to_string(), info);
@@ -2523,7 +2539,6 @@ fn subagent_label_strips_control_characters() {
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
-        None,
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
@@ -2545,8 +2560,7 @@ fn subagent_label_strips_control_characters() {
     );
 }
 
-/// Sticky must land on parent + subagent and remain on parent after leaving
-/// the subagent view (Esc clears `active_subagent` only).
+/// Sticky must land on parent and subagent, and remain on the parent after leaving the subagent view (Esc clears `active_subagent` only).
 #[serial_test::serial(MOUSE_CAPTURE_ENABLED)]
 #[test]
 fn mouse_reporting_toggle_sticky_survives_subagent_esc_to_parent() {
@@ -2591,4 +2605,102 @@ fn mouse_reporting_toggle_sticky_survives_subagent_esc_to_parent() {
     assert!(parent.toast.is_none() || parent.sticky_toast.is_some());
 
     reset_mouse_capture_enabled(true);
+}
+
+#[test]
+fn fork_failure_force_idle_drops_a_live_cancel_anchor() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnRunning;
+    let _ = super::super::turn::do_cancel_turn(
+        &mut app,
+        true,
+        crate::app::cancel_latency::CancelOrigin::UserGesture,
+    );
+    assert!(
+        app.agents[&id].cancel_latency.is_some(),
+        "the cancel armed the anchor"
+    );
+
+    let _ = super::super::session::fork::handle_fork_session_failed(&mut app, id, "boom".into());
+
+    assert!(
+        app.agents[&id].cancel_latency.is_none(),
+        "the fork teardown drops the anchor (no leak into a later settle)"
+    );
+}
+
+#[test]
+fn settled_cancel_emits_latency_from_arm_anchor_once() {
+    use crate::app::cancel_latency::{CancelLatency, CancelOrigin, TurnEnd};
+    use std::time::{Duration, Instant};
+    use xai_grok_telemetry::events::CancellationScope;
+
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnRunning;
+
+    let _ = super::super::turn::do_cancel_turn(&mut app, true, CancelOrigin::UserGesture);
+    assert_eq!(
+        app.agents[&id].cancel_latency.map(|c| c.scope),
+        Some(CancellationScope::Turn),
+        "the real arm path armed a Turn-scoped anchor"
+    );
+
+    let t0 = Instant::now();
+    let agent = app.agents.get_mut(&id).unwrap();
+    agent.cancel_latency = Some(CancelLatency::new(t0, CancellationScope::Turn));
+
+    let event = agent
+        .settle_cancel(TurnEnd::Completed, t0 + Duration::from_millis(50))
+        .expect("a settled turn emits the pending anchor");
+    assert_eq!(event.latency_ms, 50);
+    assert_eq!(event.scope, CancellationScope::Turn);
+
+    assert!(
+        agent
+            .settle_cancel(TurnEnd::Completed, t0 + Duration::from_millis(999))
+            .is_none(),
+        "the anchor is consumed, so a second settle emits nothing"
+    );
+
+    agent.cancel_latency = Some(CancelLatency::new(t0, CancellationScope::Turn));
+    assert!(
+        agent
+            .settle_cancel(TurnEnd::Aborted, t0 + Duration::from_millis(50))
+            .is_none(),
+        "a torn-down turn discards the anchor unmeasured"
+    );
+}
+
+#[test]
+fn cancel_and_arm_anchors_before_the_cancel_teardown() {
+    use crate::app::cancel_latency::CancelOrigin;
+    use xai_grok_telemetry::events::CancellationScope;
+
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    crate::app::agent_view::test_fixtures::add_running_execute(app.agents.get_mut(&id).unwrap());
+
+    let agent = app.agents.get_mut(&id).unwrap();
+    assert!(
+        agent.scrollback.last().is_some_and(|e| e.is_running),
+        "the running tool entry is live before the cancel"
+    );
+
+    agent.cancel_and_arm(CancellationScope::Turn, CancelOrigin::UserGesture);
+
+    let requested_at = agent
+        .cancel_latency
+        .expect("the user gesture armed the anchor")
+        .requested_at;
+    let teardown_at = agent
+        .scrollback
+        .last()
+        .and_then(|e| e.finished_at)
+        .expect("the cancel teardown finished the running entry");
+    assert!(
+        requested_at <= teardown_at,
+        "the latency anchor must be sampled before the cancel teardown finishes the turn"
+    );
 }

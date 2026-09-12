@@ -82,10 +82,9 @@ enum DirEntryKind {
 
 impl From<&std::fs::FileType> for DirEntryKind {
     fn from(ft: &std::fs::FileType) -> Self {
-        // Check is_symlink() FIRST — on Unix, a symlink to a directory has
-        // both is_symlink() and is_dir() true when the file_type is obtained
-        // via tokio::fs::DirEntry::file_type() (which follows symlinks).
-        // Codex checks symlink first so these are rendered with `@`, not `/`.
+        // Check is_symlink() FIRST — on Unix, a symlink to a directory has both is_symlink() and
+        // is_dir() true when the file_type is obtained via tokio::fs::DirEntry::file_type() (which
+        // follows symlinks). Codex checks symlink first so these are rendered with `@`, not `/`.
         if ft.is_symlink() {
             DirEntryKind::Symlink
         } else if ft.is_dir() {
@@ -150,15 +149,9 @@ async fn list_dir_slice(
     Ok(lines)
 }
 
-/// BFS walker using `tokio::fs::read_dir`.
-///
-/// Collects entries breadth-first up to `max_depth` levels. Directories
-/// beyond the depth limit are listed but not descended into.
-///
-/// Uses `PathBuf` for the relative prefix (matching codex's `prefix: &Path`
-/// + `prefix.join(&file_name)`). The raw `PathBuf` is kept for recursion so
-///   that subdirectory prefixes are never affected by `format_entry_name`
-///   truncation or normalization.
+/// BFS walker using `tokio::fs::read_dir`. Collects entries breadth-first up to `max_depth` levels. Directories beyond the depth limit are
+/// listed but not descended into. Uses `PathBuf` for the relative prefix (matching codex's `prefix: &Path` + `prefix.join(&file_name)`). The
+/// raw `PathBuf` is kept for recursion so that subdirectory prefixes are never affected by `format_entry_name` truncation or normalization.
 async fn collect_entries(
     dir_path: &Path,
     relative_prefix: &Path,

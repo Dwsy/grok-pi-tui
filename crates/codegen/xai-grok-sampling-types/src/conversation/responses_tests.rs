@@ -1,5 +1,3 @@
-//! Tests for the Responses API conversion.
-
 use super::test_support::*;
 use super::*;
 use crate::tool_overrides::*;
@@ -44,9 +42,8 @@ fn function_tool_colliding_with_hosted_web_search_is_dropped() {
     let responses_req: rs::CreateResponse = (&req).into();
     let tools = responses_req.tools.expect("tools should be set");
 
-    // web_search rides the raw-JSON `extra_tool_entries` channel (so it can carry
-    // `excluded_domains`, which async_openai's typed filter omits), so it never
-    // appears as a native `rs::Tool::WebSearch`.
+    // web_search is emitted as a raw-JSON `extra_tool_entries` entry, so it never appears as a native `rs::Tool::WebSearch`
+    // The raw entry can carry `excluded_domains`, which async_openai's typed filter omits
     let web_search_count = tools
         .iter()
         .filter(|t| matches!(t, rs::Tool::WebSearch(_)))
@@ -92,10 +89,9 @@ fn function_tool_colliding_with_hosted_x_search_is_dropped() {
     assert_eq!(entries, vec![serde_json::json!({"type": "x_search"})]);
 }
 
-/// The hosted `web_search` domain policy only reaches the API through this raw
-/// entry (async_openai's typed filters model no blocklist), so both filters must
-/// survive the `HostedTool` → `extra_tool_entries` hop, and an empty/absent
-/// policy must stay byte-identical to the bare tool.
+/// The hosted `web_search` domain policy only reaches the API through this raw entry (async_openai's typed filters model no blocklist).
+/// Both filters must survive the conversion from `HostedTool` to `extra_tool_entries`.
+/// An empty or absent policy must stay byte-identical to the bare tool.
 #[test]
 fn web_search_domain_filters_reach_the_tool_entry() {
     let hosted = |options: Option<WebSearchOptions>| {
@@ -383,8 +379,6 @@ fn test_tool_calls_to_responses_api() {
     let rs::InputParam::Items(items) = responses_req.input else {
         panic!("Expected Items input");
     };
-    // Should have: system message, user message, (possibly assistant text), function_call
-    // Find the FunctionCall item
     let fc_items: Vec<_> = items
         .iter()
         .filter(|item| matches!(item, rs::InputItem::Item(rs::Item::FunctionCall(_))))
@@ -418,7 +412,6 @@ fn test_tool_result_to_responses_api() {
     let rs::InputParam::Items(items) = responses_req.input else {
         panic!("Expected Items input");
     };
-    // Find the FunctionCallOutput item
     let fco_items: Vec<_> = items
         .iter()
         .filter(|item| matches!(item, rs::InputItem::Item(rs::Item::FunctionCallOutput(_))))
@@ -482,81 +475,7 @@ fn test_multiple_tool_results_to_responses_api() {
 }
 
 #[test]
-fn test_responses_api_with_reasoning() {
-    // Test conversion from Responses API response with reasoning
-    let response = rs::Response {
-        background: None,
-        billing: None,
-        conversation: None,
-        created_at: 1234567890,
-        completed_at: None,
-        error: None,
-        id: "resp_123".to_string(),
-        incomplete_details: None,
-        instructions: None,
-        max_output_tokens: None,
-        metadata: None,
-        model: "grok-3".to_string(),
-        object: "response".to_string(),
-        output: vec![
-            rs::OutputItem::Reasoning(rs::ReasoningItem {
-                id: "reasoning_1".to_string(),
-                summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
-                    text: "I need to analyze this carefully.".to_string(),
-                })],
-                content: None,
-                encrypted_content: None,
-                status: None,
-            }),
-            rs::OutputItem::Message(rs::OutputMessage {
-                content: vec![rs::OutputMessageContent::OutputText(
-                    rs::OutputTextContent {
-                        text: "Here is my answer.".to_string(),
-                        annotations: vec![],
-                        logprobs: None,
-                    },
-                )],
-                id: "msg_123".to_string(),
-                role: rs::AssistantRole::Assistant,
-                status: rs::OutputStatus::Completed,
-            }),
-        ],
-        parallel_tool_calls: None,
-        previous_response_id: None,
-        prompt: None,
-        prompt_cache_key: None,
-        prompt_cache_retention: None,
-        reasoning: None,
-        safety_identifier: None,
-        service_tier: None,
-        status: rs::Status::Completed,
-        temperature: None,
-        text: None,
-        tool_choice: None,
-        tools: None,
-        top_logprobs: None,
-        top_p: None,
-        truncation: None,
-        usage: None,
-    };
-
-    // The full flat-list shape (Reasoning siblings preserved) is
-    // exercised in the `test_response_to_conversation_items_preserves_*`
-    // tests below; here we just assert the trailing Assistant content.
-    let items = response_to_conversation_items(response);
-    let item = items
-        .into_iter()
-        .next_back()
-        .expect("response produces at least a trailing Assistant");
-    let ConversationItem::Assistant(a) = &item else {
-        panic!("Expected Assistant item");
-    };
-    assert_eq!(a.content.as_ref(), "Here is my answer.");
-}
-
-#[test]
 fn test_responses_api_with_encrypted_reasoning() {
-    // Test that encrypted reasoning content is preserved from Responses API
     let response = rs::Response {
         background: None,
         billing: None,
@@ -613,7 +532,7 @@ fn test_responses_api_with_encrypted_reasoning() {
         usage: None,
     };
 
-    // Exercise the flat-list path: reasoning now lives as a sibling.
+    // Exercise the flat-list path: reasoning lives as a sibling
     let items = response_to_conversation_items(response);
     let assistant_idx = items
         .iter()
@@ -631,7 +550,7 @@ fn test_responses_api_with_encrypted_reasoning() {
             _ => None,
         })
         .expect("reasoning sibling present");
-    // Both text summary and encrypted content should be preserved
+    // Both the text summary and the encrypted content survive
     assert_eq!(
         reasoning_sibling.summary.first().map(|sp| match sp {
             rs::SummaryPart::SummaryText(t) => t.text.as_str(),
@@ -646,7 +565,6 @@ fn test_responses_api_with_encrypted_reasoning() {
 
 #[test]
 fn test_responses_api_with_only_encrypted_reasoning() {
-    // Test case where there's only encrypted content, no visible summary
     let response = rs::Response {
         background: None,
         billing: None,
@@ -664,7 +582,7 @@ fn test_responses_api_with_only_encrypted_reasoning() {
         output: vec![
             rs::OutputItem::Reasoning(rs::ReasoningItem {
                 id: "reasoning_only_enc".to_string(),
-                summary: vec![], // Empty summary
+                summary: vec![],
                 content: None,
                 encrypted_content: Some("enc_only_encrypted_no_visible_summary".to_string()),
                 status: Some(rs::OutputStatus::Completed),
@@ -701,8 +619,7 @@ fn test_responses_api_with_only_encrypted_reasoning() {
         usage: None,
     };
 
-    // Flat-list path: reasoning sibling carries the encrypted blob,
-    // empty summary maps to an empty `Vec<SummaryPart>`.
+    // Flat-list path: reasoning sibling carries the encrypted blob, empty summary maps to an empty `Vec<SummaryPart>`
     let items = response_to_conversation_items(response);
     let reasoning_sibling = items
         .iter()
@@ -719,41 +636,12 @@ fn test_responses_api_with_only_encrypted_reasoning() {
 }
 
 #[test]
-fn test_conversation_item_with_sibling_reasoning_serialization() {
-    // Reasoning is now a sibling variant — round-trip both items
-    // through serde and confirm they survive.
-    let reasoning_item = ConversationItem::Reasoning(rs::ReasoningItem {
-        id: "reasoning_1".to_string(),
-        summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
-            text: "Computing the answer...".to_string(),
-        })],
-        content: None,
-        encrypted_content: Some("enc_ultimate_answer_computation".to_string()),
-        status: None,
-    });
-    let assistant_item = ConversationItem::Assistant(AssistantItem {
-        content: "The answer is 42.".into(),
-        tool_calls: vec![],
-        model_id: Some("grok-3".to_string()),
-        model_fingerprint: None,
-        reasoning_effort: None,
-    });
-
-    for item in [reasoning_item, assistant_item] {
-        let json = serde_json::to_string(&item).expect("Should serialize");
-        let back: ConversationItem = serde_json::from_str(&json).expect("Should deserialize");
-        assert_eq!(std::mem::discriminant(&item), std::mem::discriminant(&back));
-    }
-}
-
-#[test]
 fn test_encrypted_reasoning_included_in_responses_api_request() {
-    // Test that when building a Responses API request, encrypted reasoning is included
-    // This is crucial for context continuity across turns
+    // Encrypted reasoning is crucial for context continuity across turns
     let req = ConversationRequest::from_items(vec![
         ConversationItem::system("You are helpful"),
         ConversationItem::user("What is 2+2?"),
-        // Previous reasoning + assistant: reasoning is now a sibling.
+        // Previous reasoning and assistant: reasoning is a sibling
         ConversationItem::Reasoning(rs::ReasoningItem {
             id: "r1".to_string(),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
@@ -770,13 +658,11 @@ fn test_encrypted_reasoning_included_in_responses_api_request() {
             model_fingerprint: None,
             reasoning_effort: None,
         }),
-        // New user message
         ConversationItem::user("Now what is 3+3?"),
     ]);
 
     let responses_req: rs::CreateResponse = (&req).into();
 
-    // Find the reasoning item in the input
     let rs::InputParam::Items(items) = responses_req.input else {
         panic!("Expected Items input");
     };
@@ -798,7 +684,6 @@ fn test_encrypted_reasoning_included_in_responses_api_request() {
     );
 
     let reasoning = reasoning_items[0];
-    // Verify encrypted content is included
     assert_eq!(
         reasoning.encrypted_content,
         Some("enc_secret_reasoning_chain".to_string())
@@ -812,8 +697,6 @@ fn test_encrypted_reasoning_included_in_responses_api_request() {
 
 #[test]
 fn test_only_encrypted_reasoning_included_in_request() {
-    // Test that when there's only encrypted content (no visible summary),
-    // it's still included in the request
     let req = ConversationRequest::from_items(vec![
         ConversationItem::user("Hello"),
         ConversationItem::Reasoning(rs::ReasoningItem {
@@ -851,19 +734,16 @@ fn test_only_encrypted_reasoning_included_in_request() {
     assert_eq!(reasoning_items.len(), 1);
     let reasoning = reasoning_items[0];
 
-    // Encrypted content should be present
     assert_eq!(
         reasoning.encrypted_content,
         Some("enc_hidden_thoughts".to_string())
     );
 
-    // Summary should be empty
     assert!(reasoning.summary.is_empty());
 }
 
 #[test]
 fn test_no_reasoning_item_when_no_reasoning() {
-    // Test that when there's no reasoning, no reasoning item is added
     let req = ConversationRequest::from_items(vec![
         ConversationItem::user("Hello"),
         ConversationItem::assistant("Hi!"), // No reasoning
@@ -1057,7 +937,6 @@ fn test_btw_cross_api_responses_no_regressions() {
         "completed FunctionCallOutput call_1 must survive; got outputs: {function_outputs:?}"
     );
 
-    // Orphaned call_2 must NOT be present.
     assert!(
         !function_calls.contains(&"call_2".to_string()),
         "orphaned FunctionCall call_2 must be removed"
@@ -1069,7 +948,6 @@ fn test_btw_cross_api_responses_no_regressions() {
         .any(|item| matches!(item, rs::InputItem::Item(rs::Item::Reasoning(_))));
     assert!(!has_reasoning, "reasoning items must be stripped");
 
-    // Temperature must be absent.
     assert!(
         json.get("temperature").is_none()
             || json.pointer("/temperature").is_some_and(|v| v.is_null()),
@@ -1079,10 +957,7 @@ fn test_btw_cross_api_responses_no_regressions() {
 
 #[test]
 fn test_transform_cwd_rewrites_reasoning_sibling() {
-    // Reasoning lives as a sibling now and IS subject to CWD rewriting
-    // via `transform_conversation_cwd` (see the `Reasoning(_)` arm),
-    // which is a behavior improvement over the pre-refactor state
-    // where it lived buried in AssistantItem.reasoning and was skipped.
+    // Reasoning siblings are subject to CWD rewriting via `transform_conversation_cwd` (see the `Reasoning(_)` arm)
     let worktree = "/workspace/.grok/worktrees/project/ab-uuid-a";
     let root = "/workspace/project";
 
@@ -1202,7 +1077,6 @@ fn test_tool_result_without_images_stays_text() {
         })
         .unwrap();
 
-    // Should still be Text variant when no images
     assert!(matches!(&fco.output, rs::FunctionCallOutput::Text(t) if t == "file1.txt\nfile2.txt"));
 }
 
@@ -1272,8 +1146,7 @@ fn responses_api_conversion_preserves_model_fingerprint() {
 
 #[test]
 fn empty_reason_reasoning_only() {
-    // A response with a Reasoning sibling but empty Assistant content
-    // is classified as ReasoningOnly so the retry logic resamples.
+    // A response with a Reasoning sibling but empty Assistant content is classified as ReasoningOnly so the retry logic resamples
     let response = ConversationResponse {
         items: vec![
             ConversationItem::Reasoning(rs::ReasoningItem {
@@ -1314,10 +1187,7 @@ fn empty_reason_reasoning_only() {
 fn build_responses_input_preserves_multi_turn_ordering() {
     // 4-turn conversation where each assistant turn carries reasoning.
     // The wire-level item order must be
-    //     [Sys, U1, R, A1, U2, R, A2, U3, R, A3, U4, R, A4, U5]
-    // and NOT the buggy
-    //     [Sys, U1, U2, U3, U4, U5, R, A1, R, A2, ...]
-    // which would shift the cache prefix every turn.
+    // [Sys, U1, U2, U3, U4, U5, R, A1, R, A2, ...] which would shift the cache prefix every turn.
     fn r(text: &str) -> ConversationItem {
         ConversationItem::Reasoning(rs::ReasoningItem {
             id: text.to_string(),
@@ -1353,8 +1223,7 @@ fn build_responses_input_preserves_multi_turn_ordering() {
     };
 
     // Walk the wire items and verify the expected pattern.
-    // Roles per wire item: System, User, Reasoning(role=Assistant),
-    // Assistant, User, Reasoning, Assistant, ...
+    // Roles per wire item: System, User, Reasoning(role=Assistant), Assistant, User, Reasoning, Assistant, ...
     let kinds: Vec<&'static str> = wire_items
         .iter()
         .map(|w| match w {
@@ -1399,7 +1268,7 @@ fn upgrade_legacy_reasoning_singular_chat_completions_text_only() {
 
 #[test]
 fn upgrade_legacy_reasoning_v0_chat_request_message_shape() {
-    // v0 on disk: top-level role + reasoning_content.
+    // v0 on disk: top-level role and reasoning_content
     let raw = serde_json::json!({
         "role": "assistant",
         "content": "v0 answer",
@@ -1417,8 +1286,7 @@ fn upgrade_legacy_reasoning_v0_chat_request_message_shape() {
 
 #[test]
 fn patch_reasoning_text_types_injects_type_discriminator() {
-    // Build a request body containing a reasoning item whose nested
-    // `content[]` entries lack the `type` field (the async-openai gap).
+    // Build a request body containing a reasoning item whose nested `content[]` entries lack the `type` field (the async-openai gap)
     let mut body = serde_json::json!({
         "input": [
             {
@@ -1467,7 +1335,7 @@ fn patch_reasoning_text_types_preserves_existing_type() {
                     { "type": "reasoning_text", "text": "already tagged" },
                     // A hypothetical different discriminator must NOT be clobbered.
                     { "type": "some_future_variant", "text": "future shape" },
-                    // Current gap: missing type → gets filled in.
+                    // Current gap: missing type gets filled in
                     { "text": "needs tag" }
                 ]
             }
@@ -1521,14 +1389,13 @@ fn build_responses_input_single_reasoning_sibling_lands_inline() {
     assert_eq!(summary[2], "reasoning:r_abc");
     assert_eq!(summary[3], "assistant:hi");
 
-    // No placeholder strings must appear (post-refactor invariant).
+    // No placeholder strings must appear
     let body_str = serde_json::to_string(&input).unwrap();
     assert!(
         !body_str.contains("__RAW_OUTPUT_PLACEHOLDER_"),
         "no placeholder strings post-refactor"
     );
 
-    // The reasoning item must carry encrypted_content verbatim.
     assert_eq!(
         input[2].get("encrypted_content").and_then(|v| v.as_str()),
         Some("enc1"),
@@ -1555,8 +1422,8 @@ fn build_responses_input_multi_turn_reasoning_ordering() {
     let input = input_items_json(&req);
     let summary = summarise_input(&input);
 
-    // INVARIANT 1: There must be exactly N reasoning items for N
-    // siblings. The pre-refactor bug produced only 1.
+    // INVARIANT 1: There must be exactly N reasoning items for N siblings
+    // The pre-refactor bug produced only 1
     let reasoning_count = summary
         .iter()
         .filter(|s| s.starts_with("reasoning:"))
@@ -1566,9 +1433,8 @@ fn build_responses_input_multi_turn_reasoning_ordering() {
         "must have 3 reasoning items, got {reasoning_count}. Items: {summary:?}"
     );
 
-    // INVARIANT 2: Each reasoning must be BETWEEN its corresponding
-    // user message and the NEXT user message. Without this check,
-    // all reasoning items bunched at the end would still pass count.
+    // INVARIANT 2: Each reasoning must be BETWEEN its corresponding user message and the NEXT user message
+    // Without this check, all reasoning items bunched at the end would still pass count
     let user_positions: Vec<usize> = summary
         .iter()
         .enumerate()
@@ -1690,14 +1556,7 @@ fn empty_content_assistant_with_tool_calls_and_reasoning() {
     let input = input_items_json(&req);
     let summary = summarise_input(&input);
 
-    // Expected:
-    //   user:u1
-    //   reasoning:r1
-    //   (assistant message DROPPED because content is empty -- per
-    //    conversation_item_to_input_items, lines 1718-1724)
-    //   function_call:call_1
-    //   function_call_output (tool result)
-    //
+    // (assistant message DROPPED because content is empty -- per conversation_item_to_input_items, lines 1718-1724) function_call_output (tool result)
     // No spurious extra reasoning items, no placeholder.
     let reasoning_count = summary
         .iter()

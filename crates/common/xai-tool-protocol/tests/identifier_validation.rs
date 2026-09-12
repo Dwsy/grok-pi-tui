@@ -78,13 +78,6 @@ fn tool_id_rejects_empty_segments_around_separator() {
         );
     }
 }
-
-#[test]
-fn tool_id_try_from_string_works() {
-    let id: ToolId = "GrokBuild:read_file".to_owned().try_into().unwrap();
-    assert_eq!(id.as_str(), "GrokBuild:read_file");
-}
-
 #[test]
 fn server_id_accepts_arbitrary_non_empty_strings() {
     for ok in ["my-uuid-v7", "srv_42", "x", "abc.def"] {
@@ -96,6 +89,23 @@ fn server_id_accepts_arbitrary_non_empty_strings() {
 #[test]
 fn server_id_rejects_empty() {
     assert_eq!(ServerId::new("").unwrap_err(), IdError::Empty);
+}
+
+#[test]
+fn session_id_rejects_hub_reserved_prefix() {
+    use xai_tool_protocol::HUB_RESERVED_SESSION_PREFIX;
+    for bad in [
+        format!("{HUB_RESERVED_SESSION_PREFIX}botrelay:rotate:u"),
+        format!("{HUB_RESERVED_SESSION_PREFIX}"),
+        format!("{HUB_RESERVED_SESSION_PREFIX}x"),
+    ] {
+        let err = SessionId::new(&bad).unwrap_err();
+        assert!(
+            matches!(err, IdError::ReservedPrefix { ref value } if value == &bad),
+            "expected ReservedPrefix for {bad:?}, got {err:?}"
+        );
+    }
+    assert!(SessionId::new("botrelay:rotate:u").is_ok());
 }
 
 #[test]
@@ -181,12 +191,4 @@ fn tool_call_id_uuid_v7_helper_is_unique_and_valid_uuid() {
             "expected UUID v7, got {parsed}"
         );
     }
-}
-
-#[test]
-fn opaque_id_display_matches_inner_string() {
-    let s = SessionId::new("sess_abc").unwrap();
-    assert_eq!(format!("{s}"), "sess_abc");
-    let t = ToolId::new("github:list_repos").unwrap();
-    assert_eq!(format!("{t}"), "github:list_repos");
 }

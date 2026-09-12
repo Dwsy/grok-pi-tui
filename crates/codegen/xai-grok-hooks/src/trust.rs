@@ -1,28 +1,20 @@
 use std::path::{Path, PathBuf};
 
 // Project-hook trust is no longer stored here: the shell's folder-trust store
-// (`~/.grok/trusted_folders.toml`) is the single authority for whether a repo's
-// project hooks run (the same gate as repo-local MCP/LSP). The helpers below
-// exist only to migrate prior grants out of the legacy file.
+// (`~/.grok/trusted_folders.toml`) is the single authority for whether a repo's project hooks run (the same gate as repo-local MCP/LSP). The helpers below exist only to migrate prior grants out of the legacy file.
 
-/// Path to the legacy project-hook trust file
-/// (`<user_grok_home>/trusted-hook-projects`), or `None` when no user grok home
-/// resolves. Retained only for the one-time migration into folder-trust.
+/// Path to the legacy project-hook trust file (`<user_grok_home>/trusted-hook-projects`), or `None` when no user grok home resolves.
+/// It is retained only for the one-time migration into folder-trust.
 pub fn legacy_trust_file_path() -> Option<PathBuf> {
-    Some(xai_grok_config::user_grok_home()?.join("trusted-hook-projects"))
+    Some(xai_grok_config::user_grok_home()?.join(xai_grok_config::TRUSTED_HOOK_PROJECTS_FILENAME))
 }
 
-/// Parse the legacy trusted-projects file into a list of project paths.
-///
-/// The legacy format is one canonical absolute path per line; blank and
-/// `#`-comment lines are skipped. A missing file yields `Ok(empty)` (nothing to
-/// migrate); any OTHER read error is returned as `Err` so the caller does not
-/// mistake an unreadable file for an empty one and consume it. Consumed by the
-/// one-time migration that seeds folder-trust from prior grants.
+/// The legacy format is one canonical absolute path per line; blank and `#`-comment lines are skipped.
+/// Any other read error is returned as `Err` so the caller does not mistake an unreadable file for an empty one and consume it.
+/// The one-time migration that seeds folder-trust from prior grants consumes this list.
 pub fn list_trusted_projects_with_file(trust_file: &Path) -> std::io::Result<Vec<PathBuf>> {
     let content = match std::fs::read_to_string(trust_file) {
         Ok(c) => c,
-        // A missing file is "nothing to migrate", not an error.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
@@ -36,13 +28,56 @@ pub fn list_trusted_projects_with_file(trust_file: &Path) -> std::io::Result<Vec
 
 // ── Hook enable/disable ─────────────────────────────────────────────────
 
-/// Check whether a hook is disabled by name.
-///
-/// Disabled hooks are listed in , one hook name per line.
+/// Disabled hooks are listed in `$GROK_HOME/disabled-hooks`, one hook name per line.
 pub fn is_hook_disabled(hook_name: &str) -> bool {
     match disabled_hooks_file_path() {
         Some(file) => is_hook_disabled_with_file(hook_name, &file),
         None => false,
+    }
+}
+
+/// What the hooks modal and status reports show as disabled; managed-policy hooks never do, since dispatch ignores their disable state.
+/// Keep this in lockstep with `dispatcher::eligible_or_record_skip` or the modal lies about what runs.
+pub fn hook_disabled_for_display(spec: &crate::config::HookSpec) -> bool {
+    hook_disabled_for_display_with(spec, &DisabledHooks::load())
+}
+
+/// The same rule as [`hook_disabled_for_display`], evaluated against a pre-loaded snapshot (bulk display passes and tests).
+pub fn hook_disabled_for_display_with(
+    spec: &crate::config::HookSpec,
+    disabled: &DisabledHooks,
+) -> bool {
+    !spec.is_managed_policy() && (!spec.enabled || disabled.contains(&spec.name))
+}
+
+/// One-shot snapshot of the disabled-hooks file, for callers that evaluate many specs per pass (dispatch loops, the stop-gate guard).
+/// One `load()` replaces a file read per spec.
+#[derive(Debug, Default)]
+pub struct DisabledHooks(std::collections::HashSet<String>);
+
+impl DisabledHooks {
+    /// Build from explicit names (tests; no filesystem or env dependence).
+    pub fn from_names<I: IntoIterator<Item = String>>(names: I) -> Self {
+        Self(names.into_iter().collect())
+    }
+
+    pub fn load() -> Self {
+        let names = disabled_hooks_file_path()
+            .and_then(|file| std::fs::read_to_string(file).ok())
+            .map(|content| {
+                content
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self(names)
+    }
+
+    pub fn contains(&self, hook_name: &str) -> bool {
+        self.0.contains(hook_name)
     }
 }
 
@@ -56,7 +91,7 @@ fn is_hook_disabled_with_file(hook_name: &str, file: &Path) -> bool {
         .any(|l| !l.trim().is_empty() && !l.trim().starts_with('#') && l.trim() == hook_name)
 }
 
-/// Disable a hook by name. Adds to .
+/// Disable a hook by name (append to `$GROK_HOME/disabled-hooks`).
 pub fn disable_hook(hook_name: &str) -> Result<(), String> {
     let file = disabled_hooks_file_path()
         .ok_or_else(|| "no user grok home (set $GROK_HOME or $HOME)".to_string())?;
@@ -65,7 +100,7 @@ pub fn disable_hook(hook_name: &str) -> Result<(), String> {
 
 fn disable_hook_with_file(hook_name: &str, file: &Path) -> Result<(), String> {
     if is_hook_disabled_with_file(hook_name, file) {
-        return Ok(()); // Already disabled.
+        return Ok(());
     }
     if let Some(parent) = file.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -80,7 +115,7 @@ fn disable_hook_with_file(hook_name: &str, file: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Enable a hook by name (remove from ).
+/// Enable a hook by name (remove from `$GROK_HOME/disabled-hooks`).
 pub fn enable_hook(hook_name: &str) -> Result<bool, String> {
     match disabled_hooks_file_path() {
         Some(file) => enable_hook_with_file(hook_name, &file),
@@ -122,8 +157,7 @@ fn enable_hook_with_file(hook_name: &str, file: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Returns the path to `$GROK_HOME/disabled-hooks`, or `None` when no user grok
-/// home resolves.
+/// Returns the path to `$GROK_HOME/disabled-hooks`, or `None` when no user grok home resolves.
 fn disabled_hooks_file_path() -> Option<PathBuf> {
     Some(xai_grok_config::user_grok_home()?.join("disabled-hooks"))
 }
@@ -132,7 +166,7 @@ fn disabled_hooks_file_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// Each test creates its own legacy file in its own temp dir -- no shared state.
+    /// Each test creates its own legacy file in its own temp dir, so no state is shared.
     fn trust_file_in(dir: &Path) -> PathBuf {
         let grok_dir = dir.join(".grok");
         std::fs::create_dir_all(&grok_dir).unwrap();
@@ -161,8 +195,7 @@ mod tests {
 
     #[test]
     fn list_trusted_projects_missing_file_is_empty() {
-        // A missing file is Ok(empty), NOT an error — so the migration treats it
-        // as "nothing to migrate" rather than as an unreadable file.
+        // The migration treats a missing file as "nothing to migrate", not as an unreadable file
         let projects =
             list_trusted_projects_with_file(Path::new("/nonexistent/trusted-hook-projects"))
                 .expect("missing file resolves to Ok(empty)");

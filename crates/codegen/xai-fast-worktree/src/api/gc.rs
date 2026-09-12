@@ -563,10 +563,9 @@ fn reclaim_expired_worktrees(
         if let Some(hook) = hook {
             hook(Entered::AfterGate);
         }
-        // Re-check the freshly read record after the gate (which can run for
-        // minutes): a session that re-registered with a live creator_pid in
-        // that window must not be removed. The CWD list is the pass-start
-        // snapshot, so a bare chdir after the scan is not re-observed here.
+        // Re-check after the gate (can run for minutes): a session that
+        // re-registered with a live creator_pid must not be removed. The CWD
+        // list is the pass-start snapshot, so a later bare chdir is not seen.
         if !opts.force && recheck_holds(db, &rec, now, live_cwds, opts, report).is_break() {
             continue;
         }
@@ -597,12 +596,31 @@ pub fn gc_worktrees(db: &WorktreeDb, opts: &GcOptions) -> Result<GcReport> {
     gc_worktrees_with_delegate(db, opts, None)
 }
 
+#[tracing::instrument(
+    name = "worktree.gc",
+    skip_all,
+    fields(
+        dead_removed = tracing::field::Empty,
+        expired_removed = tracing::field::Empty,
+    )
+)]
 pub fn gc_worktrees_with_delegate(
     db: &WorktreeDb,
     opts: &GcOptions,
     delegate: Option<Arc<dyn BtrfsDelegate>>,
 ) -> Result<GcReport> {
-    run_pass(db, opts, Pass::default(), delegate, None)
+    let start = Instant::now();
+    let report = run_pass(db, opts, Pass::default(), delegate, None)?;
+    let (dead_removed, expired_removed) = if opts.dry_run {
+        (0, 0)
+    } else {
+        (report.dead_removed, report.expired_removed)
+    };
+    let span = tracing::Span::current();
+    span.record("dead_removed", dead_removed as i64);
+    span.record("expired_removed", expired_removed as i64);
+    crate::metrics::record_grove_wt_gc(dead_removed + expired_removed, start.elapsed());
+    Ok(report)
 }
 
 fn collect_names_in(sources: &BTreeSet<PathBuf>, report: &mut GcReport) {

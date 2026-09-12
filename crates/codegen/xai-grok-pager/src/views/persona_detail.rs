@@ -1,9 +1,8 @@
-//! Persona detail/edit modal — structured view of a persona with inline editing.
+//! Persona detail/edit modal: structured view of a persona with inline editing.
 //!
 //! Opened by pressing Enter on a persona in the `/config-agents` Personas tab.
-//! Renders all persona TOML fields in labeled sections. Editable personas
-//! (user/project scope) support inline field editing; bundled personas are
-//! read-only.
+//! Renders all persona TOML fields in labeled sections.
+//! Editable personas (user/project scope) support inline field editing; bundled personas are read-only.
 
 use std::path::{Path, PathBuf};
 
@@ -97,7 +96,7 @@ enum PersonaDetailMode {
 
 #[derive(Debug)]
 pub enum PersonaDetailOutcome {
-    /// Normal handled event.
+    /// The event was handled and the modal changed.
     Changed,
     /// Nothing to do.
     Unchanged,
@@ -366,7 +365,7 @@ fn render_detail_editor(
     if width > 0 {
         let cursor_x = x + viewport.cursor_display_column as u16;
         if let Some(cell) = buf.cell_mut((cursor_x, y)) {
-            cell.set_style(Style::default().fg(theme.bg_base).bg(theme.text_primary));
+            cell.set_style(theme.block_cursor_over(theme.bg_base));
         }
     }
 }
@@ -449,7 +448,6 @@ pub fn render_persona_detail(
         let value_x = content_area.x + label_w;
         let value_w = w.saturating_sub(label_w as usize);
 
-        // Check if we're in editing mode for this field.
         if is_selected
             && let PersonaDetailMode::Editing {
                 field: editing_field,

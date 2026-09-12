@@ -35,6 +35,17 @@ impl OwnedClients {
         removed
     }
 
+    /// Removes `name` only while its slot still holds `client`.
+    pub fn remove_if_same(&mut self, name: &str, client: &Arc<McpClient>) {
+        if self
+            .clients
+            .get(name)
+            .is_some_and(|held| Arc::ptr_eq(held, client))
+        {
+            self.remove(name);
+        }
+    }
+
     pub fn clear(&mut self) {
         for client in self.clients.values() {
             cancel_watcher(client);
@@ -71,8 +82,7 @@ impl OwnedClients {
     }
 }
 
-/// An evicted client's liveness watcher holds a strong `Arc` to it; cancel
-/// the watcher so the client, its `Ready` state, and its gauge slot can drop.
+/// An evicted client's liveness watcher holds a strong `Arc` to it; cancel the watcher so the client, its `Ready` state, and its gauge slot can drop.
 fn cancel_watcher(client: &McpClient) {
     client.set_liveness_handle(None);
 }
@@ -92,3 +102,7 @@ impl FromIterator<(McpServerName, Arc<McpClient>)> for OwnedClients {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "owned_clients_tests.rs"]
+mod tests;

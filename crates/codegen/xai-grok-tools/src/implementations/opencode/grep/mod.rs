@@ -161,7 +161,7 @@ impl xai_tool_runtime::Tool for GrepTool {
         };
 
         // Build rg command.
-        let rg_exec = rg_path();
+        let rg_exec = rg_path()?;
         let mut cmd = Command::new(rg_exec);
         cmd.args([
             "-n",
@@ -1015,18 +1015,15 @@ mod tests {
             text.contains("real.txt"),
             "expected real.txt match in output: {text}"
         );
-        // Note: ripgrep's --no-messages flag suppresses error messages so rg
-        // may not return exit code 2 for a broken symlink. If rg returns 0
-        // instead, the "(Some paths were inaccessible)" message won't appear.
-        // We still verify the match was found; the exit-code-2 path is
-        // exercised only when rg actually reports partial errors.
+        // Note: ripgrep's --no-messages flag suppresses error messages so rg may not return exit code 2 for a broken symlink.
+        // If rg returns 0 instead, the "(Some paths were inaccessible)" message won't appear. We still verify the match was
+        // found; the exit-code-2 path is exercised only when rg actually reports partial errors.
         assert!(output.match_count >= 1, "should have at least 1 match");
     }
 
     // ── exit_code_2_without_output ──────────────────────────────────
 
-    // Skipped: triggering ripgrep exit code 2 with zero stdout (errors
-    // only, no matches) is impractical in a unit test with real `rg`.
-    // The code path (line 189) returns "No files found" and is simple
-    // enough to verify by inspection. Documented as a known gap.
+    // Skipped: triggering ripgrep exit code 2 with zero stdout (errors only, no matches) is
+    // impractical in a unit test with real `rg`. The code path (line 189) returns "No files found"
+    // and is simple enough to verify by inspection. Documented as a known gap.
 }

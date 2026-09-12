@@ -15,18 +15,9 @@ use super::file_utils::missing_content;
 use super::state::FileContentState;
 
 impl HunkTrackerActor {
-    /// Recompute hunks for a file and emit events.
-    /// Also updates the turn_index for O(1) prompt_index lookup.
-    ///
-    /// **Invariant:** `source` must reflect a single edit origin per call.
-    /// The actor processes commands sequentially (one at a time via
-    /// `cmd_rx.recv()`), so agent writes (`RecordAgentWrite`) and external
-    /// edits (`HandleFileChange`) never share the same invocation. All
-    /// `HunkContentChanged` events emitted from one call therefore share
-    /// the same `trigger_source`, which is correct.
-    ///
-    /// Takes `Option<FileContentState>` to preserve explicit Binary/TooLarge states
-    /// through recomputation.
+    /// Also updates the turn_index for O(1) prompt_index lookup. Invariant: `source` must reflect a single edit origin per
+    /// call. The actor processes commands sequentially (one at a time via `cmd_rx.recv()`), so agent writes
+    /// (`RecordAgentWrite`) and external edits (`HandleFileChange`) never share the same invocation.
     pub(super) fn recompute_hunks(
         &mut self,
         path: &Path,
@@ -105,10 +96,8 @@ impl HunkTrackerActor {
                 // Always preserve hunk ID for continuity
                 new_hunk.id = best_match.id.clone();
 
-                // Source preservation logic:
-                // - If new edit is from agent: keep new source (latest prompt_index wins)
-                // - If new edit is external but old was agent: preserve agent attribution
-                // - Otherwise: keep new source
+                // If new edit is from agent: keep new source (latest prompt_index wins); If new edit is external but old was agent:
+                // preserve agent attribution; Otherwise: keep new source.
                 if new_hunk.source.is_external() && best_match.source.is_agent_edit() {
                     new_hunk.source = best_match.source;
                 }
@@ -141,11 +130,9 @@ impl HunkTrackerActor {
         self.emit_hunk_diff_events(path, &old_hunks, &arc_hunks, source);
     }
 
-    /// Emit events for the difference between old and new hunks.
-    ///
-    /// `trigger_source` is the source of the edit that triggered this recomputation
-    /// (before any source-preservation logic). It is forwarded to `HunkContentChanged`
-    /// so that LOC tracking can attribute in-place changes to the correct author.
+    /// Emit events for the difference between old and new hunks. `trigger_source` is the source of the edit that triggered
+    /// this recomputation (before any source-preservation logic). It is forwarded to `HunkContentChanged` so that LOC
+    /// tracking can attribute in-place changes to the correct author.
     fn emit_hunk_diff_events(
         &self,
         path: &Path,
@@ -194,11 +181,9 @@ impl HunkTrackerActor {
                             hunk: new_hunk.clone(),
                         });
                     } else {
-                        // Hunk grew/merged/changed in place — ID was already
-                        // preserved in recompute_hunks. Find the matching old
-                        // hunk by ID to get previous line counts for delta
-                        // computation. Fall back to the overlapping hunk if
-                        // no ID match (e.g., hunk split/merge scenarios).
+                        // Hunk grew/merged/changed in place — ID was already preserved in recompute_hunks. Find the matching old hunk by ID
+                        // to get previous line counts for delta computation. Fall back to the overlapping hunk if no ID match (e.g., hunk
+                        // split/merge scenarios).
                         let prev = old_hunks
                             .iter()
                             .find(|o| o.id == new_hunk.id)

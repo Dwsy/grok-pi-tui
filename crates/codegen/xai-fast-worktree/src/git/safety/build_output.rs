@@ -24,10 +24,9 @@ const CACHE_TAG: &str = "CACHEDIR.TAG";
 // The cachedir.org tag file's fixed first-line signature.
 const CACHE_TAG_SIGNATURE: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
 
-/// Whether an ignored/untracked entry is a tool's output (safe to drop) rather
-/// than the user's work. A known name alone is not enough: the directory must be
-/// written off by the repository's *own* ignore rules (a user's global/system
-/// gitignore must not authorize deletion) or carry a `CACHEDIR.TAG`.
+/// Tool output (safe to drop), not user work. A known name is not enough: the
+/// repo's own ignore rules must write it off (global/system gitignore must not
+/// authorize deletion) or it must carry a `CACHEDIR.TAG`.
 pub(super) fn is_build_output(repo: &gix::Repository, entry: &gix::dir::Entry) -> bool {
     let Some(workdir) = repo.workdir() else {
         return false;

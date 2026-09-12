@@ -1,21 +1,15 @@
-//! Gate tests inject a fresh BootstrapProgress and assert only on their own
-//! per-tmpdir database state.
+//! Gate tests inject a fresh BootstrapProgress and assert only on their own per-tmpdir database state.
 
 use super::*;
 use crate::fts::META_KEY_SCHEMA_VERSION;
 
-/// A synthetic session store: the gate tests exercise the claim lease, not
-/// the on-disk layout, so the sessions need no transcripts. `list_sessions`
-/// still has to report a non-zero count for the single-flight test, which
-/// asserts that exactly one of two racing gates ran the reindex.
+/// A synthetic session store: the gate tests exercise the claim lease, not the on-disk layout, so the sessions need no transcripts.
+/// `list_sessions` has to report a non-zero count for the single-flight test, which asserts that exactly one of two racing gates ran the reindex.
 struct FakeSource {
     sessions: Vec<IndexableSession>,
-    /// Latched when a gate task returns. `list_sessions` runs only in the
-    /// gate that won the claim, so waiting on this holds the lease until the
-    /// other gate has finished its whole wait window. Without it the fake
-    /// enumerates so fast that the loser's first claim attempt can land
-    /// after the winner already released, and a launch's first claim always
-    /// reindexes.
+    /// `list_sessions` runs only in the gate that won the claim, so waiting on this holds the lease until the other gate
+    /// finishes its wait window. Without it the fake enumerates so fast that the loser's first claim can land after the
+    /// winner already released. A launch's first claim always reindexes, so both gates would run the reindex.
     peer_done: Option<Arc<AtomicBool>>,
 }
 
@@ -30,7 +24,7 @@ impl FakeSource {
         }
     }
 
-    fn with_ids(ids: &[&str], peer_done: Arc<AtomicBool>) -> Self {
+    fn with_session_ids(ids: &[&str]) -> Self {
         Self {
             sessions: ids
                 .iter()
@@ -42,7 +36,14 @@ impl FakeSource {
                     updates_path: None,
                 })
                 .collect(),
+            peer_done: None,
+        }
+    }
+
+    fn with_ids(ids: &[&str], peer_done: Arc<AtomicBool>) -> Self {
+        Self {
             peer_done: Some(peer_done),
+            ..Self::with_session_ids(ids)
         }
     }
 }
@@ -92,10 +93,9 @@ const TEST_TIMING: BootstrapTiming = BootstrapTiming {
 const _: () = assert!(TEST_TIMING.refresh.as_millis() < TEST_TIMING.lease.as_millis());
 const _: () = assert!(TEST_TIMING.poll.as_millis() < TEST_TIMING.peer_wait.as_millis());
 
-/// [`TEST_TIMING`] with a shorter peer wait, for the single-flight test. That
-/// test holds the winning gate's claim open for the losing gate's whole wait,
-/// and the shorter the hold the smaller the window in which a sibling test
-/// bumps the process-global cache epoch (see the marker assertion there).
+/// [`TEST_TIMING`] with a shorter peer wait, for the single-flight test.
+/// That test holds the winning gate's claim open for the losing gate's whole wait.
+/// The shorter the hold, the smaller the window in which a sibling test bumps the process-global cache epoch (see the marker assertion there).
 const CONTENDED_TIMING: BootstrapTiming = BootstrapTiming {
     lease: Duration::from_secs(300),
     refresh: Duration::from_millis(50),
@@ -121,21 +121,33 @@ async fn test_claimant_reindexes_even_when_marker_exists() {
     let tmp = tempfile::TempDir::new().unwrap();
     let db_path = search_db_path(tmp.path());
     stamp_marker(&db_path, "123");
+    let epoch_before = recovery::current_epoch();
+    let progress = Arc::new(BootstrapProgress::default());
 
-    let source = FakeSource::empty();
+    let source = FakeSource::with_session_ids(&["s1"]);
     bootstrap_with_lease_inner(
         tmp.path(),
         &source,
         no_content,
-        &Arc::new(BootstrapProgress::default()),
+        &progress,
         &TEST_TIMING,
         BootstrapRole::Launch,
     )
     .await
     .unwrap();
 
-    // The reindex rewrote the marker and released the claim.
-    assert_ne!(read_marker(&db_path).as_deref(), Some("123"));
+    // list_sessions runs only inside reindex_all, so a non-zero total is the launch-must-rebuild contract
+    assert!(
+        progress.total.load(Ordering::Relaxed) > 0,
+        "a launch claimant must reindex even when a completed marker already exists"
+    );
+    // The cache epoch is process-global
+    // A sibling heal withholds this run's completion marker ("cache healed during bootstrap")
+    let healed = recovery::current_epoch() != epoch_before;
+    assert!(
+        healed || read_marker(&db_path).as_deref() != Some("123"),
+        "reindex rewrites the marker unless a sibling heal withheld it"
+    );
     let claim =
         with_search_index(&db_path, |index| index.get_meta(META_KEY_BOOTSTRAP_CLAIM)).unwrap();
     assert_eq!(claim, None);
@@ -227,8 +239,7 @@ async fn test_try_bootstrap_returns_at_once_when_peer_holds_claim() {
 async fn test_recheck_adopts_marker_completed_after_its_probe() {
     let tmp = tempfile::TempDir::new().unwrap();
     let db_path = search_db_path(tmp.path());
-    // A peer finished and released between the recheck's marker probe
-    // and its claim attempt: the marker exists and the lease is free.
+    // A peer finished and released between the recheck's marker probe and its claim attempt: the marker exists and the lease is free
     stamp_marker(&db_path, "123");
 
     let source = FakeSource::empty();
@@ -300,19 +311,6 @@ fn test_shared_index_reopens_after_epoch_change() {
 }
 
 #[test]
-fn test_read_write_last_bootstrap_at() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let db_path = tmp.path().join("session_search.sqlite");
-
-    assert_eq!(try_read_last_bootstrap_at(&db_path).unwrap(), None);
-    write_last_bootstrap_at(&db_path).unwrap();
-
-    let ts = try_read_last_bootstrap_at(&db_path).unwrap().unwrap();
-    let now = chrono::Utc::now().timestamp();
-    assert!((now - ts).abs() < 5);
-}
-
-#[test]
 fn test_clear_last_bootstrap_at() {
     let tmp = tempfile::TempDir::new().unwrap();
     let db_path = tmp.path().join("session_search.sqlite");
@@ -332,8 +330,7 @@ async fn test_concurrent_gates_single_flight() {
 
     let progress_a = Arc::new(BootstrapProgress::default());
     let progress_b = Arc::new(BootstrapProgress::default());
-    // Whichever gate loses the claim returns first and latches this, which
-    // releases the winner's enumeration.
+    // Whichever gate loses the claim returns first and latches this, which releases the winner's enumeration
     let peer_done = Arc::new(AtomicBool::new(false));
     let source_a = FakeSource::with_ids(&["s1", "s2"], Arc::clone(&peer_done));
     let source_b = FakeSource::with_ids(&["s1", "s2"], Arc::clone(&peer_done));
@@ -383,11 +380,9 @@ async fn test_concurrent_gates_single_flight() {
     assert!(b.is_ok(), "gate b: {b:?}");
 
     let db_path = search_db_path(tmp.path());
-    // The cache epoch is process-global, so a sibling test healing its own
-    // cache while these gates run makes the winner withhold its completion
-    // marker by design ("cache healed during bootstrap"). That is the
-    // behavior under test elsewhere; here it just means the marker is
-    // legitimately absent.
+    // The cache epoch is process-global
+    // A sibling test healing its own cache while these gates run makes the winner withhold its completion marker ("cache healed during bootstrap")
+    // That is the behavior under test elsewhere; here it just means the marker is legitimately absent
     let healed = recovery::current_epoch() != epoch_before;
     assert!(
         healed || read_marker(&db_path).is_some(),

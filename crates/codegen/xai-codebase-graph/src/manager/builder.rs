@@ -62,12 +62,7 @@ struct FileSymbols {
 }
 
 /// Builder for creating a symbol index.
-///
-/// Uses optimized parallel processing with:
-/// - Thread-local parser and query caching
-/// - Chunked parallel processing for cache locality
-/// - Lightweight symbol extraction (no intermediate ScopeGraph)
-/// - Bounded merge-batching to cap two-phase peak memory
+/// Parallel parse with thread-local caches, then bounded merge-batching to cap two-phase peak memory.
 pub struct IndexBuilder {
     registry: LanguageRegistry,
     num_threads: usize,
@@ -77,10 +72,8 @@ pub struct IndexBuilder {
     skip_hidden: bool,
     /// Chunk size for parallel processing / thread-local cache locality (default: 100)
     chunk_size: usize,
-    /// Maximum number of files whose symbols are held in memory at once during
-    /// the merge phase.  Limiting this bounds the two-phase peak: parallel
-    /// parsing produces at most `build_batch_size` FileSymbols before they are
-    /// merged into the index and dropped.  Default: 5 000 files per batch.
+    /// Max files whose symbols are held at once during merge. Bounds two-phase peak memory.
+    /// Default: 5 000 files per batch.
     build_batch_size: usize,
 }
 
@@ -129,12 +122,8 @@ impl IndexBuilder {
     }
 
     /// Set the merge-batch size (default: 5 000 files per batch).
-    ///
-    /// Controls how many files' symbols are held in memory simultaneously
-    /// during the sequential merge phase.  Smaller values reduce peak RSS at
-    /// the cost of slightly more pool scheduling overhead.  Values below
-    /// `chunk_size` are clamped to `chunk_size` at build time, so the call
-    /// order of `with_build_batch_size` and `with_chunk_size` does not matter.
+    /// Smaller values reduce peak RSS at slightly more pool-scheduling cost.
+    /// Values below `chunk_size` are clamped at build time, so call order does not matter.
     #[must_use]
     pub fn with_build_batch_size(mut self, size: usize) -> Self {
         self.build_batch_size = size;
@@ -155,16 +144,8 @@ impl IndexBuilder {
         self
     }
 
-    /// Build index from a directory, respecting .gitignore.
-    ///
-    /// This walks the directory tree, automatically respecting:
-    /// - `.gitignore` files at any level
-    /// - `.git/info/exclude`
-    /// - Global gitignore (`~/.config/git/ignore`)
-    /// - Hidden files/directories (configurable)
-    ///
-    /// **Note**: File paths in the index are stored as **relative paths** (to `root_path`)
-    /// for portability across machines/sessions.
+    /// Build index from a directory, respecting gitignore (any level), exclude, and global ignore.
+    /// File paths in the index are stored relative to `root_path` for portability.
     pub fn build(&self, root_path: &Path) -> Result<ScopeGraphIndex> {
         // Collect files using the ignore crate
         let file_paths = self.collect_files(root_path)?;
@@ -194,11 +175,8 @@ impl IndexBuilder {
         self.collect_files_walk(root_path)
     }
 
-    /// Collect files using git2 - reads from the git index (tracked files).
-    /// Untracked files are not included since:
-    /// 1. They are typically a small minority
-    /// 2. They will be picked up by fsnotify when created
-    /// 3. The statuses() call for untracked files is very slow (~10x overhead)
+    /// Collect files from the git index (tracked files only).
+    /// Untracked files are omitted: they are a minority, fsnotify picks them up, and `statuses()` is ~10x slower.
     fn collect_files_git(&self, root_path: &Path) -> Option<Vec<PathBuf>> {
         use git2::Repository;
 
@@ -268,22 +246,9 @@ impl IndexBuilder {
         Ok(files.into_inner().unwrap())
     }
 
-    /// Build index with maximum throughput optimizations:
-    /// - Memory-mapped I/O for zero-copy file reading
-    /// - Direct parsing from mmap (no intermediate buffer copy)
-    /// - Lightweight symbol extraction (skip building full ScopeGraph)
-    /// - Thread-local parser and query caching
-    /// - Chunked parallel processing for better cache locality
-    /// - Single StringInterner for memory-efficient string deduplication
-    ///
-    /// Uses two-phase approach:
-    /// 1. Parallel: parse files and extract symbols into Vec<FileSymbols>
-    /// 2. Sequential: aggregate into single ScopeGraphIndex with single interner
-    ///
-    /// This ensures all strings are deduplicated in one interner, avoiding
-    /// the memory overhead of multiple interners during parallel aggregation.
-    ///
-    /// File paths are stored as **relative paths** (to `root_path`) for portability.
+    /// Build index with mmap parse and lightweight symbol extraction (no full ScopeGraph).
+    /// Two-phase: parallel extract into `FileSymbols`, then sequential merge into one interner.
+    /// Paths are stored relative to `root_path`.
     fn build_fast(&self, root_path: &Path, file_paths: &[PathBuf]) -> Result<ScopeGraphIndex> {
         // Configure thread pool with N-1 cores
         let pool = rayon::ThreadPoolBuilder::new()
@@ -303,15 +268,8 @@ impl IndexBuilder {
         let mut index = ScopeGraphIndex::new();
 
         // Process files in bounded merge-batches to cap two-phase peak memory.
-        //
-        // Old approach: collect ALL FileSymbols in one go, then merge.
-        // Peak = O(total_files) symbols + growing index simultaneously.
-        //
-        // New approach: for each batch of build_batch_size files:
-        //   1. Parse in parallel (par_chunks preserves thread-local cache locality)
-        //   2. Merge the batch into the index
-        //   3. Drop the batch before starting the next one
-        // Peak = O(build_batch_size) symbols + growing index simultaneously.
+        // Parse a batch in parallel, merge it, drop it, then start the next.
+        // Peak is O(build_batch_size) symbols plus the growing index, not O(total_files).
         for batch in file_paths.chunks(build_batch_size) {
             let batch_symbols: Vec<FileSymbols> = pool.install(|| {
                 batch
@@ -359,9 +317,7 @@ impl Default for IndexBuilder {
 }
 
 /// Process a single file using thread-local caching.
-/// Returns lightweight FileSymbols (no ScopeGraph overhead).
-///
-/// File path is stored as **relative** (to `root_path`) for portability.
+/// Returns lightweight FileSymbols (no ScopeGraph overhead). Path is relative to `root_path`.
 fn process_file_fast(
     path: &Path,
     root_path: &Path,

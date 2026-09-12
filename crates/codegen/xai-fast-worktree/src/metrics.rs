@@ -1,9 +1,3 @@
-//! `grove_wt_create` create-strategy telemetry.
-//!
-//! Histogram-shaped: every completed create records `(strategy, duration)`.
-//! Counters are process-local so tests can assert emission without a Prometheus
-//! scrape; production scrapes the matching tracing fields.
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -16,6 +10,29 @@ static CREATE_OVERLAY: AtomicU64 = AtomicU64::new(0);
 static CREATE_GIT: AtomicU64 = AtomicU64::new(0);
 static CREATE_OTHER: AtomicU64 = AtomicU64::new(0);
 static LAST_DURATION_NS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::IntoStaticStr)]
+pub enum DisposeMethod {
+    #[strum(serialize = "btrfs")]
+    Btrfs,
+    #[strum(serialize = "overlay")]
+    Overlay,
+    #[strum(serialize = "bind")]
+    Bind,
+    #[strum(serialize = "grove")]
+    Grove,
+    #[strum(serialize = "rm")]
+    Remove,
+    #[strum(serialize = "rm_fallback")]
+    RemoveFallback,
+}
+
+impl DisposeMethod {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        self.into()
+    }
+}
 
 /// Record one completed worktree create. `strategy` matches the design label
 /// set (`nfs` / `copy` / `btrfs` / `overlay`); `git` and `standalone` map to
@@ -43,6 +60,49 @@ pub fn record_grove_wt_create(strategy: &'static str, duration: Duration) {
         duration_seconds = duration.as_secs_f64(),
         "grove_wt_create"
     );
+}
+
+pub(crate) fn record_grove_wt_snapshot(duration: Duration) {
+    tracing::info!(
+        metric = "grove_wt_snapshot_duration_seconds",
+        duration_seconds = duration.as_secs_f64(),
+        "grove_wt_snapshot"
+    );
+}
+
+pub(crate) fn record_grove_wt_rehydrate(duration: Duration) {
+    tracing::info!(
+        metric = "grove_wt_rehydrate_duration_seconds",
+        duration_seconds = duration.as_secs_f64(),
+        "grove_wt_rehydrate"
+    );
+}
+
+pub fn record_grove_wt_dispose(method: DisposeMethod, duration: Duration) {
+    tracing::info!(
+        metric = "grove_wt_dispose_duration_seconds",
+        method = method.as_str(),
+        duration_seconds = duration.as_secs_f64(),
+        "grove_wt_dispose"
+    );
+}
+
+pub(crate) fn record_grove_wt_gc(removed: u64, duration: Duration) {
+    tracing::info!(
+        metric = "grove_wt_gc_duration_seconds",
+        removed = removed as i64,
+        duration_seconds = duration.as_secs_f64(),
+        "grove_wt_gc"
+    );
+}
+
+pub(crate) fn size_class_from_entries(entries: u64) -> &'static str {
+    match entries {
+        0 => "none",
+        1..=9_999 => "small",
+        10_000..=99_999 => "medium",
+        _ => "large",
+    }
 }
 
 /// Process-local count for `grove_wt_create_duration_seconds{strategy}`.

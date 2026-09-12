@@ -50,11 +50,8 @@ pub fn get_cache_path(root_path: &Path) -> std::path::PathBuf {
     root_path.join(CACHE_FILE_NAME)
 }
 
-/// Load an index from cache.
-///
-/// Uses the new binary format with magic bytes "SGIX".
-/// Returns `CacheError::LegacyFormat` if the file uses the old bincode format,
-/// signaling to the caller that a rebuild is needed.
+/// Load an index from cache. Uses the binary format with magic bytes "SGIX".
+/// `CacheError::LegacyFormat` means the old bincode format — caller should rebuild.
 pub fn load_index(cache_path: &Path) -> Result<ScopeGraphIndex> {
     if !cache_path.exists() {
         return Err(CacheError::IoError(std::io::Error::new(
@@ -83,10 +80,8 @@ pub fn save_index(cache_path: &Path, index: &ScopeGraphIndex) -> Result<()> {
     index.save(cache_path).map_err(CacheError::IoError)
 }
 
-/// Save an index to cache asynchronously (in a background thread).
-///
-/// Returns immediately and spawns a thread to do the actual saving.
-/// Useful for saving the index without blocking the main thread.
+/// Save an index to cache asynchronously (background thread).
+/// Returns immediately so the caller is not blocked.
 pub fn save_index_async(cache_path: std::path::PathBuf, index: ScopeGraphIndex) {
     std::thread::spawn(move || {
         if let Err(e) = save_index(&cache_path, &index) {

@@ -191,10 +191,8 @@ fn collect_files() -> Vec<String> {
     files
 }
 
-/// Compute the @-completion context from current textarea state.
-///
-/// Scans backward from `cursor` looking for an `@` that could be a file search
-/// trigger. Returns `None` if no valid context is found.
+/// Compute the @-completion context from current textarea state. Scans backward from `cursor` looking for an `@` that
+/// could be a file search trigger. Returns `None` if no valid context is found.
 fn compute_file_search_context(
     text: &str,
     cursor: usize,
@@ -1440,13 +1438,9 @@ impl DemoApp {
                 status.render(status_area, f.buffer_mut());
             }
 
-            // ── Cursor management (inside draw) ──
-            //
-            // By calling set_cursor_position inside the draw closure,
-            // ratatui emits show_cursor + set_cursor_position WITHOUT
-            // the hide_cursor that happens when no cursor is set.  This
-            // avoids the hide→show cycle that resets the terminal's
-            // blink timer every frame.
+            // By calling set_cursor_position inside the draw closure, ratatui emits show_cursor + set_cursor_position WITHOUT the
+            // hide_cursor that happens when no cursor is set. This avoids the hide→show cycle that resets the terminal's blink timer
+            // every frame.
             let want_cursor = if self.line_select.is_none() {
                 self.textarea
                     .cursor_pos_with_state(self.textarea_area, self.textarea_state)
@@ -1876,10 +1870,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> 
             }
         }
 
-        // Whether we processed an event or timed out, check if the
-        // textarea has pending timer work (e.g. continuous drag-scroll).
-        // The textarea's internal throttle prevents this from firing
-        // too fast — it'll return Nothing if not enough time has passed.
+        // Whether we processed an event or timed out, check if the textarea has pending timer work (e.g. continuous
+        // drag-scroll). The textarea's internal throttle prevents this from firing too fast — it'll return Nothing if not enough
+        // time has passed.
         if app.textarea.poll_timeout_ms().is_some() {
             let action = app.textarea.tick(app.textarea_area, app.textarea_state);
             if matches!(action, MouseAction::SelectionUpdated) {

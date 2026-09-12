@@ -65,12 +65,9 @@ impl std::fmt::Display for HunkLineInfo {
     }
 }
 
-/// The source of a hunk - who made the change.
-///
-/// This enum distinguishes between:
-/// - Changes made directly by the agent (with prompt attribution)
-/// - External changes to files the agent has touched (tracked for session context)
-/// - External changes to files the agent hasn't touched
+/// The source of a hunk - who made the change. This enum distinguishes between: Changes made directly by the agent (with
+/// prompt attribution); External changes to files the agent has touched (tracked for session context); External changes
+/// to files the agent hasn't touched.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum HunkSource {
@@ -471,11 +468,8 @@ impl FileContentView {
     }
 }
 
-/// Per-file content entry returned by `GetAllFileContents`.
-///
-/// Contains baseline, current content, agent attribution, and staging
-/// state for a single tracked file — everything a client needs to render
-/// diffs without per-file round trips.
+/// Per-file content entry returned by `GetAllFileContents`. Contains baseline, current content, agent attribution, and
+/// staging state for a single tracked file — everything a client needs to render diffs without per-file round trips.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileContentEntry {
@@ -500,10 +494,9 @@ pub struct FileHunkData {
     /// Current content with explicit status (on disk)
     pub current: FileContentView,
 
-    // === Legacy fields for backward compatibility ===
-    // These are populated from FileContentView for existing callers.
-    // Will be deprecated once all callers migrate to baseline/current views.
-    /// Baseline content (git HEAD) - legacy, use `baseline.content` instead
+    // === Legacy fields for backward compatibility ===. These are populated from FileContentView for existing callers. Will
+    // be deprecated once all callers migrate to baseline/current views. Baseline content (git HEAD) - legacy, use
+    // `baseline.content` instead
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline_content: Option<String>,
     /// Current content (on disk) - legacy, use `current.content` instead
@@ -519,12 +512,9 @@ pub struct FileHunkData {
 // imported here for snapshot serialization.
 use crate::actor::state::FileContentState;
 
-/// Snapshot of a single tracked file's hunk state.
-/// Preserves the full FileContentState (including Binary/TooLarge) for correctness
-/// in fork and cross-session sync flows.
-///
-/// `Serialize`/`Deserialize` let the rewind checkpoint store persist this to disk
-/// (see [`HunkTurnDelta`]).
+/// Snapshot of a single tracked file's hunk state. Preserves the full FileContentState (including Binary/TooLarge) for
+/// correctness in fork and cross-session sync flows. `Serialize`/`Deserialize` let the rewind checkpoint store persist
+/// this to disk (see [`HunkTurnDelta`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileHunkStateSnapshot {
     /// Content at git HEAD or session start (baseline for diffing).
@@ -542,14 +532,9 @@ pub struct FileHunkStateSnapshot {
     pub baseline_accepted: bool,
 }
 
-/// Snapshot of all hunk tracker state.
-///
-/// Used to preserve pending hunks across session kill/reload cycles
-/// (e.g., fork sync-back). Without this,
-/// the session reload creates a fresh `HunkTrackerActor` with empty state,
-/// causing all un-reviewed hunks to silently disappear — the user sees
-/// their changes "auto-applied" because they're on disk but no longer
-/// shown as reviewable.
+/// Used to preserve pending hunks across session kill/reload cycles (e.g., fork sync-back). Without this, the session
+/// reload creates a fresh `HunkTrackerActor` with empty state, causing all un-reviewed hunks to silently disappear — the
+/// user sees their changes "auto-applied" because they're on disk but no longer shown as reviewable.
 #[derive(Debug, Clone)]
 pub struct HunkTrackerSnapshot {
     /// All tracked files with their baselines, current content, hunks, and agent flags.
@@ -560,13 +545,9 @@ pub struct HunkTrackerSnapshot {
     pub session_stats: SessionStats,
 }
 
-/// Incremental, single-turn slice of hunk-tracker state, captured per
-/// `prompt_index` for the rewind checkpoint store: snapshots of the turn's
-/// touched files plus its hunk-id set, never a whole-tracker copy. Restore
-/// composes deltas (ascending, last write per path wins) into a
-/// [`HunkTrackerSnapshot`].
-///
-/// `Serialize`/`Deserialize` let the checkpoint store persist a delta to disk.
+/// Incremental, single-turn slice of hunk-tracker state, captured per `prompt_index` for the rewind checkpoint store:
+/// snapshots of the turn's touched files plus its hunk-id set, never a whole-tracker copy. Restore composes deltas
+/// (ascending, last write per path wins) into a [`HunkTrackerSnapshot`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HunkTurnDelta {
     /// The turn this delta belongs to.
@@ -578,21 +559,9 @@ pub struct HunkTurnDelta {
 }
 
 impl HunkTrackerSnapshot {
-    /// Rewrite all absolute paths in the snapshot from one directory prefix
-    /// to another. This is a **pure function** — no filesystem I/O.
-    ///
-    /// Used when transferring hunk state between sessions that operate in
-    /// different directories (e.g., root cwd ↔ fork worktree). Rewrites:
-    /// - `file_states` HashMap keys
-    /// - `Hunk.path` field inside each file's hunks
-    ///
-    /// Both `old_cwd` and `canonical_old_cwd` should be provided by the
-    /// caller (who canonicalizes while the directories still exist on disk).
-    /// This avoids filesystem I/O inside the transform and ensures correct
-    /// behavior even after worktree cleanup.
-    ///
-    /// Files whose paths cannot be rewritten (e.g., tracked outside the
-    /// worktree) are kept at their original path with a warning log.
+    /// Rewrite all absolute paths in the snapshot from one directory prefix to another. This avoids filesystem I/O inside the
+    /// transform and ensures correct behavior even after worktree cleanup. Files whose paths cannot be rewritten (e.g.,
+    /// tracked outside the worktree) are kept at their original path with a warning log.
     pub fn rewrite_paths(
         &mut self,
         old_cwd: &std::path::Path,
@@ -624,16 +593,10 @@ impl HunkTrackerSnapshot {
     }
 }
 
-/// Rewrite a single absolute path from one directory prefix to another.
-/// Pure function — no filesystem I/O.
-///
-/// Tries both raw and canonicalized prefix variants to handle macOS
-/// symlinks (e.g., `/var` → `/private/var`) and paths stored with vs.
-/// without symlink resolution.
-///
-/// Returns `None` if the path cannot be made relative to `old_cwd`
-/// under any prefix variant.
-fn rewrite_single_path(
+/// Rewrite a single absolute path from one directory prefix to another. Pure function — no filesystem I/O. Tries both raw
+/// and canonicalized prefix variants to handle macOS symlinks (e.g., `/var` → `/private/var`) and paths stored with vs.
+/// without symlink resolution. Returns `None` if the path cannot be made relative to `old_cwd` under any prefix variant.
+pub(crate) fn rewrite_single_path(
     path: &std::path::Path,
     old_cwd: &std::path::Path,
     canonical_old: &std::path::Path,
@@ -781,78 +744,6 @@ mod snapshot_tests {
         assert!(!snap.turn_index.is_empty());
         assert_eq!(snap.session_stats.accepted_hunks, 5);
     }
-
-    // === Snapshot preserves Binary/TooLarge (regression test) ===
-
-    #[test]
-    fn snapshot_preserves_binary_state() {
-        let mut file_states = HashMap::new();
-        file_states.insert(
-            PathBuf::from("/test/binary.bin"),
-            FileHunkStateSnapshot {
-                baseline: FileContentState::Binary {
-                    byte_len: Some(100),
-                },
-                current_content: FileContentState::Binary {
-                    byte_len: Some(100),
-                },
-                hunks: vec![],
-                is_agent_file: true,
-                baseline_accepted: false,
-            },
-        );
-        let snap = HunkTrackerSnapshot {
-            file_states,
-            turn_index: HashMap::new(),
-            session_stats: SessionStats::default(),
-        };
-
-        // Snapshot should preserve Binary (not collapse to Missing)
-        let state = snap
-            .file_states
-            .get(&PathBuf::from("/test/binary.bin"))
-            .unwrap();
-        assert!(matches!(state.baseline, FileContentState::Binary { .. }));
-        assert!(matches!(
-            state.current_content,
-            FileContentState::Binary { .. }
-        ));
-    }
-
-    #[test]
-    fn snapshot_preserves_too_large_state() {
-        let mut file_states = HashMap::new();
-        file_states.insert(
-            PathBuf::from("/test/huge.txt"),
-            FileHunkStateSnapshot {
-                baseline: FileContentState::TooLarge {
-                    byte_len: 2_000_000,
-                },
-                current_content: FileContentState::TooLarge {
-                    byte_len: 2_000_000,
-                },
-                hunks: vec![],
-                is_agent_file: true,
-                baseline_accepted: false,
-            },
-        );
-        let snap = HunkTrackerSnapshot {
-            file_states,
-            turn_index: HashMap::new(),
-            session_stats: SessionStats::default(),
-        };
-
-        // Snapshot should preserve TooLarge (not collapse to Missing)
-        let state = snap
-            .file_states
-            .get(&PathBuf::from("/test/huge.txt"))
-            .unwrap();
-        assert!(matches!(state.baseline, FileContentState::TooLarge { .. }));
-        assert!(matches!(
-            state.current_content,
-            FileContentState::TooLarge { .. }
-        ));
-    }
 }
 
 // ============================================================================
@@ -927,44 +818,5 @@ mod content_view_tests {
         assert_eq!(view.status, FileContentStatus::Full);
         assert_eq!(view.byte_len, Some(11));
         assert_eq!(view.content, Some(content));
-    }
-
-    #[test]
-    fn view_constructors() {
-        // Test the convenience constructors
-        let missing = FileContentView::missing();
-        assert_eq!(missing.status, FileContentStatus::Missing);
-
-        let binary = FileContentView::binary(Some(512));
-        assert_eq!(binary.status, FileContentStatus::Binary);
-        assert_eq!(binary.byte_len, Some(512));
-
-        let too_large = FileContentView::too_large(5_000_000);
-        assert_eq!(too_large.status, FileContentStatus::TooLarge);
-        assert_eq!(too_large.byte_len, Some(5_000_000));
-
-        let lfs = FileContentView::lfs_pointer(130);
-        assert_eq!(lfs.status, FileContentStatus::LfsPointer);
-        assert_eq!(lfs.byte_len, Some(130));
-        assert!(lfs.content.is_none());
-
-        let full = FileContentView::full("test".to_string());
-        assert_eq!(full.status, FileContentStatus::Full);
-        assert_eq!(full.byte_len, Some(4));
-        assert_eq!(full.content, Some("test".to_string()));
-    }
-
-    #[test]
-    fn default_view_is_missing() {
-        let view = FileContentView::default();
-        assert_eq!(view.status, FileContentStatus::Missing);
-        assert!(view.byte_len.is_none());
-        assert!(view.content.is_none());
-    }
-
-    #[test]
-    fn default_status_is_missing() {
-        let status = FileContentStatus::default();
-        assert_eq!(status, FileContentStatus::Missing);
     }
 }

@@ -76,11 +76,9 @@ impl crate::types::tool_metadata::ToolMetadata for WaitTasksTool {
     }
 }
 
-/// Resolve the model-facing `wait_tasks` description from the finalized toolset,
-/// honoring an explicit config override. Wording lives in the shared
-/// [`xai_tool_types::build_wait_tasks_description`] builder so the CLI and
-/// prod-chat can't drift. When no dedicated background-retrieval tool is
-/// registered, fall back to naming this tool's own get-output sibling.
+/// Resolve the model-facing `wait_tasks` description from the finalized toolset, honoring an explicit config override. Wording lives in the
+/// shared [`xai_tool_types::build_wait_tasks_description`] builder so the CLI and prod-chat can't drift. When no dedicated background-retrieval
+/// tool is registered, fall back to naming this tool's own get-output sibling.
 fn wait_tasks_description(
     renderer: &TemplateRenderer,
     description_override: Option<&str>,

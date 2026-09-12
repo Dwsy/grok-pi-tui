@@ -2,10 +2,8 @@
 
 use xai_grok_sampling_types::{ContentPart, ConversationItem};
 
-/// Replaces an inline image evicted to keep the request body under the proxy's
-/// 50 MB limit. Phrased so the model treats the image as gone rather than
-/// describing it from memory — a silently-stripped image otherwise induces
-/// confident hallucination of its contents.
+/// Replaces an inline image evicted to keep the request body under the proxy's 50 MB limit.
+/// Phrased so the model treats the image as gone — a silent strip otherwise induces hallucination.
 const IMAGE_COMPACT_PLACEHOLDER: &str = "[An earlier image was removed to keep the request within its size limit and is no longer visible. Do not describe or reason about its contents from memory; ask the user to re-share it if you need to see it again.]";
 
 /// Appended to a tool result when any of its images are evicted. Tool-result
@@ -13,50 +11,23 @@ const IMAGE_COMPACT_PLACEHOLDER: &str = "[An earlier image was removed to keep t
 /// result content itself.
 const TOOL_IMAGE_COMPACT_NOTE: &str = "[One or more images from this tool result were removed to keep the request within its size limit and are no longer visible. Do not describe or reason about their contents from memory.]";
 
-/// Hard request-body ceiling enforced by the inference proxy
-/// (nginx `proxy-body-size`). Bodies larger than this are rejected with HTTP
-/// 413 — or a connection reset before the response is written. Inline image
-/// `data:` URLs (base64) are the dominant term in this size.
+/// Hard request-body ceiling enforced by the inference proxy (nginx `proxy-body-size`).
+/// Larger bodies are rejected with HTTP 413 or a connection reset. Inline image `data:` URLs dominate.
 const MAX_REQUEST_BYTES: usize = 50 * 1024 * 1024;
 
-/// Evict old images once the serialized body reaches this size.
-///
-/// We gate on the exact body (see [`conversation_body_bytes`]) — system prompt,
-/// all message text, tool results, and image `data:` URLs are all counted
-/// precisely. This sits 3 MB below [`MAX_REQUEST_BYTES`] as headroom for the
-/// only parts of the wire request the body measurement does **not** include:
-/// - **tool definitions** — sent alongside the conversation but not part of it
-///   (tool JSON schemas + MCP tools); this is the bulk of the gap.
-/// - the request envelope and sampling params.
-/// - the small delta between our internal `ContentPart` JSON and the public-API
-///   wire format (the dominant base64 image bytes are identical in both).
-///
-/// The uncounted remainder is only sub-MB to low-MB in practice, so 3 MB covers
-/// it without needlessly sacrificing image capacity. The sampler's reactive 413
-/// image-strip is the final backstop if this is ever under-estimated.
-///
-/// Below this threshold every image stays in place so the KV-cache prefix is
-/// byte-stable across turns; eviction rewrites earlier turns and busts the
-/// prefix cache, so we only pay that cost when a 413 is actually near.
+/// Evict old images once the serialized body reaches this size (3 MB below the hard ceiling).
+/// Headroom covers uncounted tool definitions and the request envelope.
+/// Below the trigger every image stays so the KV-cache prefix remains byte-stable.
 pub const IMAGE_COMPACT_TRIGGER_BYTES: usize = MAX_REQUEST_BYTES - 3 * 1024 * 1024;
 
 /// Low-water mark that eviction reclaims down to once it fires (hysteresis).
-///
-/// Eviction is **gated** at [`IMAGE_COMPACT_TRIGGER_BYTES`] but **reclaims** to
-/// this strictly lower mark. Evicting only enough to clear the trigger means
-/// the next image-bearing turn re-crosses it and evicts again — rewriting the
-/// prefix and busting the KV cache on essentially every turn once the body sits
-/// at the ceiling. Dropping to half the hard limit instead frees ~25 MB of
-/// headroom, so the prefix is rewritten once and then stays stable (cache-warm)
-/// across many turns until the headroom is consumed again. The oldest images
-/// (least useful) are sacrificed in a batch rather than one-per-turn — a
-/// high-water trigger paired with a lower reclaim mark (classic hysteresis).
+/// Clearing only the trigger would re-cross and re-bust the KV cache every turn.
+/// Dropping to half the hard limit rewrites the prefix once, then stays cache-warm.
 pub const IMAGE_COMPACT_RECLAIM_TARGET_BYTES: usize = MAX_REQUEST_BYTES / 2;
 
-// Hysteresis invariant: eviction is gated at the trigger but reclaims to a
-// strictly lower mark, so one batch eviction buys many cache-warm turns rather
-// than re-triggering (and re-busting the prompt cache) every turn at the
-// ceiling. Enforced at compile time so the two constants can't drift together.
+// Hysteresis invariant: eviction is gated at the trigger but reclaims to a strictly lower mark.
+// One batch eviction buys many cache-warm turns instead of re-busting the prompt cache every turn.
+// Enforced at compile time so the two constants cannot drift together.
 const _: () = assert!(IMAGE_COMPACT_RECLAIM_TARGET_BYTES < IMAGE_COMPACT_TRIGGER_BYTES);
 
 /// An [`std::io::Write`] sink that counts bytes instead of storing them. Lets
@@ -147,9 +118,7 @@ pub fn apply_image_budget(items: Vec<ConversationItem>) -> BudgetedConversation 
 }
 
 /// Applies an explicit high-water trigger and low-water reclaim target.
-///
-/// Callers that add request fields outside the conversation can subtract those
-/// serialized bytes from both limits before calling this function.
+/// Callers that add request fields outside the conversation can subtract those bytes from both limits.
 #[must_use]
 pub fn apply_image_budget_with_limits(
     mut items: Vec<ConversationItem>,
@@ -200,12 +169,9 @@ fn image_part_bytes(part: &ContentPart) -> usize {
     }
 }
 
-/// Exact serialized size of the conversation body without scanning base64
-/// image tails.
-///
-/// The copy blanks image URLs before serialization, then adds back each URL's
-/// exact escaped contribution. For a base64 data URI, only the caller-supplied
-/// header is escape-scanned; the base64 tail cannot require JSON escaping.
+/// Exact serialized size of the conversation body without scanning base64 image tails.
+/// Blanks image URLs before serialization, then adds back each URL's exact escaped contribution.
+/// For a base64 data URI, only the header is escape-scanned; the base64 tail cannot need JSON escaping.
 fn conversation_body_bytes(conversation: &[ConversationItem]) -> usize {
     let mut blanked = conversation.to_vec();
     let mut image_url_bytes = 0usize;

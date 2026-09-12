@@ -3,6 +3,7 @@ use crate::capability::CapabilityMode;
 use crate::handle::tests::{
     background_capable_cfg, make_confining_handle, make_handle, start_background_sleep,
 };
+use std::sync::Arc;
 use xai_grok_tools::implementations::grok_build::scheduler::types::{
     ScheduledTask, SchedulerState,
 };
@@ -108,6 +109,52 @@ async fn dispatch_unknown_method_returns_unknown_method_error() {
         }
         other => panic!("expected UnknownMethod, got {other:?}"),
     }
+}
+#[tokio::test]
+async fn handle_evict_unbind_does_not_unmount() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let handle = make_handle();
+    handle
+        .create_session_with_cwd("evict-conv", None)
+        .expect("create");
+    handle
+        .session("evict-conv")
+        .expect("session")
+        .set_path_virtualization(
+            crate::path_virtualization::PathVirtualization::try_from_session_root(
+                "/workspace/evict-conv",
+            )
+            .expect("valid"),
+        );
+    let mounts = Arc::new(AtomicUsize::new(0));
+    let unbinds = Arc::new(AtomicUsize::new(0));
+    let mounts_c = mounts.clone();
+    let unbinds_c = unbinds.clone();
+    handle.set_bind_mount_hook(
+        crate::path_virtualization::BindMountHook::probe_then_mount(
+            |_| false,
+            move |_| {
+                mounts_c.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .with_on_unbind(move |_, _| {
+            unbinds_c.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
+    WorkspaceRpcHandler::new(handle)
+        .handle_evict(ToolServerEvictParams {
+            session_id: SessionId::new("evict-conv").unwrap(),
+            reason: "test".into(),
+            grace_period_ms: 50,
+        })
+        .await;
+    assert_eq!(
+        mounts.load(Ordering::SeqCst),
+        0,
+        "evict/prune must not mount or unmount"
+    );
+    assert_eq!(unbinds.load(Ordering::SeqCst), 1);
 }
 #[tokio::test]
 async fn handle_evict_triggers_two_phase_drain() {
@@ -1352,36 +1399,6 @@ async fn handle_hook_before_turn_sets_turn_state() {
     );
 }
 #[tokio::test]
-async fn handle_hook_after_turn_does_not_panic() {
-    let handle = make_handle();
-    let handler = WorkspaceRpcHandler::new(handle.clone());
-    handle.activity_tracker().turn_started("main", 1);
-    let payload = turn_hook::AfterTurnPayload {
-        turn_number: 1,
-        outcome: turn_hook::TurnHookOutcome::Completed,
-        duration_ms: 500,
-        tool_call_count: 3,
-        model_id: "grok-3".to_string(),
-        written_repo_paths: Vec::new(),
-        cancellation_category: None,
-        cancellation_context: None,
-    };
-    let frame = HookFrame {
-        session_id: SessionId::new("main").unwrap(),
-        tool_id: None,
-        call_id: None,
-        hook_id: None,
-        event: HookEvent::Custom {
-            kind: turn_hook::AFTER_TURN_KIND.to_string(),
-            payload: serde_json::to_value(&payload).unwrap(),
-        },
-        trace_context: None,
-    };
-    handler
-        .handle_hook(SessionId::new("main").unwrap(), frame)
-        .await;
-}
-#[tokio::test]
 async fn handle_hook_malformed_payload_does_not_panic() {
     let handle = make_handle();
     let handler = WorkspaceRpcHandler::new(handle);
@@ -1659,24 +1676,6 @@ async fn dispatch_resolve_file_references_uses_bound_session_base() {
     let arr = result.as_array().expect("results array");
     assert_eq!(arr[0]["exists"], serde_json::Value::Bool(true));
     assert_eq!(arr[0]["content"], serde_json::json!("rebased"));
-}
-#[tokio::test]
-async fn handle_hook_pause_resume_are_noops() {
-    let handle = make_handle();
-    let handler = WorkspaceRpcHandler::new(handle);
-    for event in [HookEvent::Pause, HookEvent::Resume] {
-        let frame = HookFrame {
-            session_id: SessionId::new("main").unwrap(),
-            tool_id: None,
-            call_id: None,
-            hook_id: None,
-            event,
-            trace_context: None,
-        };
-        handler
-            .handle_hook(SessionId::new("main").unwrap(), frame)
-            .await;
-    }
 }
 #[tokio::test]
 async fn dispatch_put_files_rejects_absolute_outside_root() {

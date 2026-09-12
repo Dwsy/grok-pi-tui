@@ -49,13 +49,9 @@ pub fn usage_percentage_u8(used: u64, total: u64) -> u8 {
     usage_percentage(used, total).round() as u8
 }
 
-/// Integer-arithmetic (truncating) usage percentage, clamped to `100`.
-///
-/// Differs from [`usage_percentage_u8`] in two ways: no `f64` round-trip,
-/// and the result is **truncated** (not rounded).
-///
-/// Returns `u8` because the result is bounded to `100`. Saturates on
-/// overflow via `saturating_mul`.
+/// Integer-arithmetic (truncating) usage percentage, clamped to `100`. Differs from [`usage_percentage_u8`] in two ways:
+/// no `f64` round-trip, and the result is truncated (not rounded). Returns `u8` because the result is bounded to `100`.
+/// Saturates on overflow via `saturating_mul`.
 #[inline]
 pub fn usage_percentage_truncated_u8(used: u64, total: u64) -> u8 {
     used.saturating_mul(100)
@@ -70,10 +66,9 @@ pub fn free_tokens(total: u64, used: u64) -> u64 {
     total.saturating_sub(used)
 }
 
-/// True when `used >= context_window * threshold_percent / 100`. Returns
-/// `false` for `context_window == 0` so callers do not have to special-case
-/// missing windows. Computed in integer arithmetic to match the existing
-/// auto-compact gate semantics.
+/// True when `used >= context_window * threshold_percent / 100`. Returns `false` for `context_window == 0` so callers do
+/// not have to special-case missing windows. Computed in integer arithmetic to match the existing auto-compact gate
+/// semantics.
 #[inline]
 pub fn exceeds_threshold(used: u64, context_window: u64, threshold_percent: u8) -> bool {
     if context_window == 0 {
@@ -164,10 +159,8 @@ mod tests {
         assert_eq!(usage_percentage_truncated_u8(u64::MAX, 1), 100);
     }
 
-    /// Truncation contract — distinguishes this helper from
-    /// `usage_percentage_u8`, which rounds. Locks in that
-    /// `exceeds_threshold(used, cw, p)` and
-    /// `usage_percentage_truncated_u8(used, cw) >= p` agree.
+    /// Truncation contract — distinguishes this helper from `usage_percentage_u8`, which rounds. Locks in that
+    /// `exceeds_threshold(used, cw, p)` and `usage_percentage_truncated_u8(used, cw) >= p` agree.
     #[test]
     fn usage_percentage_truncated_u8_truncates_does_not_round() {
         // 85 / 200 = 0.425, truncated -> 42 (rounded would be 43).
@@ -191,10 +184,9 @@ mod tests {
         assert!(!exceeds_threshold(50, 0, 85));
     }
 
-    /// Strict-boundary contract — pin the `>=` semantics. At cw=1000,
-    /// pct=85, `850 * 100 == 1000 * 85` so the gate must fire at exactly
-    /// 850 tokens. This is one token earlier than the legacy `>` gate
-    /// (`total > cw * pct / 100` which fired at 851).
+    /// Strict-boundary contract — pin the `>=` semantics. At cw=1000, pct=85, `850 * 100 == 1000 * 85` so the gate must fire
+    /// at exactly 850 tokens. This is one token earlier than the legacy `>` gate (`total > cw * pct / 100` which fired at
+    /// 851).
     #[test]
     fn exceeds_threshold_fires_on_strict_boundary() {
         assert!(exceeds_threshold(850, 1000, 85));

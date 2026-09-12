@@ -9,13 +9,7 @@ use anyhow::{Result, bail};
 use terminput::{Encoding, Event, KeyCode, KeyEvent, KeyModifiers};
 
 /// Parse a vim-notation key string into raw terminal bytes.
-///
-/// # Examples
-/// - `"hello"` -> literal bytes for h, e, l, l, o
-/// - `"<CR>"` or `"<Enter>"` -> `\r`
-/// - `"<C-c>"` -> Ctrl+C (0x03)
-/// - `"<Esc>:wq<CR>"` -> ESC, :, w, q, CR
-/// - `"<Up><Up><CR>"` -> up arrow, up arrow, CR
+/// Angle-bracket tokens (`<CR>`, `<C-c>`, `<Up>`) become control/escape sequences; other text is literal.
 pub fn parse_keys(input: &str) -> Result<Vec<u8>> {
     let events = parse_to_events(input)?;
     let mut bytes = Vec::new();

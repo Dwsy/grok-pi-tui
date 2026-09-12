@@ -99,6 +99,39 @@ is_not_found() {
     [ "$code" = "404" ]
 }
 
+fetch_compressed() {
+    local url="$1" tmp="$2" out="$3"
+    shift 3
+    is_not_found "$url" && return 1
+    download_file_parallel "$url" "$tmp" || return 1
+    # pipefail catches a decoder error (corrupt) or the over-cap SIGPIPE so the
+    # caller falls back; head bounds the write so a bomb cannot fill the disk.
+    # A real binary is ~170 MiB, well under the cap.
+    local max=$((512 * 1024 * 1024))
+    if (set -o pipefail; "$@" <"$tmp" 2>/dev/null | head -c "$max" >"$out"); then
+        [ -s "$out" ] && return 0
+    fi
+    rm -f "$out"
+    return 1
+}
+
+fetch_binary() {
+    local base="$1" out="$2" tmp
+    tmp=$(mktemp 2>/dev/null) || tmp=""
+    if [ -n "$tmp" ]; then
+        if command -v zstd >/dev/null 2>&1 && fetch_compressed "${base}.zst" "$tmp" "$out" zstd -q -dc; then
+            rm -f "$tmp"
+            return 0
+        fi
+        if command -v gzip >/dev/null 2>&1 && fetch_compressed "${base}.gz" "$tmp" "$out" gzip -dc; then
+            rm -f "$tmp"
+            return 0
+        fi
+        rm -f "$tmp"
+    fi
+    download_file_parallel "$base" "$out"
+}
+
 # JSON field extractor — extract a top-level string value using sed.
 json_get() {
     local json="$1" field="$2"
@@ -172,6 +205,13 @@ mkdir -p "$DOWNLOAD_DIR" "$BIN_DIR"
 
 platform="${os}-${arch}"
 CHANNEL="${GROK_CHANNEL:-stable}"
+case "$CHANNEL" in
+    stable|alpha|enterprise) ;;
+    *)
+        echo "Invalid GROK_CHANNEL: '${CHANNEL}' (expected stable, alpha, or enterprise)" >&2
+        exit 1
+        ;;
+esac
 
 # Pick a working BASE_URL: try Cloudflare-fronted x.ai first, fall back to
 # direct GCS if it's unreachable. The probe doubles as the channel-pointer
@@ -220,8 +260,8 @@ rm -f "$binary_tmp" 2>/dev/null || true
 
 echo "  Downloading grok ${version}..." >&2
 if [ "$os" = "windows" ]; then
-    if ! download_file_parallel "${artifact_base}.exe" "$binary_tmp"; then
-        if ! download_file_parallel "$artifact_base" "$binary_tmp"; then
+    if ! fetch_binary "${artifact_base}.exe" "$binary_tmp"; then
+        if ! fetch_binary "$artifact_base" "$binary_tmp"; then
             rm -f "$binary_tmp"
             if is_not_found "${artifact_base}.exe"; then
                 echo "Error: Grok is not yet available for your system ($platform)." >&2
@@ -231,7 +271,7 @@ if [ "$os" = "windows" ]; then
             exit 1
         fi
     fi
-elif ! download_file_parallel "$artifact_base" "$binary_tmp"; then
+elif ! fetch_binary "$artifact_base" "$binary_tmp"; then
     rm -f "$binary_tmp"
     if is_not_found "$artifact_base"; then
         echo "Error: Grok is not yet available for your system ($platform)." >&2
@@ -291,9 +331,10 @@ fi
 # Persist installer source and channel to config
 CONFIG_FILE="$HOME/.grok/config.toml"
 CLI_BLOCK="installer = \"internal\""
-if [ "$CHANNEL" != "stable" ]; then
-    CLI_BLOCK="${CLI_BLOCK}\nchannel = \"${CHANNEL}\""
-fi
+case "$CHANNEL" in
+    alpha) CLI_BLOCK="${CLI_BLOCK}\nchannel = \"alpha\"" ;;
+    enterprise) CLI_BLOCK="${CLI_BLOCK}\nchannel = \"enterprise\"" ;;
+esac
 if [ ! -f "$CONFIG_FILE" ]; then
     printf '[cli]\n%b\n' "$CLI_BLOCK" > "$CONFIG_FILE"
 elif grep -q '^\[cli\]' "$CONFIG_FILE"; then
@@ -311,13 +352,29 @@ fi
 # Fetch managed_config.toml + requirements.toml from server (deployment key only).
 if [ -n "$GROK_DEPLOYMENT_KEY" ]; then
     PROXY_URL="${GROK_PROXY_URL:-https://cli-chat-proxy.grok.com/v1}"
+    # Refuse cleartext / userinfo / empty-host proxies before attaching the key.
+    proxy_authority="${PROXY_URL#*://}"
+    proxy_authority="${proxy_authority%%[/?#]*}"
+    proxy_ok=
+    case "$PROXY_URL" in
+        [hH][tT][tT][pP][sS]://*)
+            case "$proxy_authority" in
+                ""|*@*) ;;
+                *) proxy_ok=1 ;;
+            esac
+            ;;
+    esac
+    if [ -z "$proxy_ok" ]; then
+        echo "Error: GROK_PROXY_URL must be an https:// URL." >&2
+        exit 1
+    fi
     echo "  Fetching deployment config..." >&2
     DEPLOY_RESPONSE=""
     AUTH_HEADER_FILE=$(mktemp 2>/dev/null) || AUTH_HEADER_FILE=""
     if [ -n "$AUTH_HEADER_FILE" ]; then
         chmod 600 "$AUTH_HEADER_FILE" 2>/dev/null || true
         printf 'Authorization: Bearer %s\n' "$GROK_DEPLOYMENT_KEY" > "$AUTH_HEADER_FILE"
-        DEPLOY_RESPONSE=$(curl -sS -f \
+        DEPLOY_RESPONSE=$(curl -sS -f --proto '=https' \
             -H "@${AUTH_HEADER_FILE}" \
             "${PROXY_URL}/deployment/config" 2>/dev/null) || DEPLOY_RESPONSE=""
         : > "$AUTH_HEADER_FILE" 2>/dev/null || true

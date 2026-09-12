@@ -31,6 +31,153 @@ pub fn is_grove_strategy(s: &str) -> bool {
     matches!(s, STRATEGY_GROVE_FUSE | STRATEGY_GROVE_NFS | STRATEGY_NFS)
 }
 
+/// The one decline both the Grove arm and the workspace's pre-dispatch rewrite
+/// can reach, so they account for the same source the same way.
+pub const SKIP_SOURCE_IS_GROVE_MOUNT: &str = "source is itself a Grove mount";
+
+/// Outcome of the Grove arm when it was requested.
+pub(crate) enum GroveTry {
+    Adopted(Box<CreateWorktreeResult>),
+    Skipped(GroveSkip),
+}
+
+impl std::fmt::Debug for GroveTry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Adopted(_) => f.write_str("Adopted(..)"),
+            Self::Skipped(skip) => f.debug_tuple("Skipped").field(skip).finish(),
+        }
+    }
+}
+
+/// Why the Grove arm declined. Every variant is a fallthrough: the next arm runs.
+/// `Display` is the wording that reaches the user through the strategy report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroveSkip {
+    /// Linux-only: macOS reaches Grove over NFS and never reads `/dev/fuse`.
+    #[cfg(target_os = "linux")]
+    FuseUnavailable,
+    #[cfg(target_os = "linux")]
+    PrivateMountNamespace,
+    SourceIsGroveMount,
+    PreserveOnLinkedView,
+    MountTableInconclusive,
+    PreserveOnInconclusiveLinkedView,
+    JjSourceRepo,
+    PreserveNonHeadRef,
+    HeadUnreadableAfterAdopt,
+    DaemonDeclined,
+}
+
+impl GroveSkip {
+    /// The daemon is the only decline its capability class explains; every other
+    /// variant is a local decision the daemon never saw, so grading it there
+    /// would spend a Status RPC to answer a question nobody asked.
+    pub(crate) fn is_daemon_refusal(self) -> bool {
+        matches!(self, Self::DaemonDeclined)
+    }
+}
+
+impl std::fmt::Display for GroveSkip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // This text is printed to users, not just logged: say what happened in
+        // the user's terms, not in the implementation's.
+        f.write_str(match self {
+            #[cfg(target_os = "linux")]
+            Self::FuseUnavailable => "/dev/fuse or fusermount is missing",
+            #[cfg(target_os = "linux")]
+            Self::PrivateMountNamespace => "this process is in a private mount namespace",
+            Self::SourceIsGroveMount => crate::worktree::SKIP_SOURCE_IS_GROVE_MOUNT,
+            Self::PreserveOnLinkedView => {
+                "uncommitted changes cannot be carried onto a linked Grove view"
+            }
+            Self::MountTableInconclusive => "the source's mount table could not be read",
+            Self::PreserveOnInconclusiveLinkedView => {
+                "uncommitted changes cannot be carried onto a possibly linked Grove view"
+            }
+            Self::JjSourceRepo => "the source is a jj repo",
+            Self::PreserveNonHeadRef => {
+                "uncommitted changes cannot be carried onto a different ref"
+            }
+            Self::HeadUnreadableAfterAdopt => "the new worktree's HEAD could not be read",
+            Self::DaemonDeclined => "the Grove daemon declined or was unreachable",
+        })
+    }
+}
+
+/// A dispatch arm that can decline before a later arm serves the worktree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorktreeArm {
+    GroveFuse,
+    GroveNfs,
+    Overlay,
+    Btrfs,
+}
+
+impl WorktreeArm {
+    /// Only a Grove skip explains why Grove did not serve the worktree; a
+    /// snapshot arm's skip means an earlier arm lost and Grove never ran.
+    #[must_use]
+    pub fn is_grove(self) -> bool {
+        matches!(self, Self::GroveFuse | Self::GroveNfs)
+    }
+
+    #[must_use]
+    fn label(self) -> &'static str {
+        match self {
+            Self::GroveFuse => STRATEGY_GROVE_FUSE,
+            Self::GroveNfs => STRATEGY_GROVE_NFS,
+            Self::Overlay => STRATEGY_OVERLAY,
+            Self::Btrfs => STRATEGY_BTRFS,
+        }
+    }
+}
+
+/// One arm that did not serve the worktree, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArmSkip {
+    pub arm: WorktreeArm,
+    /// One line: a typed Grove decline, or a flattened error chain.
+    pub detail: String,
+    /// Set when the Grove arm declined with a [`GroveSkip`]. Absent on snapshot-arm
+    /// failures and flattened error chains, which have no typed Grove decline.
+    pub grove_skip: Option<GroveSkip>,
+}
+
+impl ArmSkip {
+    pub fn new(arm: WorktreeArm, detail: impl Into<String>) -> Self {
+        Self {
+            arm,
+            detail: detail.into(),
+            grove_skip: None,
+        }
+    }
+
+    pub fn from_grove(arm: WorktreeArm, skip: GroveSkip) -> Self {
+        Self {
+            arm,
+            detail: skip.to_string(),
+            grove_skip: Some(skip),
+        }
+    }
+}
+
+impl std::fmt::Display for ArmSkip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.arm.label(), self.detail)
+    }
+}
+
+/// Skip lines joined for a log field or a fallback message.
+#[must_use]
+pub fn render_arm_skips(skips: &[ArmSkip]) -> String {
+    skips
+        .iter()
+        .map(ArmSkip::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// Result of worktree creation.
 #[derive(Debug)]
 pub struct CreateWorktreeResult {
@@ -54,6 +201,12 @@ pub struct CreateWorktreeResult {
 
     /// Arm-specific metadata (NFS mount/backing/pin; overlay/btrfs snapshot paths).
     pub strategy_metadata: Option<serde_json::Value>,
+
+    /// Arms that declined before the one that ran.
+    pub skipped: Vec<ArmSkip>,
+
+    /// Grove daemon capability class: `current`, `old`, or `unknown`.
+    pub daemon_capability_class: Option<&'static str>,
 }
 
 /// Execute worktree creation plan. This is a blocking operation.
@@ -1581,9 +1734,8 @@ mod tests {
     #[test]
     fn test_linked_cancel_after_worktree_add_deregisters() {
         // A pre-cancelled Linked creation bails right after `git worktree add`.
-        // The partial worktree dir AND its `.git/worktrees/<name>` registration
-        // must both be cleaned up, so a later create at the same dest isn't
-        // blocked by a stale registration.
+        // Both the partial dir and its `.git/worktrees/<name>` registration must
+        // be cleaned up, or a later create at the same dest is blocked.
         xai_test_utils::require_git!();
         use crate::CreationMode;
         use tokio_util::sync::CancellationToken;
@@ -1618,11 +1770,8 @@ mod tests {
     #[test]
     fn test_standalone_cancel_removes_partial_dest() {
         // A pre-cancelled standalone creation must join the background `.git/`
-        // copy thread and then remove the partial dest — no leftover dir.
-        // NOTE: with a tiny repo the `.git/` copy finishes ~instantly, so this
-        // covers the join-before-teardown ORDERING structurally (no timing
-        // fault-injection); the unconditional join in execute.rs makes it safe
-        // regardless of thread timing.
+        // copy and then remove the partial dest. A tiny repo finishes instantly,
+        // so this pins join-before-teardown ordering, not timing.
         xai_test_utils::require_git!();
         use tokio_util::sync::CancellationToken;
 
@@ -1647,10 +1796,9 @@ mod tests {
 
     #[test]
     fn test_linked_hard_error_reclaims_and_deregisters() {
-        // A hard (non-cancel) error AFTER `git worktree add` arms the guard must
-        // reclaim the dir AND deregister `.git/worktrees/<name>` — proves the
-        // guard fires on the error path, not only on cancel. An invalid
-        // ignored-files glob makes the ignored-copy phase fail deterministically.
+        // A hard error after `git worktree add` must reclaim the dir and
+        // deregister `.git/worktrees/<name>` — the guard fires on error, not
+        // only on cancel. An invalid ignored-files glob fails that phase.
         xai_test_utils::require_git!();
         use crate::{CreationMode, IgnoredFilesMode};
 

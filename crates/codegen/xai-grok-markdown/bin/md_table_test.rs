@@ -254,7 +254,6 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let size = f.area();
 
     // Layout: header (1) | textarea (flexible) | full render | streaming render
-    //
     // We compute the heights we need for the render panels, then give the rest
     // to the textarea.
 
@@ -410,10 +409,8 @@ fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> u16 {
 }
 
 /// Render a bordered panel whose *inner* width is exactly `inner_w`.
-///
-/// Content is soft-wrapped with `Wrap { trim: false }` so long non-table
-/// lines fold inside the box.  The box is left-aligned within the available
-/// `area`.  If `is_error` is true the border turns red.
+/// Content is soft-wrapped with `Wrap { trim: false }` so long non-table lines fold inside the box. The box is left-aligned within the available
+/// `area`. If `is_error` is true the border turns red.
 fn render_panel(
     f: &mut ratatui::Frame,
     area: Rect,

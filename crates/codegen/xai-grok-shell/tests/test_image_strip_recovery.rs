@@ -1,5 +1,5 @@
-//! Server-rejected (but client-valid) image recovers in-turn and persists
-//! so the next turn does not resend it.
+//! An image the client accepts but the server rejects is stripped within the failing turn.
+//! The strip persists so the next turn does not resend the image.
 
 mod acp_harness;
 
@@ -58,12 +58,13 @@ async fn seed_poisoned_session(cwd: &std::path::Path, image_url: &str) -> Info {
     info
 }
 
-/// Main-turn `/v1/chat/completions` bodies, excluding turn-summary side-calls.
-fn chat_completion_bodies(server: &xai_grok_test_support::MockInferenceServer) -> Vec<String> {
+/// Sampling bodies from the main turn, excluding turn-summary requests.
+/// The agent may call either chat completions or the responses API.
+fn sampling_bodies(server: &xai_grok_test_support::MockInferenceServer) -> Vec<String> {
     server
         .requests()
         .into_iter()
-        .filter(|r| r.path == "/v1/chat/completions")
+        .filter(|r| r.path == "/v1/chat/completions" || r.path == "/v1/responses")
         .filter(|r| {
             !r.header("x-grok-req-id")
                 .is_some_and(|id| id.starts_with("xai-turn-summary-"))
@@ -91,31 +92,43 @@ fn poisoned_image_session_recovers_within_the_failing_turn() {
         .expect("session/load timed out")
         .expect("session/load failed");
 
-        // One-shot 400; strip-retry falls through to echo.
-        server.enqueue_response(
-            "/v1/chat/completions",
-            ScriptedResponse::json(
-                400,
-                json!({
-                    "code": "invalid_image",
-                    "error": "Base64 string of provided image cannot be decoded.",
-                }),
+        // The 400 fires once on the foreground turn; auxiliary calls must not
+        // consume it. The strip-retry falls through to the mock's default echo.
+        let invalid_image = ScriptedResponse::json(
+            400,
+            json!({
+                "code": "invalid_image",
+                "error": "Base64 string of provided image cannot be decoded.",
+            }),
+        );
+        let _reject_chat = server.expect_response(
+            "invalid-image-chat",
+            xai_grok_test_support::InferenceRequestMatcher::foreground(
+                xai_grok_test_support::InferenceEndpoint::ChatCompletions,
             ),
+            invalid_image.clone(),
+        );
+        let _reject_responses = server.expect_response(
+            "invalid-image-responses",
+            xai_grok_test_support::InferenceRequestMatcher::foreground(
+                xai_grok_test_support::InferenceEndpoint::Responses,
+            ),
+            invalid_image,
         );
 
         prompt_turn(&conn, &info.id, "hi").await;
 
-        let bodies = chat_completion_bodies(&server);
+        let bodies = sampling_bodies(&server);
+        let rejected = bodies
+            .iter()
+            .position(|body| body.contains(image_marker))
+            .expect("a sampling attempt must carry the poisoned image");
         assert!(
-            bodies.len() >= 2,
-            "expected the rejected attempt plus a strip-retry, saw {} request(s)",
+            rejected + 1 < bodies.len(),
+            "strip-retry must follow the rejected attempt, saw {} request(s)",
             bodies.len()
         );
-        assert!(
-            bodies[0].contains(image_marker),
-            "first attempt must carry the poisoned image"
-        );
-        let retry = &bodies[bodies.len() - 1];
+        let retry = &bodies[rejected + 1];
         assert!(
             !retry.contains(image_marker),
             "strip-retry must not resend the poisoned image"
@@ -126,9 +139,9 @@ fn poisoned_image_session_recovers_within_the_failing_turn() {
         );
 
         // Persist: next turn must not resend or strip-retry.
-        let turn_one_requests = chat_completion_bodies(&server).len();
+        let turn_one_requests = sampling_bodies(&server).len();
         prompt_turn(&conn, &info.id, "hi again").await;
-        let bodies = chat_completion_bodies(&server);
+        let bodies = sampling_bodies(&server);
         assert_eq!(
             bodies.len(),
             turn_one_requests + 1,
@@ -163,7 +176,7 @@ fn poisoned_image_session_recovers_within_the_failing_turn() {
     });
 }
 
-/// Session `chat_history.jsonl`; cwd encoding is internal, so we scan.
+/// The session's `chat_history.jsonl`; the sessions dir name encodes the cwd in an internal format, so we scan for the file.
 fn session_chat_jsonl() -> std::path::PathBuf {
     let sessions = std::path::PathBuf::from(std::env::var("GROK_HOME").expect("GROK_HOME set"))
         .join("sessions");

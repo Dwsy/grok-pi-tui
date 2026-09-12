@@ -19,11 +19,9 @@ pub fn tool_identity_of(metadata: &dyn ToolMetadata) -> ToolIdentity {
         read_only: metadata.is_read_only(),
     }
 }
-/// Resolve `wire_name` in `toolset` and merge the canonical `x.ai/tool` object
-/// into `existing` (see [`CanonicalToolMeta::merge_into`]). Returns `existing`
-/// unchanged when the tool is unknown (uninitialized MCP, backend-hosted), so
-/// markers like `bash_mode`/`backend` are never clobbered. This is the harness
-/// entry point for stamping tool-call `_meta`.
+/// Resolve `wire_name` in `toolset` and merge the canonical `x.ai/tool` object into `existing` (see [`CanonicalToolMeta::merge_into`]). Returns
+/// `existing` unchanged when the tool is unknown (uninitialized MCP, backend-hosted), so markers like `bash_mode`/`backend` are never
+/// clobbered. This is the harness entry point for stamping tool-call `_meta`.
 pub fn merge_tool_meta(
     toolset: &FinalizedToolset,
     existing: Option<serde_json::Value>,
@@ -39,27 +37,18 @@ pub fn merge_tool_meta(
         None => existing,
     }
 }
-/// Normalize a read offset to the 1-indexed canonical line. Readers
-/// allow negative (from-end) offsets, which have no 1-indexed
-/// equivalent and are dropped (consumers read `raw_input`); `0` coalesces to
-/// `1`. Shared by [`canonical_input`] and the harness ACP location line so a
-/// single tool-call event never exposes two different start lines.
+/// Normalize a read offset to the 1-indexed canonical line. Readers allow negative (from-end) offsets, which have no 1-indexed equivalent and
+/// are dropped (consumers read `raw_input`); `0` coalesces to `1`. Shared by [`canonical_input`] and the harness ACP location line so a single
+/// tool-call event never exposes two different start lines.
 pub fn norm_offset_i64(offset: Option<i64>) -> Option<u64> {
     match offset {
         Some(o) if o >= 0 => Some(o.max(1) as u64),
         _ => None,
     }
 }
-/// Project a tool's **typed** input into the harness-independent `input` dict of
-/// the `x.ai/tool` `_meta` object. Equivalent tools across toolsets emit the
-/// same keys with the same meaning (a harness may add an extra key).
-///
-/// Returns `None` for tools with no stable cross-harness shape (MCP / dynamic /
-/// codex / hashline / media / control-flow); the caller then omits `input`.
-/// Absent optional fields are omitted (never `null`). Bulky payload fields
-/// (edit `old_string`/`new_string`, full write contents) are never projected —
-/// consumers read them from `raw_input`. Keys come from [`field`]; the match is
-/// exhaustive so a new `ToolInput` variant must decide here.
+/// Project a tool's **typed** input into the harness-independent `input` dict of the `x.ai/tool` `_meta` object. Equivalent tools across
+/// toolsets emit the same keys with the same meaning (a harness may add an extra key). Absent optional fields are omitted (never `null`). Bulky
+/// payload fields (edit `old_string`/`new_string`, full write contents) are never projected — consumers read them from `raw_input`.
 pub fn canonical_input(input: &ToolInput) -> Option<serde_json::Value> {
     use serde_json::Value;
     /// Required field — omitted on serialization failure (absent fields are
@@ -122,6 +111,8 @@ pub fn canonical_input(input: &ToolInput) -> Option<serde_json::Value> {
         | ToolInput::EnterPlanMode(_)
         | ToolInput::ExitPlanMode(_)
         | ToolInput::AskUserQuestion(_)
+        | ToolInput::SendSubagentMessage(_)
+        | ToolInput::SendFeedback(_)
         | ToolInput::Lsp(_)
         | ToolInput::Monitor(_)
         | ToolInput::SchedulerCreate(_)

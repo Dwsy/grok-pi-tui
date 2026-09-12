@@ -22,7 +22,6 @@ fn summary_round_trips_head_fields_through_json() {
 
 #[test]
 fn summary_deserializes_without_head_fields_backward_compat() {
-    // Simulate an old summary.json that lacks head_commit/head_branch.
     let json = r#"{
             "info": { "id": "old-session", "cwd": "/tmp" },
             "session_summary": "",
@@ -33,8 +32,30 @@ fn summary_deserializes_without_head_fields_backward_compat() {
             "current_model_id": "test-model"
         }"#;
     let summary: Summary = serde_json::from_str(json).unwrap();
+    assert!(summary.agent_id.is_none());
+    assert!(summary.attempt_id.is_none());
     assert!(summary.head_commit.is_none());
     assert!(summary.head_branch.is_none());
+}
+
+#[test]
+fn session_identity_start_resume_and_fork() {
+    let started = next_session_identity(None, false, (0x11, 0x22));
+    assert_eq!(started.agent_id, "ag1.11");
+    assert_eq!(started.attempt_id, "at1.22");
+
+    let resumed = next_session_identity(Some(&started.agent_id), false, (0x33, 0x44));
+    assert_eq!(resumed.agent_id, started.agent_id);
+    assert_eq!(resumed.attempt_id, "at1.44");
+
+    let forked = next_session_identity(Some(&resumed.agent_id), true, (0x55, 0x66));
+    assert_eq!(forked.agent_id, "ag1.55");
+    assert_ne!(forked.agent_id, resumed.agent_id);
+    assert_eq!(forked.attempt_id, "at1.66");
+
+    let invalid_legacy = next_session_identity(Some("legacy-session-id"), false, (0x77, 0x88));
+    assert_eq!(invalid_legacy.agent_id, "ag1.77");
+    assert_eq!(invalid_legacy.attempt_id, "at1.88");
 }
 
 #[test]
@@ -125,10 +146,8 @@ fn summary_skips_none_head_fields_in_serialized_json() {
     )
     .unwrap();
     // In a non-git directory the fields will be None.
-    // Verify they are omitted from the JSON output.
     let json = serde_json::to_string(&summary).unwrap();
-    // head_commit should not appear if the cwd has a repo (it might),
-    // but verify the skip_serializing_if attribute works for None.
+    // The test cwd may be inside a git repo, so assert skip_serializing_if omission only when the field is None
     if summary.head_commit.is_none() {
         assert!(!json.contains("head_commit"));
     }

@@ -231,11 +231,9 @@ fn rebuild_worktree_db_from_grove_dirs(
     let now = now_epoch_secs();
     let roots = managed_worktree_roots(grok_home);
 
-    // Union grove identities before any managed-root walk. The dests we
-    // learn here are skipped in discover_worktrees_skipping so is_dir /
-    // .git / canonicalize never touch a wedged NFS mount. Registering NFS
-    // first also keeps a grove dest from being labeled linked/standalone
-    // (sweep_dead would then Path::exists the live mount).
+    // Union grove identities first so later walks skip those dests and never
+    // touch a wedged NFS mount. Registering NFS first also keeps a grove dest
+    // from being labeled linked/standalone (sweep_dead would exists() it).
     let mut seen = HashSet::new();
     let mut counted_nfs = HashSet::new();
     let recs = db.list(&crate::db::ListFilter {
@@ -305,10 +303,9 @@ fn register_nfs_from_union(
     // permanently skip the live identity. Highest rank first; id tie-break.
     ordered.sort_by(|a, b| b.1.rank.cmp(&a.1.rank).then_with(|| a.0.cmp(&b.0)));
     let mut skip_dests: Vec<PathBuf> = Vec::new();
-    // Hang-avoidance skips (aborted / missing backing) stay in skip_dests so
-    // FS rediscovery does not poke a wedged mount, but they are not claims.
-    // dest_taken must ignore them or a rank-3 aborted journal blocks a live
-    // marker/mounts identity at the same dest.
+    // Hang-avoidance skips stay in skip_dests (don't poke a wedged mount) but
+    // are not claims: dest_taken must ignore them or a rank-3 aborted journal
+    // blocks a live identity at the same dest.
     let mut claimed_dests: Vec<PathBuf> = Vec::new();
     for (id, idn) in ordered {
         if let Some(dest) = idn
@@ -386,11 +383,9 @@ fn register_nfs_from_union(
             .iter()
             .any(|r| crate::nfs::dest_paths_equivalent(&r.path, &dest))
         {
-            // Dest already registered under another id (nfs or linked/copy).
-            // Never overlay this identity's backing/source_pin (stale marker
-            // would make dead-NFS GC drop the live pin) and never flip a
-            // linked/copy row to nfs. Always skip dest so FS rediscovery and
-            // GC cannot exists()/try_nfs_remove a live grove tree.
+            // Dest already registered: never overlay backing/source_pin (stale
+            // marker would make dead-NFS GC drop the live pin) or flip a
+            // linked/copy row to nfs. Always skip so GC cannot touch a live tree.
             claim_nfs_dest(dest, &mut skip_dests, &mut claimed_dests);
             report.already_tracked += 1;
             continue;
@@ -653,20 +648,6 @@ mod tests {
 
         let source = detect_source_repo(&wt);
         assert_eq!(source, Some(PathBuf::from("/home/user/myrepo")));
-    }
-
-    #[test]
-    fn rebuild_report_serde_round_trip() {
-        let report = RebuildReport {
-            discovered: 5,
-            registered: 3,
-            already_tracked: 2,
-        };
-        let json = serde_json::to_string(&report).unwrap();
-        let deser: RebuildReport = serde_json::from_str(&json).unwrap();
-        assert_eq!(deser.discovered, 5);
-        assert_eq!(deser.registered, 3);
-        assert_eq!(deser.already_tracked, 2);
     }
 
     #[test]

@@ -33,12 +33,9 @@ const MAX_PAYLOAD_LEN: usize = 10 * 1024 * 1024;
 /// Cap per tool result to avoid flooding the context with vision tokens.
 const MAX_IMAGES: usize = 5;
 
-/// Prefix regex for `data:<mime>;base64,`. The payload is scanned manually
-/// from prefix end so line-wrapped producers (Python `base64.encodebytes`,
-/// OpenSSL, Perl `MIME::Base64`) round-trip byte-equal. The leading
-/// `(?:[^a-zA-Z0-9]|^)` rejects word-internal matches like
-/// `metadata:image/...`. Only raster MIME types `image_normalize` can
-/// decode are matched. Groups: (1) full prefix, (2) MIME type.
+/// Prefix regex for `data:<mime>;base64,`. The payload is scanned manually from prefix end so line-wrapped producers (Python
+/// `base64.encodebytes`, OpenSSL, Perl `MIME::Base64`) round-trip byte-equal. The leading `(?:[^a-zA-Z0-9]|^)` rejects word-internal matches
+/// like `metadata:image/...`. Only raster MIME types `image_normalize` can decode are matched. Groups: (1) full prefix, (2) MIME type.
 static IMAGE_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"(?i)(?:[^a-zA-Z0-9]|^)",
@@ -69,17 +66,9 @@ fn is_base64_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=')
 }
 
-/// Scan a base64 payload starting at `start`, returning the exclusive end.
-///
-/// Admits a greedy core run plus any number of `\r?\n[ \t]*<base64>+`
-/// continuation chunks, so line-wrapped output round-trips byte-equal. A
-/// chunk ending in `=` (real base64 padding) ends the scan. The scan is
-/// also bounded by `end_cap` (the next URI prefix) so adjacent data URIs
-/// do not bleed into each other.
-///
-/// Trade-off: pure base64-alphabet prose on the line after a payload IS
-/// absorbed; the downstream integrity check in
-/// `image_normalize::normalize_one` rejects the resulting corrupt image.
+/// Scan a base64 payload starting at `start`, returning the exclusive end. Admits a greedy core run plus any number of `\r?\n[ \t]*<base64>+`
+/// continuation chunks, so line-wrapped output round-trips byte-equal. A chunk ending in `=` (real base64 padding) ends the scan. The scan is
+/// also bounded by `end_cap` (the next URI prefix) so adjacent data URIs do not bleed into each other.
 fn scan_payload_end(text: &str, start: usize, end_cap: usize) -> usize {
     let bytes = text.as_bytes();
     let cap = end_cap.min(bytes.len());
@@ -187,10 +176,8 @@ fn strip_pdf_data_uris(text: &str) -> Option<String> {
     Some(result)
 }
 
-/// Scan `s` for data-URI images, replacing each with a placeholder and
-/// capturing the payload bytes for downstream multimodal injection.
-///
-/// Returns `None` when nothing was modified.
+/// Scan `s` for data-URI images, replacing each with a placeholder and capturing the payload bytes
+/// for downstream multimodal injection. Returns `None` when nothing was modified.
 fn scan_and_extract(s: &str) -> Option<(String, Vec<ExtractedImage>)> {
     if !s.contains("data:image") {
         return None;
@@ -255,10 +242,9 @@ fn scan_and_extract(s: &str) -> Option<(String, Vec<ExtractedImage>)> {
     Some((result, images))
 }
 
-/// Extract image data URIs from `text`, replacing each with a placeholder.
-/// Small payloads and non-image data URIs survive; PDF data URIs are
-/// stripped first. Owned-input convenience over [`try_extract_base64_images`]
-/// — when nothing matched, the original `text` is returned unmodified.
+/// Extract image data URIs from `text`, replacing each with a placeholder. Small payloads and non-image data URIs
+/// survive; PDF data URIs are stripped first. Owned-input convenience over [`try_extract_base64_images`] — when nothing
+/// matched, the original `text` is returned unmodified.
 pub fn extract_base64_images(text: String) -> ExtractionResult {
     try_extract_base64_images(&text).unwrap_or_else(|| ExtractionResult {
         text,
@@ -266,10 +252,9 @@ pub fn extract_base64_images(text: String) -> ExtractionResult {
     })
 }
 
-/// Borrowed-input variant: returns `Some` only when at least one URI was
-/// matched (image captured, or PDF / oversize stripped). Returns `None`
-/// on the no-op fast path so callers (e.g. the per-line scan inside
-/// `extract_file_content_lines`) can avoid an allocation.
+/// Borrowed-input variant: returns `Some` only when at least one URI was matched (image captured,
+/// or PDF / oversize stripped). Returns `None` on the no-op fast path so callers (e.g. the per-line
+/// scan inside `extract_file_content_lines`) can avoid an allocation.
 pub fn try_extract_base64_images(text: &str) -> Option<ExtractionResult> {
     let after_pdf = strip_pdf_data_uris(text);
     let input = after_pdf.as_deref().unwrap_or(text);

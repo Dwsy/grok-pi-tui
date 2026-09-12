@@ -31,11 +31,9 @@ impl HunkTrackerActor {
             .unwrap_or_default()
     }
 
-    /// Get hunks + file content for a specific path (for diff rendering).
-    /// Each hunk includes its own patch fragment with context lines.
-    /// Returns explicit content status (Full/Binary/TooLarge/Missing) for both
-    /// baseline and current content, plus legacy Option<String> fields for
-    /// backward compatibility.
+    /// Get hunks + file content for a specific path (for diff rendering). Each hunk includes its own patch fragment with
+    /// context lines. Returns explicit content status (Full/Binary/TooLarge/Missing) for both baseline and current content,
+    /// plus legacy Option<String> fields for backward compatibility.
     pub(super) fn get_file_hunk_data(&self, path: &Path) -> FileHunkData {
         self.file_states
             .get(path)
@@ -87,12 +85,9 @@ impl HunkTrackerActor {
             .unwrap_or_default()
     }
 
-    /// Get all tracked file paths, regardless of source or remaining hunks.
-    ///
-    /// Returns every key in `file_states` — agent files, external edits, and
-    /// fs_notify-detected changes alike.  Entries persist after the user
-    /// accepts/rejects every hunk, making this suitable for file-discovery
-    /// when replicating a worktree's changes back to the root repo.
+    /// Get all tracked file paths, regardless of source or remaining hunks. Returns every key in `file_states` — agent files,
+    /// external edits, and fs_notify-detected changes alike. Entries persist after the user accepts/rejects every hunk,
+    /// making this suitable for file-discovery when replicating a worktree's changes back to the root repo.
     pub(super) fn get_all_tracked_paths(&self) -> Vec<PathBuf> {
         self.file_states.keys().cloned().collect()
     }

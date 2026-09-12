@@ -6,10 +6,8 @@ use std::time::{Duration, Instant};
 /// consumers refresh from scratch anyway.
 pub(crate) const COOLDOWN_MS: u64 = 500;
 
-/// After a lock release, wait this long before declaring the operation
-/// complete: a lock reappearing within the window (a rebase/squash cycles
-/// `index.lock` per pick) is the *same* operation, so rapid cycles merge into
-/// one `Started`/`Completed` pair instead of storming consumers.
+/// After a lock release, wait this long before declaring the operation complete.
+/// A lock reappearing within the window is the same operation, so rapid cycles merge into one pair.
 pub const SETTLE_MS: u64 = 500;
 
 /// Diagnostic threshold — fires a one-time warning when a lock is held
@@ -24,10 +22,8 @@ pub(crate) enum LockState {
         head_at_start: Option<String>,
         since: Instant,
     },
-    /// Lock released, operation not yet declared complete. `head_at_start`
-    /// and `since` are carried from the first `Locked` entry of the merged
-    /// operation so re-locks preserve the op-wide HEAD comparison and the
-    /// stale-lock clock.
+    /// Lock released, operation not yet declared complete.
+    /// `head_at_start` and `since` carry from the first `Locked` entry so re-locks preserve the op-wide comparison.
     Settling {
         head_at_start: Option<String>,
         since: Instant,

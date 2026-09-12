@@ -1,30 +1,26 @@
-//! Subagent business types.
+//! Tracking state for spawned child sessions.
+//! [`SubagentInfo`] is the single source of truth, used by both the subagent pane (display) and the permission view (provenance labels).
 //!
-//! Tracking state for spawned child sessions. [`SubagentInfo`] is the single
-//! source of truth, used by both the subagent pane (display) and the
-//! permission view (provenance labels).
+//! # Child-transcript replay and eviction
 //!
-//! # Child-transcript lifecycle
+//! - **replay**: read a child's persisted `updates.jsonl` and apply it to that child's view.
+//!   [`ensure_subagent_child_replayed`] runs on fullscreen open and dashboard attach.
+//!   [`replay_resumed_child_before_live_block`] runs only through its single funnel,
+//!   the [`child_view_for_live_update_mut`](crate::app::agent_view::AgentView::child_view_for_live_update_mut) accessor.
+//!   The funnel reads a resumed child's inherited history before its first live block closes the empty-view window.
+//! - **evict**: drop a finished child's retained view once disk is proven able to rebuild it ([`evict_finished_child_view`]).
 //!
-//! - **replay**: read a child's persisted `updates.jsonl` and apply it to
-//!   that child's view. Two entry points: [`ensure_subagent_child_replayed`]
-//!   (fullscreen open / dashboard attach) and
-//!   [`replay_resumed_child_before_live_block`] (invoked only through the
-//!   [`child_view_for_live_update_mut`](crate::app::agent_view::AgentView::child_view_for_live_update_mut)
-//!   accessor, the single funnel, so a resumed child's inherited history is
-//!   read before its first live block overwrites the prompt-only window).
-//! - **evict**: drop a finished child's retained view once disk is proven
-//!   able to rebuild it ([`evict_finished_child_view`]).
+//! The ordering rule both depend on: a replay may only append to a view that *shows nothing yet*.
+//! Disk history can therefore never land after a live block.
+//! A finished foreground child is reset to that state first; a child that is still running, or a background child, waits instead.
 //!
-//! The ordering rule both depend on: a replay may only append to a view that
-//! *shows nothing but the task prompt*, so disk history can never land after
-//! a live block. A finished foreground child is reset to that state first; a
-//! child that is still running, or a background child, waits instead. The
-//! spawn path itself never reads the child transcript (the MB-scale
-//! `updates.jsonl`), so a burst of spawns cannot block the UI thread; the
-//! small `meta.json` enrichment ([`enrich_from_meta`]) is a separate,
-//! bounded read.
+//! The child's session stream is the only writer of its task prompt (the shell's `UserMessageChunk` echo, live and persisted); the pager seeds no copy.
+//! A `UserPrompt` in a running child's view therefore means the live stream already reached it, and a fresh child's disk holds nothing newer.
+//!
+//! The spawn path itself never reads the child transcript (the MB-scale `updates.jsonl`), so a burst of spawns cannot block the UI thread.
+//! The small `meta.json` enrichment ([`enrich_from_meta`]) is a separate, bounded read.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -34,14 +30,18 @@ use xai_grok_shell::session::storage::{
     stream_replay_updates_at_hinted,
 };
 
-/// Enriched subagent tracking info, keyed by `child_session_id` in
-/// `AgentView::subagent_sessions`.
+mod lifecycle;
+
+#[cfg(test)]
+pub(crate) use lifecycle::SUBAGENT_ATTEMPT_HISTORY_LIMIT;
+pub(crate) use lifecycle::{
+    AcceptedSubagentLifecycle, SubagentAttemptKey, SubagentLifecycleEffect,
+    SubagentLifecycleReduction, SubagentLifecycleState, SubagentLifecycleTransition,
+};
+
 #[derive(Debug, Clone)]
-pub struct SubagentInfo {
-    pub subagent_id: Arc<str>,
-    pub child_session_id: Arc<str>,
-    pub description: Arc<str>,
-    pub subagent_type: Arc<str>,
+pub struct SubagentAttemptInfo {
+    pub(crate) lifecycle: SubagentLifecycleState,
     pub persona: Option<Arc<str>>,
     pub role: Option<Arc<str>>,
     pub model: Option<Arc<str>>,
@@ -55,13 +55,8 @@ pub struct SubagentInfo {
     pub context_normalized: bool,
     pub parent_prompt_id: Option<Arc<str>>,
     pub started_at: Instant,
-    /// Latest progress/finish update, else `started_at`; the dashboard's
-    /// "last activity" sort key.
+    /// Latest progress/finish update, else `started_at`; the dashboard's "last activity" sort key.
     pub last_progress_at: Instant,
-    /// One terminal transition per child: a duplicate finish must not
-    /// re-finalize and a duplicate spawn must not replace this state.
-    pub finished: bool,
-
     /// Terminal status from `SubagentFinished`: "completed", "failed", or "cancelled".
     pub status: Option<Arc<str>>,
     pub error: Option<Arc<str>>,
@@ -79,8 +74,7 @@ pub struct SubagentInfo {
     pub context_usage_pct: Option<u8>,
     pub tools_used: Vec<Arc<str>>,
     pub error_count: Option<u32>,
-    /// Live activity label ("Thinking", "Running: cargo build") for the tasks
-    /// pane and dashboard; cleared on `SubagentFinished`.
+    /// Live activity label ("Thinking", "Running: cargo build") for the tasks pane and dashboard; cleared on `SubagentFinished`.
     pub activity_label: Option<String>,
 
     /// Affects scrollback rendering (background shows "started:"/"completed:").
@@ -88,12 +82,60 @@ pub struct SubagentInfo {
 
     /// Set on kill request, cleared on `SubagentFinished`.
     pub pending_kill: bool,
-    /// Auto-clears `pending_kill` after a timeout so the user can retry if the
-    /// kill notification is lost.
+    /// Auto-clears `pending_kill` after a timeout so the user can retry if the kill notification is lost.
     pub kill_requested_at: Option<Instant>,
 
-    /// Set on spawn, updated on finish.
+    /// Started row for the current attempt.
     pub scrollback_entry_id: Option<crate::scrollback::entry::EntryId>,
+    /// Terminal row for the current background attempt.
+    pub terminal_entry_id: Option<crate::scrollback::entry::EntryId>,
+}
+
+impl SubagentAttemptInfo {
+    fn preserve_progress_from(&mut self, prior: &Self) {
+        self.last_progress_at = prior.last_progress_at;
+        self.duration_ms = prior.duration_ms;
+        self.turn_count = prior.turn_count;
+        self.tool_call_count = prior.tool_call_count;
+        self.tokens_used = prior.tokens_used;
+        self.context_window_tokens = prior.context_window_tokens;
+        self.context_usage_pct = prior.context_usage_pct;
+        self.tools_used.clone_from(&prior.tools_used);
+        self.error_count = prior.error_count;
+        self.activity_label.clone_from(&prior.activity_label);
+    }
+
+    pub(crate) fn terminal_update(
+        &self,
+        subagent_id: &str,
+        child_session_id: &str,
+        fallback_status: &str,
+    ) -> xai_grok_shell::extensions::notification::SessionUpdate {
+        xai_grok_shell::extensions::notification::SessionUpdate::SubagentFinished {
+            subagent_id: subagent_id.to_owned(),
+            attempt_id: self.lifecycle.current_attempt_id().map(str::to_owned),
+            child_session_id: child_session_id.to_owned(),
+            status: self.status.as_deref().unwrap_or(fallback_status).to_owned(),
+            error: self.error.as_deref().map(str::to_owned),
+            tool_calls: self.tool_calls.unwrap_or(0),
+            turns: self.turns.unwrap_or(0),
+            duration_ms: self.duration_ms.unwrap_or(0),
+            tokens_used: self.tokens_used.unwrap_or(0),
+            output: None,
+            will_wake: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SubagentInfo {
+    pub subagent_id: Arc<str>,
+    pub child_session_id: Arc<str>,
+    pub description: Arc<str>,
+    pub subagent_type: Arc<str>,
+    pub attempt: SubagentAttemptInfo,
+    pub(crate) completed_attempt_tokens: u64,
+    pub(crate) sealed_attempt_tokens: HashMap<SubagentAttemptKey, u64>,
 
     /// Enriched from the on-disk `meta.json`.
     pub prompt: Option<Arc<str>>,
@@ -103,45 +145,36 @@ pub struct SubagentInfo {
     pub(crate) transcript: ChildTranscript,
 }
 
-/// Where a child's authoritative transcript lives. One state feeds both the
-/// replay-on-open and the eviction decision, so the two cannot drift apart.
+/// Where a child's authoritative transcript lives.
+/// One state feeds both the replay-on-open and the eviction decision, so the two cannot drift apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ChildTranscript {
-    /// No disk copy proven yet: the next fullscreen open replays
-    /// `updates.jsonl`. A failed read stays here, as does an empty read of a
-    /// finished child or of a still-running resumed child (its inherited
-    /// history is expected on disk), so a lagging persistence flush is retried.
+    /// No disk copy proven yet: the next fullscreen open replays `updates.jsonl`.
+    /// A failed read stays here, so a lagging persistence flush is retried.
+    /// So does an empty read of a finished child, or of a still-running resumed child whose inherited history is expected on disk.
     #[default]
     NeedsReplay,
-    /// An emitting replay proved disk reproduces the transcript: the
-    /// retained view may be dropped and rebuilt.
+    /// An emitting replay proved disk reproduces the transcript: the retained view may be dropped and rebuilt.
     DiskBacked,
-    /// A replay of a still-running child that inherits nothing found an empty
-    /// disk. Cached so later opens skip the relocation scan;
-    /// [`Self::retry_disk_after_finish`] grants one more try once the child is
-    /// terminal and disk is final. A resumed child never caches here: its
-    /// inherited history is expected on disk, so an empty read stays
-    /// `NeedsReplay` to retry.
+    /// A replay of a still-running child that inherits nothing found an empty disk.
+    /// The result is cached so later opens skip the relocation scan.
+    /// A resumed child never caches here: its inherited history is expected on disk, so an empty read stays `NeedsReplay` to retry.
     DiskEmptyWhileRunning,
-    /// The in-memory view is the only copy (disk resolved to nothing while
-    /// the view held content), so evicting it would lose the transcript.
+    /// The in-memory view is the only copy (disk resolved to nothing while the view held content), so evicting it would lose the transcript.
     MemoryOnly,
 }
 
-/// Disk is only final once the child is terminal, so an empty read means
-/// "not written yet" for a running child and "nothing was ever written" for
-/// a finished one.
+/// Disk is only final once the child is terminal.
+/// An empty read means "not written yet" for a running child and "nothing was ever written" for a finished one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChildLifecycle {
     Running,
     Finished,
 }
 
-/// Whether the child's transcript is expected to already exist on disk. A
-/// resumed child inherits its source's persisted history, copied into its
-/// session dir at spawn, so an empty read while it runs is transient ("not
-/// visible yet"); a fresh or forked child starts with an empty replay
-/// transcript, so an empty read is a settled negative worth caching.
+/// A resumed child inherits its source's persisted history, copied into its session dir at spawn.
+/// An empty read while it runs is therefore transient ("not visible yet").
+/// A fresh or forked child starts with an empty replay transcript, so an empty read is a settled negative worth caching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChildOrigin {
     Resumed,
@@ -157,11 +190,9 @@ impl ChildTranscript {
         matches!(self, Self::DiskBacked)
     }
 
-    /// Only an emitting replay proves the disk copy. A failed read stays
-    /// `NeedsReplay` so the next open retries; an empty read caches the
-    /// negative result only for a still-running child that inherits nothing.
-    /// A resumed child's inherited history is expected on disk, so its
-    /// empty-while-running read is transient and must stay `NeedsReplay`.
+    /// Only an emitting replay proves the disk copy.
+    /// An empty read caches the negative result only for a still-running child that inherits nothing.
+    /// A resumed child's inherited history is expected on disk, so its empty-while-running read is transient and must stay `NeedsReplay`.
     fn record_replay(
         &mut self,
         outcome: &std::io::Result<ReplayEmission>,
@@ -180,16 +211,27 @@ impl ChildTranscript {
         }
     }
 
-    /// The child is terminal, so disk is final and the cached empty read is
-    /// worth one more try. A proven `DiskBacked` or `MemoryOnly` state is
-    /// untouched.
+    /// The child is terminal, so disk is final and the cached empty read is worth one more try.
+    /// A proven `DiskBacked` or `MemoryOnly` state is untouched.
     pub(crate) fn retry_disk_after_finish(&mut self) {
         if matches!(self, Self::DiskEmptyWhileRunning) {
             *self = Self::NeedsReplay;
         }
     }
 
-    /// The view was reset to the task-prompt baseline: rebuild on next open.
+    /// A new attempt can append beyond an earlier disk proof, so persistence must be proven again.
+    pub(crate) fn begin_new_attempt(&mut self) {
+        if matches!(self, Self::DiskBacked | Self::DiskEmptyWhileRunning) {
+            *self = Self::NeedsReplay;
+        }
+    }
+
+    /// A full parent replay means disk may now contain a tail that arrived while disconnected.
+    pub(crate) fn begin_parent_replay(&mut self) {
+        *self = Self::NeedsReplay;
+    }
+
+    /// The view was reset to the empty baseline: rebuild on next open.
     pub(crate) fn evicted(&mut self) {
         debug_assert!(
             !matches!(self, Self::MemoryOnly),
@@ -207,20 +249,91 @@ impl ChildTranscript {
     }
 }
 
+pub(crate) struct SubagentChildInfo {
+    pub(crate) subagent_id: String,
+    pub(crate) child_session_id: String,
+    pub(crate) description: String,
+    pub(crate) subagent_type: String,
+}
+
 impl SubagentInfo {
+    pub(crate) fn from_spawn(
+        prior: Option<Self>,
+        child: SubagentChildInfo,
+        mut attempt: SubagentAttemptInfo,
+        is_new_attempt: bool,
+    ) -> Self {
+        match prior {
+            Some(mut info) => {
+                if is_new_attempt {
+                    info.transcript.begin_new_attempt();
+                } else {
+                    attempt.preserve_progress_from(&info.attempt);
+                }
+                info.subagent_id = Arc::from(child.subagent_id);
+                info.child_session_id = Arc::from(child.child_session_id);
+                info.description = Arc::from(child.description);
+                info.subagent_type = Arc::from(child.subagent_type);
+                info.attempt = attempt;
+                info
+            }
+            None => Self {
+                subagent_id: Arc::from(child.subagent_id),
+                child_session_id: Arc::from(child.child_session_id),
+                description: Arc::from(child.description),
+                subagent_type: Arc::from(child.subagent_type),
+                attempt,
+                completed_attempt_tokens: 0,
+                sealed_attempt_tokens: HashMap::new(),
+                prompt: None,
+                child_cwd: None,
+                worktree_path: None,
+                transcript: Default::default(),
+            },
+        }
+    }
+
+    pub(crate) fn seal_current_attempt_tokens(&mut self) {
+        let Some(attempt_key) = self.attempt.lifecycle.current_attempt_key().cloned() else {
+            return;
+        };
+        let tokens = self.attempt.tokens_used.unwrap_or(0);
+        self.seal_attempt_tokens(attempt_key, tokens);
+    }
+
+    pub(crate) fn seal_attempt_tokens(&mut self, attempt_key: SubagentAttemptKey, tokens: u64) {
+        let prior = self
+            .sealed_attempt_tokens
+            .insert(attempt_key, tokens)
+            .unwrap_or(0);
+        self.completed_attempt_tokens = self
+            .completed_attempt_tokens
+            .saturating_sub(prior)
+            .saturating_add(tokens);
+    }
+
     pub fn is_running(&self) -> bool {
-        !self.finished
+        !self.attempt.lifecycle.is_finished()
+    }
+
+    pub(crate) fn is_finished(&self) -> bool {
+        self.attempt.lifecycle.is_finished()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_finished_for_test(&mut self, finished: bool) {
+        self.attempt.lifecycle.set_finished_for_test(finished);
     }
 
     pub fn elapsed(&self) -> std::time::Duration {
-        self.started_at.elapsed()
+        self.attempt.started_at.elapsed()
     }
 
-    /// Uses the authoritative `duration_ms` from `SubagentFinished` when
-    /// available, else the live wall-clock elapsed.
+    /// Uses the authoritative `duration_ms` from `SubagentFinished` when available, else the live wall-clock elapsed.
     pub fn display_elapsed(&self) -> std::time::Duration {
-        if self.finished {
-            self.duration_ms
+        if self.is_finished() {
+            self.attempt
+                .duration_ms
                 .map(std::time::Duration::from_millis)
                 .unwrap_or_else(|| self.elapsed())
         } else {
@@ -311,10 +424,8 @@ fn enrich_from_meta_with_home(
 }
 
 /// Best-effort streamed replay of a child's inherited conversation.
-///
 /// `Err`: the read failed, so callers must not mark the child replayed.
-/// `Ok(Empty)`: nothing on disk, so callers holding detached content restore
-/// it. The `child_cwd` hint skips the full relocation scan when it matches.
+/// The `child_cwd` hint skips the full relocation scan when it matches.
 fn replay_inherited_updates(
     child_view: &mut crate::app::agent_view::AgentView,
     child_session_id: &str,
@@ -363,8 +474,7 @@ fn replay_inherited_updates(
     Ok(outcome)
 }
 
-/// Counts `updates.jsonl` open attempts (per thread) so a test can assert a
-/// path did no disk work.
+/// Counts `updates.jsonl` open attempts (per thread) so a test can assert a path did no disk work.
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::cell::Cell;
@@ -381,44 +491,49 @@ pub(crate) mod test_support {
         TRANSCRIPT_READS.with(Cell::get)
     }
 
-    /// Baseline [`super::SubagentInfo`] fixture: a running, foreground,
-    /// non-resumed "explore" child. Shared by the `#[path]`-included test
-    /// modules (`subagent_tests`, `subagent_format_tests`).
+    /// Baseline [`super::SubagentInfo`] fixture: a running, foreground, non-resumed "explore" child.
+    /// It is shared by the `#[path]`-included test modules (`subagent_tests`, `subagent_format_tests`).
     pub(crate) fn make_info() -> super::SubagentInfo {
+        let now = std::time::Instant::now();
         super::SubagentInfo {
             subagent_id: "sa-1".into(),
             child_session_id: "cs-1".into(),
             description: "test task".into(),
             subagent_type: "explore".into(),
-            persona: None,
-            role: None,
-            model: None,
-            context_source: None,
-            resumed_from: None,
-            capability_mode: None,
-            workflow_run_id: None,
-            context_normalized: false,
-            parent_prompt_id: None,
-            started_at: std::time::Instant::now(),
-            last_progress_at: std::time::Instant::now(),
-            finished: false,
-            status: None,
-            error: None,
-            duration_ms: None,
-            tool_calls: None,
-            turns: None,
-            turn_count: None,
-            tool_call_count: None,
-            tokens_used: None,
-            context_window_tokens: None,
-            context_usage_pct: None,
-            tools_used: Vec::new(),
-            error_count: None,
-            activity_label: None,
-            is_background: false,
-            pending_kill: false,
-            kill_requested_at: None,
-            scrollback_entry_id: None,
+            attempt: super::SubagentAttemptInfo {
+                lifecycle: crate::app::subagent::SubagentLifecycleState::running_legacy_for_test(),
+                persona: None,
+                role: None,
+                model: None,
+                context_source: None,
+                resumed_from: None,
+                capability_mode: None,
+                workflow_run_id: None,
+                context_normalized: false,
+                parent_prompt_id: None,
+                started_at: now,
+                last_progress_at: now,
+                status: None,
+                error: None,
+                duration_ms: None,
+                tool_calls: None,
+                turns: None,
+                turn_count: None,
+                tool_call_count: None,
+                tokens_used: None,
+                context_window_tokens: None,
+                context_usage_pct: None,
+                tools_used: Vec::new(),
+                error_count: None,
+                activity_label: None,
+                is_background: false,
+                pending_kill: false,
+                kill_requested_at: None,
+                scrollback_entry_id: None,
+                terminal_entry_id: None,
+            },
+            completed_attempt_tokens: 0,
+            sealed_attempt_tokens: Default::default(),
             prompt: None,
             child_cwd: None,
             worktree_path: None,
@@ -427,35 +542,15 @@ pub(crate) mod test_support {
     }
 }
 
-/// True when a scrollback holds nothing beyond injected task prompts.
-fn scrollback_is_prompt_only(scrollback: &crate::scrollback::state::ScrollbackState) -> bool {
-    let len = scrollback.len();
-    if len == 0 {
-        return true;
-    }
-    for i in 0..len {
-        let Some(entry) = scrollback.entry(i) else {
-            continue;
-        };
-        match &entry.block {
-            crate::scrollback::block::RenderBlock::UserPrompt(_) => {}
-            _ => return false,
-        }
-    }
-    true
-}
-
-/// True when a scrollback holds only injected prompts plus the `TurnCompleted`
-/// footer: content a rebuild recreates, so it must not pin the view `MemoryOnly`.
-fn scrollback_is_prompt_and_footer_only(
-    scrollback: &crate::scrollback::state::ScrollbackState,
-) -> bool {
+/// True when a scrollback holds nothing but `TurnCompleted` footers.
+/// A finalize recreates that content, so it must not pin the view `MemoryOnly`.
+/// A `UserPrompt` counts as content: it came from the session stream and may be the only copy.
+fn scrollback_is_footer_only(scrollback: &crate::scrollback::state::ScrollbackState) -> bool {
     for i in 0..scrollback.len() {
         let Some(entry) = scrollback.entry(i) else {
             continue;
         };
         match &entry.block {
-            crate::scrollback::block::RenderBlock::UserPrompt(_) => {}
             crate::scrollback::block::RenderBlock::SessionEvent(b)
                 if matches!(
                     b.event,
@@ -473,23 +568,21 @@ fn scrollback_is_prompt_and_footer_only(
 pub(crate) enum ChildReplayOutcome {
     /// The replay emitted content; the disk copy is now recorded `DiskBacked`.
     Replayed,
-    /// The read succeeded but found nothing on disk yet; the transcript stays
-    /// unsettled so a later open retries.
+    /// The read succeeded but found nothing on disk yet; the transcript stays unsettled so a later open retries.
     FoundNothingOnDisk,
     /// The read failed; the transcript stays `NeedsReplay` to retry.
     ReadFailed,
     /// The transcript is already accounted for, so nothing was read.
     NothingToRead,
-    /// A running or background view already holds live blocks; disk is not read.
+    /// A running view already holds live blocks; disk is not read.
     ViewHoldsLiveBlocks,
     /// No `SubagentInfo` or no view under this id (pruned tab, stale id).
     UnknownChild,
 }
 
-/// Replay child `updates.jsonl` on fullscreen open (and dashboard attach)
-/// when not yet read: a finished foreground child always rebuilds from
-/// disk; a running or background view is filled only while it still shows
-/// nothing but the task prompt.
+/// Replay child `updates.jsonl` on fullscreen open (and dashboard attach) when not yet read.
+/// A finished child always rebuilds from disk.
+/// A running view is filled only while it still shows nothing.
 pub(crate) fn ensure_subagent_child_replayed(
     parent: &mut crate::app::agent_view::AgentView,
     child_sid: &str,
@@ -500,20 +593,20 @@ pub(crate) fn ensure_subagent_child_replayed(
     if !info.transcript.needs_replay() {
         return ChildReplayOutcome::NothingToRead;
     }
-    let finished = info.finished;
-    let is_background = info.is_background;
+    let finished = info.is_finished();
+    let is_background = info.attempt.is_background;
     let resumed = is_resumed_child(info);
-    // Finished-during-resume defers the live finalize; reapply the footer after load.
+    // A child that finished during a resume defers the live finalize; reapply the footer after load
     let finished_elapsed = finished
-        .then_some(info.duration_ms)
+        .then_some(info.attempt.duration_ms)
         .flatten()
         .map(std::time::Duration::from_millis);
     let Some(child_view) = parent.subagent_views.get(child_sid) else {
         return ChildReplayOutcome::UnknownChild;
     };
-    // Ordering barrier: a running or background view is filled only while it holds
-    // nothing but the task prompt, so disk history never lands after a live block.
-    if (!finished || is_background) && !scrollback_is_prompt_only(&child_view.scrollback) {
+    // Ordering barrier: a running view is filled only while it holds nothing.
+    // A finished replayed child rebuilds because disk is now authoritative for the disconnected tail.
+    if !finished && !child_view.scrollback.is_empty() {
         tracing::debug!(
             child_session_id = %child_sid,
             finished,
@@ -522,25 +615,24 @@ pub(crate) fn ensure_subagent_child_replayed(
         );
         return ChildReplayOutcome::ViewHoldsLiveBlocks;
     }
-    // Reset to the evicted baseline first: the rebuild trusts disk only, never
-    // appending onto a stray or unpersisted live block.
-    let detached_state = if finished && !is_background {
-        let detached_state = reset_child_view_to_prompt(parent, child_sid);
+    // Reset to the evicted baseline first: the rebuild trusts disk only, never appending onto a stray or unpersisted live block
+    let detached_state = if finished {
+        let detached_state = detach_child_view_content(parent, child_sid);
         debug_assert!(
             parent
                 .subagent_views
                 .get(child_sid)
-                .is_none_or(|view| scrollback_is_prompt_only(&view.scrollback)),
-            "the reset must leave the view showing nothing but the task prompt, \
+                .is_none_or(|view| view.scrollback.is_empty()),
+            "the reset must leave the view empty, \
              or the replay below appends disk history after live blocks"
         );
         detached_state
     } else {
         None
     };
-    // A finished rebuild or resumed source may be relocated; a running child
-    // stays hinted-only, since a foreign-cwd same-id copy is not its own.
-    let fallback = if (finished && !is_background) || resumed {
+    // A finished rebuild or resumed source may be relocated
+    // A running child stays hinted-only, since a copy with the same id under a foreign cwd is not its own
+    let fallback = if finished || resumed {
         ReplayLookupFallback::Relocation
     } else {
         ReplayLookupFallback::HintedOnly
@@ -560,11 +652,9 @@ pub(crate) fn ensure_subagent_child_replayed(
     }
 }
 
-/// The tail of [`ensure_subagent_child_replayed`]: given the replay outcome and
-/// the pre-reset detached content, either restore that content (the read
-/// emitted nothing but the view held real blocks) or stamp the finished footer.
-/// A read error, or a detached view that was only a prompt plus footer, is left
-/// dropped and `NeedsReplay` so the next open retries.
+/// The tail of [`ensure_subagent_child_replayed`].
+/// Given the replay outcome and the pre-reset detached content, it either restores that content or stamps the finished footer.
+/// A read error, or a detached view that was only a footer, is left dropped and `NeedsReplay` so the next open retries.
 fn restore_or_finalize_after_replay(
     parent: &mut crate::app::agent_view::AgentView,
     child_sid: &str,
@@ -572,13 +662,12 @@ fn restore_or_finalize_after_replay(
     detached_state: Option<crate::app::agent_view::ReplayRebuiltState>,
     finished_elapsed: Option<std::time::Duration>,
 ) {
-    // A rebuild that emitted nothing keeps the only in-memory copy; a
-    // prompt-plus-footer view is not content, so leave it dropped and NeedsReplay.
+    // A rebuild that emitted nothing keeps the only in-memory copy; a footer-only view is not content, so leave it dropped and NeedsReplay
     let restore = match outcome {
         Ok(ReplayEmission::Emitted) => false,
         Ok(ReplayEmission::Empty) => detached_state
             .as_ref()
-            .is_some_and(|t| !scrollback_is_prompt_and_footer_only(&t.scrollback)),
+            .is_some_and(|t| !scrollback_is_footer_only(&t.scrollback)),
         Err(_) => true,
     };
     let mut restored = false;
@@ -599,15 +688,13 @@ fn restore_or_finalize_after_replay(
         parent.session.state.is_turn_running() || parent.session.state.is_cancelling();
     if let Some(child_view) = parent.subagent_views.get_mut(child_sid) {
         match finished_elapsed {
-            // No footer on a failed rebuild (retry re-applies it) or restored
-            // content (already stamped; appending doubles it).
+            // No footer on a failed rebuild (retry re-applies it) or restored content (already stamped; appending doubles it)
             Some(elapsed) if outcome.is_ok() && !restored => {
                 finalize_finished_child_view(child_view, elapsed)
             }
             Some(_) => {}
             None if !parent_turn_running => {
-                // Parent died mid-run with no live turn: sweep stuck running
-                // entries so they can't hold needs_animation() open forever.
+                // Parent died mid-run with no live turn: sweep stuck running entries so they can't hold needs_animation() open forever
                 child_view.scrollback.finish_all_running();
             }
             None => {}
@@ -616,21 +703,12 @@ fn restore_or_finalize_after_replay(
 }
 
 fn is_resumed_child(info: &SubagentInfo) -> bool {
-    info.resumed_from.is_some() || info.context_source.as_deref() == Some("resumed")
+    info.attempt.resumed_from.is_some() || info.attempt.context_source.as_deref() == Some("resumed")
 }
 
-/// Read a resumed child's inherited transcript into its view before the first
-/// live block lands. A resumed child's source transcript is copied into its
-/// session dir and the live stream never repeats it, so the first live block
-/// would close the replay window for good. A non-resumed child needs nothing:
-/// its `updates.jsonl` only ever holds blocks the live stream already delivered.
-///
-/// Idempotent and self-gating: only a resumed child still in `NeedsReplay` with
-/// a prompt-only view hydrates. Its sole caller is
-/// [`child_view_for_live_update_mut`](crate::app::agent_view::AgentView::child_view_for_live_update_mut);
-/// every apply that can be a resumed child's *first* live block routes through
-/// that accessor. Any new ingress that can push a resumed child's first block
-/// MUST go through it too.
+/// A resumed child's source transcript is copied into its session dir, and the live stream never repeats it.
+/// A non-resumed child needs nothing: its `updates.jsonl` only ever holds blocks the live stream already delivered.
+/// Idempotent and self-gating: only a resumed child still in `NeedsReplay` with an empty view is filled.
 pub(crate) fn replay_resumed_child_before_live_block(
     parent: &mut crate::app::agent_view::AgentView,
     child_sid: &str,
@@ -644,15 +722,14 @@ pub(crate) fn replay_resumed_child_before_live_block(
     if !parent
         .subagent_views
         .get(child_sid)
-        .is_some_and(|view| scrollback_is_prompt_only(&view.scrollback))
+        .is_some_and(|view| view.scrollback.is_empty())
     {
         return;
     }
     let _ = ensure_subagent_child_replayed(parent, child_sid);
 }
 
-/// Replay the child's on-disk transcript and record what the read proved on
-/// [`SubagentInfo::transcript`] (see [`ChildTranscript::record_replay`]).
+/// Replay the child's on-disk transcript and record what the read proved on [`SubagentInfo::transcript`] (see [`ChildTranscript::record_replay`]).
 fn replay_child_and_record_outcome(
     parent: &mut crate::app::agent_view::AgentView,
     child_sid: &str,
@@ -674,7 +751,7 @@ fn replay_child_and_record_outcome(
         );
     }
     if let Some(info) = parent.subagent_sessions.get_mut(child_sid) {
-        let lifecycle = if info.finished {
+        let lifecycle = if info.is_finished() {
             ChildLifecycle::Finished
         } else {
             ChildLifecycle::Running
@@ -689,36 +766,19 @@ fn replay_child_and_record_outcome(
     outcome
 }
 
-/// Reset a child view to the resume-state baseline: detach every replay-rebuilt
-/// field, drop the media caches, and re-inject the task prompt. `expect_user_echo`
-/// lets a later replay dedup the persisted echo against this injected prompt.
+/// Reset a child view to the empty baseline: detach every replay-rebuilt field and drop the media caches.
 ///
-/// Returns the detached state so a rebuild that emitted nothing can restore it
-/// losslessly (eviction drops it instead).
+/// Returns the detached state so a rebuild that emitted nothing can restore it losslessly (eviction drops it instead).
 #[must_use = "dropping the detached state destroys the only in-memory copy; eviction must drop it explicitly"]
-fn reset_child_view_to_prompt(
+fn detach_child_view_content(
     parent: &mut crate::app::agent_view::AgentView,
     child_sid: &str,
 ) -> Option<crate::app::agent_view::ReplayRebuiltState> {
-    let prompt = parent
-        .subagent_sessions
-        .get(child_sid)
-        .and_then(|info| info.prompt.clone())
-        .filter(|p| !p.trim().is_empty());
     let child_view = parent.subagent_views.get_mut(child_sid)?;
     let detached = child_view.take_replay_rebuilt_state();
-    // Drop the byte cache and failed-load markers; keep inline_media_ids so
-    // transmitted placements stay valid and re-place from disk.
+    // Drop the byte cache and failed-load markers; keep inline_media_ids so transmitted placements stay valid and re-place from disk
     child_view.inline_media_cache = Default::default();
     child_view.inline_media_load_failed = Default::default();
-    if let Some(prompt) = prompt {
-        child_view
-            .scrollback
-            .push_block(crate::scrollback::block::RenderBlock::user_prompt(
-                prompt.as_ref(),
-            ));
-        child_view.session.tracker.expect_user_echo();
-    }
     Some(detached)
 }
 
@@ -728,20 +788,13 @@ fn reset_child_view_to_prompt(
 pub(crate) enum EvictOutcome {
     /// The retained transcript was dropped; the first open rebuilds from disk.
     Evicted,
-    /// A guard applied (open fullscreen, unfinished or background, memory-only,
-    /// or an unproven disk probe); the caller must finalize in place.
+    /// A guard applied (open fullscreen, unfinished or background, memory-only, or an unproven disk probe); the caller must finalize in place.
     Retained,
 }
 
-/// Evict a finished child view's retained transcript (scrollback, tracker,
-/// caches); the first open rebuilds it from disk, footer included. Without this
-/// every finished child is retained for the whole process.
-///
-/// Returns [`EvictOutcome::Retained`] when a guard applies and the caller must
-/// finalize in place: the child open fullscreen, unfinished or background
-/// children, and memory-only transcripts. A view holding content is dropped
-/// only once a disk probe proves the persisted transcript would emit, so a
-/// raced or missing flush cannot lose the only copy.
+/// Returns [`EvictOutcome::Retained`] when a guard applies and the caller must finalize in place.
+/// The guards: the child open fullscreen, unfinished or background children, and memory-only transcripts.
+/// A view holding content is dropped only once a disk probe proves the persisted transcript would emit.
 pub(crate) fn evict_finished_child_view(
     parent: &mut crate::app::agent_view::AgentView,
     child_sid: &str,
@@ -752,8 +805,8 @@ pub(crate) fn evict_finished_child_view(
     let Some(info) = parent.subagent_sessions.get(child_sid) else {
         return EvictOutcome::Retained;
     };
-    if !info.finished
-        || info.is_background
+    if info.is_running()
+        || info.attempt.is_background
         || matches!(info.transcript, ChildTranscript::MemoryOnly)
     {
         return EvictOutcome::Retained;
@@ -765,19 +818,17 @@ pub(crate) fn evict_finished_child_view(
         return EvictOutcome::Evicted;
     };
     // Purge only after a real drop: re-evicting a bare view frees nothing.
-    let had_content = !scrollback_is_prompt_only(&child_view.scrollback)
-        || !child_view.inline_media_cache.is_empty();
+    let had_content =
+        !child_view.scrollback.is_empty() || !child_view.inline_media_cache.is_empty();
     if !info.transcript.evictable() && had_content {
         let child_cwd = info.child_cwd.clone();
-        // Hinted-only: the probe stays cheap; a relocated copy the hints miss
-        // is found by the open-path rebuild.
+        // Hinted-only: the probe stays cheap; a relocated copy the hints miss is found by the open-path rebuild
         let hint = ReplayPathHint {
             parent_cwd: Some(&parent.session.cwd),
             child_cwd: child_cwd.as_deref().map(std::path::Path::new),
             fallback: ReplayLookupFallback::HintedOnly,
         };
-        // Anything short of proof keeps the only copy as NeedsReplay, so a
-        // late flush is still picked up.
+        // Anything short of proof keeps the only copy as NeedsReplay, so a late flush is still picked up
         if !replay_would_emit(child_sid, &effective_grok_home(), hint).unwrap_or(false) {
             return EvictOutcome::Retained;
         }
@@ -785,7 +836,7 @@ pub(crate) fn evict_finished_child_view(
     if let Some(info) = parent.subagent_sessions.get_mut(child_sid) {
         info.transcript.evicted();
     }
-    drop(reset_child_view_to_prompt(parent, child_sid));
+    drop(detach_child_view_content(parent, child_sid));
     if had_content {
         // Deferred so the purge cost lands between frames, not inside this notification.
         crate::memory_release::request_release_after_draw("subagent-evict");
@@ -793,12 +844,9 @@ pub(crate) fn evict_finished_child_view(
     EvictOutcome::Evicted
 }
 
-/// Finalize a finished child view: end the turn and append the
-/// `TurnCompleted` footer.
-///
-/// Idempotent on the *trailing* footer: a re-finalized child must not get a
-/// second completed line, while an earlier turn's `TurnCompleted` deeper in
-/// the transcript must not suppress a later turn's footer.
+/// Finalize a finished child view: end the turn and append the `TurnCompleted` footer.
+/// Idempotent on the *trailing* footer: a re-finalized child must not get a second completed line.
+/// An earlier turn's `TurnCompleted` deeper in the transcript must not suppress a later turn's footer.
 pub(crate) fn finalize_finished_child_view(
     child_view: &mut crate::app::agent_view::AgentView,
     elapsed: std::time::Duration,
@@ -807,8 +855,7 @@ pub(crate) fn finalize_finished_child_view(
         .session
         .tracker
         .finish_turn(&mut child_view.scrollback);
-    // finish_turn only reaches entries the tracker saw live; entries left
-    // running by a from-disk replay would otherwise animate forever.
+    // finish_turn only reaches entries the tracker saw live; entries left running by a from-disk replay would otherwise animate forever
     child_view.scrollback.finish_all_running();
     let already_has_trailing_completed_footer = child_view.scrollback.last().is_some_and(|e| {
         matches!(
@@ -863,15 +910,14 @@ pub(crate) fn format_type_label(subagent_type: &str) -> &str {
 }
 
 pub(crate) fn format_context_badge(info: &SubagentInfo) -> &str {
-    match info.context_source.as_deref() {
+    match info.attempt.context_source.as_deref() {
         Some("resumed") => "resumed",
         Some("forked") => "forked",
         _ => "",
     }
 }
 
-/// Returns `(Some(tag), rest_after_close_bracket)` when the description
-/// begins with `[<non-empty>]`, else `(None, description)` unchanged.
+/// Returns `(Some(tag), rest_after_close_bracket)` when the description begins with `[<non-empty>]`, else `(None, description)` unchanged.
 pub(crate) fn parse_tag_prefix(description: &str) -> (Option<&str>, &str) {
     if let Some(rest) = description.strip_prefix('[')
         && let Some(close) = rest.find(']')
@@ -884,13 +930,13 @@ pub(crate) fn parse_tag_prefix(description: &str) -> (Option<&str>, &str) {
     (None, description)
 }
 
-/// Single consolidated label + display description for a subagent row. The
-/// description always has the `[tag]` prefix stripped, used as the label or
-/// not, so callers never render bracket noise inline.
+/// Single consolidated label and display description for a subagent row.
+/// The description always has the `[tag]` prefix stripped, used as the label or not, so callers never render bracket noise inline.
 pub(crate) fn format_subagent_label(info: &SubagentInfo) -> (String, String) {
     let (tag, clean_desc) = parse_tag_prefix(&info.description);
 
     let raw_label = if let Some(p) = info
+        .attempt
         .persona
         .as_deref()
         .map(str::trim)
@@ -898,6 +944,7 @@ pub(crate) fn format_subagent_label(info: &SubagentInfo) -> (String, String) {
     {
         p.to_string()
     } else if let Some(r) = info
+        .attempt
         .role
         .as_deref()
         .map(str::trim)
@@ -912,7 +959,7 @@ pub(crate) fn format_subagent_label(info: &SubagentInfo) -> (String, String) {
         "general".to_string()
     };
 
-    // Iterating handles multi-codepoint upper mappings (`ß` -> `SS`).
+    // Iterating handles uppercase mappings that span several codepoints (`ß` becomes `SS`)
     let mut chars = raw_label.chars();
     let label = match chars.next() {
         Some(c) => c.to_uppercase().chain(chars).collect(),
@@ -936,8 +983,8 @@ pub(crate) fn format_subagent_meta(
     }
 }
 
-/// Concise display label for the subagent scrollback block and the
-/// fullscreen title bar. Callers handle the `None` activity separately.
+/// Concise display label for the subagent scrollback block and the fullscreen title bar.
+/// Callers handle the `None` activity separately.
 pub(crate) fn format_activity_label(activity: &crate::acp::tracker::TurnActivity) -> String {
     use crate::acp::tracker::TurnActivity;
     match activity {
@@ -955,8 +1002,7 @@ pub(crate) fn format_activity_label(activity: &crate::acp::tracker::TurnActivity
             } else {
                 let first_line = title.lines().next().unwrap_or(title);
                 let max_len = crate::acp::tracker::MAX_ACTIVITY_SUBJECT_CHARS;
-                // Byte length is the char count for ASCII, so this skips the
-                // char walk for the common title.
+                // Byte length is the char count for ASCII, so this skips the char walk for the common title
                 if first_line.len() <= max_len {
                     format!("Running: {first_line}")
                 } else {
@@ -975,7 +1021,11 @@ pub(crate) fn format_activity_label(activity: &crate::acp::tracker::TurnActivity
             attempt,
             max_retries,
             ..
-        } => format!("Retrying ({attempt}/{max_retries})"),
+        } => crate::app::error_display::retry_clause(
+            *attempt,
+            *max_retries,
+            crate::app::error_display::RetryLabelStyle::Compact,
+        ),
         TurnActivity::WritingToolCall(writing) => writing.label(),
         TurnActivity::Waiting(reason) => reason.label(),
     }

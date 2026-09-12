@@ -132,13 +132,13 @@ pub(super) fn render_update(
         updated = if let Some(range) = parsed.items.get(&item.name) {
             let keep_eol = updated[range.start..range.end].ends_with('\n');
             let replacement = if keep_eol {
-                format!("{section}{}", parsed.newline.as_str())
+                format!("{section}{}", parsed.newline.as_ref())
             } else {
                 section
             };
             replace_range(&updated, range.start, range.end, &replacement)
         } else if let Some(close) = parsed.outer_close {
-            let insertion = format!("{section}{}", parsed.newline.as_str());
+            let insertion = format!("{section}{}", parsed.newline.as_ref());
             replace_range(&updated, close.start, close.start, &insertion)
         } else {
             append_outer(
@@ -158,21 +158,13 @@ pub(super) fn render_update(
     })
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::AsRefStr, strum::IntoStaticStr)]
 enum Newline {
+    #[strum(serialize = "\n")]
     Lf,
+    #[strum(serialize = "\r\n")]
     CrLf,
 }
-
-impl Newline {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Lf => "\n",
-            Self::CrLf => "\r\n",
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 struct Line {
     start: usize,
@@ -229,7 +221,7 @@ fn append_outer(
     newline: Newline,
     final_newline: bool,
 ) -> String {
-    let eol = newline.as_str();
+    let eol = newline.as_ref();
     let block = format!(
         "{} >>> {} >>>{eol}{section}{eol}{} <<< {} <<<",
         comments.prefix, namespace, comments.prefix, namespace
@@ -245,7 +237,7 @@ fn append_outer(
 }
 
 fn item_section(item: &ManagedItem, comments: &CommentSyntax, newline: Newline) -> String {
-    let eol = newline.as_str();
+    let eol = newline.as_ref();
     let body = item.body.trim_end_matches('\n').replace('\n', eol);
     format!(
         "{} >>> {} >>>{eol}{body}{eol}{} <<< {} <<<",

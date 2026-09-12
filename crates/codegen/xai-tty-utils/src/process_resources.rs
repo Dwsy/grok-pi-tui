@@ -19,11 +19,9 @@ pub fn sample_process_resources() -> ProcessResources {
     imp::sample()
 }
 
-/// Memory and thread gauges, leaving `open_files` unset. Skips the Linux fd
-/// directory scan, for callers that sample on a timer: threads ride along
-/// free (parsed from the same `/proc/self/status` read on Linux, one cheap
-/// `proc_pidinfo` on macOS). The tiers only diverge on Linux — on macOS this
-/// and [`sample_process_resources`] take the same sample.
+/// Memory and thread gauges, leaving `open_files` unset. Skips the Linux fd directory scan, for callers that sample on a
+/// timer: threads ride along free (parsed from the same `/proc/self/status` read on Linux, one cheap `proc_pidinfo` on
+/// macOS). The tiers only diverge on Linux — on macOS this and [`sample_process_resources`] take the same sample.
 pub fn sample_process_memory() -> ProcessResources {
     imp::sample_memory()
 }
@@ -99,11 +97,9 @@ mod cpu {
 mod imp {
     use super::ProcessResources;
 
-    // Hand-rolled `task_vm_info` prefix through `phys_footprint` (the kernel
-    // accepts any count ≤ the current struct revision; passing the prefix
-    // count returns exactly these fields). Layout per XNU osfmk/mach/task_info.h.
-    // (libc has no mach `task_vm_info`; its libproc bindings below are used
-    // for the thread count.)
+    // Hand-rolled `task_vm_info` prefix through `phys_footprint` (the kernel accepts any count ≤ the current struct
+    // revision; passing the prefix count returns exactly these fields). Layout per XNU osfmk/mach/task_info.h. (libc has no
+    // mach `task_vm_info`; its libproc bindings below are used for the thread count.)
     #[repr(C)]
     #[derive(Default)]
     struct TaskVmInfoPrefix {
@@ -374,11 +370,9 @@ mod tests {
         assert_eq!(start, None);
     }
 
-    /// The thread gauge tracks live threads, not a plausible constant:
-    /// parking N new threads raises the sampled count by at least N.
-    /// Unrelated tests in this binary start and stop threads concurrently,
-    /// so one attempt can under-observe; the invariant must hold within a
-    /// few tries.
+    /// The thread gauge tracks live threads, not a plausible constant: parking N new threads raises the sampled count by at
+    /// least N. Unrelated tests in this binary start and stop threads concurrently, so one attempt can under-observe; the
+    /// invariant must hold within a few tries.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn thread_gauge_tracks_spawned_threads() {
@@ -398,10 +392,8 @@ mod tests {
                     let stop = stop_rx.clone();
                     std::thread::spawn(move || {
                         ready.send(()).ok();
-                        // Release the sender before parking: with the
-                        // parent's copy dropped too, a thread that dies
-                        // before signaling closes the channel and errors
-                        // the recv below instead of blocking it.
+                        // Release the sender before parking: with the parent's copy dropped too, a thread that dies before signaling closes
+                        // the channel and errors the recv below instead of blocking it.
                         drop(ready);
                         // Park until released (the lock serializes the
                         // recvs; each thread consumes one stop token).

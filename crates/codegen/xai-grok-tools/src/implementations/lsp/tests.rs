@@ -16,10 +16,9 @@ use super::{LspBackend, LspError, LspOperation, LspToolInput, file_uri};
 mod mock_servers;
 use mock_servers::*;
 
-/// How long a test waits for something a mock server has to get around to.
-///
-/// One constant for the suite rather than a hand-rolled iteration count at each
-/// call site, so a slow machine is retuned in one place.
+/// How long a test waits for something a mock server has to get around to. One constant for the
+/// suite rather than a hand-rolled iteration count at each call site, so a slow machine is retuned
+/// in one place.
 const WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// Poll until `ready`, or fail saying what was being waited for.
@@ -49,12 +48,9 @@ fn brief_policy() -> super::pending::PendingPolicy {
     }
 }
 
-/// Drain until a summary mentioning `needle` appears, or give up.
-///
-/// Several of these flows take more than one drain by design — a server that
-/// answers, then says its answer was premature, is answered again on the drain
-/// after the one that heard it — and which drain lands where is a race with the
-/// mock's own scheduling, not something worth pinning down.
+/// Drain until a summary mentioning `needle` appears, or give up. Several of these flows take more than one drain by design — a server that
+/// answers, then says its answer was premature, is answered again on the drain after the one that heard it — and which drain lands where is a
+/// race with the mock's own scheduling, not something worth pinning down.
 async fn drain_until_reported(mgr: &tokio::sync::Mutex<LspManager>, needle: &str) -> String {
     let deadline = tokio::time::Instant::now() + WAIT_TIMEOUT + WAIT_TIMEOUT;
     while tokio::time::Instant::now() < deadline {
@@ -245,10 +241,9 @@ async fn pull_diagnostics_send_previous_result_id() {
     client.shutdown().await;
 }
 
-/// A server that answers "nothing wrong" while it is still re-analyzing must
-/// not be taken at its word: acting on that answer erases errors the file
-/// really has, and the follow-up "unchanged" reply would then make the blank
-/// permanent.
+/// A server that answers "nothing wrong" while it is still re-analyzing must not be taken at its
+/// word: acting on that answer erases errors the file really has, and the follow-up "unchanged"
+/// reply would then make the blank permanent.
 #[tokio::test(flavor = "current_thread")]
 async fn a_premature_empty_answer_does_not_erase_known_diagnostics() {
     let (_dir, script_path) = write_mid_analysis_pull_server();
@@ -288,9 +283,8 @@ async fn a_premature_empty_answer_does_not_erase_known_diagnostics() {
     client.shutdown().await;
 }
 
-/// An answer to a pull that was already in flight when the file changed again
-/// describes the old text. It is worth reading — it is the best we have until
-/// the re-pull lands — but it must not pass as the server's verdict on the new
+/// An answer to a pull that was already in flight when the file changed again describes the old text. It is worth
+/// reading — it is the best we have until the re-pull lands — but it must not pass as the server's verdict on the new
 /// edit, or the turn reports diagnostics for text that no longer exists.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_answer_about_the_previous_revision_does_not_settle_the_new_one() {
@@ -332,10 +326,9 @@ async fn an_answer_about_the_previous_revision_does_not_settle_the_new_one() {
     client.shutdown().await;
 }
 
-/// The result id we remember has to name what is actually in the store. A
-/// stale clean answer keeps the known errors — and if it recorded its own id
-/// anyway, the next `unchanged` reply confirms diagnostics the server no longer
-/// reports, so a file that has been fixed goes on showing its old errors.
+/// The result id we remember has to name what is actually in the store. A stale clean answer keeps the known errors —
+/// and if it recorded its own id anyway, the next `unchanged` reply confirms diagnostics the server no longer reports,
+/// so a file that has been fixed goes on showing its old errors.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_answer_the_store_refused_leaves_no_result_id_behind() {
     let (_dir, script_path) = write_stale_clean_pull_server();
@@ -1021,10 +1014,9 @@ async fn e2e_restart_monitor_preserves_replacement_client() {
         .await;
 }
 
-/// The monitor holds only a `Weak` to the manager, so once the sole strong
-/// `Arc` drops at session teardown the next poll's upgrade fails and the task
-/// must exit. A `Weak`->`Arc` regression would keep the manager (and its child
-/// processes) alive and the join would time out.
+/// The monitor holds only a `Weak` to the manager, so once the sole strong `Arc` drops at session
+/// teardown the next poll's upgrade fails and the task must exit. A `Weak`->`Arc` regression would
+/// keep the manager (and its child processes) alive and the join would time out.
 #[tokio::test(flavor = "current_thread")]
 async fn restart_monitor_exits_when_manager_arc_dropped() {
     tokio::task::LocalSet::new()
@@ -1182,13 +1174,9 @@ async fn e2e_restart_monitor_emits_failed_on_restart_init_error() {
                 args: vec!["-u".to_string(), script_path.to_string_lossy().into_owned()],
                 env,
                 extensions: ext_map,
-                // Generous startup window: the init-failure server responds to
-                // `initialize` (and bumps the on-disk counter) essentially
-                // instantly, so a large timeout adds no latency on the happy
-                // path. It only removes a cold-start race — with a tight 500ms
-                // window a slow python3 spawn under load is killed *before* it
-                // increments the counter, so `attempts` (deterministically 3)
-                // and the on-disk counter (2) diverge and the test flakes.
+                // Generous startup window: the init-failure server responds to `initialize` (and bumps the on-disk counter) essentially instantly, so a large
+                // timeout adds no latency on the happy path. It only removes a cold-start race — with a tight 500ms window a slow python3 spawn under load is
+                // killed *before* it increments the counter, so `attempts` (deterministically 3) and the on-disk counter (2) diverge and the test flakes.
                 startup_timeout: Some(10_000),
                 restart_on_crash: Some(true),
                 max_restarts: Some(3),
@@ -1227,10 +1215,9 @@ async fn e2e_restart_monitor_emits_failed_on_restart_init_error() {
             }
 
             let mut saw_failed = false;
-            // Restart backoff is 1s + 2s + 4s = 7s of mandatory sleeps before
-            // the budget is exhausted; the deadline only bounds the failure
-            // wait (the loop breaks as soon as the notification arrives), so
-            // keep it well clear of that floor to stay robust under load.
+            // Restart backoff is 1s + 2s + 4s = 7s of mandatory sleeps before the budget is
+            // exhausted; the deadline only bounds the failure wait (the loop breaks as soon as the
+            // notification arrives), so keep it well clear of that floor to stay robust under load.
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
             while tokio::time::Instant::now() < deadline {
                 match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
@@ -1310,14 +1297,9 @@ async fn e2e_drain_timeout_preserves_pending_diagnostics() {
     mgr.lock().await.shutdown().await;
 }
 
-/// A server that never reports diagnostics must not keep files pending
-/// forever: the set would grow for the whole session and every later drain
-/// would block for its full timeout.
-///
-/// The two things being checked here are separate on purpose. Holding on to a
-/// file and blocking a turn on its server are different decisions with
-/// different deadlines, and one number doing both jobs is how a server that
-/// answered several clean edits came to be written off.
+/// A server that never reports diagnostics must not keep files pending forever: the set would grow
+/// for the whole session and every later drain would block for its full timeout. The two things
+/// being checked here are separate on purpose.
 #[tokio::test(flavor = "current_thread")]
 async fn drain_gives_up_on_a_server_that_never_reports() {
     let (_dir, script_path) = write_silent_server();
@@ -1400,13 +1382,9 @@ async fn a_silent_server_does_not_accumulate_pending_files() {
     mgr.lock().await.shutdown().await;
 }
 
-/// The same guarantee, for a server that is plainly alive. Silence used to be
-/// charged only on drains that came back empty-handed, so a file the server
-/// never answered for was carried along untouched for the rest of the session
-/// as long as some *other* file kept reporting problems.
-///
-/// Nothing charges anything now — a file is let go when its own deadline
-/// passes, whatever the drain it happens to be sitting in was doing.
+/// The same guarantee, for a server that is plainly alive. Silence used to be charged only on drains that came back empty-handed, so a file the
+/// server never answered for was carried along untouched for the rest of the session as long as some *other* file kept reporting problems.
+/// Nothing charges anything now — a file is let go when its own deadline passes, whatever the drain it happens to be sitting in was doing.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_productive_server_still_lets_go_of_a_file_it_never_answers_for() {
     let (_dir, script_path) = write_partially_answering_server();
@@ -1445,10 +1423,9 @@ async fn a_productive_server_still_lets_go_of_a_file_it_never_answers_for() {
     mgr.lock().await.shutdown().await;
 }
 
-/// Not blocking on a silent server has to be reversible. Roslyn can spend a
-/// long time loading a solution before it answers anything, and if those first
-/// quiet turns disabled waiting for good, diagnostics would never appear for
-/// the rest of the session — the exact outcome this work exists to prevent.
+/// Not blocking on a silent server has to be reversible. Roslyn can spend a long time loading a solution before it
+/// answers anything, and if those first quiet turns disabled waiting for good, diagnostics would never appear for the
+/// rest of the session — the exact outcome this work exists to prevent.
 #[tokio::test(flavor = "current_thread")]
 async fn a_server_that_starts_answering_is_waited_on_again() {
     let (_dir, script_path) = write_silent_server();
@@ -1537,10 +1514,9 @@ async fn a_server_that_starts_answering_is_waited_on_again() {
     mgr.lock().await.shutdown().await;
 }
 
-/// Roslyn answers before it has loaded the solution, so its first answer is
-/// empty, and it says so afterwards. Guessing how long that takes is what the
-/// old design did; here the server is taken at its word — the questions it
-/// answered too early are asked again, and the real answer is read.
+/// Roslyn answers before it has loaded the solution, so its first answer is empty, and it says so
+/// afterwards. Guessing how long that takes is what the old design did; here the server is taken at
+/// its word — the questions it answered too early are asked again, and the real answer is read.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_server_that_finishes_loading_late_still_gets_its_diagnostics_read() {
     let (_dir, script_path) = write_loads_late_server();
@@ -1562,10 +1538,9 @@ async fn a_server_that_finishes_loading_late_still_gets_its_diagnostics_read() {
     mgr.lock().await.shutdown().await;
 }
 
-/// The same, through the request the specification provides for. Advertising
-/// `refreshSupport` obliges us to answer it — a server left waiting on a
-/// response it never gets is a protocol error we would have introduced — so
-/// the mock reports whether we did.
+/// The same, through the request the specification provides for. Advertising `refreshSupport`
+/// obliges us to answer it — a server left waiting on a response it never gets is a protocol error
+/// we would have introduced — so the mock reports whether we did.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_diagnostics_refresh_request_is_answered_and_acted_on() {
     let (_dir, script_path) = write_diagnostic_refresh_server();
@@ -1587,10 +1562,9 @@ async fn a_diagnostics_refresh_request_is_answered_and_acted_on() {
     mgr.lock().await.shutdown().await;
 }
 
-/// A pushed report may name the revision it describes. A server running one
-/// revision behind is then not mistaken for one that has answered the edit —
-/// the case arrival order alone cannot tell apart, and the reason the old
-/// design needed a monotonic sequence and an edit marker to approximate it.
+/// A pushed report may name the revision it describes. A server running one revision behind is then not mistaken for
+/// one that has answered the edit — the case arrival order alone cannot tell apart, and the reason the old design
+/// needed a monotonic sequence and an edit marker to approximate it.
 #[tokio::test(flavor = "current_thread")]
 async fn a_pushed_verdict_on_the_previous_revision_does_not_settle_the_edit() {
     let (_dir, script_path) = write_versioned_push_server();
@@ -1630,12 +1604,9 @@ async fn a_pushed_verdict_on_the_previous_revision_does_not_settle_the_edit() {
     mgr.lock().await.shutdown().await;
 }
 
-/// A server with a push channel has told us how it reports, and what it
-/// returns from a pull may be only part of it. rust-analyzer is the case in
-/// point: it answers `textDocument/diagnostic` with its own analysis and
-/// deliberately leaves `cargo check` results to `publishDiagnostics`. Believing
-/// the pull answer is the whole picture loses every check error in the crate —
-/// and worse, settles the file as clean, so nothing is reported at all.
+/// A server with a push channel has told us how it reports, and what it returns from a pull may be
+/// only part of it. rust-analyzer is the case in point: it answers `textDocument/diagnostic` with
+/// its own analysis and deliberately leaves `cargo check` results to `publishDiagnostics`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_server_that_publishes_is_not_second_guessed_with_a_pull() {
     let (_dir, script_path) = write_push_and_pull_server();
@@ -1661,20 +1632,21 @@ async fn a_server_that_publishes_is_not_second_guessed_with_a_pull() {
         let text = format!("const y = {round};\n");
         std::fs::write(&file, &text).unwrap();
         mgr.lock().await.notify_file_changed(&file, &text);
-        let summary = drain_lsp_diagnostics(&mgr, std::time::Duration::from_secs(2)).await;
+        // Leftover confirmation pull can occupy the mock's stdin before
+        // this edit's push.
+        let summary = drain_until_reported(&mgr, "the check that only the push channel runs").await;
         assert!(
-            summary.is_some_and(|s| s.text.contains("the check that only the push channel runs")),
-            "round {round}: the pushed report is what the reader gets"
+            summary.contains("the check that only the push channel runs"),
+            "round {round}: {summary}"
         );
     }
 
     mgr.lock().await.shutdown().await;
 }
 
-/// A report can arrive for a file we have never opened — a workspace-wide or
-/// `cargo check` pass covers more than the client has asked about. It describes
-/// text we never sent, so it is not a verdict on the first edit we make to that
-/// file, however new it looks.
+/// A report can arrive for a file we have never opened — a workspace-wide or `cargo check` pass
+/// covers more than the client has asked about. It describes text we never sent, so it is not a
+/// verdict on the first edit we make to that file, however new it looks.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_report_from_before_we_opened_a_file_does_not_settle_our_first_edit() {
     let (_dir, script_path) = write_publishes_before_open_server();
@@ -1751,15 +1723,9 @@ async fn a_refresh_we_cannot_act_on_does_not_discard_what_we_know() {
     mgr.lock().await.shutdown().await;
 }
 
-/// An edit landing while a suspicious empty answer is being double-checked
-/// must not cost us the errors we already hold.
-///
-/// The confirmation exists because a server answers before it has finished
-/// re-analyzing. If the second answer is written down anyway after the file has
-/// changed underneath it, two things go wrong at once: real errors are erased
-/// on the strength of a verdict about text that no longer exists, and the
-/// re-pull that follows then has nothing to lose, so it believes the first
-/// premature blank it is given and reports the newest edit as clean.
+/// An edit landing while a suspicious empty answer is being double-checked must not cost us the
+/// errors we already hold. The confirmation exists because a server answers before it has finished
+/// re-analyzing.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_edit_during_the_confirmation_does_not_cost_us_the_errors() {
     let (_dir, script_path) = write_clean_then_silent_server();
@@ -1795,14 +1761,9 @@ async fn an_edit_during_the_confirmation_does_not_cost_us_the_errors() {
     client.shutdown().await;
 }
 
-/// The refresh has to put a server back in the "worth waiting for" column, or
-/// it fails on the very case it exists for.
-///
-/// Roslyn goes quiet for as long as it takes to load a solution — long enough
-/// that we stop blocking turns on it — and then announces it is ready. If that
-/// announcement does not restart the clock, the drain that should wait for the
-/// re-pull the server just asked for returns without waiting, and its answer
-/// surfaces a turn late.
+/// The refresh has to put a server back in the "worth waiting for" column, or it fails on the very
+/// case it exists for. Roslyn goes quiet for as long as it takes to load a solution — long enough
+/// that we stop blocking turns on it — and then announces it is ready.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_server_that_announces_it_is_ready_is_waited_on_again() {
     let (_dir, script_path) = write_loads_after_going_quiet_server();
@@ -1839,16 +1800,9 @@ async fn a_server_that_announces_it_is_ready_is_waited_on_again() {
     mgr.lock().await.shutdown().await;
 }
 
-/// The first answer from a server we have not seen publish does not get to be
-/// a verdict of "clean".
-///
-/// This is the rust-analyzer case, and it is the *first* edit of a session
-/// rather than a rare race: the server has published nothing yet, because
-/// nothing has been open for it to publish about. It answers a pull promptly
-/// with only what its own analysis knows, while the errors that matter — the
-/// ones `cargo check` finds — follow on the push channel. Taking that first
-/// answer at face value settles the file as clean, and when the real errors
-/// arrive there is nobody left waiting for them.
+/// The first answer from a server we have not seen publish does not get to be a verdict of "clean". It answers a pull promptly with only what
+/// its own analysis knows, while the errors that matter — the ones `cargo check` finds — follow on the push channel. Taking that first answer
+/// at face value settles the file as clean, and when the real errors arrive there is nobody left waiting for them.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_servers_first_word_does_not_settle_an_edit_as_clean() {
     let (_dir, script_path) = write_slow_check_server();
@@ -1873,11 +1827,9 @@ async fn a_servers_first_word_does_not_settle_an_edit_as_clean() {
     mgr.lock().await.shutdown().await;
 }
 
-/// Not believing a server's first "clean" has to end in believing it, or
-/// something worse than a wrong answer takes its place: a file that stays
-/// pending for its whole deadline, so every turn for the next half minute
-/// spends the drain's budget waiting for a question that was answered at the
-/// start.
+/// Not believing a server's first "clean" has to end in believing it, or something worse than a wrong answer takes its
+/// place: a file that stays pending for its whole deadline, so every turn for the next half minute spends the drain's
+/// budget waiting for a question that was answered at the start.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_first_clean_answer_is_settled_once_it_has_been_confirmed() {
     let (_dir, script_path) = write_selective_pull_server();
@@ -1905,9 +1857,8 @@ async fn a_first_clean_answer_is_settled_once_it_has_been_confirmed() {
     mgr.lock().await.shutdown().await;
 }
 
-/// The most common case in real use is an edit that introduces no problems.
-/// Answering "this file is clean" is an answer, and must not be counted as the
-/// server going quiet — otherwise a few clean edits in a row write a perfectly
+/// The most common case in real use is an edit that introduces no problems. Answering "this file is clean" is an
+/// answer, and must not be counted as the server going quiet — otherwise a few clean edits in a row write a perfectly
 /// healthy server off, and the next real error only surfaces a turn late.
 #[tokio::test(flavor = "current_thread")]
 async fn a_server_reporting_clean_files_is_still_waited_on() {
@@ -1918,10 +1869,9 @@ async fn a_server_reporting_clean_files_is_still_waited_on() {
     // inside the drain rather than after it.
     let timeout = std::time::Duration::from_secs(3);
 
-    // Let the server say something first. Until it has, a clean answer is not
-    // taken as a verdict — we cannot yet tell a pull-only server from one that
-    // publishes and has not got round to it — and this test is about what
-    // happens *after* we know what kind of server it is.
+    // Let the server say something first. Until it has, a clean answer is not taken as a verdict —
+    // we cannot yet tell a pull-only server from one that publishes and has not got round to it —
+    // and this test is about what happens *after* we know what kind of server it is.
     let first = workspace.path().join("broken0.ts");
     std::fs::write(&first, "const bad = ;\n").unwrap();
     mgr.lock()
@@ -2065,13 +2015,8 @@ async fn scope_reaps_enrolled_language_server_child() {
     let mut child = client.child_process.take().expect("stdio child");
     scope.kill_all();
 
-    // Prove kill_all killed the child WHILE the client is still alive (the
-    // wedged-actor case) — dropping the client first would let its own Drop
-    // killpg mask a broken kill_all. `waitid(WNOWAIT)` observes the exit
-    // without reaping (signal 0 can't: it succeeds on a zombie), so the
-    // SIGKILLed leader stays unreaped and its pgid reserved. nix only
-    // exposes waitid on Linux; macOS falls back to the weaker
-    // drop-then-reap order below (CI runs the strong branch).
+    // Prove kill_all killed the child WHILE the client is still alive (the wedged-actor case) —
+    // dropping the client first would let its own Drop killpg mask a broken kill_all.
     #[cfg(target_os = "linux")]
     {
         let pid = nix::unistd::Pid::from_raw(child.id() as i32);
@@ -2098,10 +2043,9 @@ async fn scope_reaps_enrolled_language_server_child() {
         );
     }
 
-    // Linux: the leader is dead but unreaped, so its pgid is still reserved —
-    // the client Drop's killpg targets the zombie's group, not a reused pgid.
-    // macOS: dropping before the reap keeps the same pgid-reservation safety,
-    // at the cost of not isolating kill_all from the Drop killpg.
+    // Linux: the leader is dead but unreaped, so its pgid is still reserved — the client Drop's
+    // killpg targets the zombie's group, not a reused pgid. macOS: dropping before the reap keeps
+    // the same pgid-reservation safety, at the cost of not isolating kill_all from the Drop killpg.
     drop(client);
 
     assert!(
@@ -2110,10 +2054,9 @@ async fn scope_reaps_enrolled_language_server_child() {
     );
 }
 
-/// Dropping an `LspClient` without `shutdown` still reaps its server child, so a
-/// session never orphans a language server when graceful teardown is skipped.
-/// Probes the pid with signal 0 (ESRCH once reaped) since the client owns the
-/// child handle and waits on it during `Drop`.
+/// Dropping an `LspClient` without `shutdown` still reaps its server child, so a session never
+/// orphans a language server when graceful teardown is skipped. Probes the pid with signal 0 (ESRCH
+/// once reaped) since the client owns the child handle and waits on it during `Drop`.
 #[cfg(unix)]
 #[tokio::test]
 async fn drop_reaps_server_child_without_shutdown() {
@@ -2135,25 +2078,9 @@ async fn drop_reaps_server_child_without_shutdown() {
     );
 }
 
-/// The whole point of this work, measured against the real thing.
-///
-/// Mocks model the shapes real servers come in, and they missed the one that
-/// mattered most: Roslyn answers a pull before it has finished re-analyzing,
-/// and taking that answer at face value erases errors the file really has. It
-/// took driving the real server to find that, so the harness that found it is
-/// committed rather than thrown away.
-///
-/// Drives `LspManager` the way a session does — edit, drain, repeat — and
-/// watches the three things the bug showed up in: the server's lifecycle id
-/// (which changes only when grok restarts it), the number of server processes,
-/// and whether real C# diagnostics keep arriving.
-///
-/// Requires `Microsoft.CodeAnalysis.LanguageServer`. Run with:
-///
-/// ```text
-/// ROSLYN_DLL=/path/to/Microsoft.CodeAnalysis.LanguageServer.dll \
-///   cargo test -p xai-grok-tools e2e_real_roslyn_survives_editing -- --ignored --nocapture
-/// ```
+/// The whole point of this work, measured against the real thing. Mocks model the shapes real servers come in, and they missed the one that
+/// mattered most: Roslyn answers a pull before it has finished re-analyzing, and taking that answer at face value erases errors the file really
+/// has. It took driving the real server to find that, so the harness that found it is committed rather than thrown away.
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_real_roslyn_survives_editing() {
@@ -2200,13 +2127,9 @@ async fn e2e_real_roslyn_survives_editing() {
                 projects: vec!["App.csproj".to_string()],
             }),
             startup_timeout: Some(120_000),
-            // Deliberate, and the assertion below depends on it: with the
-            // default (`false`) a torn-down server is never rebuilt, so the
-            // lifecycle id could not move and "no restarts" would hold
-            // vacuously. Enabling it is also the configuration under which the
-            // memory growth was observed — the rebuild is what costs the
-            // gigabytes. With it off, the same crash simply ends C#
-            // diagnostics for the session.
+            // Deliberate, and the assertion below depends on it: with the default (`false`) a torn-down server is never rebuilt, so the lifecycle id could
+            // not move and "no restarts" would hold vacuously. Enabling it is also the configuration under which the memory growth was observed — the
+            // rebuild is what costs the gigabytes. With it off, the same crash simply ends C# diagnostics for the session.
             restart_on_crash: Some(true),
             ..Default::default()
         },
@@ -2266,4 +2189,70 @@ async fn e2e_real_roslyn_survives_editing() {
 
     monitor.abort();
     mgr.lock().await.shutdown().await;
+}
+
+fn read_json(path: &Path) -> serde_json::Value {
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}\n{text}", path.display()))
+}
+
+/// The handshake that stops Roslyn from creating a FileSystemWatcher per NuGet-cache directory: we advertise the
+/// capability, we accept the registration (including an out-of-workspace glob), and we do not turn it into an OS watch.
+/// An edit is forwarded as `workspace/didChangeWatchedFiles` so the server still hears about files we ourselves change.
+#[tokio::test]
+async fn advertises_and_accepts_file_watch_registration_without_error() {
+    let (script_dir, script_path) = write_file_watch_server();
+    let config = mock_server_config(&script_path);
+    let workspace = tempfile::tempdir().unwrap();
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let mut client = LspClient::start(
+        "watch-mock".to_string(),
+        1,
+        config,
+        workspace.path(),
+        notify,
+    )
+    .await
+    .expect("handshake failed");
+
+    let caps_path = script_dir.path().join("initialize_caps.json");
+    wait_until("initialize capabilities dump", || caps_path.exists()).await;
+    let caps = read_json(&caps_path);
+    let watch = &caps["workspace"]["didChangeWatchedFiles"];
+    assert_eq!(
+        watch["dynamicRegistration"], true,
+        "client must claim didChangeWatchedFiles so Roslyn does not use FileSystemWatcher: {watch}"
+    );
+    assert_eq!(watch["relativePatternSupport"], true, "{watch}");
+
+    let reply_path = script_dir.path().join("register_reply.json");
+    wait_until("registerCapability reply", || reply_path.exists()).await;
+    let reply = read_json(&reply_path);
+    assert!(
+        reply.get("error").is_none(),
+        "registerCapability must succeed so the server keeps using the client: {reply}"
+    );
+    assert_eq!(client.accepted_file_watch_registrations(), 1);
+
+    let file = workspace.path().join("app.ts");
+    client.notify_file_change(&file, "const x = 1;\n", "typescript");
+    client.notify_watched_path_event(&file, async_lsp::lsp_types::FileChangeType::CHANGED);
+    let watched_path = script_dir.path().join("watched.json");
+    wait_until("didChangeWatchedFiles from our edit", || {
+        watched_path.exists()
+    })
+    .await;
+    let watched = read_json(&watched_path);
+    let uri = watched["changes"][0]["uri"].as_str().unwrap_or("");
+    assert!(
+        uri.ends_with("app.ts"),
+        "edit should be forwarded as a watched-file change, got {watched}"
+    );
+    assert_eq!(
+        watched["changes"][0]["type"], 2,
+        "search_replace of an existing file is FileChangeType::Changed: {watched}"
+    );
+
+    client.shutdown().await;
 }

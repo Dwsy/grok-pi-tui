@@ -58,15 +58,9 @@ pub enum WebFetchError {
     ContentTypeMismatch { content_type: String, url: String },
 }
 
-/// Extra recovery guidance appended to an [`WebFetchError::SsrfBlocked`] message.
-///
-/// `web_fetch` can't reach internal/private hosts, but GitHub / GitHub
-/// Enterprise hosts (including internal GHE hostnames) are reachable via the
-/// authenticated `gh` CLI. When the blocked host looks like GitHub **and `gh`
-/// is actually installed**, point the agent at `gh` instead of letting it
-/// conclude the resource is inaccessible and give up. If `gh` is not on `PATH`
-/// (or the host isn't GitHub), fall back to the bare SSRF message by returning
-/// an empty string.
+/// Extra recovery guidance appended to an [`WebFetchError::SsrfBlocked`] message. `web_fetch` can't reach internal/private hosts, but GitHub /
+/// GitHub Enterprise hosts (including internal GHE hostnames) are reachable via the authenticated `gh` CLI. When the blocked host looks like
+/// GitHub **and `gh` is actually installed**, point the agent at `gh` instead of letting it conclude the resource is inaccessible and give up.
 fn ssrf_recovery_hint(host: &str) -> &'static str {
     if is_github_host(host) && gh_available() {
         ". Use the `gh` CLI instead (e.g. `gh pr view` or `gh api`)."

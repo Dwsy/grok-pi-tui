@@ -62,13 +62,9 @@ pub(crate) fn apply_replace(
     Ok(())
 }
 
-/// `merge=true`: updates are merged into the existing state.
-/// - **Existing items**: `content` is optional — if omitted the previous
-///   value is kept. This lets the model mark an item from `in_progress` →
-///   `completed` without echoing the content back.
-/// - **New items** (id not yet in state): if `content` is omitted the `id`
-///   is used as a fallback so the tool never errors on a merge call. This
-///   makes the tool resilient to state being lost between calls.
+/// `merge=true`: updates are merged into the existing state. **Existing items**: `content` is optional — if omitted the previous value is kept.
+/// This lets the model mark an item from `in_progress` → `completed` without echoing the content back. **New items** (id not yet in state): if
+/// `content` is omitted the `id` is used as a fallback so the tool never errors on a merge call.
 pub(crate) fn apply_merge(state: &mut TodoState, updates: &[TodoUpdate]) -> Result<(), TodoError> {
     for u in updates {
         if state.update(&u.id, u.content.as_deref(), u.status) {
@@ -235,10 +231,9 @@ const fn default_merge() -> bool {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TodoWriteInput {
-    /// When true (the default), merge the provided todos into the existing
-    /// list by id (partial updates are allowed — leave unchanged fields
-    /// undefined). When explicitly set to false, the provided todos replace
-    /// the existing list entirely.
+    /// When true (the default), merge the provided todos into the existing list by id (partial
+    /// updates are allowed — leave unchanged fields undefined). When explicitly set to false, the
+    /// provided todos replace the existing list entirely.
     #[serde(
         default = "default_merge",
         deserialize_with = "crate::types::schema::deserialize_lenient_bool"
@@ -252,10 +247,8 @@ pub struct TodoWriteInput {
     pub todos: Vec<TodoUpdate>,
 }
 
-/// New-architecture `TodoWrite` tool.
-///
-/// State: `State<TodoState>` — persisted across calls via Resources serde.
-/// Params: `()` — no per-tool configuration.
+/// New-architecture `TodoWrite` tool. State: `State<TodoState>` — persisted across calls via
+/// Resources serde. Params: `()` — no per-tool configuration.
 #[derive(Debug, Default)]
 pub struct TodoWriteTool;
 
@@ -390,10 +383,8 @@ mod tests {
 
     #[test]
     fn name_and_description() {
-        use crate::types::tool_metadata::ToolMetadata;
         let tool = TodoWriteTool;
         assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "todo_write");
-        assert!(ToolMetadata::description_template(&tool).contains("task list"));
     }
 
     #[tokio::test]

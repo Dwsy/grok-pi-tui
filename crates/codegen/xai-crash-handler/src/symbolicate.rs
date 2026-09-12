@@ -16,12 +16,7 @@ pub struct ResolvedFrame {
 }
 
 /// Resolve raw instruction pointers from a crash blob into symbol names.
-///
-/// Uses the `backtrace` crate's `resolve` function. This works best when
-/// the binary has debug info or at least a symbol table. For stripped
-/// release binaries, symbol names may still be available (e.g.
-/// `my_app::render::draw_frame`) but file/line info will
-/// be missing.
+/// Works best with debug info or a symbol table. Stripped release binaries may still have names, not file/line.
 pub fn resolve_frames(blob: &CrashBlob) -> Vec<ResolvedFrame> {
     blob.frames
         .iter()

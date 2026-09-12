@@ -1,26 +1,27 @@
 //! Telemetry event structs. Every struct needs a `telemetry_event!` binding.
 //! `log_event` auto-injects `session_id`/`turn_number` and reserves every key in `client::RESERVED_EVENT_KEYS`.
 //!
-//! These structs were extracted from `xai-grok-shell` so they can be
-//! reused across binaries (TUI, sampler) without dragging the shell HTTP /
-//! product-analytics client along.
+//! Extracted from `xai-grok-shell` so binaries (TUI, sampler) can reuse them without the shell's HTTP product-analytics client.
 
 use serde::Serialize;
 
 use super::enums::PermissionMode;
 pub use super::enums::PrCreationSource;
 
+mod active_agent_message;
+mod feedback;
 mod permission_analytics;
+pub use active_agent_message::*;
+pub use feedback::*;
 pub use permission_analytics::*;
 
 /// Binds a product event name to a struct. Implement via `telemetry_event!` below.
 pub trait TelemetryEvent: Serialize + Send + 'static {
     const NAME: &'static str;
 
-    /// Curated external-OTEL representation (see [`crate::external`]).
-    /// Default: not exported externally. Override via the macro's
-    /// `external = …` arm — the mapping functions live together in
-    /// `external/schema.rs` so the whole wire schema is one reviewable file.
+    /// Curated external-OTEL representation (see [`crate::external`]). Default: not exported externally. Override via the
+    /// macro's `external = …` arm. The mapping functions live together in `external/schema.rs` so the whole wire schema is
+    /// one reviewable file.
     fn external_record(&self) -> Option<crate::external::schema::ExternalRecord> {
         None
     }
@@ -62,9 +63,11 @@ pub enum ContextualTipKind {
     ImageInput,
     SendNow,
     SmallScreen,
-    /// Double-click fold/nav path → tip to enable Word select in settings.
+    /// A double-click on the fold/nav path shows a tip to enable Word select in settings.
     WordSelect,
-    /// SSH session without `grok wrap` → tip to wrap the ssh command locally.
+    /// Three nearby drag-copies → tip naming /copy and /export.
+    ExportCopy,
+    /// An SSH session without `grok wrap` shows a tip to wrap the ssh command locally.
     SshWrap,
 }
 
@@ -84,6 +87,11 @@ pub enum PromptSuggestionAction {
     Accepted,
     /// The user explicitly dismissed the ghost text (Esc).
     Dismissed,
+    SkippedCatalog,
+    Fetched,
+    FetchedEmpty,
+    Filtered,
+    FetchFailed,
 }
 
 #[derive(Serialize, Clone, Copy)]
@@ -96,6 +104,7 @@ pub enum YoloTrigger {
 
 #[derive(Serialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum AccessKind {
     Read,
     Edit,
@@ -103,6 +112,8 @@ pub enum AccessKind {
     Grep,
     Mcp,
     Web,
+    AgentMessage,
+    Other,
 }
 
 /// Outcome of one CLI binary install/update attempt.
@@ -113,8 +124,7 @@ pub enum CliUpdateOutcome {
     Failed,
 }
 
-/// Why a CLI binary install/update failed. Smoke kinds are post-download
-/// `--version` checks; other kinds cover download/activation/misc errors.
+/// Smoke kinds are post-download `--version` checks; other kinds cover download/activation/misc errors.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CliUpdateErrorKind {
@@ -126,8 +136,7 @@ pub enum CliUpdateErrorKind {
     Other,
 }
 
-/// Installer that performed the attempt. Wire values match the persisted
-/// installer strings; `Other` bounds unknown persisted values.
+/// Wire values match the persisted installer strings; `Other` covers unknown persisted values.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CliUpdateInstaller {
     #[serde(rename = "npm")]
@@ -152,15 +161,12 @@ impl CliUpdateInstaller {
     }
 }
 
-/// What kicked off the install/update. Travels across the process boundary
-/// as `--trigger=<value>`; [`CliUpdateTrigger::as_str`] and `FromStr` are
-/// the one rendering (round-trip pinned with the wire values in tests).
-///
-/// Volume caveat: one-shot `grok update` resolves telemetry from disk+env
-/// only, so `user_command` under-reports relative to the in-process
-/// `leader_converge` — the triggers are not directly comparable.
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+/// [`CliUpdateTrigger`]'s strum string and `FromStr` are the only rendering; tests pin the round trip with the wire
+/// values. Volume caveat: one-shot `grok update` resolves telemetry from disk and env only. So `user_command`
+/// under-reports relative to the in-process `leader_converge`; the triggers are not directly comparable.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum CliUpdateTrigger {
     /// A human ran `grok update` or accepted an update prompt.
     UserCommand,
@@ -169,17 +175,6 @@ pub enum CliUpdateTrigger {
     /// The leader daemon's hourly in-process converge.
     LeaderConverge,
 }
-
-impl CliUpdateTrigger {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::UserCommand => "user_command",
-            Self::AutoBackground => "auto_background",
-            Self::LeaderConverge => "leader_converge",
-        }
-    }
-}
-
 impl std::str::FromStr for CliUpdateTrigger {
     type Err = String;
 
@@ -193,27 +188,15 @@ impl std::str::FromStr for CliUpdateTrigger {
     }
 }
 
-#[derive(Serialize, Clone, Copy)]
+#[derive(Serialize, Clone, Copy, strum::AsRefStr, strum::IntoStaticStr)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum PermissionOutcome {
     Allow,
     Deny,
     Cancelled,
     Followup,
 }
-
-impl PermissionOutcome {
-    /// Stable snake_case label matching the serde representation.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Allow => "allow",
-            Self::Deny => "deny",
-            Self::Cancelled => "cancelled",
-            Self::Followup => "followup",
-        }
-    }
-}
-
 #[derive(Serialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum CompactionTrigger {
@@ -235,10 +218,10 @@ pub enum CompactionModeLabel {
 pub enum TwoPassOutcome {
     /// Policy or product-exception off (cursor, subagents).
     Disabled,
-    /// Armed, fell back to single-pass.
-    Miss,
+    /// Enabled, fell back to single-pass.
+    SinglePass,
     /// Pass-2 summary applied.
-    Used,
+    TwoPass,
 }
 
 #[derive(Serialize, Clone, Copy)]
@@ -257,8 +240,8 @@ pub enum HookOutcome {
     Blocked,
 }
 
-/// Outcome of one `PreToolUse` gate callback. Only `Denied` blocks the tool; the rest
-/// (including the `TimedOut`/`TransportError`/`Malformed`/`UnknownDecision` fail-open paths) let it run.
+/// Outcome of one `PreToolUse` gate callback.
+/// Only `Denied` blocks the tool; the rest (including the `TimedOut`/`TransportError`/`Malformed`/`UnknownDecision` fail-open paths) let it run.
 #[derive(Serialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientHookGateOutcome {
@@ -280,8 +263,9 @@ pub enum McpTransport {
 
 pub use super::enums::McpInitStrategy as McpStrategy;
 
-#[derive(Serialize, Clone, Copy)]
+#[derive(Serialize, Clone, Copy, strum::AsRefStr, strum::IntoStaticStr)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum McpErrorType {
     Connection,
     Auth,
@@ -290,21 +274,6 @@ pub enum McpErrorType {
     SpawnFailed,
     HandshakeFailed,
 }
-
-impl McpErrorType {
-    /// Stable snake_case label matching the serde representation.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Connection => "connection",
-            Self::Auth => "auth",
-            Self::Protocol => "protocol",
-            Self::Timeout => "timeout",
-            Self::SpawnFailed => "spawn_failed",
-            Self::HandshakeFailed => "handshake_failed",
-        }
-    }
-}
-
 #[derive(Serialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanModeState {
@@ -344,23 +313,13 @@ pub enum PagerCommandSource {
     NonBuiltin,
 }
 
-#[derive(Serialize, Clone, Copy)]
+#[derive(Serialize, Clone, Copy, strum::AsRefStr, strum::IntoStaticStr)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum InstallKind {
     Git,
     Local,
 }
-
-impl InstallKind {
-    /// Stable snake_case label matching the serde representation.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Git => "git",
-            Self::Local => "local",
-        }
-    }
-}
-
 #[derive(Serialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginSource {
@@ -379,24 +338,24 @@ pub struct Login {
     pub user_id: Option<String>,
 }
 
-/// The login-method picker was shown. `trigger` is "startup", "logout", or
-/// "mid_session".
+/// The login-method picker was shown.
+/// `trigger` is "startup", "logout", or "mid_session".
 #[derive(Serialize)]
 pub struct LoginPickerShown {
     pub trigger: String,
 }
 
-/// A login method was chosen from the picker. `method` is "xai" or "api_key";
-/// `mode` is "device", "loopback", or "api_key".
+/// A login method was chosen from the picker.
+/// `method` is "xai" or "api_key"; `mode` is "device", "loopback", or "api_key".
 #[derive(Serialize)]
 pub struct LoginMethodChosen {
     pub method: String,
     pub mode: String,
 }
 
-/// A login flow completed successfully. `method` is "xai" or "api_key";
-/// `mode` is the resolved auth mode; `mid_session` is true for `/login`/401
-/// re-auth (as opposed to the startup/logout flow).
+/// A login flow completed successfully.
+/// `method` is "xai" or "api_key"; `mode` is the resolved auth mode.
+/// `mid_session` is true for `/login`/401 re-auth (as opposed to the startup/logout flow).
 #[derive(Serialize)]
 pub struct LoginCompleted {
     pub method: String,
@@ -409,8 +368,8 @@ pub struct LoginCompleted {
 #[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LoginFailureKind {
-    /// `is_connect`: a dead TCP connect *or* a TLS handshake killed
-    /// mid-flight. `os_error` tells them apart.
+    /// `is_connect`: a dead TCP connect *or* a TLS handshake killed mid-flight.
+    /// `os_error` tells them apart.
     TransportConnect,
     /// TLS certificate rejected for an untrusted issuer (e.g. an uninstalled proxy root).
     CertificateUntrusted,
@@ -423,28 +382,24 @@ pub enum LoginFailureKind {
     Decode,
 }
 
-/// One per failed login attempt, emitted by the login funnel so a retried
-/// request can't inflate the count. Failures that never reached HTTP (user
-/// backed out, loopback bind, id_token validation) are not reported.
+/// One per failed login attempt, emitted by the login funnel so a retried request can't inflate the count.
+/// Failures that never reached HTTP (user backed out, loopback bind, id_token validation) are not reported.
 #[derive(Serialize)]
 pub struct LoginFailed {
     pub error_kind: LoginFailureKind,
-    /// OS code from the failure's cause chain (54/104 ECONNRESET, 10054 on
-    /// Windows).
+    /// OS code from the failure's cause chain (54/104 ECONNRESET, 10054 on Windows).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub os_error: Option<i32>,
 }
 
-/// The user backed out of the login funnel. `stage` is "picker",
-/// "api_key_entry", "loopback_paste", "device_wait", "api_key_wait", or
-/// "command_wait"; `via` is "esc" or "quit".
+/// The user backed out of the login funnel.
+/// `stage` is "picker", "api_key_entry", "loopback_paste", "device_wait", "api_key_wait", or "command_wait"; `via` is "esc" or "quit".
 #[derive(Serialize)]
 pub struct LoginAbandoned {
     pub stage: String,
     pub via: String,
 }
 
-/// Result of persisting a user-provided API key.
 #[derive(Serialize)]
 pub struct ApiKeySaveResult {
     pub ok: bool,
@@ -462,14 +417,18 @@ pub struct PlanModeToggled {
     pub trigger: PlanModeTrigger,
     pub turn_in_flight: bool,
     pub was_previously_active: bool,
+    /// Previous permission-mode label (`default` / `plan` / `bypass_permissions`)
+    /// for the external `from_mode` attr. `#[serde(skip)]`.
+    #[serde(skip)]
+    pub from_mode: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Contextual tips
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// One contextual-hint impression or acceptance: per tip, how often it is
-/// shown vs. acted on (the `action` property drives the product-analytics funnel).
+/// One contextual-hint impression or acceptance: per tip, how often it is shown vs. acted on.
+/// The `action` property drives the product-analytics funnel.
 #[derive(Serialize)]
 pub struct ContextualTip {
     pub tip: ContextualTipKind,
@@ -480,19 +439,22 @@ pub struct ContextualTip {
 // Prompt suggestions (tab autocomplete ghost text)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// One predicted-next-prompt ghost impression or outcome. `shown` →
-/// `accepted` conversion is the acceptance rate of the tab-autocomplete
-/// feature; `dismissed` counts explicit Esc dismissals (a shown suggestion
-/// with neither outcome was implicitly ignored). No suggestion text is
-/// logged — only content-free metadata.
+/// Prompt-suggestion telemetry never includes suggestion text.
 #[derive(Serialize)]
 pub struct PromptSuggestion {
     pub action: PromptSuggestionAction,
-    /// Length of the full suggestion in characters (content-free size
-    /// signal: are long or short suggestions likelier to be accepted?).
+    /// Length of the full suggestion in characters (content-free size signal: are long or short suggestions likelier to be accepted?).
     pub chars: usize,
     /// Number of whitespace-separated words in the suggestion.
     pub words: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -504,6 +466,10 @@ pub struct YoloToggled {
     pub enabled: bool,
     pub previous_state: bool,
     pub trigger: YoloTrigger,
+    /// Previous permission mode (`default` / `plan` / `bypass_permissions`).
+    /// `None` falls back to yolo-only derivation from `previous_state`.
+    #[serde(skip)]
+    pub from_mode: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -554,7 +520,7 @@ pub struct CompactionCompleted {
     pub compaction_id: String,
     pub compaction_mode: CompactionModeLabel,
     pub two_pass: TwoPassOutcome,
-    pub segments_written: u32,
+    pub segments_queued: u32,
     pub degenerate_retries: u32,
     pub input_overflow_retries: u32,
     pub is_subagent: bool,
@@ -580,7 +546,7 @@ pub struct CompactionBeginParams {
 pub struct CompactionCompleteStats {
     pub tokens_after: u64,
     pub two_pass_used: bool,
-    pub segments_written: u32,
+    pub segments_queued: u32,
     pub degenerate_retries: u32,
     pub input_overflow_retries: u32,
 }
@@ -592,17 +558,8 @@ pub struct CompactionTiming {
     pub post_compaction_ms: Option<u64>,
 }
 
-fn resolve_two_pass(enabled: bool, used: bool) -> TwoPassOutcome {
-    match (enabled, used) {
-        (false, _) => TwoPassOutcome::Disabled,
-        (true, true) => TwoPassOutcome::Used,
-        (true, false) => TwoPassOutcome::Miss,
-    }
-}
-
-/// Emits `compaction_triggered` on `begin` and `compaction_completed` on
-/// `complete`, correlated by a shared `compaction_id`. A scope dropped
-/// without `complete` (error or cancel) emits no completion.
+/// Emits `compaction_triggered` on `begin` and `compaction_completed` on `complete`, correlated by a shared `compaction_id`.
+/// A scope dropped without `complete` (error or cancel) emits no completion.
 pub struct CompactionScope {
     pub compaction_id: String,
     pub tokens_before: u64,
@@ -658,7 +615,11 @@ impl CompactionScope {
     }
 
     pub fn complete(self, stats: CompactionCompleteStats, timing: CompactionTiming) {
-        let two_pass = resolve_two_pass(self.two_pass_enabled, stats.two_pass_used);
+        let two_pass = match (self.two_pass_enabled, stats.two_pass_used) {
+            (false, _) => TwoPassOutcome::Disabled,
+            (true, true) => TwoPassOutcome::TwoPass,
+            (true, false) => TwoPassOutcome::SinglePass,
+        };
         crate::session_ctx::log_event(CompactionCompleted {
             duration_ms: self.start.elapsed().as_millis() as u64,
             tokens_before: self.tokens_before,
@@ -667,7 +628,7 @@ impl CompactionScope {
             compaction_id: self.compaction_id,
             compaction_mode: self.compaction_mode,
             two_pass,
-            segments_written: stats.segments_written,
+            segments_queued: stats.segments_queued,
             degenerate_retries: stats.degenerate_retries,
             input_overflow_retries: stats.input_overflow_retries,
             is_subagent: self.is_subagent,
@@ -678,9 +639,8 @@ impl CompactionScope {
     }
 }
 
-/// Auto-compaction suppressed after a deterministic failure so the turn loop stops
-/// re-firing a doomed compaction. Fires once per transition into the suppressed
-/// state; `reason` is a fixed classification: `credit_block | size | auth | schema | other`.
+/// Auto-compaction suppressed after a deterministic failure so the turn loop stops re-firing a doomed compaction.
+/// Fires once per transition into the suppressed state; `reason` is a fixed classification: `credit_block | size | auth | schema | other`.
 #[derive(Serialize)]
 pub struct AutoCompactSuppressed {
     pub reason: &'static str,
@@ -707,7 +667,7 @@ pub struct CompactionRetryDegraded {
 // Subagents
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Which spawn path owns a subagent's lifecycle.
+/// Which spawn path owns a subagent.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SubagentOwnerKind {
@@ -743,8 +703,7 @@ pub struct SubagentLaunched {
     /// Time parked in the admission queue; absent if admitted immediately.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queued_ms: Option<u64>,
-    /// The session's running non-workflow subagents at launch, including
-    /// this one; max per session is the session's peak concurrency.
+    /// The session's running non-workflow subagents at launch, including this one; max per session is the session's peak concurrency.
     pub session_running: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub persona: Option<String>,
@@ -769,12 +728,9 @@ pub struct SubagentCompleted {
     pub tool_calls: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_used: Option<u64>,
-    // Spawn-phase durations (`crate::subagent_spawn`, the
-    // `grok_code_subagent_spawn_*` taxonomy); absent when a phase did not run.
-    // Populated through `SubagentSpawnTimer::write_event_phases`' single match,
-    // which fails to compile until a new phase is given a field below.
-    // Phases are hierarchical (agent_build + tool_setup nest in
-    // session_bootstrap); summing all of them double-counts.
+    // Spawn-phase durations (`crate::subagent_spawn`, the `grok_code_subagent_spawn_*` taxonomy); absent when a phase did not run
+    // Populated through `SubagentSpawnTimer::write_event_phases`' single match, which fails to compile until a new phase is given a field below
+    // Phases are hierarchical (agent_build and tool_setup nest in session_bootstrap); summing all of them double-counts
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue_wait_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -826,8 +782,7 @@ impl SubagentLimitHit {
         }
     }
 
-    /// The workflow pool's producer: waiters block on the run's semaphore,
-    /// so there is no queue depth to report.
+    /// The workflow pool's producer: waiters block on the run's semaphore, so there is no queue depth to report.
     pub fn workflow_run_concurrent(
         parent_session_id: String,
         workflow_run_id: String,
@@ -855,8 +810,7 @@ pub enum RateLimitWaitOutcome {
     Unresolved,
 }
 
-/// Emitted once per inner `process_conversation_turn`, so one `turn_number`
-/// can carry several rows; do not blindly GROUP BY turn_number.
+/// Emitted once per inner `process_conversation_turn`, so one `turn_number` can carry several rows; do not blindly GROUP BY turn_number.
 #[derive(Serialize)]
 pub struct SubagentRateLimitWaited {
     /// Resubmits (waits) this turn, excluding the initial send.
@@ -892,8 +846,7 @@ pub struct WorkflowRunStarted {
     pub resumed: bool,
 }
 
-/// The run tracker's status labels, plus `superseded` for an episode whose
-/// run a quick resume took over.
+/// The run tracker's status labels, plus `superseded` for an episode whose run a quick resume took over.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowRunEndStatus {
@@ -1106,10 +1059,23 @@ pub struct HookExecuted {
 #[derive(Serialize)]
 pub struct HookBlocked {
     pub hook_name: String,
+    pub cause: HookBlockCause,
 }
 
-/// Per-callback outcome of a `PreToolUse` gate. A deny returns early, so callbacks
-/// still pending at that point are not logged.
+#[derive(Serialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum HookBlockCause {
+    Denied,
+    /// A `PreToolUse` `updatedInput` that could not be applied.
+    UnusableRewrite,
+    /// A `Stop`/`SubagentStop` hook blocked the agent from stopping.
+    StopBlocked,
+    /// A `UserPromptSubmit` hook blocked the prompt before the turn started.
+    PromptBlocked,
+}
+
+/// Per-callback outcome of a `PreToolUse` gate.
+/// A deny returns early, so callbacks still pending at that point are not logged.
 #[derive(Serialize)]
 pub struct ClientHookGate {
     pub callback_id: String,
@@ -1135,7 +1101,7 @@ pub struct SkillRemoved {
     pub success: bool,
 }
 
-#[derive(Serialize, Clone, Copy, strum::IntoStaticStr)]
+#[derive(Serialize, Clone, Copy, strum::AsRefStr, strum::IntoStaticStr)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum SkillTrigger {
@@ -1173,11 +1139,16 @@ pub struct McpServerFailed {
     pub error_type: McpErrorType,
     pub duration_ms: u64,
     pub timeout_sec: u64,
+    /// Failure text for the external `error_message` attr (CONTENT gate).
+    /// `#[serde(skip)]`.
+    #[serde(skip)]
+    pub error_message: Option<String>,
 }
 
 #[derive(Serialize)]
 pub struct McpInitCompleted {
     pub total_duration_ms: u64,
+    pub spawn_duration_ms: u64,
     pub server_count: u32,
     pub servers_succeeded: u32,
     pub servers_failed: u32,
@@ -1216,9 +1187,7 @@ pub struct SessionHarness {
     pub agents_md_dir_names: Vec<String>,
     pub memory_enabled: bool,
     pub memory_retrieval_mode: MemoryRetrievalMode,
-    /// Whether the session cwd is inside a git repo (same value `SessionNew`
-    /// carries). Additive analytics-visible field, added for the external
-    /// `session_start` event (design ‡ footnote).
+    /// Whether the session cwd is inside a git repo (same value `SessionNew` carries); the external `session_start` event reads it.
     pub is_git_repo: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_update: Option<bool>,
@@ -1253,29 +1222,19 @@ pub struct PromptSubmitted {
     pub model_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_identifier: Option<String>,
-    /// Pager screen mode from the prompt request `_meta.screenMode`
-    /// (`fullscreen` | `inline` | `minimal` | `headless`). `None` for
-    /// non-pager clients and synthetic prompts (goal summaries, drains,
-    /// interjections).
+    /// Pager screen mode from the prompt request `_meta.screenMode` (`fullscreen` | `inline` | `minimal` | `headless`).
+    /// `None` for non-pager clients and synthetic prompts (goal summaries, drains, interjections).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen_mode: Option<String>,
-    /// Raw prompt text for the external stream's `OTEL_LOG_USER_PROMPTS`
-    /// gate **only**. `#[serde(skip)]`: never serialized to product events/analytics;
-    /// dropped at external emit time unless the gate is on (then capped at
-    /// 60 KB and secret-scrubbed).
+    /// Raw prompt text for the external stream's `OTEL_LOG_USER_PROMPTS` gate **only**.
+    /// `#[serde(skip)]`: never serialized to product events/analytics.
+    /// Dropped at external emit time unless the gate is on (then capped at 60 KB and secret-scrubbed).
     #[serde(skip)]
     pub prompt_text: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct UserFeedback {
-    pub session_id: String,
-    pub has_feedback_text: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rating_value: Option<i32>,
-    pub is_solicited: bool,
+    /// Slash/skill command name for the external `command_name` attr.
+    /// Always-on metadata (not user prompt text). `#[serde(skip)]`.
+    #[serde(skip)]
+    pub command_name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1286,12 +1245,11 @@ pub struct RolloutSurvey {
 }
 
 /// PR created via the session (bash `gh pr create` or MCP create_pull_request).
-/// Counts only — PR url/number stay in the turn_result.json signals, not here.
+/// Counts only: PR url/number stay in the turn_result.json signals.
 #[derive(Serialize)]
 pub struct PrCreated {
     pub source: PrCreationSource,
-    /// Whether the session recorded a `git commit` before the create
-    /// (end-to-end attribution vs unknown work start).
+    /// Whether the session recorded a `git commit` before the create; separates work done end to end in the session from work started elsewhere.
     pub had_commit_in_session: bool,
 }
 
@@ -1370,8 +1328,7 @@ pub struct NonGitDecisionEvent {
 // Prompt Latency (every turn)
 // ---------------------------------------------------------------------------
 
-/// Why a [`ProcessResourceUsage`] was sampled, so a mid-life reading is not
-/// read as a post-teardown one.
+/// Why a [`ProcessResourceUsage`] was sampled, so a mid-life reading is not read as a post-teardown one.
 #[derive(Serialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceReportTrigger {
@@ -1379,8 +1336,8 @@ pub enum ResourceReportTrigger {
     Periodic,
 }
 
-/// The ceilings this process runs under. The denominator for
-/// `ProcessResourceUsage`: usage against limits is headroom.
+/// The ceilings this process runs under.
+/// The denominator for `ProcessResourceUsage`: usage against limits is headroom.
 #[derive(Serialize)]
 pub struct ProcessResourceLimits {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1410,9 +1367,9 @@ pub struct HeapThresholdCrossed {
     pub rss_peak_bytes: Option<u64>,
 }
 
-/// What this process still holds just after a session was removed. Aggregated
-/// per release, a rising tail is a leak; `resident_sessions` separates leader
-/// mode, where one process serves many sessions and a leak compounds.
+/// What this process still holds just after a session was removed.
+/// Aggregated per release, a rising tail is a leak.
+/// `resident_sessions` separates leader mode, where one process serves many sessions and a leak compounds.
 #[derive(Serialize)]
 pub struct ProcessResourceUsage {
     pub trigger: ResourceReportTrigger,
@@ -1430,14 +1387,17 @@ pub struct ProcessResourceUsage {
     pub open_files: Option<u64>,
     pub resident_sessions: usize,
     pub session_threads: usize,
+    pub idle: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct PromptLatency {
     pub turn_index: u32,
     pub total_ms: u64,
     pub mcp_wait_ms: u64,
     pub tool_collection_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_status_wait_ms: Option<u64>,
     pub model_call_ms: u64,
     pub pre_model_ms: u64,
     pub mcp_server_count: u32,
@@ -1450,6 +1410,17 @@ pub struct PromptLatency {
     pub attempts: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u32>,
+    pub before_first_model_ms: u64,
+    pub sampling_ms: u64,
+    pub tool_blocking_ms: u64,
+    pub compaction_ms: u64,
+    pub between_sampling_overhead_ms: u64,
+    pub after_last_sampling_ms: u64,
+    pub turn_total_ms: u64,
+    pub sampling_request_count: u32,
+    pub sampling_retry_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttfm_ms: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1462,10 +1433,31 @@ pub struct TurnCompleted {
     pub duration_ms: u64,
     pub tool_call_count: u32,
     pub model_id: String,
+    /// External-stream-only `session.id` (`#[serde(skip)]`); lets an emit outside the ambient
+    /// `TelemetryCtx` carry it. `None` falls back to the task-local ctx.
+    #[serde(skip)]
+    pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cancellation_category: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_detail: Option<String>,
+}
+
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum CancellationScope {
+    Turn,
+    Compaction,
+}
+
+#[derive(Serialize, Clone, Copy)]
+pub struct CancellationCompleted {
+    pub latency_ms: u64,
+    pub scope: CancellationScope,
 }
 
 /// Model issued a shell tool call whose command is `true` (keepalive thrash signal).
@@ -1474,13 +1466,9 @@ pub struct ShellTrueNoop {
     pub tool_name: String,
 }
 
-/// Harness nudged the model to break a run of identical tool calls. Pairs with
-/// [`ActionStationarityStop`]: the nudge fires first and once per run, the stop only
-/// if the run continues to the hard limit.
-///
-/// `problematically_repeating` splits the two threshold tiers (tools whose identical
-/// repeats are never productive versus everything else), so nudge and stop each break
-/// down by tier.
+/// Harness nudged the model to break a run of identical tool calls. Pairs with [`ActionStationarityStop`]: the nudge
+/// fires first and once per run, the stop only if the run continues to the hard limit. `problematically_repeating` splits
+/// the two threshold tiers (tools whose identical repeats are never productive versus everything else).
 #[derive(Serialize)]
 pub struct ActionStationarityNudge {
     pub problematically_repeating: bool,
@@ -1505,19 +1493,33 @@ pub struct ActionStationarityStop {
 pub struct ToolCallCompleted {
     pub tool_name: String,
     pub outcome: xai_grok_session_events::types::ToolOutcome,
+    /// Content-free: the hook name is kept out of OTLP and product events and rides only the session-event row.
+    pub hook_rewrote: bool,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_result_size_bytes: Option<u64>,
-    /// Primary file path of the call, for the external stream only
-    /// (`#[serde(skip)]`: never serialized to product events/analytics). Always reduced to
-    /// `file_extension`; the full path rides the `OTEL_LOG_TOOL_DETAILS` gate.
+    /// Model at call time, for the external stream only (`#[serde(skip)]`).
+    #[serde(skip)]
+    pub model_id: String,
+    /// Primary file path of the call, for the external stream only (`#[serde(skip)]`: never serialized to product events/analytics).
+    /// Always reduced to `file_extension`; the full path rides the `OTEL_LOG_TOOL_DETAILS` gate.
     #[serde(skip)]
     pub file_path: Option<String>,
     /// Tool parameters for the external stream's `OTEL_LOG_TOOL_DETAILS`
-    /// gate **only** (`#[serde(skip)]`; reduced to 4 KB / depth 2 / 20 items
-    /// at emit time).
+    /// 4 KB preview **and** `OTEL_LOG_TOOL_CONTENT` full `tool_input`
+    /// (`#[serde(skip)]`; reduced / capped at emit time).
     #[serde(skip)]
     pub parameters: Option<serde_json::Value>,
+    /// Tool-call id for the external stream (`#[serde(skip)]`; always-on
+    /// join key, not content).
+    #[serde(skip)]
+    pub tool_use_id: Option<String>,
+    /// Tool result body for `OTEL_LOG_TOOL_CONTENT` (`#[serde(skip)]`).
+    #[serde(skip)]
+    pub tool_output: Option<String>,
+    /// Failure text for `OTEL_LOG_TOOL_CONTENT` (`#[serde(skip)]`).
+    #[serde(skip)]
+    pub error_message: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1538,6 +1540,24 @@ pub struct ModelResponseReceived {
     pub reasoning_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached_prompt_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation_tokens: Option<u32>,
+    /// USD ticks (1e10 ticks = $1); `None` when unpriced.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd_ticks: Option<i64>,
+}
+
+/// Emitted once per turn via [`crate::external::emit`] (not [`crate::session_ctx::log_event`]), so Mixpanel never
+/// receives `assistant_response`. Thinking/tool-use blocks are excluded at the source. `response_length` always exports
+/// on the external event; `response_text` is `#[serde(skip)]` and gated by `OTEL_LOG_ASSISTANT_RESPONSES`.
+#[derive(Serialize)]
+pub struct AssistantResponse {
+    /// Char/byte count of the assembled text blocks (always-on, like
+    /// `prompt_length`). Zero on tool-only turns.
+    pub response_length: usize,
+    /// Gated by `OTEL_LOG_ASSISTANT_RESPONSES`; omitted when length is 0.
+    #[serde(skip)]
+    pub response_text: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1576,6 +1596,32 @@ pub struct SessionEnded {
     pub model_id: String,
 }
 
+/// `total_ms` is the wall-clock of the whole teardown.
+/// The other fields are individual steps, so `total_ms - sum(steps)` is time spent outside the measured steps.
+/// Emitted once after feedback so late phases are not dropped: `SessionEnded` fires mid-teardown.
+#[derive(Serialize, Default)]
+pub struct SessionEndTimings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_save_ms: Option<u64>,
+    /// Intentionally unpopulated; retained because downstream metrics consumers still read this field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_consolidate_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hooks_dispatch_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hooks_stop_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflows_drain_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflows_persist_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feedback_drain_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_tasks_save_ms: Option<u64>,
+}
+
 // ---------------------------------------------------------------------------
 // Auth lock contention (aggregate layer; unified_log carries the forensics)
 // ---------------------------------------------------------------------------
@@ -1595,8 +1641,8 @@ pub struct AuthLockTimeout {
     pub holder_state: Option<&'static str>,
 }
 
-/// A held lock's file was replaced out from under it: an unlink-recovery
-/// binary is still active in the fleet. The holder fields describe the replacer.
+/// A held lock's file was replaced out from under it: an unlink-recovery binary is still active in the fleet.
+/// The holder fields describe the replacer.
 #[derive(Serialize)]
 pub struct AuthLockReplacedOutFromUnder {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1627,13 +1673,52 @@ pub struct AgentConnect {
     pub auth_mode: crate::startup::AuthMode,
 }
 
-/// End to end startup: process start to a usable session, with the phase
-/// breakdown that accounts for it.
 #[derive(Serialize)]
-pub struct StartupComplete {
+pub struct StartupCompleted {
     pub total_ms: u64,
     pub outcome: crate::startup::StartupOutcome,
     pub phases: String,
+    pub auth_mode: crate::startup::AuthMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefetch_wait_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_load_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_replay_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_git_scan_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_spawn_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub init_process_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolve_config_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_settings_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models_manager_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_policy_auth_wait_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_policy_config_sync_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_to_first_frame_ms: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct StartupInteractive {
+    pub interactive_ms: u64,
+    pub auth_mode: crate::startup::AuthMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup_total_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spawn_to_first_frame_ms: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct StartupSubTimers {
+    pub timings: Vec<(String, u64)>,
+    pub outcome: crate::startup::StartupOutcome,
     pub auth_mode: crate::startup::AuthMode,
 }
 
@@ -1648,6 +1733,62 @@ pub struct PlanSubmit {
     pub action: String,
 }
 
+#[derive(Serialize)]
+pub struct EventLoopStall {
+    pub max_stall_ms: u64,
+    pub window_ms: u64,
+    pub events_handled: u32,
+    pub stall_compaction_active: bool,
+    pub stall_subagents_active: u32,
+    pub stall_mcp_servers_connected: u32,
+}
+
+/// The terminal writer thread made no progress on queued payloads past the blocked threshold: the terminal stopped
+/// reading the pty (screen frozen, loop responsive). Emitted once per episode at onset, so it survives the user killing
+/// the frozen tab; `blocked_ms` is the zero-progress time at emit.
+#[derive(Serialize)]
+pub struct TermWriterBlocked {
+    pub blocked_ms: u64,
+}
+
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptAckSurface {
+    Tui,
+    Headless,
+}
+
+/// What the client did with the unacknowledged prompt's text.
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptAckDisposition {
+    RestoredToComposer,
+    MergedIntoDraft,
+    /// Nothing went back to a composer: skill / wire-block / bash prompts, a composer busy editing a
+    /// queued row, a draft that already carries images, or the headless runner.
+    NotRestorable,
+}
+
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptAckPromptKind {
+    Prompt,
+    Bash,
+    Skill,
+}
+
+/// The client sent `session/prompt` and saw no acknowledgment (queue broadcast,
+/// update, or response naming the prompt) within its limit, so it aborted the
+/// turn locally. `waited_ms` is the observed wait at the abort.
+#[derive(Serialize)]
+pub struct PromptAckTimeoutFired {
+    pub limit_ms: u64,
+    pub waited_ms: u64,
+    pub surface: PromptAckSurface,
+    pub disposition: PromptAckDisposition,
+    pub prompt_kind: PromptAckPromptKind,
+}
+
 // ---------------------------------------------------------------------------
 // SuperGrok upsell
 // ---------------------------------------------------------------------------
@@ -1657,11 +1798,9 @@ pub struct PlanSubmit {
 pub enum SuperGrokUpsell {
     WelcomeScreen,
     RateLimitError,
-    /// Free-usage-exhausted paywall modal (free-tier 429 with the
-    /// `subscription:free-usage-exhausted` well-known error code).
+    /// Free-usage-exhausted paywall modal (free-tier 429 with the `subscription:free-usage-exhausted` well-known error code).
     FreeUsagePaywall,
-    /// Upsell modal shown when a tier-restricted slash command
-    /// (`/usage`, `/imagine`, …) is invoked on the free / X Basic tiers.
+    /// Upsell modal shown when a tier-restricted slash command (`/usage`, `/imagine`, …) is invoked on the free / X Basic tiers.
     RestrictedCommand,
 }
 
@@ -1679,11 +1818,9 @@ pub struct SuperGrokUpsellClicked {
     pub auth_method: Option<String>,
 }
 
-/// Which surface a promo announcement's upgrade CTA was activated from.
-/// Modeled on [`SuperGrokUpsell`]; lets the funnel attribute the click to the
-/// welcome hero vs the in-session header vs the banner vs the dashboard, and
-/// distinguish keyboard (`Ctrl+O`) activations from pointer/OSC 8 ones.
-/// Ord/Eq exist for the pager's per-(announcement, surface) impression latch.
+/// Modeled on [`SuperGrokUpsell`]; lets the funnel attribute the click to the welcome hero vs the in-session header vs
+/// the banner vs the dashboard. Also distinguishes keyboard (`Ctrl+O`) activations from pointer/OSC 8 ones. Ord/Eq exist
+/// so the pager can track which (announcement, surface) pairs already showed the CTA.
 #[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum AnnouncementCtaSurface {
@@ -1694,11 +1831,8 @@ pub enum AnnouncementCtaSurface {
     Keyboard,
 }
 
-/// A promo announcement's CTA button was painted on a surface — the
-/// impression half of the per-surface CTR funnel with
-/// [`AnnouncementCtaClicked`]. Emitted once per (announcement, surface) per
-/// pager process (cleared on logout); never emitted for `Keyboard` (a
-/// click-only surface).
+/// A promo announcement's CTA button was painted on a surface: the impression half of the per-surface CTR funnel with [`AnnouncementCtaClicked`].
+/// Emitted once per (announcement, surface) per pager process (cleared on logout); never emitted for `Keyboard` (a click-only surface).
 #[derive(Serialize)]
 pub struct AnnouncementCtaShown {
     /// Announcement `id` from the server push (`None` for id-less items).
@@ -1723,8 +1857,7 @@ pub struct AnnouncementCtaClicked {
 pub enum CodingDataConsentSource {
     PrivacyBanner,
     Settings,
-    /// "Opt in" on the `/feedback` trace-consent card
-    /// while individually opted out.
+    /// "Opt in" on the `/feedback` trace-consent card while individually opted out.
     FeedbackTraceCard,
 }
 
@@ -1752,24 +1885,26 @@ pub struct CodingDataConsentSelected {
 #[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FeedbackTraceConsentChoice {
-    /// "Opt in".
+    /// Enable trace uploads for future sessions.
     TurnOn,
-    /// "Opt out this time" — also the Esc/skip outcome.
+    /// Upload only the session attached to this feedback report.
+    SendThisSession,
+    /// Send the feedback without a trace.
     NoUpload,
+    /// Close the trace prompt without choosing.
+    Dismissed,
     /// "Opt out and don't ask again".
     NeverAsk,
 }
 
-/// The `/feedback` trace-consent card was shown (funnel denominator for
-/// [`FeedbackTraceConsentSelected`]).
+/// The `/feedback` trace-consent card was shown (funnel denominator for [`FeedbackTraceConsentSelected`]).
 #[derive(Serialize)]
 pub struct FeedbackTraceCardShown {
     /// The "yes" option disclosed that it re-enables coding-data sharing.
     pub reenables_sharing: bool,
 }
 
-/// Outcome of the `/feedback` trace-consent card (only emitted when the card
-/// was shown).
+/// Outcome of the `/feedback` trace-consent card (only emitted when the card was shown).
 #[derive(Serialize)]
 pub struct FeedbackTraceConsentSelected {
     pub choice: FeedbackTraceConsentChoice,
@@ -1777,9 +1912,7 @@ pub struct FeedbackTraceConsentSelected {
     pub reenables_sharing: bool,
 }
 
-/// Flat snapshot of the terminal environment for telemetry.
-///
-/// Shared across pager events so terminal fields are typed once.
+/// Flat snapshot of the terminal environment for telemetry. Shared across pager events so terminal fields are typed once.
 /// Constructed by the pager's `TerminalContext::telemetry_snapshot()`.
 #[derive(Clone, Debug, Serialize)]
 pub struct TerminalTelemetry {
@@ -1790,14 +1923,13 @@ pub struct TerminalTelemetry {
     pub term_var: String,
     pub tmux_version: String,
     pub xtversion: String,
-    /// Raw, as its source reported it — shapes vary (`"3.5.6"`,
-    /// `"20240203-110809-5046fc22"`, `"7402"`). Empty when unknown.
+    /// Raw, as its source reported it; shapes vary (`"3.5.6"`, `"20240203-110809-5046fc22"`, `"7402"`).
+    /// Empty when unknown.
     pub term_version: String,
     pub term_version_source: String,
-    /// The Kitty protocol was negotiated *without* `REPORT_EVENT_TYPES` because
-    /// `term_version` identified a build that mis-encodes key releases
-    /// (Alacritty ≤ 0.14.x). A field rather than its own event so the affected
-    /// population always has a denominator.
+    /// The Kitty protocol was negotiated *without* `REPORT_EVENT_TYPES`.
+    /// `term_version` identified a build that mis-encodes key releases (Alacritty 0.14.x and earlier).
+    /// A field rather than its own event so the affected population always has a denominator.
     pub kitty_event_types_withheld: bool,
     pub host_os: String,
     pub display_server: String,
@@ -1808,12 +1940,11 @@ pub struct TerminalTelemetry {
     pub hyperlink_skip_reason: String,
     pub clipboard_route: String,
     pub clipboard_native_tool: String,
-    /// Wayland data-control protocol availability: "yes" | "no" | "n/a"
-    /// (n/a off Wayland).
+    /// Wayland data-control protocol availability: "yes" | "no" | "n/a" (n/a off Wayland).
     pub clipboard_data_control: String,
 }
 
-/// One-shot OS primary-display refresh probe + auto-cadence decision at process start.
+/// One-shot OS primary-display refresh probe and auto-cadence decision at process start.
 #[derive(Serialize)]
 pub struct DisplayRefreshProbe {
     #[serde(flatten)]
@@ -1837,14 +1968,13 @@ pub struct DisplayRefreshProbe {
     pub auto_cadence_reason: String,
 }
 
-/// Emitted once per system-clipboard attachment read during paste
-/// (Ctrl/Cmd+V). Diagnoses silent image-paste failures, e.g. Wayland-only
-/// sessions where the X11 CLIPBOARD probe comes back empty.
+/// Emitted once per system-clipboard attachment read during paste (Ctrl/Cmd+V).
+/// Diagnoses silent image-paste failures, e.g. Wayland-only sessions where the X11 CLIPBOARD probe comes back empty.
 #[derive(Serialize)]
 pub struct ClipboardImagePaste {
     #[serde(flatten)]
     pub terminal: TerminalTelemetry,
-    /// Which read ran: "attachments" (file URLs + image) or "image".
+    /// Which read ran: "attachments" (file URLs and image) or "image".
     pub probe: String,
     /// "image" | "file_urls" | "empty" | "error".
     pub outcome: String,
@@ -1854,9 +1984,9 @@ pub struct ClipboardImagePaste {
     pub duration_ms: u64,
 }
 
-/// Emitted when Ctrl/Cmd+V (paste key) is handled but the **host** process
-/// clipboard has no pasteable text/image/file URLs. Diagnoses silent no-ops
-/// on remote/ETX sessions. Does not change paste behavior.
+/// Emitted when Ctrl/Cmd+V (paste key) is handled but the **host** process clipboard has no pasteable text/image/file URLs.
+/// Diagnoses silent no-ops on remote/ETX sessions.
+/// Does not change paste behavior.
 #[derive(Serialize)]
 pub struct PasteKeyEmptyHostClipboard {
     #[serde(flatten)]
@@ -1865,11 +1995,9 @@ pub struct PasteKeyEmptyHostClipboard {
     pub surface: String,
 }
 
-/// Emitted once per user-visible text copy (`copy_text` / TUI yank, etc.).
-///
-/// Captures per-leg write outcomes so we can diagnose "copy doesn't work"
-/// reports (e.g. Wayland + xclip probe; did wl-copy actually succeed?) without
-/// relying on toast text alone.
+/// Emitted once per user-visible text copy (`copy_text` / TUI yank, etc.). Captures per-leg write outcomes so we can
+/// diagnose "copy doesn't work" reports without relying on toast text alone. E.g. on Wayland with the xclip probe: did
+/// wl-copy actually succeed?
 #[derive(Serialize)]
 pub struct ClipboardCopy {
     #[serde(flatten)]
@@ -1886,18 +2014,15 @@ pub struct ClipboardCopy {
     pub route_label: String,
     /// CLI tools actually invoked, `+`-joined (e.g. `wl-copy+xclip`); empty if none.
     pub cli_tools_tried: String,
-    /// CLI tools that returned Ok, `+`-joined; empty if none succeeded.
-    /// On Wayland, wl-copy is read-back-verified only when `data_control` is
-    /// false; with `data_control && arboard_ok` its exit-0 is credited
-    /// unverified (the arboard write is authoritative) — condition wl-copy
-    /// success rates on `data_control`.
+    /// CLI tools that returned Ok, `+`-joined; empty if none succeeded. On Wayland, wl-copy is read-back-verified only when
+    /// `data_control` is false. With `data_control && arboard_ok` its exit-0 is credited unverified (the arboard write is
+    /// authoritative). Condition wl-copy success rates on `data_control`.
     pub cli_ok_tools: String,
     pub cli_ok: bool,
     pub arboard_ok: bool,
-    /// The Wayland data-control protocol was available for this write (the
-    /// environment probe — NOT proof the arboard write landed; a focus-free
-    /// authoritative write additionally requires `arboard_ok`). Always false
-    /// off-Wayland.
+    /// The Wayland data-control protocol was available for this write (the environment probe, NOT proof the arboard write landed).
+    /// A focus-free authoritative write additionally requires `arboard_ok`.
+    /// Always false off-Wayland.
     pub data_control: bool,
     pub tmux_ok: bool,
     pub osc52_ok: bool,
@@ -1914,8 +2039,8 @@ pub struct ClipboardCopy {
     pub duration_ms: u64,
 }
 
-/// Emitted when backspace/delete is pressed but produces no text change
-/// on a non-empty prompt. Used to diagnose the "backspace lock" bug.
+/// Emitted when backspace/delete is pressed but produces no text change on a non-empty prompt.
+/// Used to diagnose the "backspace lock" bug.
 #[derive(Serialize)]
 pub struct BackspaceNoEffect {
     #[serde(flatten)]
@@ -1928,8 +2053,8 @@ pub struct BackspaceNoEffect {
     pub has_selection: bool,
 }
 
-/// Emitted each time a terminal notification is actually sent (not filtered
-/// by condition or event kind). Used for protocol distribution analysis.
+/// Emitted each time a terminal notification is actually sent (not filtered by condition or event kind).
+/// Used for protocol distribution analysis.
 #[derive(Serialize)]
 pub struct NotificationEmitted {
     pub protocol: &'static str,
@@ -1944,21 +2069,9 @@ pub struct DashboardOpened {
     pub leader_mode: bool,
 }
 
-/// User pressed an allowlisted registry shortcut.
-///
-/// **Product contract (authoritative):** intent-only telemetry for the
-/// bindings that can own **Ctrl+L**. Emits when the chord resolves to the
-/// action, whether the effect succeeds, defers, or soft-no-ops. Soft no-ops
-/// still count as intent.
-///
-/// Allowlist: `interject_prompt` (VS Code family often Ctrl+L; elsewhere the
-/// interject/send-now chord) and `open_extensions` (Ctrl+L on other
-/// terminals). Absence of other actions is not “unused.” Expand the allowlist
-/// deliberately; this is not full-registry coverage.
-///
-/// Fields are content-free. `key` is a platform-stable encoding (`Ctrl+L`,
-/// not locale-specific `Cmd`/`Opt` or mixed case). `context` is a surface
-/// label (`prompt_focused`, `agent_screen`, `queue`, …).
+/// Intent-only telemetry for the bindings that can own Ctrl+L. Allowlist: `interject_prompt` and `open_extensions`.
+/// Absence of other actions is not “unused.”. Expand the allowlist deliberately; this is not full-registry coverage.
+/// `key` is a platform-stable encoding (`Ctrl+L`, not locale-specific `Cmd`/`Opt` or mixed case).
 #[derive(Serialize)]
 pub struct ShortcutUsed {
     /// Stable chord encoding (`Ctrl+L`, `Ctrl+Enter`, …).
@@ -1985,11 +2098,41 @@ pub struct DashboardAgentLaunched {
 }
 
 // ---------------------------------------------------------------------------
+// Block viewer
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockViewerKind {
+    Markdown,
+    Execute,
+    Edit,
+    BgTask,
+    WebFetch,
+    WebSearch,
+    IntegrationSearch,
+    UseTool,
+    Read,
+    Grep,
+    PlainText,
+}
+
+#[derive(Serialize)]
+pub struct BlockViewerOpened {
+    pub kind: BlockViewerKind,
+}
+
+#[derive(Serialize)]
+pub struct BlockViewerQuoted {
+    pub kind: BlockViewerKind,
+}
+
+// ---------------------------------------------------------------------------
 // Rate limiting
 // ---------------------------------------------------------------------------
 
-/// Emitted when a user's turn fails due to rate limiting (all retries
-/// exhausted). Key conversion-funnel signal: rate limit → upsell → subscribe.
+/// Emitted when a user's turn fails due to rate limiting (all retries exhausted).
+/// Key conversion-funnel signal: rate limit, then upsell, then subscribe.
 #[derive(Serialize)]
 pub struct RateLimitHit {
     pub model_id: String,
@@ -1997,8 +2140,8 @@ pub struct RateLimitHit {
     pub attempts: u32,
 }
 
-/// Model-API failure at the turn level (non-rate-limit). Category/class only
-/// — no message text (external `api_error` event; also a product event).
+/// Model-API failure at the turn level (non-rate-limit).
+/// Category/class only, no message text (external `api_error` event; also a product event).
 #[derive(Serialize)]
 pub struct ApiError {
     /// Fixed classification (`auth`, `server_error`, `timeout`, …).
@@ -2011,20 +2154,16 @@ pub struct ApiError {
 }
 
 /// Internal (our-code) error class for the external `internal_error` event.
-/// Error class only — no message, no location (user decision, RQ5).
+/// Error class only: no message, no location.
 #[derive(Serialize)]
 pub struct InternalError {
     pub error_type: String,
 }
 
-// ---------------------------------------------------------------------------
-// External-OTEL stream meta-events (product-events only — adoption visibility;
-// never exported externally)
-// ---------------------------------------------------------------------------
+// External-OTEL stream meta-events (product-events only — adoption visibility; never exported externally)
 
-/// Emitted once per process (post-auth) when the external OTEL stream is
-/// configured. Endpoint reduced to `scheme://host[:port]` — we measure
-/// adoption without learning collector details.
+/// Emitted once per process (post-auth) when the external OTEL stream is configured.
+/// Endpoint reduced to `scheme://host[:port]`; we measure adoption without learning collector details.
 #[derive(Serialize)]
 pub struct ExternalOtelConfigured {
     pub metrics_exporter: String,
@@ -2034,6 +2173,8 @@ pub struct ExternalOtelConfigured {
     pub metrics_endpoint_origin: String,
     pub prompts_gate: bool,
     pub details_gate: bool,
+    pub assistant_gate: bool,
+    pub content_gate: bool,
     /// Startup source of the master switch: `env` | `config`.
     pub source: String,
 }
@@ -2045,8 +2186,7 @@ pub struct ExternalOtelRemotePolicyApplied {
     pub action: String,
 }
 
-/// Export-health counters for the external stream, emitted on the internal
-/// pipeline at shutdown (never externally — avoid feedback loops).
+/// Export-health counters for the external stream, emitted on the internal pipeline at shutdown (never externally, to avoid feedback loops).
 #[derive(Serialize)]
 pub struct ExternalOtelExportHealth {
     pub records_dropped: u64,
@@ -2060,8 +2200,7 @@ pub struct ExternalOtelExportHealth {
 pub struct StatusLineConfigured {
     /// `unset` when the config named no mode, which is adoption's denominator.
     pub kind: &'static str,
-    /// Always `false` once the user wrote `type = "disabled"`, and reported even
-    /// by a client that draws no row.
+    /// Always `false` once the user wrote `type = "disabled"`, and reported even by a client that draws no row.
     pub row_shows_a_problem: bool,
     pub items: String,
     pub custom_items: bool,
@@ -2071,8 +2210,7 @@ pub struct StatusLineConfigured {
 #[derive(Serialize)]
 pub struct StatusLineHealth {
     pub kind: &'static str,
-    /// A run's error text counts, a config diagnostic does not, so `false` can
-    /// still mean a bar that showed one all session.
+    /// A run's error text counts, a config diagnostic does not, so `false` can still mean a bar that showed one all session.
     pub had_content: bool,
     pub runs_ok: u64,
     /// Shown on the row as `[status line: …]`.
@@ -2087,7 +2225,7 @@ pub struct StatusLineHealth {
 // Credit limit
 // ---------------------------------------------------------------------------
 
-/// 403 "run out of credits" — billing exhaustion (not request throttling).
+/// 403 "run out of credits": billing exhaustion (not request throttling).
 #[derive(Serialize)]
 pub struct CreditLimitHit {
     pub model_id: String,
@@ -2096,9 +2234,9 @@ pub struct CreditLimitHit {
 #[derive(Serialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum CreditLimitUpsellSurface {
-    /// Q&A modal with "Upgrade tier" + "Pay as you go" options (non-max-tier).
+    /// Q&A modal (upgrade, buy / PAYG, and try again; or buy and try again at max-tier).
     QuestionModal,
-    /// Inline scrollback card with PAYG link (max-tier / Heavy users).
+    /// Retired: max-tier used an inline scrollback card. Kept for historical events.
     InlineCard,
 }
 
@@ -2108,8 +2246,8 @@ pub struct CreditLimitUpsellShown {
     pub surface: CreditLimitUpsellSurface,
     pub max_tier: bool,
     pub pay_as_you_go: bool,
-    /// User is on unified usage billing (buy-credits wording). When false,
-    /// legacy on-demand / PAYG wording was used.
+    /// User is on unified usage billing (buy-credits wording).
+    /// When false, legacy on-demand / PAYG wording was used.
     #[serde(default)]
     pub unified_billing: bool,
 }
@@ -2122,6 +2260,8 @@ pub enum CreditLimitChoice {
     PayAsYouGo,
     /// Unified-billing / credits-pool users: purchase prepaid credits.
     PurchaseCredits,
+    /// Resubmit the prompt that hit the credit limit.
+    RetryLastPrompt,
 }
 
 /// User clicked an option in the credit-limit upsell.
@@ -2135,33 +2275,28 @@ pub struct CreditLimitUpsellClicked {
 // Subscription conversion
 // ---------------------------------------------------------------------------
 
-/// Emitted when a previously access-gated user re-authenticates and the gate
-/// is lifted — i.e. they subscribed (externally on grok.com) and came back.
-/// This is the actual conversion signal for SuperGrok Heavy subscriptions
-/// attributed to Grok Build: the user saw the gate in Grok Build, went and
-/// paid, then returned with access.
+/// Emitted when a previously access-gated user re-authenticates and the gate is lifted, i.e. they subscribed (externally on grok.com) and came back.
+/// This is the actual conversion signal for SuperGrok Heavy subscriptions attributed to Grok Build.
+/// The user saw the gate in Grok Build, went and paid, then returned with access.
 #[derive(Serialize)]
 pub struct SubscriptionActivated {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_method: Option<String>,
-    /// Whether the subscribe CTA was shown in this session before the gate
-    /// was lifted (`access_gate_shown_logged`). When `true`, the conversion
-    /// is strongly attributable to Grok Build's upsell surface.
+    /// Whether the subscribe CTA was shown in this session before the gate was lifted (`access_gate_shown_logged`).
+    /// When `true`, the conversion is strongly attributable to Grok Build's upsell surface.
     pub upsell_shown_this_session: bool,
 }
 
-/// Why auth recovery could not refresh the credential, forcing the user to
-/// manually re-authenticate. Mapped from shell's `AuthError`; only terminal
-/// failures map — transient ones don't emit (recovery retries).
+/// Why auth recovery could not refresh the credential, forcing the user to manually re-authenticate.
+/// Mapped from shell's `AuthError`; only terminal failures map, transient ones don't emit (recovery retries).
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ManualAuthReason {
     /// IdP rejected the refresh token (`invalid_grant`); a re-login is required.
     RefreshTokenRejected,
-    /// Token type has no refresh authority (API key / legacy / OIDC sans refresh token).
+    /// Token type has no refresh authority (API key / legacy / OIDC without a refresh token).
     NoRefreshAuthority,
-    /// The operator's auth-provider command could not mint a credential
-    /// unattended, so only an interactive run of it can restore the session.
+    /// The operator's auth-provider command could not mint a credential unattended, so only an interactive run of it can restore the session.
     ProviderInteractiveRequired,
     RecoveryExhausted,
     TokenExpiredNoRefresh,
@@ -2169,8 +2304,8 @@ pub enum ManualAuthReason {
     WrongTeam,
 }
 
-/// User-facing surface where the manual re-auth was triggered. Background
-/// recoveries (storage/telemetry uploads) do not emit this event.
+/// User-facing surface where the manual re-auth was triggered.
+/// Background recoveries (storage/telemetry uploads) do not emit this event.
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ManualAuthSurface {
@@ -2180,8 +2315,8 @@ pub enum ManualAuthSurface {
     Relay,
 }
 
-/// The kind of bearer that was rejected. Mirrors shell's `TokenType` as a
-/// stable wire enum (don't serialize the shell `Debug` repr).
+/// The kind of bearer that was rejected.
+/// Mirrors shell's `TokenType` as a stable wire enum (don't serialize the shell `Debug` repr).
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthTokenKind {
@@ -2192,19 +2327,9 @@ pub enum AuthTokenKind {
     None,
 }
 
-/// KPI: a user-facing 401 recovery (`Turn`/`Relay`) terminally failed, forcing a
-/// manual re-login. Product-events only (no external export).
-///
-/// Alerting contract: the event lands under the Shell-origin name
-/// `grok-shell-manual_auth` (the `manual_auth` binding gets the `grok-shell-`
-/// prefix at emit). Count `distinct(principal)`, never raw events — the debounce
-/// is a single slot per process (repeats on the most-recent dead credential
-/// collapse; alternating credentials can re-emit), and `trigger` is whichever
-/// surface fired first, not a reliable per-surface split. `principal` is absent for
-/// unattributed lockouts (all collapse into one NULL bucket). API-key sessions
-/// are excluded (a 401 there means rotate the key, not `/login`).
-// `Debug`/`Clone`/`PartialEq` let shell tests assert the emitted event by value
-// (a downstream crate's `cfg(test)` can't turn on `cfg_attr(test, ...)` here).
+/// Product-events only (no external export). Count `distinct(principal)`, never raw events. `trigger` is whichever
+/// surface fired first, not a reliable per-surface split. API-key sessions are excluded (a 401 there means rotate the
+/// key, not `/login`). A downstream crate's `cfg(test)` can't turn on `cfg_attr(test,...)` here
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct ManualAuth {
     pub reason: ManualAuthReason,
@@ -2215,8 +2340,7 @@ pub struct ManualAuth {
     pub principal: Option<String>,
 }
 
-/// Release channel bucketed to the known set: channel is free-text user
-/// config, and recording it verbatim would leak private mirror names.
+/// Release channel bucketed to the known set: channel is free-text user config, and recording it verbatim would leak private mirror names.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CliUpdateChannel {
@@ -2227,8 +2351,7 @@ pub enum CliUpdateChannel {
 }
 
 impl CliUpdateChannel {
-    /// Empty means stable — the installers' default (mirrors the updater's
-    /// `is_stable_channel`).
+    /// Empty means stable, the installers' default (mirrors the updater's `is_stable_channel`).
     pub fn from_channel_str(raw: &str) -> Self {
         match raw.trim() {
             "" | "stable" => Self::Stable,
@@ -2239,9 +2362,9 @@ impl CliUpdateChannel {
     }
 }
 
-/// One attempt to download + activate a new `grok` binary. Analytics name:
-/// `grok-shell-cli_update`. Emitted on failure too; failures carry the
-/// typed `error_kind` only — freeform strings leak home paths.
+/// One attempt to download and activate a new `grok` binary.
+/// Analytics name: `grok-shell-cli_update`.
+/// Emitted on failure too; failures carry the typed `error_kind` only (freeform strings leak home paths).
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct CliUpdate {
     pub outcome: CliUpdateOutcome,
@@ -2251,12 +2374,253 @@ pub struct CliUpdate {
     pub to_version: Option<String>,
     pub channel: CliUpdateChannel,
     pub installer: CliUpdateInstaller,
-    /// `{os}-{arch}` from platform detection — closed by construction.
+    /// `{os}-{arch}` from platform detection; closed by construction.
     pub platform: String,
     pub rosetta: bool,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<CliUpdateErrorKind>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// grok clone (utility process)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// History shape requested by the client or produced by the daemon.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneHistoryMode {
+    Shallow,
+    Full,
+}
+
+/// Whether `grok clone` finished the mount.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneOutcome {
+    Success,
+    Failed,
+    Cancelled,
+}
+
+/// Where a failed `grok clone` stopped.
+/// Closed set: no freeform strings.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneFailureStage {
+    Configuration,
+    Validation,
+    Preflight,
+    Daemon,
+}
+
+/// Local checkout vs remote fetch.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneSourceMode {
+    Local,
+    Remote,
+}
+
+impl CloneSourceMode {
+    #[must_use]
+    pub fn from_source_mode_str(s: &str) -> Option<Self> {
+        match s {
+            "local" => Some(Self::Local),
+            "remote" => Some(Self::Remote),
+            _ => None,
+        }
+    }
+}
+
+/// Kernel transport of the mount. Linux FUSE is never `nfs`.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneTransport {
+    Fuse,
+    Nfs,
+}
+
+impl CloneTransport {
+    #[must_use]
+    pub fn from_transport_str(s: &str) -> Option<Self> {
+        match s {
+            "fuse" => Some(Self::Fuse),
+            "nfs" => Some(Self::Nfs),
+            _ => None,
+        }
+    }
+}
+
+/// Requested or resolved strategy name.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneStrategy {
+    Grove,
+    #[serde(rename = "grove-fuse")]
+    GroveFuse,
+    #[serde(rename = "grove-nfs")]
+    GroveNfs,
+    Copy,
+    Overlay,
+    Btrfs,
+    Git,
+    Standalone,
+    Linked,
+}
+
+impl CloneStrategy {
+    #[must_use]
+    pub fn from_strategy_str(s: &str) -> Option<Self> {
+        match s {
+            "grove" => Some(Self::Grove),
+            "grove-fuse" => Some(Self::GroveFuse),
+            "grove-nfs" => Some(Self::GroveNfs),
+            "copy" => Some(Self::Copy),
+            "overlay" => Some(Self::Overlay),
+            "btrfs" => Some(Self::Btrfs),
+            "git" => Some(Self::Git),
+            "standalone" => Some(Self::Standalone),
+            "linked" => Some(Self::Linked),
+            _ => None,
+        }
+    }
+}
+
+/// Why Grove was not used. Mapped from report copy; never a freeform string.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneFallbackReason {
+    RemoteKill,
+    RemoteUnavailable,
+    CloneDisabled,
+    FuseUnavailable,
+    DaemonDown,
+    DaemonOld,
+    DaemonDeclined,
+    SourceIsGrove,
+    InFlight,
+    Other,
+}
+
+/// Last clone phase observed at emit, including client-side `validating`.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClonePhase {
+    Validating,
+    Materializing,
+    Attaching,
+    Cancelling,
+    Committed,
+    Failed,
+    Cancelled,
+}
+
+impl ClonePhase {
+    #[must_use]
+    pub fn from_phase_str(s: &str) -> Option<Self> {
+        match s {
+            "validating" => Some(Self::Validating),
+            "materializing" => Some(Self::Materializing),
+            "attaching" => Some(Self::Attaching),
+            "cancelling" => Some(Self::Cancelling),
+            "committed" => Some(Self::Committed),
+            "failed" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+}
+
+/// How a cancelled clone ended, beyond `outcome = cancelled`.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneCancellationDisposition {
+    ClientCancelled,
+    CancelUnsupported,
+    /// Cancel reached the daemon; the client was already gone when it finished.
+    CancelAfterDisconnect,
+}
+
+/// Daemon Status capability grade.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneDaemonCapabilityClass {
+    Current,
+    Old,
+    Unknown,
+}
+
+impl CloneDaemonCapabilityClass {
+    #[must_use]
+    pub fn from_class_str(s: &str) -> Option<Self> {
+        match s {
+            "current" => Some(Self::Current),
+            "old" => Some(Self::Old),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
+/// One `grok clone` attempt. Content-free: no URL, dest, store, or repo name.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct CloneEnded {
+    pub requested_history: CloneHistoryMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_history: Option<CloneHistoryMode>,
+    pub duration_ms: u64,
+    pub outcome: CloneOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_stage: Option<CloneFailureStage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_mode: Option<CloneSourceMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<CloneTransport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_strategy: Option<CloneStrategy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_strategy: Option<CloneStrategy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<CloneFallbackReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_phase: Option<ClonePhase>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancellation_disposition: Option<CloneCancellationDisposition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daemon_capability_class: Option<CloneDaemonCapabilityClass>,
+}
+
+/// Which session-worktree lifecycle produced [`WorktreeEnded`].
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeLifecycle {
+    Create,
+    /// Git `WorktreeBuilder` forks only. `jj workspace add` is not in this series.
+    Fork,
+    Resume,
+    Restore,
+    Isolated,
+}
+
+/// One session worktree attempt. Content-free: no dest, source, store, or repo name.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct WorktreeEnded {
+    pub lifecycle: WorktreeLifecycle,
+    pub duration_ms: u64,
+    pub outcome: CloneOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<CloneTransport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_strategy: Option<CloneStrategy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_strategy: Option<CloneStrategy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<CloneFallbackReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancellation_disposition: Option<CloneCancellationDisposition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daemon_capability_class: Option<CloneDaemonCapabilityClass>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2271,6 +2635,8 @@ telemetry_event!(
     "auth_lock_replaced_out_from_under"
 );
 telemetry_event!(CliUpdate, "cli_update");
+telemetry_event!(CloneEnded, "clone_ended");
+telemetry_event!(WorktreeEnded, "worktree_ended");
 
 telemetry_event!(Login, "login", external = crate::external::schema::map_auth);
 telemetry_event!(LoginPickerShown, "login_picker_shown");
@@ -2298,7 +2664,7 @@ telemetry_event!(
 telemetry_event!(SlashCommandUsed, "slash_command_used");
 telemetry_event!(PermissionPrompted, "permission_prompted");
 telemetry_event!(
-    PermissionDecisionPayload,
+    PermissionDecisionRecord,
     "permission_decision",
     external = crate::external::schema::map_tool_decision
 );
@@ -2323,6 +2689,12 @@ telemetry_event!(
 );
 telemetry_event!(SubagentLimitHit, "subagent_limit_hit");
 telemetry_event!(SubagentRateLimitWaited, "subagent_rate_limit_waited");
+telemetry_event!(
+    ActiveAgentMessageCompleted,
+    "active_agent_message_completed"
+);
+telemetry_event!(ActiveAgentMessageLimitHit, "active_agent_message_limit_hit");
+telemetry_event!(ActiveAgentMessageSettled, "active_agent_message_settled");
 telemetry_event!(WorkflowRunStarted, "workflow_run_started");
 telemetry_event!(WorkflowRunEnded, "workflow_run_ended");
 telemetry_event!(
@@ -2392,6 +2764,8 @@ telemetry_event!(
     external = crate::external::schema::map_user_prompt
 );
 telemetry_event!(UserFeedback, "user_feedback");
+telemetry_event!(FeedbackModalOpened, "feedback_modal_opened");
+telemetry_event!(FeedbackDraftOp, "feedback_draft_op");
 telemetry_event!(RolloutSurvey, "rollout_survey");
 telemetry_event!(PrCreated, "pr_created");
 telemetry_event!(PrMerged, "pr_merged");
@@ -2400,7 +2774,12 @@ telemetry_event!(MultiAgentApply, "multi_agent_apply");
 telemetry_event!(MultiAgentDiscard, "multi_agent_discard");
 telemetry_event!(RepoChanges, "repo_changes");
 telemetry_event!(NonGitDecisionEvent, "non_git_decision");
-telemetry_event!(PromptLatency, "prompt_latency");
+telemetry_event!(
+    PromptLatency,
+    "prompt_latency",
+    external = crate::external::schema::map_prompt_latency
+);
+telemetry_event!(CancellationCompleted, "cancellation_completed");
 telemetry_event!(HeapThresholdCrossed, "heap_threshold_crossed");
 telemetry_event!(ProcessResourceUsage, "process_resource_usage");
 telemetry_event!(ProcessResourceLimits, "process_resource_limits");
@@ -2422,6 +2801,11 @@ telemetry_event!(
     "model_response_received",
     external = crate::external::schema::map_api_request
 );
+telemetry_event!(
+    AssistantResponse,
+    "assistant_response",
+    external = crate::external::schema::map_assistant_response
+);
 telemetry_event!(MemoryFlushed, "memory_flushed");
 telemetry_event!(MediaGenerated, "media_generated");
 telemetry_event!(
@@ -2429,18 +2813,32 @@ telemetry_event!(
     "session_ended",
     external = crate::external::schema::map_session_end
 );
+telemetry_event!(SessionEndTimings, "session_end_timings");
 telemetry_event!(
     AgentConnect,
     "agent_connect",
     external = crate::external::schema::map_agent_connect
 );
 telemetry_event!(
-    StartupComplete,
-    "startup_complete",
-    external = crate::external::schema::map_startup_complete
+    StartupCompleted,
+    "startup_completed",
+    external = crate::external::schema::map_startup_completed
+);
+telemetry_event!(
+    StartupInteractive,
+    "startup_interactive",
+    external = crate::external::schema::map_startup_interactive
+);
+telemetry_event!(
+    StartupSubTimers,
+    "startup_subtimers",
+    external = crate::external::schema::map_startup_sub_timers
 );
 telemetry_event!(PagerSlashCommand, "pager_slash_command");
 telemetry_event!(PlanSubmit, "plan_submit");
+telemetry_event!(EventLoopStall, "event_loop_stall");
+telemetry_event!(TermWriterBlocked, "term_writer_blocked");
+telemetry_event!(PromptAckTimeoutFired, "prompt_ack_timeout_fired");
 telemetry_event!(SuperGrokUpsellShown, "supergrok_upsell_shown");
 telemetry_event!(SuperGrokUpsellClicked, "supergrok_upsell_clicked");
 telemetry_event!(AnnouncementCtaShown, "announcement_cta_shown");
@@ -2462,6 +2860,8 @@ telemetry_event!(DashboardOpened, "dashboard_opened");
 telemetry_event!(DashboardClosed, "dashboard_closed");
 telemetry_event!(DashboardAgentAttached, "dashboard_agent_attached");
 telemetry_event!(DashboardAgentLaunched, "dashboard_agent_launched");
+telemetry_event!(BlockViewerOpened, "block_viewer_opened");
+telemetry_event!(BlockViewerQuoted, "block_viewer_quoted");
 telemetry_event!(ShortcutUsed, "shortcut_used");
 telemetry_event!(
     RateLimitHit,
@@ -2493,10 +2893,18 @@ telemetry_event!(ExternalOtelExportHealth, "external_otel_export_health");
 
 // Session lifecycle (structs in session_metrics)
 telemetry_event!(crate::session_metrics::SessionStarted, "session_started");
+telemetry_event!(
+    crate::session_metrics::SessionContextSnapshot,
+    "session_context_snapshot"
+);
 telemetry_event!(crate::session_metrics::Turn, "turn");
 telemetry_event!(
     crate::session_metrics::TurnCompletedLifecycle,
     "turn_completed_lifecycle"
+);
+telemetry_event!(
+    crate::session_metrics::DoomLoopDetected,
+    "doom_loop_detected"
 );
 telemetry_event!(
     crate::session_metrics::DoomLoopRecovery,
@@ -2546,14 +2954,14 @@ telemetry_event!(
 
 #[cfg(test)]
 mod tests {
-    /// Reserved keys insert only-if-absent, so an event field that collides
-    /// intentionally wins over the enrichment. Walk every registered event's
-    /// fields from source and pin the intentional shadows, so a new event
-    /// cannot silently shadow a reserved key.
+    /// Reserved keys insert only-if-absent, so an event field that collides intentionally wins over the enrichment.
+    /// Walk every registered event's fields from source and pin the intentional shadows, so a new event cannot silently shadow a reserved key.
     #[test]
     fn event_fields_shadow_reserved_keys_only_on_the_allowlist() {
         const SOURCES: &[&str] = &[
             include_str!("mod.rs"),
+            include_str!("active_agent_message.rs"),
+            include_str!("feedback.rs"),
             include_str!("permission_analytics.rs"),
             include_str!("../session_metrics.rs"),
             include_str!("../memory_telemetry.rs"),
@@ -2633,8 +3041,12 @@ mod tests {
         );
 
         const ALLOWED: &[(&str, &str)] = &[
+            ("DoomLoopDetected", "session_id"),
+            ("DoomLoopDetected", "turn_number"),
             ("DoomLoopRecovery", "session_id"),
             ("DoomLoopRecovery", "turn_number"),
+            ("FeedbackDraftOp", "session_id"),
+            ("FeedbackModalOpened", "session_id"),
             ("MemoryFlushComplete", "session_id"),
             ("MemoryFlushStart", "session_id"),
             ("MemoryInjection", "session_id"),
@@ -2647,10 +3059,12 @@ mod tests {
             ("NonGitDecisionEvent", "session_id"),
             ("ProcessResourceUsage", "footprint_bytes"),
             ("ProcessResourceUsage", "rss_bytes"),
+            ("PromptSuggestion", "session_id"),
             ("RolloutSurvey", "session_id"),
             ("SessionHarness", "session_id"),
             ("SessionLoad", "session_id"),
             ("SessionNew", "session_id"),
+            ("SessionContextSnapshot", "session_id"),
             ("SessionStarted", "session_id"),
             ("TraceUploadAttempted", "session_id"),
             ("TraceUploadAttempted", "turn_number"),
@@ -2662,6 +3076,8 @@ mod tests {
             ("TraceUploadSucceeded", "turn_number"),
             ("Turn", "session_id"),
             ("Turn", "turn_number"),
+            // Intentional: external-stream `session.id` on the event (see `TurnCompleted`).
+            ("TurnCompleted", "session_id"),
             ("TurnCompletedLifecycle", "session_id"),
             ("TurnCompletedLifecycle", "turn_number"),
             ("UserFeedback", "session_id"),
@@ -2679,6 +3095,163 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clone_ended_is_content_free_and_omits_absent_fields() {
+        assert_eq!(CloneEnded::NAME, "clone_ended");
+        assert_eq!(
+            serde_json::to_value(CloneEnded {
+                requested_history: CloneHistoryMode::Shallow,
+                effective_history: Some(CloneHistoryMode::Shallow),
+                duration_ms: 42,
+                outcome: CloneOutcome::Success,
+                failure_stage: None,
+                source_mode: Some(CloneSourceMode::Local),
+                transport: Some(CloneTransport::Fuse),
+                requested_strategy: Some(CloneStrategy::Grove),
+                resolved_strategy: Some(CloneStrategy::GroveFuse),
+                fallback_reason: None,
+                terminal_phase: Some(ClonePhase::Committed),
+                cancellation_disposition: None,
+                daemon_capability_class: Some(CloneDaemonCapabilityClass::Current),
+            })
+            .unwrap(),
+            serde_json::json!({
+                "requested_history": "shallow",
+                "effective_history": "shallow",
+                "duration_ms": 42,
+                "outcome": "success",
+                "source_mode": "local",
+                "transport": "fuse",
+                "requested_strategy": "grove",
+                "resolved_strategy": "grove-fuse",
+                "terminal_phase": "committed",
+                "daemon_capability_class": "current",
+            })
+        );
+        let failed = serde_json::to_value(CloneEnded {
+            requested_history: CloneHistoryMode::Shallow,
+            effective_history: None,
+            duration_ms: 7,
+            outcome: CloneOutcome::Failed,
+            failure_stage: Some(CloneFailureStage::Preflight),
+            source_mode: None,
+            transport: None,
+            requested_strategy: None,
+            resolved_strategy: None,
+            fallback_reason: Some(CloneFallbackReason::FuseUnavailable),
+            terminal_phase: None,
+            cancellation_disposition: None,
+            daemon_capability_class: None,
+        })
+        .unwrap();
+        assert_eq!(failed["failure_stage"], "preflight");
+        assert_eq!(failed["fallback_reason"], "fuse_unavailable");
+        assert!(failed.get("effective_history").is_none());
+        assert!(failed.get("source_mode").is_none());
+        assert!(failed.get("transport").is_none());
+        assert!(failed.get("requested_strategy").is_none());
+        assert!(failed.get("resolved_strategy").is_none());
+        assert!(failed.get("terminal_phase").is_none());
+        assert!(failed.get("cancellation_disposition").is_none());
+        assert!(failed.get("daemon_capability_class").is_none());
+        let text = failed.to_string();
+        assert!(!text.contains("http"), "{text}");
+        assert!(!text.contains("path"), "{text}");
+        assert!(!text.contains("url"), "{text}");
+        assert!(!text.contains("repo"), "{text}");
+        assert!(!text.contains("/dev/fuse"), "{text}");
+        let cancelled = serde_json::to_value(CloneEnded {
+            requested_history: CloneHistoryMode::Shallow,
+            effective_history: None,
+            duration_ms: 3,
+            outcome: CloneOutcome::Cancelled,
+            failure_stage: None,
+            source_mode: None,
+            transport: None,
+            requested_strategy: Some(CloneStrategy::Grove),
+            resolved_strategy: None,
+            fallback_reason: None,
+            terminal_phase: Some(ClonePhase::Cancelled),
+            cancellation_disposition: Some(CloneCancellationDisposition::ClientCancelled),
+            daemon_capability_class: None,
+        })
+        .unwrap();
+        assert_eq!(cancelled["outcome"], "cancelled");
+        assert_eq!(cancelled["cancellation_disposition"], "client_cancelled");
+        assert_eq!(cancelled["terminal_phase"], "cancelled");
+        assert!(cancelled.get("failure_stage").is_none());
+        assert_eq!(CloneStrategy::from_strategy_str("nfs"), None);
+        assert_eq!(ClonePhase::from_phase_str("not-a-phase"), None);
+    }
+
+    #[test]
+    fn worktree_ended_is_content_free_and_omits_absent_fields() {
+        assert_eq!(WorktreeEnded::NAME, "worktree_ended");
+        assert_eq!(
+            serde_json::to_value(WorktreeEnded {
+                lifecycle: WorktreeLifecycle::Create,
+                duration_ms: 42,
+                outcome: CloneOutcome::Success,
+                transport: Some(CloneTransport::Fuse),
+                requested_strategy: Some(CloneStrategy::Grove),
+                resolved_strategy: Some(CloneStrategy::GroveFuse),
+                fallback_reason: None,
+                cancellation_disposition: None,
+                daemon_capability_class: Some(CloneDaemonCapabilityClass::Current),
+            })
+            .unwrap(),
+            serde_json::json!({
+                "lifecycle": "create",
+                "duration_ms": 42,
+                "outcome": "success",
+                "transport": "fuse",
+                "requested_strategy": "grove",
+                "resolved_strategy": "grove-fuse",
+                "daemon_capability_class": "current",
+            })
+        );
+        let failed = serde_json::to_value(WorktreeEnded {
+            lifecycle: WorktreeLifecycle::Fork,
+            duration_ms: 7,
+            outcome: CloneOutcome::Failed,
+            transport: None,
+            requested_strategy: Some(CloneStrategy::Grove),
+            resolved_strategy: Some(CloneStrategy::Copy),
+            fallback_reason: Some(CloneFallbackReason::FuseUnavailable),
+            cancellation_disposition: None,
+            daemon_capability_class: None,
+        })
+        .unwrap();
+        assert_eq!(failed["lifecycle"], "fork");
+        assert_eq!(failed["fallback_reason"], "fuse_unavailable");
+        assert!(failed.get("transport").is_none());
+        assert!(failed.get("cancellation_disposition").is_none());
+        assert!(failed.get("daemon_capability_class").is_none());
+        assert!(failed.get("source_mode").is_none());
+        let text = failed.to_string();
+        assert!(!text.contains("http"), "{text}");
+        assert!(!text.contains("path"), "{text}");
+        assert!(!text.contains("url"), "{text}");
+        assert!(!text.contains("repo"), "{text}");
+        assert!(!text.contains("/dev/fuse"), "{text}");
+        let cancelled = serde_json::to_value(WorktreeEnded {
+            lifecycle: WorktreeLifecycle::Fork,
+            duration_ms: 3,
+            outcome: CloneOutcome::Cancelled,
+            transport: None,
+            requested_strategy: Some(CloneStrategy::Grove),
+            resolved_strategy: None,
+            fallback_reason: None,
+            cancellation_disposition: Some(CloneCancellationDisposition::ClientCancelled),
+            daemon_capability_class: None,
+        })
+        .unwrap();
+        assert_eq!(cancelled["outcome"], "cancelled");
+        assert_eq!(cancelled["cancellation_disposition"], "client_cancelled");
+        assert_eq!(cancelled["lifecycle"], "fork");
+        assert!(cancelled.get("fallback_reason").is_none());
+    }
+
+    #[test]
     fn process_resource_usage_omits_allocated_bytes_when_unavailable() {
         assert_eq!(
             serde_json::to_value(ProcessResourceUsage {
@@ -2691,6 +3264,7 @@ mod tests {
                 open_files: None,
                 resident_sessions: 2,
                 session_threads: 3,
+                idle: false,
             })
             .unwrap(),
             serde_json::json!({
@@ -2698,6 +3272,7 @@ mod tests {
                 "allocated_bytes": 4_096,
                 "resident_sessions": 2,
                 "session_threads": 3,
+                "idle": false,
             })
         );
         assert_eq!(
@@ -2711,12 +3286,14 @@ mod tests {
                 open_files: None,
                 resident_sessions: 2,
                 session_threads: 3,
+                idle: false,
             })
             .unwrap(),
             serde_json::json!({
                 "trigger": "periodic",
                 "resident_sessions": 2,
                 "session_threads": 3,
+                "idle": false,
             })
         );
     }
@@ -2727,15 +3304,21 @@ mod tests {
             serde_json::to_value(ToolCallCompleted {
                 tool_name: "bash".into(),
                 outcome: xai_grok_session_events::types::ToolOutcome::Success,
+                hook_rewrote: false,
                 duration_ms: 7,
                 tool_result_size_bytes: Some(2_048),
+                model_id: "grok".into(),
                 file_path: None,
                 parameters: None,
+                tool_use_id: None,
+                tool_output: None,
+                error_message: None,
             })
             .unwrap(),
             serde_json::json!({
                 "tool_name": "bash",
                 "outcome": "success",
+                "hook_rewrote": false,
                 "duration_ms": 7,
                 "tool_result_size_bytes": 2_048,
             })
@@ -2744,15 +3327,21 @@ mod tests {
             serde_json::to_value(ToolCallCompleted {
                 tool_name: "bash".into(),
                 outcome: xai_grok_session_events::types::ToolOutcome::Success,
+                hook_rewrote: false,
                 duration_ms: 7,
                 tool_result_size_bytes: None,
+                model_id: "grok".into(),
                 file_path: None,
                 parameters: None,
+                tool_use_id: None,
+                tool_output: None,
+                error_message: None,
             })
             .unwrap(),
             serde_json::json!({
                 "tool_name": "bash",
                 "outcome": "success",
+                "hook_rewrote": false,
                 "duration_ms": 7,
             })
         );
@@ -2898,8 +3487,8 @@ mod tests {
             })
         );
 
-        // `principal` is omitted (not null) when unknown. `LegacySession` is a
-        // reachable fixture (API-key sessions never emit this event).
+        // `principal` is omitted (not null) when unknown
+        // `LegacySession` is a reachable fixture (API-key sessions never emit this event)
         let no_principal = serde_json::to_value(ManualAuth {
             reason: ManualAuthReason::NoRefreshAuthority,
             trigger: ManualAuthSurface::Relay,
@@ -3112,8 +3701,8 @@ mod tests {
             model_id: Some("grok-4".into()),
             compaction_id: "cid-1".into(),
             compaction_mode: CompactionModeLabel::Summary,
-            two_pass: TwoPassOutcome::Used,
-            segments_written: 0,
+            two_pass: TwoPassOutcome::TwoPass,
+            segments_queued: 0,
             degenerate_retries: 1,
             input_overflow_retries: 2,
             is_subagent: false,
@@ -3131,8 +3720,8 @@ mod tests {
                 "model_id": "grok-4",
                 "compaction_id": "cid-1",
                 "compaction_mode": "summary",
-                "two_pass": "used",
-                "segments_written": 0,
+                "two_pass": "two_pass",
+                "segments_queued": 0,
                 "degenerate_retries": 1,
                 "input_overflow_retries": 2,
                 "is_subagent": false,
@@ -3147,7 +3736,7 @@ mod tests {
             compaction_id: "cid-2".into(),
             compaction_mode: CompactionModeLabel::Transcript,
             two_pass: TwoPassOutcome::Disabled,
-            segments_written: 0,
+            segments_queued: 0,
             degenerate_retries: 0,
             input_overflow_retries: 0,
             is_subagent: true,
@@ -3165,22 +3754,22 @@ mod tests {
                 "compaction_id": "cid-2",
                 "compaction_mode": "transcript",
                 "two_pass": "disabled",
-                "segments_written": 0,
+                "segments_queued": 0,
                 "degenerate_retries": 0,
                 "input_overflow_retries": 0,
                 "is_subagent": true,
             })
         );
 
-        let miss = serde_json::to_value(CompactionCompleted {
+        let single_pass = serde_json::to_value(CompactionCompleted {
             duration_ms: 2,
             tokens_before: 2,
             tokens_after: 2,
             model_id: None,
             compaction_id: "cid-3".into(),
             compaction_mode: CompactionModeLabel::Segments,
-            two_pass: TwoPassOutcome::Miss,
-            segments_written: 1,
+            two_pass: TwoPassOutcome::SinglePass,
+            segments_queued: 1,
             degenerate_retries: 0,
             input_overflow_retries: 0,
             is_subagent: false,
@@ -3190,62 +3779,20 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            miss,
+            single_pass,
             serde_json::json!({
                 "duration_ms": 2,
                 "tokens_before": 2,
                 "tokens_after": 2,
                 "compaction_id": "cid-3",
                 "compaction_mode": "segments",
-                "two_pass": "miss",
-                "segments_written": 1,
+                "two_pass": "single_pass",
+                "segments_queued": 1,
                 "degenerate_retries": 0,
                 "input_overflow_retries": 0,
                 "is_subagent": false,
             })
         );
-    }
-
-    #[test]
-    fn resolve_two_pass_covers_armed_and_used() {
-        assert_eq!(resolve_two_pass(false, false), TwoPassOutcome::Disabled);
-        assert_eq!(resolve_two_pass(false, true), TwoPassOutcome::Disabled);
-        assert_eq!(resolve_two_pass(true, false), TwoPassOutcome::Miss);
-        assert_eq!(resolve_two_pass(true, true), TwoPassOutcome::Used);
-    }
-
-    #[test]
-    fn two_pass_outcome_and_mode_label_serialize_snake_case() {
-        for outcome in [
-            TwoPassOutcome::Disabled,
-            TwoPassOutcome::Miss,
-            TwoPassOutcome::Used,
-        ] {
-            let expected = match outcome {
-                TwoPassOutcome::Disabled => "disabled",
-                TwoPassOutcome::Miss => "miss",
-                TwoPassOutcome::Used => "used",
-            };
-            assert_eq!(
-                serde_json::to_value(outcome).unwrap(),
-                serde_json::json!(expected)
-            );
-        }
-        for mode in [
-            CompactionModeLabel::Summary,
-            CompactionModeLabel::Transcript,
-            CompactionModeLabel::Segments,
-        ] {
-            let expected = match mode {
-                CompactionModeLabel::Summary => "summary",
-                CompactionModeLabel::Transcript => "transcript",
-                CompactionModeLabel::Segments => "segments",
-            };
-            assert_eq!(
-                serde_json::to_value(mode).unwrap(),
-                serde_json::json!(expected)
-            );
-        }
     }
 
     #[test]
@@ -3366,6 +3913,37 @@ mod tests {
     }
 
     #[test]
+    fn turn_completed_error_fields_omit_when_none_include_when_some() {
+        fn tc(error_code: Option<String>, error_detail: Option<String>) -> TurnCompleted {
+            TurnCompleted {
+                outcome: Outcome::Completed,
+                duration_ms: 5,
+                tool_call_count: 0,
+                model_id: "grok-4".into(),
+                session_id: None,
+                cancellation_category: None,
+                error_category: None,
+                error_code,
+                error_detail,
+            }
+        }
+        let omitted = serde_json::to_value(tc(None, None)).unwrap();
+        assert!(
+            omitted.get("error_code").is_none(),
+            "error_code must be omitted when None"
+        );
+        assert!(
+            omitted.get("error_detail").is_none(),
+            "error_detail must be omitted when None"
+        );
+        let included =
+            serde_json::to_value(tc(Some("invalid_request".into()), Some("bad body".into())))
+                .unwrap();
+        assert_eq!(included["error_code"], "invalid_request");
+        assert_eq!(included["error_detail"], "bad body");
+    }
+
+    #[test]
     fn cli_update_event_name_and_serde() {
         assert_eq!(CliUpdate::NAME, "cli_update");
         let ok = serde_json::to_value(CliUpdate {
@@ -3422,11 +4000,11 @@ mod tests {
             CliUpdateTrigger::AutoBackground,
             CliUpdateTrigger::LeaderConverge,
         ] {
-            assert_eq!(serde_json::to_value(t).unwrap(), t.as_str());
-            assert_eq!(t.as_str().parse::<CliUpdateTrigger>().unwrap(), t);
+            assert_eq!(serde_json::to_value(t).unwrap(), t.as_ref());
+            assert_eq!(t.as_ref().parse::<CliUpdateTrigger>().unwrap(), t);
         }
         assert!("bogus".parse::<CliUpdateTrigger>().is_err());
-        // Wire values and from_installer_str round-trip — one mapping.
+        // Wire values and from_installer_str round-trip: one mapping
         for (installer, wire) in [
             (CliUpdateInstaller::Npm, "npm"),
             (CliUpdateInstaller::GhRelease, "gh-release"),

@@ -27,13 +27,9 @@ const K_IO_MESSAGE_SYSTEM_WILL_SLEEP: u32 = 0xe000_0280;
 const K_IO_MESSAGE_SYSTEM_WILL_NOT_SLEEP: u32 = 0xe000_0290;
 const K_IO_MESSAGE_SYSTEM_HAS_POWERED_ON: u32 = 0xe000_0300;
 
-// IOPM system-power capability bits (`IOPMCapabilityBits`). These constants and
-// the `IOPMConnectionGetSystemCapabilities` query below are **SPI**: declared in
-// the *private* `IOPMLibPrivate.h` (IOKitUser), not the public `IOPMLib.h` that
-// ships in the SDK. A dark wake has CPU (and usually network/disk) but *not*
-// video: the system is up for background maintenance with the display off. A
-// full/user wake additionally carries the video capability. (See
-// `crate::PowerState` for the canonical dark-wake explanation.)
+// These constants and the `IOPMConnectionGetSystemCapabilities` query below are SPI: declared in the *private*
+// `IOPMLibPrivate.h` (IOKitUser), not the public `IOPMLib.h` that ships in the SDK. A dark wake has CPU (and usually
+// network/disk) but *not* video: the system is up for background maintenance with the display off.
 const K_IOPM_CAPABILITY_CPU: u32 = 0x1;
 const K_IOPM_CAPABILITY_VIDEO: u32 = 0x2;
 
@@ -71,29 +67,14 @@ unsafe extern "C" {
     fn IONotificationPortDestroy(port: *mut c_void);
     fn IOAllowPowerChange(kern_port: MachPort, notification_id: isize) -> i32;
     fn IOServiceClose(connect: MachPort) -> i32;
-    // `IOPMCapabilityBits IOPMConnectionGetSystemCapabilities(void)` — an
-    // undeclared **SPI** symbol: exported by IOKit but prototyped only in the
-    // private `IOPMLibPrivate.h`, not the public SDK. Despite the "Connection"
-    // in the name the real prototype takes **no** arguments (it reads global
-    // state — no `IOPMConnectionCreate`, no run loop, no acknowledgment), so
-    // this zero-arg declaration matches the ABI: a cheap synchronous read of
-    // the current power state.
+    // `IOPMCapabilityBits IOPMConnectionGetSystemCapabilities(void)` — an undeclared SPI symbol: exported by IOKit but
+    // prototyped only in the private `IOPMLibPrivate.h`, not the public SDK.
     fn IOPMConnectionGetSystemCapabilities() -> u32;
 }
 
-/// Classify raw IOPM capability bits into a coarse [`PowerState`].
-///
-/// - no CPU bit  → [`PowerState::Unknown`]: we only ever call this while the
-///   process is executing, so a missing CPU bit is a transitional / bogus
-///   sample. Fail open so callers keep their existing behavior rather than
-///   blocking on a bad read.
-/// - CPU + video → [`PowerState::FullWake`].
-/// - CPU, no video → [`PowerState::DarkWake`].
-///
-/// Note an idle *display sleep* while the system is otherwise fully awake keeps
-/// the system-level video capability set (the system can drive graphics on
-/// demand), so it classifies as `FullWake`, not `DarkWake` — only a real dark
-/// wake from sleep drops the video capability.
+/// Classify raw IOPM capability bits into a coarse [`PowerState`]. Note an idle *display sleep* while the system is
+/// otherwise fully awake keeps the system-level video capability set (the system can drive graphics on demand), so it
+/// classifies as `FullWake`, not `DarkWake` — only a real dark wake from sleep drops the video capability.
 fn classify_capabilities(caps: u32) -> PowerState {
     if caps & K_IOPM_CAPABILITY_CPU == 0 {
         return PowerState::Unknown;
@@ -108,12 +89,8 @@ fn classify_capabilities(caps: u32) -> PowerState {
 pub(crate) fn current_power_state() -> PowerState {
     // Safe: the C function takes no arguments and returns a plain bitfield.
     let caps = unsafe { IOPMConnectionGetSystemCapabilities() };
-    // IOKit also exports `IOPMIsADarkWake(IOPMCapabilityBits)` /
-    // `IOPMIsAUserWake(IOPMCapabilityBits)` (also `IOPMLibPrivate.h` SPI), which
-    // classify these bits directly. We classify them ourselves so the mapping
-    // stays a pure, unit-tested function (`classify_capabilities`) and so we
-    // control the fail-open-to-`Unknown` behavior on a missing CPU bit, which
-    // those predicates don't express.
+    // We classify them ourselves so the mapping stays a pure, unit-tested function (`classify_capabilities`) and so we
+    // control the fail-open-to-`Unknown` behavior on a missing CPU bit, which those predicates don't express.
     classify_capabilities(caps)
 }
 
@@ -163,10 +140,9 @@ impl Listener {
 
 impl Drop for Listener {
     fn drop(&mut self) {
-        // Signal stop, then wake the run loop so the thread exits promptly and
-        // tears down IOKit resources. The stop flag also covers the race where
-        // `CFRunLoopStop` arrives before the loop starts (the timed
-        // `CFRunLoopRunInMode` re-checks the flag).
+        // Signal stop, then wake the run loop so the thread exits promptly and tears down IOKit resources. The stop flag also
+        // covers the race where `CFRunLoopStop` arrives before the loop starts (the timed `CFRunLoopRunInMode` re-checks the
+        // flag).
         self.stop.store(true, Ordering::SeqCst);
         unsafe { CFRunLoopStop(self.runloop.0) };
         if let Some(handle) = self.handle.take() {
@@ -217,11 +193,9 @@ fn run_thread(
         return;
     }
 
-    // Service power notifications until stopped. `Drop` calls `CFRunLoopStop`,
-    // which wakes this immediately; the finite (rather than infinite) timeout
-    // only exists to cover the rare race where `CFRunLoopStop` arrives before
-    // the loop starts. A long interval keeps idle wakeups negligible without
-    // delaying normal teardown.
+    // `Drop` calls `CFRunLoopStop`, which wakes this immediately; the finite (rather than infinite) timeout only exists to
+    // cover the rare race where `CFRunLoopStop` arrives before the loop starts. A long interval keeps idle wakeups
+    // negligible without delaying normal teardown.
     while !stop.load(Ordering::SeqCst) {
         unsafe { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 5.0, 0) };
     }
@@ -235,23 +209,9 @@ fn run_thread(
     }
 }
 
-/// Pure mapping of an IOKit power message to the [`PowerEvent`] delivered to
-/// the user callback (if any) and whether the message requires an
-/// `IOAllowPowerChange` acknowledgment. Split from [`power_callback`] so the
-/// mapping is unit-testable without IOKit ports.
-///
-/// - `CAN_SYSTEM_SLEEP` (idle-sleep query) maps to [`PowerEvent::WillSleep`]:
-///   an idle sleep may follow within seconds, so consumers must treat it
-///   exactly like an announced sleep — the auth sleep gate must already be up
-///   (and in-flight token refreshes drained, via the bounded blocking callback)
-///   *before* we permit the transition. We never veto; the callback runs, then
-///   the ack allows the sleep. If the sleep is vetoed by another client,
-///   `SYSTEM_WILL_NOT_SLEEP` arrives and maps to [`PowerEvent::DidWake`]
-///   (transition cancelled — same "not sleeping anymore" meaning), lowering the
-///   gate; if it proceeds, the later `SYSTEM_WILL_SLEEP` re-raises it
-///   (idempotent, and its drain-wait finds the in-flight counter already at
-///   zero).
-/// - `SYSTEM_WILL_NOT_SLEEP` requires no ack (informational).
+/// `CAN_SYSTEM_SLEEP` (idle-sleep query) maps to [`PowerEvent::WillSleep`]: an idle sleep may follow within seconds, so
+/// consumers must treat it exactly like an announced sleep — the auth sleep gate must already be up (and in-flight token
+/// refreshes drained, via the bounded blocking callback) *before* we permit the transition.
 fn map_power_message(message_type: u32) -> (Option<PowerEvent>, bool) {
     match message_type {
         K_IO_MESSAGE_CAN_SYSTEM_SLEEP => (Some(PowerEvent::WillSleep), true),
@@ -272,12 +232,9 @@ extern "C" fn power_callback(
     let ctx = unsafe { &*(refcon as *const Context) };
     let (event, needs_ack) = map_power_message(message_type);
     if let Some(event) = event {
-        // For sleep-bound messages the ack is sent only *after* the callback
-        // returns: a `WillSleep` handler may block (bounded) waiting for an
-        // in-flight token refresh to finish, which intentionally delays the
-        // `IOAllowPowerChange` and holds off the suspend. IOKit allows ~30 s
-        // per phase before forcing sleep, so a bounded wait is safe. See the
-        // `xai_system_power` crate-level callback contract.
+        // For sleep-bound messages the ack is sent only *after* the callback returns: a `WillSleep` handler may block (bounded)
+        // waiting for an in-flight token refresh to finish, which intentionally delays the `IOAllowPowerChange` and holds off
+        // the suspend. IOKit allows ~30 s per phase before forcing sleep, so a bounded wait is safe.
         (ctx.callback)(event);
     }
     if needs_ack {
@@ -294,12 +251,8 @@ const K_IOPM_ASSERTION_LEVEL_ON: u32 = 255;
 const K_IO_RETURN_SUCCESS: i32 = 0;
 const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
 
-/// Spelled out because `kIOPMAssertionTypePreventSystemSleep` is a
-/// `CFSTR(...)` macro, not an exported symbol — an `extern static` links
-/// and then aborts at load ("symbol not found in flat namespace"), which
-/// Linux CI can never catch. `PreventSystemSleep` is also the only type
-/// that keeps a machine resident in a dark wake
-/// (`PreventUserIdleSystemSleep` suppresses only *idle* sleep).
+/// Spelled out because `kIOPMAssertionTypePreventSystemSleep` is a `CFSTR(...)` macro, not an exported symbol — an
+/// `extern static` links and then aborts at load ("symbol not found in flat namespace"), which Linux CI can never catch.
 const ASSERTION_TYPE_PREVENT_SYSTEM_SLEEP: &str = "PreventSystemSleep";
 
 #[link(name = "IOKit", kind = "framework")]
@@ -331,10 +284,8 @@ pub(crate) struct Assertion(IoPmAssertionId);
 
 impl Drop for Assertion {
     fn drop(&mut self) {
-        // SAFETY: the id came from a successful `IOPMAssertionCreateWithName`,
-        // this type is not `Clone`, and `drop` runs once — so the assertion is
-        // released exactly once. Releasing is what keeps a leaked assertion
-        // from pinning the machine awake.
+        // SAFETY: the id came from a successful `IOPMAssertionCreateWithName`, this type is not `Clone`, and `drop` runs once —
+        // so the assertion is released exactly once. Releasing is what keeps a leaked assertion from pinning the machine awake.
         unsafe { IOPMAssertionRelease(self.0) };
     }
 }
@@ -383,11 +334,9 @@ pub(crate) fn hold_awake(reason: &str) -> Option<Assertion> {
 mod tests {
     use super::*;
 
-    // Network (0x8) + disk (0x10): the `kIOPMCapabilityNetwork` /
-    // `kIOPMCapabilityDisk` bits a real dark/full wake typically also carries.
-    // Named here so the classifier inputs mirror real
-    // `IOPMConnectionGetSystemCapabilities` samples, not just the CPU/video bits
-    // `classify_capabilities` keys on.
+    // Network (0x8) + disk (0x10): the `kIOPMCapabilityNetwork` / `kIOPMCapabilityDisk` bits a real dark/full wake typically
+    // also carries. Named here so the classifier inputs mirror real `IOPMConnectionGetSystemCapabilities` samples, not just
+    // the CPU/video bits `classify_capabilities` keys on.
     const K_IOPM_CAPABILITY_NETWORK: u32 = 0x8;
     const K_IOPM_CAPABILITY_DISK: u32 = 0x10;
 
@@ -428,14 +377,7 @@ mod tests {
         );
     }
 
-    /// Message → (event, needs_ack) contract. The load-bearing rows:
-    /// - the idle-sleep *query* must deliver `WillSleep` (raise the auth sleep
-    ///   gate / drain in-flight refreshes **before** we allow the transition —
-    ///   an idle sleep can follow within seconds, and a one-time-use OIDC
-    ///   refresh-token exchange started in that window would straddle it), and
-    ///   must still be acked (we never veto);
-    /// - a vetoed sleep must deliver `DidWake` so a gate raised at the query
-    ///   is lowered instead of blocking refresh for `SLEEP_GATE_MAX`.
+    /// The load-bearing rows:
     #[test]
     fn map_power_message_matrix() {
         assert_eq!(

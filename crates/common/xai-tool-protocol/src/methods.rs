@@ -65,6 +65,13 @@ define_methods! {
     // harness → service
     SessionOpen => "session_open",
     SessionClose => "session_close",
+    /// The harness is leaving the session but the workspace is untouched,
+    /// exactly as if the harness connection had dropped; the hub sweeps
+    /// only what no other connection still holds. Used when a pooled
+    /// connection stays open for other sessions. A separate verb (not a
+    /// `session_close` flag) so a hub predating it rejects the frame with
+    /// `-32601` instead of silently unbinding the workspace.
+    SessionDetach => "session_detach",
     SessionBindServer => "session_bind_server",
     SessionUnbindServer => "session_unbind_server",
     /// Attach this harness connection to an EXISTING session as an
@@ -135,6 +142,33 @@ define_methods! {
     /// Hub tells the server to stop serving a session
     /// (hub → server). Notification — no response expected.
     SessionUnbind => "session.unbind",
+
+    // bot_client ↔ service (bot relay)
+    /// Passthrough of an in-box gateway command. `name` and `args` are
+    /// upstream-verbatim; `agentId` is hub routing metadata.
+    BotCommand => "bot.command",
+    /// Short-lived noVNC descriptor. May wake a hibernated box.
+    BotVncDescriptor => "bot.vncDescriptor",
+    /// Live agent roster read from the box. May wake a hibernated box; the
+    /// hub bounds the wait and answers a retryable `box_unavailable`
+    /// (`box_waking` / `box_hibernated`) or `box_migrating` while the box is
+    /// coming up — never an empty list because of a failure.
+    BotRoster => "bot.roster",
+    /// Off-box run-state read. Cold — never wakes the box.
+    BotStatus => "bot.status",
+    /// Off-box transcript page. Cold — never wakes the box.
+    BotTranscriptOffbox => "bot.transcript.offbox",
+    /// Caller-scoped weekly Grok Bot usage summary. Cold — never wakes the
+    /// box.
+    BotUsage => "bot.usage",
+    /// Subscribe this connection to `bot.event` for the given agents.
+    BotSubscribe => "bot.subscribe",
+    /// Drop this connection's `bot.event` subscription for the given agents.
+    BotUnsubscribe => "bot.unsubscribe",
+    /// Record a conversation → agents index. Does not route by conversation.
+    BotBindConversation => "bot.bindConversation",
+    /// Hub → client event notification (not a client-callable verb).
+    BotEvent => "bot.event",
 }
 
 impl std::fmt::Display for Method {
@@ -149,45 +183,8 @@ mod tests {
 
     #[test]
     fn round_trip_as_wire_str_from_wire_str() {
-        let all = [
-            Method::SessionOpen,
-            Method::SessionClose,
-            Method::SessionBindServer,
-            Method::SessionUnbindServer,
-            Method::SessionAttachServer,
-            Method::ToolsList,
-            Method::ToolsSearch,
-            Method::ToolCall,
-            Method::ToolCancel,
-            Method::ToolNotify,
-            Method::SystemNotify,
-            Method::SubscribeNotifications,
-            Method::UnsubscribeNotifications,
-            Method::Hook,
-            Method::Hello,
-            Method::HelloAck,
-            Method::Ping,
-            Method::Pong,
-            Method::ToolCallProgress,
-            Method::ToolNotification,
-            Method::HookReply,
-            Method::TracesDonate,
-            Method::LogsDonate,
-            Method::MetricsDonate,
-            Method::ToolCallRequest,
-            Method::ToolsChanged,
-            Method::SubscribeAck,
-            Method::UnsubscribeAck,
-            Method::ServersList,
-            Method::ToolServerStatus,
-            Method::ToolServerGetStatus,
-            Method::ToolServerEvict,
-            Method::Serve,
-            Method::SessionBind,
-            Method::SessionUnbind,
-        ];
-        for m in all {
-            assert_eq!(Method::from_wire_str(m.as_wire_str()), Some(m));
+        for m in Method::ALL {
+            assert_eq!(Method::from_wire_str(m.as_wire_str()), Some(*m));
         }
     }
 
@@ -198,11 +195,19 @@ mod tests {
     }
 
     #[test]
-    fn serde_round_trip_matches_wire_str() {
-        let method = Method::ToolCall;
-        let json = serde_json::to_value(method).expect("serialize");
-        assert_eq!(json.as_str(), Some("tool.call"));
-        let back: Method = serde_json::from_value(json).expect("deserialize");
-        assert_eq!(back, method);
+    fn snake_case_bot_method_aliases_are_rejected() {
+        for alias in [
+            "bot.vnc_descriptor",
+            "bot.bind_conversation",
+            "bot.link_status",
+            "bot.linkStatus",
+            "bot.transcript_offbox",
+            "bot.ensure_box",
+            "bot.ensureBox",
+        ] {
+            assert_eq!(Method::from_wire_str(alias), None, "{alias}");
+            let err = serde_json::from_value::<Method>(serde_json::json!(alias)).unwrap_err();
+            assert!(!err.to_string().is_empty(), "{alias}");
+        }
     }
 }

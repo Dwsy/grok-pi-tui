@@ -1,8 +1,5 @@
-//! Appearance configuration for the pager.
-//!
-//! Two-layer design:
-//! - `RawAppearanceConfig`: Serde-friendly types for TOML (de)serialization
-//! - `AppearanceConfig`: Runtime types with ratatui::Color, BlockBackground, etc.
+//! `RawAppearanceConfig` is the serde-friendly shape of pager.toml.
+//! `AppearanceConfig` is the resolved runtime form (ratatui::Color, BlockBackground, etc.).
 
 use documented::{Documented, DocumentedFields};
 use ratatui::style::Color;
@@ -23,7 +20,6 @@ pub enum BlockBackground {
     Dark,
 }
 
-/// Runtime appearance configuration with resolved types.
 #[derive(Debug, Clone)]
 pub struct AppearanceConfig {
     pub animation: AnimationConfig,
@@ -36,22 +32,18 @@ pub struct AppearanceConfig {
     pub show_other_tool_args: bool,
     /// Timeline sidebar (per-turn tick rail). Toggled via `/timeline`.
     pub show_timeline: bool,
-    /// Whether hooks & plugins UI is disabled (hides /hooks, /plugins commands
-    /// and scrollback annotations). `false` by default (plugins enabled).
+    /// Whether hooks & plugins UI is disabled (hides /hooks, /plugins commands and scrollback annotations). `false` by default (plugins enabled).
     pub disable_plugins: bool,
-    /// Always show the "plan" chip in the status bar when plan content is
-    /// available, even after the user exits plan mode.
+    /// Always show the "plan" chip in the status bar when plan content is available, even after the user exits plan mode.
     /// `false` by default (chip hidden once plan mode ends).
     pub show_plan_chip: bool,
     /// Alt-screen (fullscreen) policy from the `[terminal]` section.
     pub alt_screen: crate::terminal::AltScreenMode,
     /// Experimental scrollback-native minimal mode (`[terminal] minimal`).
     pub minimal: bool,
-    /// Pinned live-region height (rows) in minimal mode. Clamped to
-    /// `[3, term_height - 1]` at runtime.
+    /// Pinned live-region height (rows) in minimal mode. Clamped to `[3, term_height - 1]` at runtime.
     pub minimal_live_rows: u16,
-    /// Maximum rows a single committed block may occupy in minimal mode before
-    /// it is truncated with a "… N more lines" footer.
+    /// Maximum rows a single committed block may occupy in minimal mode before it is truncated with a "… N more lines" footer.
     pub minimal_max_commit_rows: u16,
     /// Resolved `[terminal] minimal_collapse_thinking`.
     pub minimal_collapse_thinking: bool,
@@ -63,12 +55,9 @@ impl Default for AppearanceConfig {
     }
 }
 
-/// Turn status line configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct TurnStatusConfig {
-    /// When true, add a 1-line gap between the turn status line and the prompt
-    /// widget. Allows visual separation; also enables future background styling
-    /// without merging with the prompt's lighter background.
+    /// When true, add a 1-line gap between the turn status line and the prompt widget.
     pub gap: bool,
 }
 
@@ -141,8 +130,7 @@ impl PromptCursor {
 /// Prompt input view configuration (the editor widget, not the scrollback block).
 #[derive(Debug, Clone, Copy)]
 pub struct PromptViewConfig {
-    /// When true, the prompt collapses to its minimum height (single-line)
-    /// when focus is in the scrollback pane. Expands back when focused.
+    /// When true, the prompt collapses to its minimum height (single-line) when focus is in the scrollback pane. Expands back when focused.
     pub collapse_unfocused: bool,
     /// Show hover highlight box when mousing over the prompt widget.
     pub mouse_hover: bool,
@@ -150,11 +138,9 @@ pub struct PromptViewConfig {
     pub show_prefix: bool,
     /// Cursor shown at the prompt insertion point.
     pub cursor: PromptCursor,
-    /// Compact mode: remove top padding and reduce info block padding.
-    /// Toggled at runtime via `/compact-mode`. This is the DERIVED render
-    /// value, which the app may force on for short terminals (the persisted
-    /// user setting is `UiConfig::compact_mode`) — in the pager, write it
-    /// only via `AppView::apply_effective_compact`.
+    /// Compact mode: remove top padding and reduce info block padding. Toggled at runtime via `/compact-mode`.
+    /// This is the DERIVED render value, which the app may force on for short terminals (the persisted user setting is `UiConfig::compact_mode`).
+    /// In the pager, write it only via `AppView::apply_effective_compact`.
     pub compact: bool,
 }
 
@@ -170,7 +156,6 @@ impl Default for PromptViewConfig {
     }
 }
 
-/// Scrollback pane configuration (layout, scrollbar, scroll, block rendering).
 #[derive(Debug, Clone, Default)]
 pub struct ScrollbackConfig {
     pub layout: LayoutConfig,
@@ -180,37 +165,26 @@ pub struct ScrollbackConfig {
     pub display: ScrollbackDisplayConfig,
 }
 
-/// Scrollback display options (grouping, accents, etc.).
 #[derive(Debug, Clone)]
 pub struct ScrollbackDisplayConfig {
-    /// Render a subtle horizontal line below the last entry.
-    /// Visual marker for "end of content".
+    /// Render a subtle horizontal line below the last entry to mark the end of content.
     pub line_under_last_entry: bool,
     /// Accent character for collapsed groupable blocks (default: "❙").
     /// Used instead of "┃" to prevent adjacent accents from merging visually.
     pub collapsed_accent_char: String,
-    /// Blend factor for dimmed accents on collapsed groupable blocks (0.0–1.0).
-    /// 0.0 = invisible (fully bg), 1.0 = full accent color. Default: 0.5.
+    /// Blend factor for dimmed accents on collapsed groupable blocks (0.0-1.0).
+    /// 0.0 is invisible (fully background), 1.0 is the full accent color. Default: 0.5.
     pub dim_accent: f32,
-    /// Group selection box mode.
-    /// When `true` (Mode B / "split"): selection box wraps only the contiguous
-    /// collapsed sub-group around the selected entry. Expanded blocks within a
-    /// group get their own individual selection box.
-    /// When `false` (Mode A / "always"): selection box wraps the entire group
-    /// regardless of expanded blocks.
-    /// Default: `true` (Mode B).
+    /// `true`: selection wraps only the collapsed sub-group; expanded blocks get their own box. `false`: the whole group.
     pub group_selection_split: bool,
-    /// When true, the active-block highlight within a group extends over the
-    /// selection box border columns (│). When false (default), the highlight is
-    /// inset by 1 column on each side so the borders remain uncolored.
+    /// When true, the active-block highlight within a group extends over the selection box border columns (│).
+    /// When false (default), the highlight is inset by 1 column on each side so the borders remain uncolored.
     pub highlight_overlays_border: bool,
-    /// When true, the bullet character of the selected entry is replaced with
-    /// an expand indicator (e.g., "›") if the block is foldable and collapsed.
+    /// When true, the selected entry's bullet is replaced with an expand indicator (e.g., "›") if the block is foldable and collapsed.
     /// Helps indicate which entries can be expanded with 'l' or 'e'.
     /// Default: true.
     pub expandable_indicator: bool,
-    /// When true, also show the expand indicator on running entries that are
-    /// in their minimum fold mode (e.g., Truncated for execute/thinking blocks).
+    /// When true, the expand indicator also shows on running entries in their minimum fold mode (e.g., Truncated for execute/thinking blocks).
     /// The indicator inherits the block's animated accent style (blinking).
     /// Default: true.
     pub expandable_indicator_running: bool,
@@ -222,19 +196,16 @@ pub struct ScrollbackDisplayConfig {
     /// Pin user prompts as sticky headers when scrolled past.
     /// Default: true.
     pub sticky_headers: bool,
-    /// Number of spaces to use when expanding tab characters (\t) in content.
-    /// Tabs in model output are replaced with this many spaces before rendering.
+    /// Tabs (\t) in model output are replaced with this many spaces before rendering.
     /// Default: 4. Set to 0 to pass through tabs unchanged.
     pub tab_width: u8,
-    /// Maximum number of visible entries in a group of consecutive collapsed
-    /// tool-call / thinking blocks. Older entries beyond this limit are hidden
-    /// behind a compact "╶╶ N more" header. 0 disables group truncation.
-    /// Default: 10.
+    /// Maximum number of visible entries in a group of consecutive collapsed tool-call / thinking blocks.
+    /// Older entries beyond this limit are hidden behind a compact "╶╶ N more" header.
+    /// 0 disables group truncation. Default: 10.
     pub group_max_visible: u16,
-    /// Apply UAX #9 bidi reordering in the app before painting scrollback
-    /// lines. **Default false** — many terminals already reorder; enabling
-    /// both double-flips Arabic/Persian. Turn on only if your terminal does
-    /// not handle RTL.
+    /// Apply UAX #9 bidi reordering in the app before painting scrollback lines.
+    /// **Default false**: many terminals already reorder; enabling both double-flips Arabic/Persian.
+    /// Turn on only if your terminal does not handle RTL.
     pub rtl_bidi: bool,
 }
 
@@ -258,7 +229,6 @@ impl Default for ScrollbackDisplayConfig {
     }
 }
 
-/// Layout configuration for viewport padding and block spacing.
 #[derive(Debug, Clone, Copy)]
 pub struct LayoutConfig {
     /// Vertical padding (top/bottom) for outer viewport.
@@ -312,7 +282,6 @@ impl LayoutConfig {
         }
     }
 
-    /// Validate and clamp values to valid ranges.
     pub fn validated(self) -> Self {
         Self {
             outer_vpad: self.outer_vpad,
@@ -324,36 +293,20 @@ impl LayoutConfig {
     }
 }
 
-/// Scrollbar configuration.
-///
-/// # Positioning
-///
-/// The scrollbar position is computed as:
-/// - `scrollbar_x = screen_right - gap_right - 1`
-/// - Content ends at: `scrollbar_x - gap_left`
-///
-/// # Content Width Clamping
-///
-/// Content width is automatically clamped to not extend beyond the outer
-/// viewport padding. This means:
-/// - With `gap_right=0` (scrollbar at screen edge), the scrollbar is in `outer_hpad_right`
-/// - With `gap_left=0`, content extends to just before the scrollbar
-/// - But content will never exceed `outer_hpad_right` boundary on the right
-///
-/// This allows flexible scrollbar positioning without content overflow.
+/// Scrollbar layout: `scrollbar_x = screen_right - gap_right - 1`, and content ends at `scrollbar_x - gap_left`.
+/// Content width is clamped so it never extends past the outer viewport padding, whatever the gaps are.
 #[derive(Debug, Clone, Copy)]
 pub struct ScrollbarConfig {
-    /// Whether scrollbar is enabled.
     pub enabled: bool,
     /// Gap between content/selection edge and scrollbar track.
-    /// 0 = adjacent to content, 1+ = space between content and scrollbar.
+    /// At 0 the track sits against the content; higher values add space.
     pub gap_left: u16,
     /// Gap between scrollbar track and screen edge.
-    /// 0 = scrollbar at screen edge (in outer_hpad_right if > 0).
+    /// At 0 the scrollbar sits at the screen edge, inside outer_hpad_right when that padding is nonzero.
     pub gap_right: u16,
-    /// Override scrollbar background color (None = use theme default).
+    /// Override scrollbar background color (None uses the theme default).
     pub scrollbar_bg: Option<Color>,
-    /// Override scrollbar foreground/thumb color (None = use theme default).
+    /// Override scrollbar foreground/thumb color (None uses the theme default).
     pub scrollbar_fg: Option<Color>,
 }
 
@@ -385,17 +338,14 @@ impl ScrollbarConfig {
     }
 }
 
-/// Scroll behavior configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct ScrollConfig {
-    /// Minimum lines of context to keep above/below selected entry.
-    /// When navigating, ensure at least this many lines of adjacent entries
-    /// remain visible. 0 = scroll to edge (default).
+    /// Minimum lines of context to keep visible above/below the selected entry when navigating.
+    /// 0 scrolls to the edge (default).
     pub margin: u16,
     /// Minimum scroll as a fraction of viewport height (0-100).
-    /// If a scroll would be less than this percentage of the viewport,
-    /// scroll by this amount instead. 0 = minimal scroll (default).
-    /// 100 = always scroll by full page.
+    /// If a scroll would be less than this percentage of the viewport, scroll by this amount instead.
+    /// 0 means minimal scroll (default); 100 always scrolls a full page.
     pub min_page_fraction: u8,
     /// Follow indicator style in the gap row below scrollback.
     pub follow_indicator: FollowIndicator,
@@ -403,9 +353,8 @@ pub struct ScrollConfig {
     pub follow_auto_select: bool,
     /// Scrolling past the bottom (j, Ctrl-D, page-down, mousewheel) engages follow mode.
     pub follow_by_overscroll: bool,
-    /// When true (default), expanding/collapsing a block adjusts scroll_offset so
-    /// the block's header line stays at the same screen position. When false, uses
-    /// ensure_selected_visible (the block may shift on screen).
+    /// When true (default), expanding/collapsing a block adjusts scroll_offset so the block's header line stays at the same screen position.
+    /// When false, uses ensure_selected_visible (the block may shift on screen).
     pub anchor_on_fold: bool,
     pub respect_manual_folds: bool,
 }
@@ -424,23 +373,18 @@ impl Default for ScrollConfig {
     }
 }
 
-/// Scroll indicator display mode: the ▼ jump-to-bottom arrow below
-/// scrollback and its ▲ jump-to-response-top mirror under the sticky
-/// prompt header.
+/// Scroll indicator display mode: the ▼ jump-to-bottom arrow below scrollback and its ▲ jump-to-response-top mirror under the sticky prompt header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FollowIndicator {
     /// No scroll indicators.
     None,
-    /// Show ▼ centered in the gap row below scrollback when not following
-    /// and there's content below the viewport, and ▲ centered under the
-    /// sticky prompt header while the answer being read starts above the
-    /// viewport top.
+    /// Show ▼ centered in the gap row below scrollback when not following and there's content below the viewport.
+    /// Show ▲ centered under the sticky prompt header while the answer being read starts above the viewport top.
     #[default]
     Center,
 }
 
 impl ScrollConfig {
-    /// Compute the minimum scroll amount in lines for a given viewport height.
     pub fn min_scroll_lines(&self, viewport_height: u16) -> u16 {
         if self.min_page_fraction == 0 {
             0
@@ -452,14 +396,13 @@ impl ScrollConfig {
     }
 }
 
-/// Animation configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct AnimationConfig {
     /// Animation frame rate (ticks per second).
-    /// Higher = smoother but more CPU. Default: 30.
+    /// Higher is smoother but uses more CPU. Default: 30.
     pub fps: u8,
     /// Rows per wave cycle for accent line animation.
-    /// Lower = faster wave, higher = slower/smoother wave. Default: 32.
+    /// Lower is a faster wave; higher is slower and smoother. Default: 32.
     pub wave_rows: u16,
     /// Show an FPS counter overlay in the top-right corner (debug/dev builds only).
     /// Also enabled by the `GROK_FPS=1` env var. Default: false.
@@ -477,7 +420,6 @@ impl Default for AnimationConfig {
 }
 
 impl AnimationConfig {
-    /// Get the tick interval as a Duration.
     pub fn tick_interval(&self) -> std::time::Duration {
         let fps = self.fps.max(1) as u64;
         std::time::Duration::from_millis(1000 / fps)
@@ -494,7 +436,6 @@ pub struct BlocksConfig {
     pub execute: ExecuteConfig,
 }
 
-/// Runtime config for EditBlock with resolved ratatui types.
 #[derive(Debug, Clone)]
 pub struct EditBlockConfig {
     pub indent: bool,
@@ -504,19 +445,16 @@ pub struct EditBlockConfig {
     pub accent: Option<Color>,
     pub gutter_bg: bool,
     pub indent_bg: bool,
-    /// Show the +N/-M line summary in the collapsed header. `None` (default)
-    /// follows the shell-owned `collapsed_edit_blocks` flag; an explicit
-    /// pager.toml value pins the shape regardless of the flag.
+    /// Show the +N/-M line summary in the collapsed header.
+    /// `None` (default) follows the shell-owned `collapsed_edit_blocks` flag; an explicit pager.toml value pins the shape regardless of the flag.
     pub line_summary: Option<bool>,
-    /// When true, Edit blocks start in Expanded mode showing the diff; when
-    /// false, they start Collapsed (one-line summary). `None` (default)
-    /// follows the shell-owned `collapsed_edit_blocks` flag; an explicit
-    /// pager.toml value pins the shape regardless of the flag.
+    /// When true, Edit blocks start in Expanded mode showing the diff; when false, they start Collapsed (one-line summary).
+    /// `None` (default) follows the shell-owned `collapsed_edit_blocks` flag; an explicit pager.toml value pins the shape regardless of the flag.
     pub expanded_by_default: Option<bool>,
     /// Separator between diff hunks.
     /// Options: "…" (ellipsis, default), "───" (line), "⋯" (midline), "" (none).
     pub hunk_separator: String,
-    /// Show two line-number columns (old + new) like GitHub's unified diff.
+    /// Show two line-number columns (old and new) like GitHub's unified diff.
     /// When false (default), show a single column with the new-file line number.
     pub dual_line_numbers: bool,
 }
@@ -540,18 +478,14 @@ impl Default for EditBlockConfig {
 }
 
 impl EditBlockConfig {
-    /// Effective "Edit blocks start expanded" default. The single policy
-    /// point pairing the two owners: an explicit pager.toml value wins;
-    /// unset defers to the shell-owned `collapsed_edit_blocks` flag
-    /// (flag on = collapsed one-liner, off = legacy expanded diff).
+    /// The one policy point pairing pager.toml with the shell flag: an explicit value wins; unset defers to `collapsed_edit_blocks`.
+    /// Flag on collapses Edits to the one-liner; flag off keeps the legacy expanded diff.
     pub fn effective_expanded(&self, collapsed_edit_blocks: bool) -> bool {
         self.expanded_by_default.unwrap_or(!collapsed_edit_blocks)
     }
 
-    /// Effective collapsed-header `+N/-M` diffstat toggle. Same pairing as
-    /// [`Self::effective_expanded`]: explicit value wins; unset shows the
-    /// diffstat exactly when the flag collapses Edits (the one-liner view
-    /// is what the summary exists for).
+    /// Effective collapsed-header `+N/-M` diffstat toggle. Same pairing as [`Self::effective_expanded`]: explicit value wins.
+    /// Unset shows the diffstat exactly when the flag collapses Edits (the one-liner view is what the summary exists for).
     pub fn effective_line_summary(&self, collapsed_edit_blocks: bool) -> bool {
         self.line_summary.unwrap_or(collapsed_edit_blocks)
     }
@@ -585,7 +519,6 @@ impl Default for PromptConfig {
     }
 }
 
-/// Runtime config for thinking/reasoning block.
 #[derive(Debug, Clone)]
 pub struct ThinkingConfig {
     /// Accent color for the thinking block.
@@ -603,20 +536,19 @@ pub struct ThinkingConfig {
     /// When false (default), the header only appears in collapsed mode.
     /// When true, it appears as the first line in truncated and expanded modes too.
     pub header: bool,
-    /// When true, the header uses brighter styling in non-collapsed modes
-    /// (matching tool block title style), and respects muted_collapsed when collapsed.
-    /// When false (default), the header is always dim/muted gray.
+    /// When true, the header uses brighter styling in non-collapsed modes (matching tool block title style).
+    /// It respects muted_collapsed when collapsed. When false (default), the header is always dim/muted gray.
     pub header_bright: bool,
-    /// Render the reasoning body de-emphasized (SGR dim + italic) on top of the
-    /// `bg_blend` fade, for surfaces where the fade alone cannot separate
-    /// reasoning from the answer. **Not a TOML key** — minimal mode sets it;
-    /// see the minimal-mode design doc §6.16.
+    /// Render the reasoning body de-emphasized (SGR dim and italic) on top of the `bg_blend` fade.
+    /// **Not a TOML key**: minimal mode sets it because there the fade alone cannot separate reasoning from the answer.
     pub body_dim_italic: bool,
-    /// Append a dim "(ctrl+e to expand)" affordance to the *collapsed* header
-    /// when it fits on the same row (never adds a row). **Not a TOML key** —
-    /// minimal mode sets it, being the only surface where a folded block cannot
-    /// be unfolded in place.
+    /// Append a dim "(ctrl+e to expand)" hint to the *collapsed* header when it fits on the same row (never adds a row).
+    /// **Not a TOML key**: minimal mode sets it, the only mode where a folded block cannot be unfolded in place.
     pub collapsed_expand_hint: bool,
+    /// Draw the reasoning rail inside the body lines (a `┃ ` prefix directly below the header's bullet) instead of painting the reserved accent column.
+    /// The rail then sits under the diamond rather than beside it.
+    /// **Not a TOML key**: minimal mode sets it so every block's bullet stays flush at column 0.
+    pub rail_under_bullet: bool,
 }
 
 impl Default for ThinkingConfig {
@@ -631,6 +563,7 @@ impl Default for ThinkingConfig {
             header_bright: false,
             body_dim_italic: false,
             collapsed_expand_hint: false,
+            rail_under_bullet: false,
         }
     }
 }
@@ -647,10 +580,7 @@ pub struct ToolConfig {
     pub dim_details: bool,
     /// Bullet/icon character rendered before tool call headers.
     pub bullet: ToolBullet,
-    // Note: bullet_accent and bullet_color were removed in the scrollback-v2 refactor.
-    // Bullet color is now determined by BlockContent::bullet() — each block type
-    // decides its own bullet color based on state (accent color, error, default).
-    // Dimming for collapsed+groupable blocks is handled by EntryRenderer.
+    // Bullet color is decided by BlockContent::bullet(), not config. Collapsed dimming is EntryRenderer.
     // TODO(dim_muted): add a dim factor for collapsed text styling (not just bullet/accent).
 }
 
@@ -664,19 +594,15 @@ impl Default for ToolConfig {
     }
 }
 
-/// Bullet/icon style for tool call headers.
-///
-/// Rendered before the tool title, e.g. `⊙ Read src/main.rs`.
-/// Respects `muted_collapsed`: when the tool is collapsed and muting is
-/// enabled, the bullet color blends with the muted palette.
+/// Header icon. When collapsed and `muted_collapsed` is on, the color blends with the muted palette.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ToolBullet {
     /// No bullet (default).
     #[default]
     None,
-    /// `·` (middle dot — smallest).
+    /// `·` (middle dot, smallest).
     Dot,
-    /// `•` (bullet — between dot and circle).
+    /// `•` (bullet, between dot and circle).
     SmallCircle,
     /// `●` (filled circle).
     Circle,
@@ -698,16 +624,13 @@ impl ToolBullet {
             Self::Circle => Some(crate::glyphs::filled_dot()),
             Self::SmallTriangle => Some("▸"),
             Self::Triangle => Some("▶"),
-            // Routed through `glyphs` so the default scrollback bullet
-            // (used by tool calls, thinking, the running-subagent block,
-            // etc.) degrades to the CP437 `♦` on legacy Windows consoles
-            // that can't render U+25C6.
+            // `glyphs` degrades the default scrollback bullet to the CP437 `♦` on legacy Windows consoles that can't render U+25C6
+            // Tool calls, thinking, the running-subagent block, etc. all use it.
             Self::Diamond => Some(crate::glyphs::diamond_filled()),
         }
     }
 }
 
-/// Runtime config for ListDir block.
 #[derive(Debug, Clone)]
 pub struct ListDirConfig {
     /// When true, output has terminal-style dark background.
@@ -723,11 +646,9 @@ impl Default for ListDirConfig {
     }
 }
 
-/// Header display style for execute blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExecuteHeaderStyle {
-    /// Shell style: `$ command` (default).
-    /// The `$` prompt is dim/muted, command may or may not be colored.
+    /// Shell style: `$ command` (default). The `$` prompt is dim/muted.
     #[default]
     Shell,
     /// Label style: `Run command` (like Edit/Search blocks).
@@ -735,7 +656,6 @@ pub enum ExecuteHeaderStyle {
     Label,
 }
 
-/// Runtime config for Execute tool call block.
 #[derive(Debug, Clone)]
 pub struct ExecuteConfig {
     /// Number of output lines to show at the start in truncated mode.
@@ -765,25 +685,8 @@ impl Default for ExecuteConfig {
     }
 }
 
-// ============================================================================
-// Raw Config (for TOML serde)
-// ============================================================================
-//
-// ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║ MAINTAINER NOTE: When adding/changing fields or sections:                 ║
-// ║                                                                           ║
-// ║ 1. Add doc comments (///) to ALL fields in Raw* structs - they become    ║
-// ║    TOML comments via the `DocumentedFields` derive macro.                 ║
-// ║                                                                           ║
-// ║ 2. If adding a new section (e.g., RawNewBlockConfig):                     ║
-// ║    - Add it to RawBlocksConfig (or appropriate parent)                    ║
-// ║    - Add corresponding runtime config (NewBlockConfig)                    ║
-// ║    - Add From<RawNewBlockConfig> for NewBlockConfig conversion            ║
-// ║    - Add annotate_table call in to_toml_with_comments() below!            ║
-// ║                                                                           ║
-// ║ 3. The to_toml_with_comments() method generates the default config file   ║
-// ║    with comments. Update it when adding new sections.                     ║
-// ╚═══════════════════════════════════════════════════════════════════════════╝
+// Raw TOML structs: field docs become generated comments via DocumentedFields.
+// A new section also needs a runtime twin, a From conversion, and an annotate_table call in to_toml_with_comments().
 
 /// Root appearance configuration (TOML format).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Documented, DocumentedFields)]
@@ -806,18 +709,11 @@ pub struct RawAppearanceConfig {
     pub show_plan_chip: bool,
 }
 
-/// Terminal behavior configuration (TOML format).
-///
-/// Controls fullscreen (alternate screen) policy and related terminal
-/// interaction settings.
+/// Fullscreen (alternate screen) policy and related terminal settings.
 #[derive(Debug, Clone, Serialize, Deserialize, Documented, DocumentedFields)]
 #[serde(default)]
 pub struct RawTerminalConfig {
-    /// Alt-screen (fullscreen) policy.
-    /// "auto" — fullscreen in plain terminals and normal tmux, inline in
-    ///          tmux control mode and Zellij. (default)
-    /// "always" — always enter fullscreen, even in control mode / Zellij.
-    /// "never" — never enter fullscreen; run inline in main scrollback.
+    /// "auto" (default): fullscreen except tmux control mode and Zellij. "always" / "never" force the choice.
     pub alt_screen: RawAltScreenMode,
     /// Experimental scrollback-native rendering mode. Finalized blocks are
     /// printed into the terminal's native scrollback. Default false.
@@ -826,11 +722,7 @@ pub struct RawTerminalConfig {
     pub minimal_live_rows: Option<u16>,
     /// Maximum rows for a single committed block in minimal mode. Default 2000.
     pub minimal_max_commit_rows: Option<u16>,
-    /// Commit reasoning ("Thought for Xs") to native scrollback COLLAPSED to
-    /// its one-line header instead of in full. Default false — minimal
-    /// deliberately keeps the whole reasoning body in the transcript (K9); this
-    /// is the opt-out for a terser scrollback. The body stays reachable with
-    /// `Ctrl+E` / `/expand` and `/transcript`.
+    /// Opt out of minimal's full reasoning body (K9). Collapsed header only; body stays reachable via expand/transcript.
     pub minimal_collapse_thinking: bool,
 }
 
@@ -846,7 +738,6 @@ impl Default for RawTerminalConfig {
     }
 }
 
-/// Raw alt-screen mode for TOML (de)serialization.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RawAltScreenMode {
@@ -868,10 +759,7 @@ impl From<RawAltScreenMode> for crate::terminal::AltScreenMode {
         }
     }
 }
-/// Prompt input view configuration (TOML format).
-///
-/// This configures the prompt editor widget at the bottom of the screen,
-/// NOT the user prompt block rendered inside the scrollback.
+/// Prompt editor widget, not the user prompt block in scrollback.
 #[derive(Debug, Clone, Serialize, Deserialize, Documented, DocumentedFields)]
 #[serde(default)]
 pub struct RawPromptViewConfig {
@@ -1072,7 +960,6 @@ impl Default for RawScrollConfig {
     }
 }
 
-/// Scroll indicator display mode (TOML format).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RawFollowIndicator {
@@ -1083,16 +970,15 @@ pub enum RawFollowIndicator {
     Center,
 }
 
-/// Tool bullet style (TOML format).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum RawToolBullet {
     /// No bullet.
     #[default]
     None,
-    /// `·` (middle dot — smallest).
+    /// `·` (middle dot, smallest).
     Dot,
-    /// `•` (bullet — between dot and circle).
+    /// `•` (bullet, between dot and circle).
     SmallCircle,
     /// `●` (filled circle).
     Circle,
@@ -1159,10 +1045,7 @@ pub struct RawEditBlockConfig {
     pub bg: RawBlockBackground,
     /// Whether to show background behind accent.
     pub accent_bg: bool,
-    /// Accent color for vertical line.
-    /// Use "none" to disable, or a color value.
-    /// Formats: [r, g, b], "#rrggbb", "#rgb", or named color.
-    /// Named: BLUE, CYAN, GREEN, YELLOW, ORANGE, RED, MAGENTA, COMMENT, etc.
+    /// Vertical-line accent. "none" disables. Accepts RGB, hex, or a named color.
     pub accent: OptionalColor,
     /// Whether diff line background extends to include gutter (line numbers).
     pub gutter_bg: bool,
@@ -1173,10 +1056,7 @@ pub struct RawEditBlockConfig {
     /// Commented out (unset), it follows the `[ui] collapsed_edit_blocks`
     /// flag in config.toml; uncomment to pin either way.
     pub line_summary: Option<bool>,
-    /// Start Edit blocks expanded (showing the diff) instead of as a
-    /// collapsed one-line summary. Commented out (unset), it follows the
-    /// `[ui] collapsed_edit_blocks` flag in config.toml (flag on =
-    /// collapsed); uncomment to pin either way.
+    /// Unset follows `[ui] collapsed_edit_blocks`. Set to pin expanded or collapsed.
     pub expanded_by_default: Option<bool>,
     /// Separator between diff hunks. Options: "…" (default), "───", "⋯", "" (none).
     pub hunk_separator: Option<String>,
@@ -1203,10 +1083,7 @@ impl Default for RawEditBlockConfig {
     }
 }
 
-/// Configuration for user prompt block rendering (TOML format).
-///
-/// This configures how user prompts appear inside the scrollback,
-/// NOT the prompt editor widget (see [prompt] section).
+/// User prompt block in scrollback, not the prompt editor widget.
 #[derive(Debug, Clone, Serialize, Deserialize, Documented, DocumentedFields)]
 #[serde(default)]
 pub struct RawPromptConfig {
@@ -1357,7 +1234,6 @@ impl Default for RawExecuteConfig {
     }
 }
 
-/// Raw header style for execute blocks (TOML format).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RawExecuteHeaderStyle {
@@ -1577,7 +1453,7 @@ impl From<RawListDirConfig> for ListDirConfig {
 
 impl From<RawExecuteConfig> for ExecuteConfig {
     fn from(raw: RawExecuteConfig) -> Self {
-        // Default accent is accent_running from theme — already quantized.
+        // Default accent is accent_running from theme, already quantized
         let default_accent = crate::theme::Theme::current().accent_running;
         let accent = raw.running_accent.to_option().unwrap_or(default_accent);
         Self {
@@ -1623,10 +1499,9 @@ impl From<RawPromptConfig> for PromptConfig {
 
 impl From<RawThinkingConfig> for ThinkingConfig {
     fn from(raw: RawThinkingConfig) -> Self {
-        // Default accent is gray_dim from theme — already quantized.
+        // Default accent is gray_dim from theme, already quantized
         let default_accent = crate::theme::Theme::current().gray_dim;
         let accent = raw.accent.to_option().unwrap_or(default_accent);
-        // Convert 0-100 integer to 0.0-1.0 float
         let bg_blend = (raw.bg_blend.min(100) as f32) / 100.0;
         Self {
             accent,
@@ -1638,6 +1513,7 @@ impl From<RawThinkingConfig> for ThinkingConfig {
             header_bright: raw.header_bright,
             body_dim_italic: false,
             collapsed_expand_hint: false,
+            rail_under_bullet: false,
         }
     }
 }
@@ -1657,10 +1533,8 @@ pub enum OptionalColor {
 
 impl OptionalColor {
     /// Convert to `Option<Color>`, quantizing to the terminal's color level.
-    ///
-    /// User-configured colors arrive as raw RGB from TOML. Unlike theme
-    /// colors (which are pre-quantized by [`Theme::current()`]), these
-    /// need quantization here to work correctly on 256-color terminals.
+    /// User-configured colors arrive as raw RGB from TOML.
+    /// Unlike theme colors (pre-quantized by [`Theme::current()`]), they need quantization here to work on 256-color terminals.
     pub fn to_option(&self) -> Option<Color> {
         match self {
             OptionalColor::None => None,
@@ -1669,9 +1543,7 @@ impl OptionalColor {
     }
 
     /// Convert to `Option<Color>` without quantization.
-    ///
-    /// Returns the raw parsed color value. Used for serialization
-    /// round-trip tests and anywhere the original RGB is needed.
+    /// Returns the raw parsed color value, for serialization round-trip tests and anywhere the original RGB is needed.
     pub fn to_option_raw(&self) -> Option<Color> {
         match self {
             OptionalColor::None => None,
@@ -1750,8 +1622,8 @@ fn parse_hex_color(hex: &str) -> Result<Color, String> {
 }
 
 fn lookup_named_color(name: &str) -> Result<Color, String> {
-    // Named colors use the GrokNight RGB palette. They are quantized via
-    // `parse_color_string` → `quantize()` to match the terminal's capabilities.
+    // Named colors use the GrokNight RGB palette
+    // They are quantized (via `parse_color_string`, then `quantize()`) to match the terminal's capabilities
     let color = match name.to_uppercase().as_str() {
         // Background colors
         "BG" | "BG_BASE" => Color::Rgb(20, 20, 20), // #141414
@@ -1813,10 +1685,8 @@ fn lookup_named_color(name: &str) -> Result<Color, String> {
 impl RawAppearanceConfig {
     pub fn to_toml_with_comments() -> String {
         let mut config = Self::default();
-        // Template-only materialization: these default to None (the shell's
-        // `[ui] collapsed_edit_blocks` flag decides), which the serializer
-        // would omit entirely. Show the flag-off shape as commented lines so
-        // the keys stay discoverable; commenting-out below keeps them inert.
+        // These two keys default to None (the shell's `[ui] collapsed_edit_blocks` flag decides), which the serializer would omit entirely
+        // Show the flag-off shape as commented lines so the keys stay discoverable; commenting-out below keeps them inert
         config.scrollback.blocks.edit.expanded_by_default = Some(true);
         config.scrollback.blocks.edit.line_summary = Some(false);
         let toml_str = toml_edit::ser::to_string_pretty(&config).expect("serialize default");
@@ -1939,9 +1809,8 @@ impl RawAppearanceConfig {
 }
 
 /// Comment out every key-value line, keeping section headers and comments.
-/// The generated template documents defaults without pinning them, so a
-/// future built-in default change reaches installs holding an old file
-/// (active values would freeze the defaults of the day forever).
+/// The generated template documents defaults without pinning them, so a future built-in default change reaches installs holding an old file.
+/// Active values would freeze the defaults of the day forever.
 fn comment_out_values(toml: &str) -> String {
     let mut out = String::with_capacity(toml.len() + 256);
     for line in toml.lines() {
@@ -1955,9 +1824,8 @@ fn comment_out_values(toml: &str) -> String {
     out
 }
 
-/// Serializes the pager.toml read-modify-write so two rapid settings
-/// toggles can't interleave and clobber each other (mirrors the shell's
-/// `save_config` `SAVE_LOCK`).
+/// Serializes the pager.toml read-modify-write so two rapid settings toggles can't interleave and clobber each other.
+/// It mirrors the shell's `save_config` `SAVE_LOCK`.
 static PAGER_TOML_SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn persist_respect_manual_folds(enabled: bool) -> std::io::Result<()> {
@@ -2210,9 +2078,8 @@ gutter_bg = true
         assert!(cfg.scrollback.blocks.edit.vpad);
         assert_eq!(cfg.scrollback.blocks.edit.bg, BlockBackground::Dark);
         assert!(cfg.scrollback.blocks.edit.accent_bg);
-        // CYAN from lookup_named_color — quantized by OptionalColor::to_option().
-        // In non-TTY test environments, quantize() may downgrade to ANSI 16,
-        // so compare against the quantized value.
+        // CYAN from lookup_named_color, quantized by OptionalColor::to_option()
+        // In non-TTY test environments, quantize() may downgrade to ANSI 16, so compare against the quantized value
         assert!(cfg.scrollback.blocks.edit.accent.is_some());
         assert!(cfg.scrollback.blocks.edit.gutter_bg);
     }
@@ -2225,8 +2092,7 @@ gutter_bg = true
         assert_eq!(cfg.scrollback.blocks.edit.bg, BlockBackground::None);
     }
 
-    /// Legacy configs still contain the removed `invert` key (it was written
-    /// by old generated `pager.toml`s); parsing must keep ignoring it.
+    /// Legacy configs still contain the removed `invert` key (it was written by old generated `pager.toml`s); parsing must keep ignoring it.
     #[test]
     fn removed_prompt_invert_key_is_ignored() {
         let raw: RawAppearanceConfig =
@@ -2331,9 +2197,8 @@ gutter_bg = true
     #[test]
     fn test_to_toml_with_comments() {
         let toml = RawAppearanceConfig::to_toml_with_comments();
-        // Check scrollback sections — check for key names rather than section
-        // headers since toml_edit may format subtables differently when the
-        // parent table has inline keys (like line_under_last_entry).
+        // Check scrollback sections by key names rather than section headers
+        // toml_edit may format subtables differently when the parent table has inline keys (like line_under_last_entry)
         assert!(
             toml.contains("margin = "),
             "Missing scroll margin in:\n{toml}"
@@ -2366,12 +2231,10 @@ gutter_bg = true
             toml.contains("line_under_last_entry"),
             "Missing line_under_last_entry in:\n{toml}"
         );
-        // Check tool bullet fields
         assert!(
             toml.contains("bullet = "),
             "Missing tool bullet in:\n{toml}"
         );
-        // Note: bullet_color and bullet_accent removed in scrollback-v2 refactor.
         assert!(
             toml.contains("outer_vpad = "),
             "Missing layout outer_vpad in:\n{toml}"
@@ -2428,7 +2291,6 @@ gutter_bg = true
             toml.contains("[scrollback.blocks.execute]"),
             "Missing [scrollback.blocks.execute] section in:\n{toml}"
         );
-        // Check execute block has running_accent
         assert!(
             toml.contains("running_accent = "),
             "Missing execute running_accent in:\n{toml}"
@@ -2452,9 +2314,8 @@ gutter_bg = true
         );
     }
 
-    /// The generated template must be inert: parsing it (and an empty file)
-    /// yields exactly the built-in defaults, so old dev-generated files can
-    /// never pin a superseded default again.
+    /// The generated template must be inert: parsing it (and an empty file) yields exactly the built-in defaults.
+    /// So an old dev-generated file can never pin a superseded default again.
     #[test]
     fn template_parses_to_builtin_defaults() {
         let serialize = |cfg: &RawAppearanceConfig| toml_edit::ser::to_string_pretty(cfg).unwrap();
@@ -2472,8 +2333,7 @@ gutter_bg = true
         assert_eq!(serialize(&empty), defaults);
     }
 
-    /// Every value line in the template is commented out; only section
-    /// headers (empty tables) and comments are active.
+    /// Every value line in the template is commented out; only section headers (empty tables) and comments are active.
     #[test]
     fn template_has_no_active_value_lines() {
         let template = RawAppearanceConfig::to_toml_with_comments();
@@ -2486,10 +2346,8 @@ gutter_bg = true
         }
     }
 
-    /// The single policy point pairing the pager.toml shape keys with the
-    /// shell-owned `collapsed_edit_blocks` flag: unset keys follow the flag
-    /// (on = collapsed one-liner with diffstat, off = legacy expanded diff
-    /// without it); explicit values pin the shape in both directions.
+    /// Unset pager.toml shape keys follow the shell-owned `collapsed_edit_blocks` flag; explicit values pin the shape in both directions.
+    /// Flag on gives the collapsed one-liner with diffstat; flag off gives the legacy expanded diff without it.
     #[test]
     fn effective_edit_shape_follows_flag_unless_pinned() {
         let unset = EditBlockConfig::default();
@@ -2529,9 +2387,8 @@ gutter_bg = true
         );
     }
 
-    /// The two flag-deferred edit keys default to `None` (omitted by the
-    /// serializer), but the template must still document them as commented
-    /// lines showing the flag-off shape.
+    /// The two flag-deferred edit keys default to `None` (omitted by the serializer).
+    /// The template must still document them as commented lines showing the flag-off shape.
     #[test]
     fn template_documents_flag_deferred_edit_keys() {
         let template = RawAppearanceConfig::to_toml_with_comments();
@@ -2549,9 +2406,8 @@ gutter_bg = true
         );
     }
 
-    /// The `/settings` writer must insert an ACTIVE key into the inert
-    /// template (whose keys are all comments) rather than edit a commented
-    /// line or fail.
+    /// The `/settings` writer must insert an ACTIVE key into the inert template (whose keys are all comments).
+    /// It must not edit a commented line or fail.
     #[test]
     fn upsert_into_inert_template_inserts_active_key() {
         let template = RawAppearanceConfig::to_toml_with_comments();
@@ -2615,7 +2471,7 @@ gutter_bg = true
         );
     }
 
-    /// A config written before the key existed must still parse and keep K9.
+    /// A config written before the key existed must still parse and keep `minimal_collapse_thinking` off.
     #[test]
     fn minimal_collapse_thinking_defaults_off_and_old_configs_parse() {
         let empty: RawAppearanceConfig = toml::from_str("").expect("empty config must parse");
@@ -2643,15 +2499,17 @@ gutter_bg = true
         assert!(AppearanceConfig::from(raw).minimal_collapse_thinking);
     }
 
-    /// The reasoning-legibility toggles must stay un-settable from pager.toml.
+    /// `body_dim_italic` and `collapsed_expand_hint` must stay un-settable from pager.toml.
     #[test]
     fn thinking_body_treatment_is_off_by_default_and_not_a_toml_key() {
         let cfg = AppearanceConfig::default();
         assert!(!cfg.scrollback.blocks.thinking.body_dim_italic);
         assert!(!cfg.scrollback.blocks.thinking.collapsed_expand_hint);
+        assert!(!cfg.scrollback.blocks.thinking.rail_under_bullet);
 
         let template = RawAppearanceConfig::to_toml_with_comments();
         assert!(!template.contains("body_dim_italic"));
         assert!(!template.contains("collapsed_expand_hint"));
+        assert!(!template.contains("rail_under_bullet"));
     }
 }

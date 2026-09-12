@@ -362,11 +362,9 @@ while True:
     (dir, script_path)
 }
 
-// ── Roslyn-shaped mock servers ──────────────────────────────────────────
-//
-// These differ only in how they answer `initialize` and what they do with the
-// notifications that follow, so they share one framing preamble rather than
-// each carrying its own copy of the JSON-RPC plumbing.
+// Roslyn-shaped mock servers These differ only in how they answer `initialize` and what they do
+// with the notifications that follow, so they share one framing preamble rather than each carrying
+// its own copy of the JSON-RPC plumbing.
 
 /// `read_message` / `send_message` / `publish` — the same for every mock.
 const MOCK_PREAMBLE: &str = r#"
@@ -452,11 +450,9 @@ pub(super) fn write_python_server(file_name: &str, body: &str) -> (tempfile::Tem
     (dir, script_path)
 }
 
-/// A server that declares **incremental** sync (`textDocumentSync: 2`), like
-/// Roslyn does. It reports back, as the diagnostic message, whether the
-/// `didChange` it received carried a `range`. Roslyn dereferences that range
-/// unconditionally and tears its request queue down when it is missing, so a
-/// rangeless change against such a server is a client bug.
+/// A server that declares **incremental** sync (`textDocumentSync: 2`), like Roslyn does. It reports back, as the diagnostic message, whether
+/// the `didChange` it received carried a `range`. Roslyn dereferences that range unconditionally and tears its request queue down when it is
+/// missing, so a rangeless change against such a server is a client bug.
 pub(super) fn write_incremental_sync_server() -> (tempfile::TempDir, PathBuf) {
     write_python_server(
         "incremental_lsp.py",
@@ -480,10 +476,9 @@ serve({"textDocumentSync": 2}, handle)
     )
 }
 
-/// A Roslyn-shaped server: incremental sync, **no** save support, and
-/// diagnostics served by pull only — it never publishes. Its diagnostic message
-/// reports what the client actually did, so tests can assert on client
-/// behaviour rather than on internal state.
+/// A Roslyn-shaped server: incremental sync, **no** save support, and diagnostics served by pull
+/// only — it never publishes. Its diagnostic message reports what the client actually did, so tests
+/// can assert on client behaviour rather than on internal state.
 pub(super) fn write_pull_diagnostics_server() -> (tempfile::TempDir, PathBuf) {
     write_python_server(
         "pull_lsp.py",
@@ -509,10 +504,9 @@ serve({
     )
 }
 
-/// A pull server that answers honestly: a document is clean unless its name
-/// says "broken". Used to check that "no problems" counts as an answer rather
-/// than as silence, and that a real problem after a run of clean files is still
-/// reported promptly.
+/// A pull server that answers honestly: a document is clean unless its name says "broken". Used to
+/// check that "no problems" counts as an answer rather than as silence, and that a real problem
+/// after a run of clean files is still reported promptly.
 pub(super) fn write_selective_pull_server() -> (tempfile::TempDir, PathBuf) {
     write_python_server(
         "selective_pull_lsp.py",
@@ -553,15 +547,9 @@ serve({
     )
 }
 
-/// A pull server that takes its time, and every answer names the revision it
-/// was asked about — so an answer to superseded text is recognisable on sight.
-///
-/// When the first pull arrives it touches [`FIRST_PULL_MARKER`] beside the
-/// document, which is the moment a test has to edit the file again if it wants
-/// an answer to land for a revision the server has since been sent a
-/// replacement for. The signal deliberately goes through the filesystem rather
-/// than a `publishDiagnostics`: a push is itself an answer, and would be the
-/// newest one, which is exactly the thing under test.
+/// A pull server that takes its time, and every answer names the revision it was asked about — so an answer to superseded text is recognisable
+/// on sight. The signal deliberately goes through the filesystem rather than a `publishDiagnostics`: a push is itself an answer, and would be
+/// the newest one, which is exactly the thing under test.
 pub(super) fn write_slow_pull_server() -> (tempfile::TempDir, PathBuf) {
     write_python_server(
         "slow_pull_lsp.py",
@@ -602,14 +590,9 @@ pub(super) const FIRST_PULL_MARKER: &str = "first-pull-started";
 /// in flight.
 pub(super) const SECOND_PULL_MARKER: &str = "second-pull-started";
 
-/// A pull server whose "the file is clean now" answer arrives late, and which
-/// then stands by it when asked again with its own result id.
-///
-/// The first pull reports a problem. The second answers clean, slowly enough
-/// that a test can edit the file again first. From the third on, a client that
-/// sends back the clean report's id is told "unchanged" — so a client that
-/// remembers an id for an answer it never stored will have the server confirm
-/// errors the server does not have.
+/// A pull server whose "the file is clean now" answer arrives late, and which then stands by it when asked again with its own result id. The
+/// first pull reports a problem. From the third on, a client that sends back the clean report's id is told "unchanged" — so a client that
+/// remembers an id for an answer it never stored will have the server confirm errors the server does not have.
 pub(super) fn write_stale_clean_pull_server() -> (tempfile::TempDir, PathBuf) {
     write_python_server(
         "stale_clean_pull_lsp.py",
@@ -641,10 +624,9 @@ serve({
     )
 }
 
-/// A pull server that answers for some documents and simply never replies for
-/// others — the shape of a server that is working, and productive, but has
-/// nothing to say about one particular file, ever. Documents whose name
-/// contains "loud" get an error; the rest get silence.
+/// A pull server that answers for some documents and simply never replies for others — the shape of
+/// a server that is working, and productive, but has nothing to say about one particular file,
+/// ever. Documents whose name contains "loud" get an error; the rest get silence.
 pub(super) fn write_partially_answering_server() -> (tempfile::TempDir, PathBuf) {
     write_python_server(
         "partial_pull_lsp.py",
@@ -729,11 +711,9 @@ serve({
     )
 }
 
-/// The same, but announced the way the specification provides for: a
-/// `workspace/diagnostic/refresh` request, which the client has to answer.
-/// Whether the client answered is reported as the diagnostic message, so a
-/// client that advertises `refreshSupport` and then ignores the request fails
-/// the test rather than merely logging.
+/// The same, but announced the way the specification provides for: a `workspace/diagnostic/refresh` request, which the
+/// client has to answer. Whether the client answered is reported as the diagnostic message, so a client that advertises
+/// `refreshSupport` and then ignores the request fails the test rather than merely logging.
 pub(super) fn write_diagnostic_refresh_server() -> (tempfile::TempDir, PathBuf) {
     write_python_server(
         "diagnostic_refresh_lsp.py",
@@ -764,10 +744,9 @@ serve({
     )
 }
 
-/// A push server that names the revision it analyzed, and runs one behind: the
-/// report for an edit describes the text before it, and the real verdict
-/// follows. Servers that fill in `version` let us tell those apart exactly
-/// instead of crediting whatever arrives.
+/// A push server that names the revision it analyzed, and runs one behind: the report for an edit
+/// describes the text before it, and the real verdict follows. Servers that fill in `version` let
+/// us tell those apart exactly instead of crediting whatever arrives.
 pub(super) fn write_versioned_push_server() -> (tempfile::TempDir, PathBuf) {
     write_python_server(
         "versioned_push_lsp.py",
@@ -788,10 +767,9 @@ serve({"textDocumentSync": {"openClose": True, "change": 1}}, handle)
     )
 }
 
-/// rust-analyzer's shape: it publishes, *and* it answers
-/// `textDocument/diagnostic` — but deliberately with a different, smaller set.
-/// Its `cargo check` results only ever arrive by push, so a client that takes
-/// the pull answer as the whole picture loses every one of them.
+/// rust-analyzer's shape: it publishes, *and* it answers `textDocument/diagnostic` — but
+/// deliberately with a different, smaller set. Its `cargo check` results only ever arrive by push,
+/// so a client that takes the pull answer as the whole picture loses every one of them.
 pub(super) fn write_push_and_pull_server() -> (tempfile::TempDir, PathBuf) {
     write_python_server(
         "push_and_pull_lsp.py",
@@ -880,11 +858,9 @@ serve({"textDocumentSync": {"openClose": True, "change": 1}}, handle)
     )
 }
 
-/// Reports a real problem once, then answers "clean" twice, then stops
-/// answering at all. Enough rope to hang a client that lets a clean answer
-/// about replaced text erase what it holds: the two clean answers belong to a
-/// revision that has been superseded by the time the second arrives, and the
-/// silence afterwards means nothing can quietly put the error back.
+/// Reports a real problem once, then answers "clean" twice, then stops answering at all. Enough rope to hang a client that lets a clean answer
+/// about replaced text erase what it holds: the two clean answers belong to a revision that has been superseded by the time the second arrives,
+/// and the silence afterwards means nothing can quietly put the error back.
 pub(super) fn write_clean_then_silent_server() -> (tempfile::TempDir, PathBuf) {
     write_python_server(
         "clean_then_silent_lsp.py",
@@ -908,12 +884,9 @@ serve({
     )
 }
 
-/// Roslyn's worst-case shape: asked for diagnostics before it has loaded the
-/// solution, it does not answer at all. Some time later it announces it is
-/// ready, and only then does it start answering — and even then not instantly.
-///
-/// By the time it speaks, a client that judges silence by the clock has already
-/// stopped waiting for it, which is exactly when it must start again.
+/// Roslyn's worst-case shape: asked for diagnostics before it has loaded the solution, it does not answer at all. Some time later it announces
+/// it is ready, and only then does it start answering — and even then not instantly. By the time it speaks, a client that judges silence by the
+/// clock has already stopped waiting for it, which is exactly when it must start again.
 pub(super) fn write_loads_after_going_quiet_server() -> (tempfile::TempDir, PathBuf) {
     write_python_server(
         "loads_after_quiet_lsp.py",
@@ -952,11 +925,8 @@ serve({
     )
 }
 
-/// rust-analyzer at its most dangerous: it answers a pull promptly and has
-/// nothing of its own to say, while the errors that matter — the ones only
-/// `cargo check` finds — arrive on the push channel a moment later.
-///
-/// A client that takes the pull answer as the verdict settles the file as
+/// rust-analyzer at its most dangerous: it answers a pull promptly and has nothing of its own to say, while the errors that matter — the ones
+/// only `cargo check` finds — arrive on the push channel a moment later. A client that takes the pull answer as the verdict settles the file as
 /// clean, and by the time the real errors land nobody is waiting for them.
 pub(super) fn write_slow_check_server() -> (tempfile::TempDir, PathBuf) {
     write_python_server(
@@ -984,6 +954,62 @@ serve({
     "textDocumentSync": {"openClose": True, "change": 2},
     "diagnosticProvider": {"interFileDependencies": True, "workspaceDiagnostics": False}
 }, handle)
+"#,
+    )
+}
+
+/// A server that behaves like Roslyn on file watching: if the client advertised `didChangeWatchedFiles`, it registers a
+/// NuGet-cache glob (the registration that would otherwise become tens of thousands of inotify watches) and records
+/// whether the client accepted it. It also records any `workspace/didChangeWatchedFiles` the client later sends.
+pub(super) fn write_file_watch_server() -> (tempfile::TempDir, PathBuf) {
+    write_python_server(
+        "file_watch_lsp.py",
+        r#"
+import os
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+def dump(name, obj):
+    with open(os.path.join(HERE, name), "w") as f:
+        json.dump(obj, f)
+
+while True:
+    msg = read_message()
+    if msg is None:
+        break
+    method = msg.get("method")
+    if method == "initialize":
+        dump("initialize_caps.json", msg["params"]["capabilities"])
+        reply(msg, {"capabilities": {"textDocumentSync": 1}})
+    elif method == "initialized":
+        ask("client/registerCapability", {
+            "registrations": [{
+                "id": "nuget-dlls",
+                "method": "workspace/didChangeWatchedFiles",
+                "registerOptions": {
+                    "watchers": [
+                        {
+                            "globPattern": {
+                                "baseUri": "file:///tmp/fake-nuget/packages",
+                                "pattern": "**/*.dll"
+                            }
+                        },
+                        {
+                            "globPattern": "**/*.{ts,tsx,js}"
+                        }
+                    ]
+                }
+            }]
+        }, 100)
+    elif method == "workspace/didChangeWatchedFiles":
+        dump("watched.json", msg["params"])
+    elif method in ("textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"):
+        pass
+    elif method == "shutdown":
+        reply(msg, None)
+    elif method == "exit":
+        break
+    elif method is None and "id" in msg:
+        dump("register_reply.json", msg)
 "#,
     )
 }

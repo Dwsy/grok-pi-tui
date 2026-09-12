@@ -1,13 +1,14 @@
-//! Session-level telemetry helpers: permission analytics, hook/skill labels, harness snapshot.
+//! Session-level telemetry helpers: product analytics and harness snapshots.
 
+mod active_agent_message;
 mod permission;
 
+pub(crate) use active_agent_message::*;
 pub(crate) use permission::*;
 
 use xai_grok_telemetry::events::SessionHarness;
 
-/// Emit an `mcp.server_connection` span. `duration_ms` / `tool_count` /
-/// `error_type` are status-specific; pass `None` when not applicable.
+/// `duration_ms`, `tool_count`, and `error_type` are status-specific; pass `None` when not applicable.
 pub(crate) fn emit_mcp_connection_span(
     status: &str,
     server_name: &str,
@@ -39,10 +40,9 @@ pub(crate) fn emit_mcp_connection_span(
     span.in_scope(|| {});
 }
 
-/// Provenance for `skill.activated`'s `skill_source`: project (under `cwd`),
-/// user (under `$HOME`), else bundled. Paths are canonicalized (symlinked cwd
-/// like macOS `/tmp` vs `/private/tmp`); when both roots match, the deepest
-/// wins, tie (cwd == `$HOME`) → user.
+/// Provenance for `skill.activated`'s `skill_source`: project (under `cwd`), user (under `$HOME`), else bundled.
+/// Paths are canonicalized so a symlinked cwd (macOS `/tmp` vs `/private/tmp`) still matches.
+/// When both roots match, the deepest wins; a tie (cwd == `$HOME`) counts as user.
 pub(crate) fn skill_source_label(skill_path: &str, cwd: &str) -> &'static str {
     let canon = |p: &std::path::Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let p = canon(std::path::Path::new(skill_path));
@@ -86,8 +86,7 @@ pub(crate) fn format_hook_name(spec: &xai_grok_hooks::config::HookSpec) -> Strin
     }
 }
 
-/// Provenance for telemetry, mapped from the shared [`hook_origin`] classifier so
-/// this and `/hooks` inspect can't diverge.
+/// Provenance for telemetry, mapped from the shared [`hook_origin`] classifier so this and `/hooks` inspect can't diverge.
 fn format_hook_source(spec: &xai_grok_hooks::config::HookSpec) -> &'static str {
     use xai_grok_hooks::config::HookOrigin as O;
     match xai_grok_hooks::config::hook_origin(spec) {
@@ -115,7 +114,7 @@ impl HookRegInfo {
         Self {
             name: format_hook_name(spec),
             event: spec.event.to_string(),
-            hook_type: spec.handler_type.as_str().to_string(),
+            hook_type: spec.handler_type.as_ref().to_string(),
             source: format_hook_source(spec),
         }
     }
@@ -136,8 +135,7 @@ pub(crate) struct SessionHarnessMetrics {
     pub cwd: String,
     /// Filled from the built agent's bridge so `into_event` doesn't re-walk the disk.
     pub skill_names: Vec<String>,
-    /// Resolved vendor-compat config, so recorded AGENTS.md names match
-    /// what the session actually discovers.
+    /// Resolved vendor-compat config, so recorded AGENTS.md names match what the session actually discovers.
     pub compat: xai_grok_tools::types::compat::CompatConfig,
     pub plugin_registry: Option<std::sync::Arc<xai_grok_agent::plugins::PluginRegistry>>,
     pub plugin_names: Vec<String>,
@@ -148,7 +146,7 @@ impl SessionHarnessMetrics {
         // One `plugin.loaded` span per enabled plugin at session start.
         if let Some(registry) = self.plugin_registry.as_deref() {
             for plugin in registry.enabled_plugins() {
-                tracing::info_span!(
+                xai_grok_telemetry::event_span!(
                     "plugin.loaded",
                     plugin_name = %plugin.name,
                     plugin_version = %plugin.version.as_deref().unwrap_or(""),
@@ -158,27 +156,26 @@ impl SessionHarnessMetrics {
                     skill_count = plugin.skill_count as i64,
                     agent_count = plugin.agent_count as i64,
                     command_path_count = plugin.command_dirs.len() as i64,
-                )
-                .in_scope(|| {});
+                );
             }
         }
 
         // One `hook.registered` span per configured hook at session start.
         for h in &hooks {
-            tracing::info_span!(
+            xai_grok_telemetry::event_span!(
                 "hook.registered",
                 hook_name = %h.name,
                 hook_event = %h.event,
                 hook_type = %h.hook_type,
                 hook_source = %h.source,
-            )
-            .in_scope(|| {});
+            );
         }
         let hook_names: Vec<String> = hooks.into_iter().map(|h| h.name).collect();
 
         let agents_md_dir_names = xai_grok_agent::prompt::agents_md::read_agents_config_with_paths(
             &self.cwd,
             self.compat,
+            crate::agent::folder_trust::project_scope_allowed(std::path::Path::new(&self.cwd)),
         )
         .await
         .iter()
@@ -203,8 +200,7 @@ impl SessionHarnessMetrics {
             agents_md_dir_names,
             memory_enabled: self.memory_enabled,
             memory_retrieval_mode: self.memory_retrieval_mode,
-            // Same signal `SessionNew` carries; recomputed here because this
-            // event is built off-thread, after spawn (cheap: repo discovery).
+            // Same signal `SessionNew` carries; recomputed here because this event is built off-thread, after spawn (cheap: repo discovery)
             is_git_repo: xai_grok_telemetry::context::collect_git_context(&self.cwd).is_git_repo,
             auto_update: self.auto_update,
         }

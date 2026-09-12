@@ -1,13 +1,11 @@
-//! SubagentBlock — scrollback entries for subagent lifecycle.
+//! Scrollback entries for the subagent lifecycle.
 //!
-//! Similar to BgTaskBlock: always collapsed, animated bullet while running,
-//! colored bullet when done. Enter / Ctrl-F opens the subagent view.
+//! Similar to BgTaskBlock: always collapsed, an animated bullet while running, a colored bullet when done.
+//! Enter / Ctrl-F opens the subagent view.
 //!
 //! Two modes:
-//! - **Blocking** (sync): Single `Started` block. Blinks while running,
-//!   turns green/red when done. Text: `Subagent "description"`
-//! - **Background** (async): `Started` block stays forever (turns gray).
-//!   A separate `Completed`/`Failed` block is added when done.
+//! - **Blocking** (sync): one `Started` block; it blinks while running and turns green/red when done. Text: `Subagent "description"`
+//! - **Background** (async): the `Started` block stays forever (turns gray) and a separate `Completed`/`Failed` block is added when done.
 //!   Started text: `Subagent started: "description"`
 //!   Completed text: `Subagent completed in 43s: "description"`
 
@@ -29,7 +27,7 @@ use crate::util::format_duration;
 /// What kind of subagent lifecycle event this block represents.
 #[derive(Debug, Clone)]
 pub enum SubagentBlockKind {
-    /// Subagent is running (or was running — `finish_running` stops animation).
+    /// Subagent is running (or was running; `finish_running` stops animation).
     Started,
     /// Subagent completed successfully.
     Completed { elapsed: Duration },
@@ -42,9 +40,7 @@ pub enum SubagentBlockKind {
     Cancelled { elapsed: Duration },
 }
 
-/// Subagent scrollback block.
-///
-/// Always collapsed, not foldable, groupable, selectable.
+/// Always collapsed and not foldable; groupable and selectable.
 /// Enter / Ctrl-F opens the subagent view.
 #[derive(Debug, Clone)]
 pub struct SubagentBlock {
@@ -64,12 +60,8 @@ pub struct SubagentBlock {
     pub is_background: bool,
     /// Lifecycle kind.
     pub kind: SubagentBlockKind,
-    /// Live activity label from the child session's turn tracker.
-    ///
-    /// Updated on each `SubagentProgress` tick while the subagent is running.
-    /// Shown inline in the collapsed scrollback line (e.g. "Thinking",
-    /// "Running: cargo build") so the user sees interactive progress without
-    /// opening the subagent view.
+    /// Live activity label from the child session's turn tracker. The user sees interactive progress without opening
+    /// the subagent view.
     pub activity_label: Option<String>,
     /// Number of completed child turns, updated on each `SubagentProgress`
     /// tick and stamped at `SubagentFinished`.
@@ -225,11 +217,9 @@ fn format_stats(turn_count: Option<u32>, tokens_used: Option<u64>) -> String {
 impl BlockContent for SubagentBlock {
     fn output(&self, ctx: &BlockContext) -> BlockOutput {
         let theme = Theme::current();
-        // When selected, lift only the bold "Subagent" label to
-        // `text_primary` so it reads as undimmed (mirrors `read.rs` /
-        // `search.rs`, which bump only the label and leave the rest at
-        // `muted`). The detail text (verb + description + meta) stays
-        // muted in every state.
+        // When selected, lift only the bold "Subagent" label to `text_primary` so it reads as undimmed
+        // This mirrors `read.rs` and `search.rs`, which bump only the label and leave the rest at `muted`
+        // The detail text (verb, description, meta) stays muted in every state
         let bold = if ctx.is_selected {
             theme.primary().add_modifier(Modifier::BOLD)
         } else {
@@ -351,7 +341,7 @@ impl BlockContent for SubagentBlock {
                         .unwrap_or(theme.accent_running);
                     Some(AccentStyle::animated(dimmed))
                 } else {
-                    // Finished — gray bullet (same as bg task "started" after completion)
+                    // Finished: gray bullet (same as bg task "started" after completion)
                     None
                 }
             }

@@ -34,19 +34,7 @@ macro_rules! tprintln {
     }};
 }
 
-/// Prints a message via tracing::warn with a Unix timestamp prefix.
-///
-/// The format is: `{unix_timestamp}::{message}`
-///
-/// # Examples
-///
-/// ```ignore
-/// teprintln!("Error occurred!");
-/// // Logs: 1234567890::Error occurred!
-///
-/// teprintln!("Error code: {}", 500);
-/// // Logs: 1234567890::Error code: 500
-/// ```
+/// Prints a message via tracing::warn with a Unix timestamp prefix. The format is: `{unix_timestamp}::{message}`
 #[macro_export]
 macro_rules! teprintln {
     () => {{

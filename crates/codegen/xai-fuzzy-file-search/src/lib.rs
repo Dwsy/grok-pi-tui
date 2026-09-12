@@ -208,16 +208,9 @@ pub struct FuzzyFileMatcher {
 }
 
 impl FuzzyFileMatcher {
-    /// Create a new matcher with default config focused on matching paths.
-    ///
-    /// If the matcher thread pool cannot be spawned (cgroup pids / `RLIMIT_NPROC`
-    /// exhaustion), the matcher degrades to browse-only: it logs once and keyed
-    /// queries return no matches (see [`Self::is_enabled`]). Empty-query browsing
-    /// still works from the serial top-level walk.
-    ///
-    /// The probe asks for `NUM_NUCLEO_THREADS + 1`: peak demand is the persistent
-    /// nucleo pool plus the daemon's worker thread, so reserving the extra slot
-    /// keeps the daemon spawn (browse) from being starved by the pool.
+    /// Create a matcher with default config focused on matching paths.
+    /// If the thread pool cannot spawn (cgroup pids / `RLIMIT_NPROC`), degrade to browse-only: keyed queries return no matches.
+    /// The probe reserves `NUM_NUCLEO_THREADS + 1` so the daemon browse spawn is not starved by the pool.
     pub fn new(root: &Path) -> Self {
         Self::new_inner(root, threads_spawnable(NUM_NUCLEO_THREADS + 1))
     }
@@ -345,10 +338,7 @@ impl FuzzyFileMatcher {
     }
 
     /// Restart the walk with a pre-computed [`WalkMode`].
-    ///
-    /// Assumes any prior walk is already joined: `restart_walk_with` joins
-    /// before probing, and the direct test-seam callers start from a fresh
-    /// matcher.
+    /// Assumes any prior walk is already joined: `restart_walk_with` joins before probing.
     fn restart_walk_inner(
         &mut self,
         make_walker: impl FnOnce(&mut WalkBuilder) -> &mut WalkBuilder,
@@ -732,10 +722,8 @@ impl FuzzyFileMatcherDaemon {
     /// populated them, so this yields only empty results.
     pub fn get(&self) -> FuzzyMatcherDaemonResults {
         if self.mode == MatcherMode::Disabled {
-            // Terminal empty state. `generation` is MAX so it also clears the
-            // callers' `generation >= min_gen` gate: otherwise a disabled search
-            // reads as perpetually pending once the first query bumps min_gen
-            // past zero.
+            // Terminal empty state. `generation` is MAX so it also clears the callers' `generation >= min_gen` gate.
+            // Otherwise a disabled search reads as perpetually pending once the first query bumps min_gen past zero.
             return FuzzyMatcherDaemonResults {
                 status: FuzzyMatcherStatus {
                     done: true,
@@ -974,10 +962,8 @@ mod thread_exhaustion_tests {
             println!("{SKIP_MARK} threadpool built despite the cap");
             std::process::exit(0);
         }
-        // Drive the disabled matcher end to end: restart_walk collects the
-        // top-level entries and returns before spawning a walk thread (nucleo is
-        // None), and every query call returns empty. A panic here would abort
-        // under panic=abort.
+        // Drive the disabled matcher end to end: restart_walk returns before spawning a walk thread.
+        // Every query call returns empty. A panic here would abort under panic=abort.
         matcher.restart_walk();
         matcher.set_query("alpha", false);
         let _ = matcher.tick(10);

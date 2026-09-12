@@ -23,16 +23,11 @@ mod imp {
     use crate::format::{self, MAX_FILE_SIZE, MAX_FRAMES};
     use crate::terminal;
 
-    // ── Platform-specific ucontext access ────────────────────────────────
-    //
-    // The libc crate does not expose ucontext_t on macOS. We define minimal
-    // repr(C) types covering only the fields we need (PC and frame pointer).
+    // The libc crate does not expose ucontext_t on macOS.
+    // Minimal repr(C) types cover only the fields we need (PC and frame pointer).
 
-    /// Extract the crash instruction pointer and frame pointer from the
-    /// signal handler's context parameter.
-    ///
-    /// Returns `(instruction_pointer, frame_pointer)`. Both may be 0 if
-    /// the context is null or the platform is unsupported.
+    /// Extract the crash instruction pointer and frame pointer from the signal context.
+    /// Returns `(instruction_pointer, frame_pointer)`. Both may be 0 if context is null or unsupported.
     unsafe fn extract_pc_and_fp(ctx: *mut libc::c_void) -> (usize, usize) {
         if ctx.is_null() {
             return (0, 0);
@@ -153,10 +148,8 @@ mod imp {
     }
 
     /// Walk the frame-pointer chain, collecting return addresses.
-    ///
     /// Fully async-signal-safe: only raw pointer reads, no library calls.
-    /// Stops at the first invalid (null, misaligned, or suspiciously small)
-    /// frame pointer.
+    /// Stops at the first invalid (null, misaligned, or suspiciously small) frame pointer.
     unsafe fn walk_frame_pointers(initial_fp: usize, out: &mut [usize], max: usize) -> usize {
         let mut fp = initial_fp;
         let mut count = 0;
@@ -222,9 +215,7 @@ mod imp {
     }
 
     /// Allocate an alternate signal stack via mmap (survives stack overflow).
-    ///
-    /// No-op if already installed (idempotent across
-    /// [`install_terminal_restore_only`] → [`install`] sequences).
+    /// No-op if already installed (idempotent across install sequences).
     fn setup_alt_stack() {
         if ALT_STACK_INSTALLED.swap(true, Ordering::AcqRel) {
             return;
@@ -250,9 +241,7 @@ mod imp {
     }
 
     /// Restore termios and re-raise. No escape codes.
-    ///
     /// # Safety
-    ///
     /// Must only be called from a signal handler context.
     unsafe fn restore_termios_and_reraise(sig: libc::c_int) {
         unsafe {
@@ -269,9 +258,7 @@ mod imp {
     }
 
     /// Restore terminal escape codes + termios, then re-raise.
-    ///
     /// # Safety
-    ///
     /// Must only be called from a signal handler context.
     unsafe fn restore_terminal_and_reraise(sig: libc::c_int) {
         unsafe {
@@ -280,19 +267,8 @@ mod imp {
         }
     }
 
-    /// Register a signal handler for SIGBUS, SIGSEGV, and SIGABRT.
-    ///
-    /// SIGABRT is hooked so `panic = "abort"` deaths (every Rust panic in
-    /// release builds) produce a crash report instead of a bare `Aborted`.
-    ///
-    /// Flags: `SA_SIGINFO | SA_ONSTACK | SA_RESETHAND`. `SA_RESETHAND`
-    /// resets disposition to `SIG_DFL` after delivery, preventing recursive
-    /// faults in the handler from looping. The handlers additionally restore
-    /// `SIG_DFL` and re-raise explicitly, so the process still terminates
-    /// with the original signal's semantics (exit status, core dumps).
-    ///
+    /// Register SIGBUS/SIGSEGV/SIGABRT so abort-panics produce a crash report.
     /// # Safety
-    ///
     /// `handler` must be a valid `sa_sigaction`-compatible function pointer.
     unsafe fn register_crash_signals(
         handler: unsafe extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void),
@@ -332,9 +308,7 @@ mod imp {
     }
 
     /// Write crash blob to the pre-opened fd. Shared by crash handler variants.
-    ///
     /// # Safety
-    ///
     /// Signal handler context. Only async-signal-safe operations.
     unsafe fn write_crash_blob(
         sig: libc::c_int,
@@ -435,12 +409,8 @@ mod imp {
         }
     }
 
-    /// Install a minimal SIGSEGV/SIGBUS/SIGABRT handler that restores termios
-    /// on crash.
-    ///
-    /// Does NOT write terminal escape codes — call
-    /// [`enable_terminal_escape_restore`] after TUI modes are enabled.
-    ///
+    /// Install a minimal SIGSEGV/SIGBUS/SIGABRT handler that restores termios on crash.
+    /// Does NOT write terminal escape codes — call [`enable_terminal_escape_restore`] after TUI modes are enabled.
     /// If [`install`] is called later, it replaces these handlers.
     pub fn install_terminal_restore_only() {
         save_termios();
@@ -556,8 +526,7 @@ mod win {
     const FILE_BEGIN: u32 = 0;
 
     /// Walk the frame-pointer chain, collecting return addresses.
-    ///
-    /// [fp+0] = previous frame pointer, [fp+8] = return address.
+    /// `[fp+0]` = previous frame pointer, `[fp+8]` = return address.
     /// Stops at null, misaligned, or non-ascending frame pointers.
     unsafe fn walk_frame_pointers(initial_fp: usize, out: &mut [usize], max: usize) -> usize {
         let mut fp = initial_fp;
@@ -868,10 +837,8 @@ pub fn disable_terminal_escape_restore() {}
 mod tests {
     use std::sync::Mutex;
 
-    // SIGSEGV/SIGBUS/SIGABRT handlers are process-global. Tests in this binary run on
-    // parallel threads, so any two tests that install/read these handlers race.
-    // Serialize them through this lock (poison-tolerant: a real assertion
-    // failure in one test must not cascade into the other).
+    // SIGSEGV/SIGBUS/SIGABRT handlers are process-global; parallel tests that install them race.
+    // Serialize through this lock. Poison-tolerant: one assertion failure must not cascade.
     static SIGNAL_STATE_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
@@ -892,13 +859,8 @@ mod tests {
                 0,
                 "SIGSEGV handler must use alternate signal stack"
             );
-            // Note: SA_RESETHAND is set in our sigaction call but macOS XNU
-            // does not round-trip it through the sigaction query — the kernel
-            // stores it in ps_sigreset internally but returns sa_flags=0x41
-            // (SA_SIGINFO|SA_ONSTACK only). The flag IS honored for signal
-            // delivery. Verified via the integration test
-            // `sigsegv_produces_valid_crash_blob` which relies on SA_RESETHAND
-            // to re-raise with SIG_DFL after the handler runs.
+            // macOS XNU does not round-trip SA_RESETHAND through the sigaction query (returns 0x41).
+            // The flag is still honored for delivery. The integration test relies on it to re-raise with SIG_DFL.
 
             assert_eq!(libc::sigaction(libc::SIGBUS, std::ptr::null(), &mut sa), 0);
             assert_ne!(

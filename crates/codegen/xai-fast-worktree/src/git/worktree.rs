@@ -40,11 +40,8 @@ enum StaleWorktreeMatch<'a> {
 }
 
 /// Remove stale `.git/worktrees/<id>` registrations matching `match_rule`.
-/// Best-effort; returns the count removed.
-///
-/// Not `git worktree prune`: prune also drops registrations whose worktree is
-/// merely invisible in the current mount namespace, wiping live linked worktrees
-/// inside a container that does not mount them.
+/// Not `git worktree prune`: prune also drops registrations merely invisible
+/// in this mount namespace, wiping live linked worktrees in a container.
 fn remove_stale_worktree_registrations(
     source_repo: &Path,
     match_rule: StaleWorktreeMatch<'_>,
@@ -130,12 +127,9 @@ fn remove_stale_worktree_registrations(
         if !matched {
             continue;
         }
-        // Removing the registration also drops its `logs/` reflog. The recorded
-        // working tree is confirmed gone (checked above), the registration is
-        // not `locked`, and this scrub is opt-in (`include_rebuild`, off by
-        // default); a reflog-only commit under a vanished worktree is accepted
-        // as lost here rather than named (the age-GC delete path names via
-        // reclaimed.rs; this cleanup does not).
+        // Removing the registration also drops its `logs/` reflog. The tree is
+        // confirmed gone and unlocked, and this scrub is opt-in; a reflog-only
+        // commit here is accepted as lost (age-GC names via reclaimed.rs).
         match std::fs::remove_dir_all(&registration) {
             Ok(()) => {
                 tracing::debug!(
@@ -162,12 +156,9 @@ pub fn remove_stale_worktree_registration(source_repo: &Path, worktree_path: &Pa
     remove_stale_worktree_registrations(source_repo, StaleWorktreeMatch::Path(worktree_path))
 }
 
-/// Remove stale registrations for every worktree under a tool-owned base directory.
-///
-/// Deliberately not `git worktree prune`: prune also deletes registrations whose
-/// worktree path is merely invisible from the current mount namespace (e.g. a
-/// container that does not mount the user's worktrees), which would wipe live
-/// ones; this only removes registrations whose recorded path is confirmed gone.
+/// Remove stale registrations under a tool-owned base. Not `git worktree prune`:
+/// prune also drops paths merely invisible in this mount namespace. This only
+/// removes registrations whose recorded path is confirmed gone.
 pub fn remove_stale_worktree_registrations_under(source_repo: &Path, prefix: &Path) -> u64 {
     remove_stale_worktree_registrations(source_repo, StaleWorktreeMatch::UnderPrefix(prefix))
 }

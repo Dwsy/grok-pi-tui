@@ -210,8 +210,6 @@ pub struct ScheduledTask {
     pub recurring: bool,
     #[serde(default)]
     pub durable: bool,
-    #[serde(default)]
-    pub foreground: bool,
     pub created_at: DateTime<Utc>,
     pub last_fired_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
@@ -219,10 +217,9 @@ pub struct ScheduledTask {
     pub last_subagent_id: Option<String>,
     #[serde(default)]
     pub iterations_since_fresh: u32,
-    /// Set when the prompt is patched: the next fire starts a fresh
-    /// transcript instead of resuming the old task's. The anchor itself is
-    /// kept until then so the in-flight guard can still see a running
-    /// iteration.
+    /// Set when the prompt is patched: the next fire starts a fresh transcript instead of resuming
+    /// the old task's. The anchor itself is kept until then so the in-flight guard can still see a
+    /// running iteration.
     #[serde(default)]
     pub chain_reset_pending: bool,
 }
@@ -263,12 +260,11 @@ impl ScheduledTask {
             now
         };
         Self {
-            id: uuid::Uuid::now_v7().to_string().replace('-', "")[..12].to_string(),
+            id: uuid::Uuid::now_v7().to_string(),
             interval_secs,
             prompt,
             recurring,
             durable,
-            foreground: false,
             created_at,
             last_fired_at: None,
             expires_at: if recurring {
@@ -288,10 +284,9 @@ impl ScheduledTask {
         anchor + chrono::Duration::seconds(self.interval_secs as i64)
     }
 
-    /// Next moment the actor must wake for this task: the sooner of the next fire and the
-    /// auto-expiry deadline. Sleeping purely on `next_fire_at` would let a task whose interval
-    /// stretches past `expires_at` outlive the TTL (an 8-day interval must still expire at day
-    /// 7, not when its first fire comes due).
+    /// Next moment the actor must wake for this task: the sooner of the next fire and the auto-expiry deadline. Sleeping
+    /// purely on `next_fire_at` would let a task whose interval stretches past `expires_at` outlive the TTL (an 8-day
+    /// interval must still expire at day 7, not when its first fire comes due).
     pub fn next_wake_at(&self) -> DateTime<Utc> {
         match self.expires_at {
             Some(expires_at) => self.next_fire_at().min(expires_at),
@@ -425,9 +420,16 @@ mod tests {
     }
 
     #[test]
-    fn task_id_is_12_chars() {
-        let task = ScheduledTask::new(300, "test".into(), true, false);
-        assert_eq!(task.id.len(), 12);
+    fn task_ids_are_full_unique_uuid_v7_values() {
+        let first = ScheduledTask::new(300, "first".into(), true, false);
+        let second = ScheduledTask::new(300, "second".into(), true, false);
+
+        assert_ne!(first.id, second.id);
+        for id in [&first.id, &second.id] {
+            let parsed = uuid::Uuid::parse_str(id).unwrap();
+            assert_eq!(parsed.get_version_num(), 7);
+            assert_eq!(parsed.to_string(), *id);
+        }
     }
 
     #[test]

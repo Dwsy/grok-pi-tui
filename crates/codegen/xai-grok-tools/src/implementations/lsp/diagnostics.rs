@@ -24,13 +24,9 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use async_lsp::lsp_types::Diagnostic;
 
-/// The server's latest word on one document.
-///
-/// The items and the `result_id` that names them are one value on purpose. An
-/// id is a promise that what it names is what a reader would find, and a
-/// promise kept by remembering to update two containers together is a promise
-/// that eventually gets broken. Here there is nothing to keep in step: an
-/// answer the store turns away takes its id with it.
+/// The server's latest word on one document. The items and the `result_id` that names them are one value on purpose. An id is a promise that
+/// what it names is what a reader would find, and a promise kept by remembering to update two containers together is a promise that eventually
+/// gets broken. Here there is nothing to keep in step: an answer the store turns away takes its id with it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Answer {
     pub items: Vec<Diagnostic>,
@@ -56,12 +52,9 @@ impl Answer {
 /// [`super::documents::FIRST_VERSION`].
 pub const NO_VERSION: i32 = 0;
 
-/// Diagnostics for every document one server has reported on.
-///
-/// Cheap to clone (shared handle) so the pull tasks, the router and the manager
-/// can each hold one. Lock poisoning is recovered from in one place rather than
-/// being spelled differently at each call site: a panicking writer leaves the
-/// map structurally intact, and stale diagnostics beat no diagnostics.
+/// Diagnostics for every document one server has reported on. Cheap to clone (shared handle) so the pull tasks, the router and the manager can
+/// each hold one. Lock poisoning is recovered from in one place rather than being spelled differently at each call site: a panicking writer
+/// leaves the map structurally intact, and stale diagnostics beat no diagnostics.
 #[derive(Debug, Clone, Default)]
 pub struct DiagnosticsStore {
     inner: Arc<Inner>,
@@ -78,46 +71,22 @@ impl DiagnosticsStore {
         Self::default()
     }
 
-    /// Whether this server publishes diagnostics of its own accord.
-    ///
-    /// Set by the first `publishDiagnostics` to arrive and never cleared. It
-    /// decides whether to ask the server for diagnostics as well, and the
-    /// answer is no: a server with a push channel is telling us how it reports,
-    /// and its answer to a pull may be only part of what it knows.
-    /// rust-analyzer is the case in point — it answers
-    /// `textDocument/diagnostic` with its own analysis and *deliberately* does
-    /// not include `cargo check` results there, publishing those instead. Take
-    /// the pull answer as the whole picture and every clippy and type error in
-    /// the crate disappears.
+    /// Whether this server publishes diagnostics of its own accord. Set by the first
+    /// `publishDiagnostics` to arrive and never cleared. Take the pull answer as the whole picture
+    /// and every clippy and type error in the crate disappears.
     pub fn server_publishes(&self) -> bool {
         self.inner.publishes.load(Ordering::Acquire)
     }
 
-    /// Write `answer` down unless what we hold is newer. Returns whether it
-    /// landed.
-    ///
-    /// This is the only rule in the store, and every write goes through it.
-    /// Two things fall out of it that used to be maintained by hand:
-    ///
-    /// - an answer about superseded text cannot erase a newer one, so a
-    ///   mid-analysis blank that arrives late is harmless;
-    /// - an answer that did not land leaves no `result_id` behind, because the
-    ///   id is part of the value that did not land.
+    /// Write `answer` down unless what we hold is newer. Returns whether it landed. This is the
+    /// only rule in the store, and every write goes through it.
     pub fn install(&self, uri: &str, answer: Answer) -> bool {
         self.install_if(uri, answer, || true)
     }
 
-    /// The same, for a writer whose answer may have been overtaken by
-    /// something the store cannot see — a refresh, or the server revealing
-    /// that it publishes.
-    ///
-    /// `still_wanted` is evaluated under the same lock that installs, so
-    /// nothing can slip between deciding to write and writing. Checking first
-    /// and writing second leaves a gap in which a `forget` is undone or a
-    /// fuller report is replaced by a thinner one.
-    ///
-    /// It must not touch the store, or it will deadlock; the flags it reads
-    /// are atomics for that reason.
+    /// The same, for a writer whose answer may have been overtaken by something the store cannot see — a refresh, or the server revealing that it
+    /// publishes. `still_wanted` is evaluated under the same lock that installs, so nothing can slip between deciding to write and writing. It must
+    /// not touch the store, or it will deadlock; the flags it reads are atomics for that reason.
     pub fn install_if(
         &self,
         uri: &str,
@@ -137,13 +106,9 @@ impl DiagnosticsStore {
         true
     }
 
-    /// Record a pushed report.
-    ///
-    /// `reported` is the version the server said it analyzed, and
-    /// `latest_sent` the newest version we have sent it. A server that names a
-    /// version is taken at its word; one that does not is credited with the
-    /// text it had most recently been given, which is all arrival order can
-    /// tell us.
+    /// Record a pushed report. `reported` is the version the server said it analyzed, and `latest_sent` the newest version
+    /// we have sent it. A server that names a version is taken at its word; one that does not is credited with the text it
+    /// had most recently been given, which is all arrival order can tell us.
     pub fn record_push(
         &self,
         uri: &str,
@@ -153,10 +118,9 @@ impl DiagnosticsStore {
     ) -> bool {
         self.inner.publishes.store(true, Ordering::Release);
         let covers = match (reported, latest_sent) {
-            // Never above what we sent. A server naming a version we never gave
-            // it — its own numbering, or a counter left over from a previous
-            // connection — would otherwise set a bar no later answer could
-            // clear, freezing that file's diagnostics for the session.
+            // Never above what we sent. A server naming a version we never gave it — its own
+            // numbering, or a counter left over from a previous connection — would otherwise set a
+            // bar no later answer could clear, freezing that file's diagnostics for the session.
             (Some(reported), Some(sent)) => reported.min(sent),
             (None, Some(sent)) => sent,
             // We have told this server nothing about the document, so nothing
@@ -167,11 +131,9 @@ impl DiagnosticsStore {
         self.install(uri, Answer::new(items, covers, None))
     }
 
-    /// Record that the server stands by its previous answer for `uri`, as an
-    /// `unchanged` pull report does: same items, but a verdict on newer text.
-    ///
-    /// Nothing to stand by means nothing to record — the id we sent named an
-    /// answer that has since been forgotten.
+    /// Record that the server stands by its previous answer for `uri`, as an `unchanged` pull
+    /// report does: same items, but a verdict on newer text. Nothing to stand by means nothing to
+    /// record — the id we sent named an answer that has since been forgotten.
     pub fn confirm_unchanged(
         &self,
         uri: &str,
@@ -195,10 +157,9 @@ impl DiagnosticsStore {
         self.read().get(uri).map(|answer| answer.covers)
     }
 
-    /// Whether the server has given a verdict on `uri` at `version` or later.
-    ///
-    /// "No problems" is a verdict like any other. Conflating it with silence is
-    /// what makes a clean file wait forever for an answer it has already had.
+    /// Whether the server has given a verdict on `uri` at `version` or later. "No problems" is a
+    /// verdict like any other. Conflating it with silence is what makes a clean file wait forever
+    /// for an answer it has already had.
     pub fn answered_for(&self, uri: &str, version: i32) -> bool {
         self.covers(uri).is_some_and(|covers| covers >= version)
     }

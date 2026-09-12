@@ -7,10 +7,9 @@ pub enum McpElicitMode {
     Url,
 }
 
-/// Per-mode fields of an elicitation request, internally tagged with the
-/// wire `mode` key ("form" / "url") so a request can never carry a mode
-/// with the wrong companion fields. Flattened into [`McpElicitExtRequest`],
-/// keeping the flat top-level camelCase wire shape.
+/// Per-mode fields of an elicitation request, internally tagged with the wire `mode` key ("form" /
+/// "url") so a request can never carry a mode with the wrong companion fields. Flattened into
+/// [`McpElicitExtRequest`], keeping the flat top-level camelCase wire shape.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum McpElicitModeFields {

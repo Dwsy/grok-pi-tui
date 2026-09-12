@@ -98,22 +98,16 @@ pub use pb::{
     VersionWarning,
 };
 
-/// Default client-facing tool name derived from a namespaced tool id.
-///
-/// Tool ids are colon-separated `Namespace:tool` (e.g. `GrokBuild:grep`); the
-/// default name is the segment after the FIRST colon, so an id with embedded
-/// colons (`ns:a:b`) resolves to `a`. Ids without a colon are returned as-is.
-///
-/// This is the single source of truth shared by the tools server (which
-/// advertises tools under this name unless `name_override` is set) and any
-/// client that needs to predict the advertised name from a config entry
-/// (e.g. prompt tool selection in a downstream service). Keeping both sides on
-/// this helper prevents a silent desync that would drop tools from prompts.
+/// Default client-facing tool name derived from a namespaced tool id. Tool ids are colon-separated `Namespace:tool`
+/// (e.g. `GrokBuild:grep`); the default name is the segment after the FIRST colon, so an id with embedded colons
+/// (`ns:a:b`) resolves to `a`. Ids without a colon are returned as-is.
 pub fn default_client_name(id: &str) -> &str {
     id.split(':').nth(1).unwrap_or(id)
 }
 
-/// Convert ToolCategory enum to a string representation.
+/// Convert ToolCategory enum to a string representation. Prost generates this enum, so a strum
+/// derive cannot be attached here.
+/// xai-codegen-lint: allow(manual_strum)
 impl ToolCategory {
     /// Get the string representation of the category.
     pub fn as_str(&self) -> &'static str {

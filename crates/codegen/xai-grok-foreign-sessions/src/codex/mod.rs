@@ -11,14 +11,14 @@ use super::{
     approved_root_for_recent, finish_tool_scan, normalize_title,
 };
 
-// Codex is currently on single-digit state generations. Probe a generous,
-// deterministic supported range without enumerating unrelated CODEX_HOME files.
+// Codex is currently on single-digit state generations
+// Probe a generous, deterministic supported range without enumerating unrelated CODEX_HOME files
 const MAX_STATE_DB_GENERATION: u32 = 128;
 
 pub(super) fn scan(cwd: &Path, now: SystemTime) -> Vec<ForeignSessionSummary> {
     let Some(codex_home) = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+        .or_else(|| xai_dirs::home_dir().map(|home| home.join(".codex")))
     else {
         return Vec::new();
     };
@@ -32,7 +32,7 @@ pub(super) fn most_recent(
 ) -> RecentProbe<RecentCandidate> {
     let Some(codex_home) = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+        .or_else(|| xai_dirs::home_dir().map(|home| home.join(".codex")))
     else {
         return RecentProbe::Complete(None);
     };

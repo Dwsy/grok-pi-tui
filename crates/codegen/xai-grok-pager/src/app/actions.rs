@@ -1,11 +1,10 @@
 //! Application actions, effects, and task results.
 //!
-//! This module defines the three enums that form the backbone of the
-//! event→dispatch→effect pipeline:
+//! This module defines the three enums that form the backbone of the pipeline from input event to dispatch to effect:
 //!
-//! - [`Action`] — produced by input handling, consumed by dispatch (sync).
-//! - [`Effect`] — produced by dispatch, consumed by the event loop (async).
-//! - [`TaskResult`] — produced by spawned tasks, fed back into dispatch.
+//! - [`Action`]: produced by input handling, consumed by dispatch (sync).
+//! - [`Effect`]: produced by dispatch, consumed by the event loop (async).
+//! - [`TaskResult`]: produced by spawned tasks, fed back into dispatch.
 use super::agent::AgentId;
 use crate::app::status_line::StatusLineRun;
 use crate::scrollback::entry::EntryId;
@@ -91,15 +90,13 @@ impl SessionTreeFilter {
 /// instead of parsing strings.
 #[derive(Debug, Clone)]
 pub enum SwitchModelError {
-    /// The target model requires a different agent harness than the
-    /// active session. The pager should offer to start a new session.
-    /// Deserialized from `ModelSwitchIncompatibleAgentError` in
-    /// `acp::Error.data`.
+    /// The target model requires a different agent harness than the active session.
+    /// The pager should offer to start a new session.
+    /// Deserialized from `ModelSwitchIncompatibleAgentError` in `acp::Error.data`.
     IncompatibleAgent {
         error: xai_grok_shell::agent::config::ModelSwitchIncompatibleAgentError,
-        /// The model that was active before the optimistic UI update
-        /// (if any). Used to roll back `models.current` when the user
-        /// declines to start a new session.
+        /// The model that was active before the optimistic UI update (if any).
+        /// Used to roll back `models.current` when the user declines to start a new session.
         prev_model_id: Option<acp::ModelId>,
     },
     /// Any other failure (network, auth, server error, etc.).
@@ -120,7 +117,6 @@ pub enum PiBuiltinTool {
 }
 
 /// Synchronous, side-effect-free user intent.
-///
 /// Produced by [`super::input`] from key/mouse events.
 /// Consumed by [`super::dispatch::dispatch`] to mutate state and return effects.
 #[derive(Debug)]
@@ -142,6 +138,8 @@ pub enum Action {
     QuitConfirmed,
     /// Create a new session from the welcome screen.
     NewSession,
+    /// Leave the welcome screen for the optimistic home session, or create one if none exists.
+    LeaveHome,
     /// Ask whether the new session should use a git worktree.
     ChooseNewSessionMode,
     /// Exit the current session and return to the welcome screen.
@@ -159,6 +157,8 @@ pub enum Action {
     CheckSubscription,
     /// Open an arbitrary URL in the system browser (with scheme validation).
     OpenUrl(String),
+    /// Resubmit the prompt that last hit the credit/usage limit.
+    RetryCreditLimitPrompt,
     /// Open a semantic scrollback link.
     OpenLink(crate::render::osc8::LinkTarget),
     /// Open grok.com managed connectors, appending session teamId when set.
@@ -218,8 +218,7 @@ pub enum Action {
     /// through to the welcome picker fields.
     SessionPickerClosed,
     /// Create a new session in a git worktree from the welcome screen.
-    /// `load_session_id`: when `Some`, loads that session in the new worktree
-    /// instead of creating a fresh one (`--resume` + `--worktree`).
+    /// `load_session_id`: when `Some`, loads that session in the new worktree instead of creating a fresh one (`--resume` with `--worktree`).
     /// `label`: optional human-readable label from CLI `-w <label>` or dialog.
     NewWorktreeSession {
         load_session_id: Option<String>,
@@ -231,26 +230,19 @@ pub enum Action {
     OpenNewWorktreeDialog,
     /// Open the interactive import-claude modal on the welcome screen.
     ImportClaudeSettings,
-    /// User confirmed the import modal — apply selected items.
+    /// User confirmed the import modal: apply selected items.
     ImportClaudeConfirm,
-    /// User cancelled the import modal — close without applying.
+    /// User cancelled the import modal: close without applying.
     ImportClaudeCancel,
-    /// Hide the import-claude menu row by recording the current `.claude/`
-    /// content hash as "seen". Doesn't import anything, doesn't change
-    /// runtime fallback behavior. The menu reappears only if `.claude/`
-    /// content changes.
+    /// Hide the import-claude menu row by recording the current `.claude/` content hash as "seen".
+    /// Doesn't import anything, doesn't change runtime fallback behavior.
+    /// The menu reappears only if `.claude/` content changes.
     DismissClaudeImport,
-    /// Load (resume) an existing session by ID (strict — never create).
-    /// The optional `PathBuf` overrides the CWD for sessions stored under a
-    /// different directory (e.g., a worktree).
-    ///
-    /// `chat_kind` is the **conversation-entry** bit only (`source ==
-    /// "conversation"` / restore preserve) — **not** sticky `--chat`.
-    /// Process-wide chat mode still stamps kind=chat via SessionFlags in the
-    /// load effect; under `--chat`, local Build disk rows are refused in
-    /// dispatch (never coerced).
+    /// Load (resume) an existing session by ID (strict: never create).
+    /// `chat_kind` is the **conversation-entry** bit only (`source == "conversation"` / restore preserve), **not** sticky `--chat`.
+    /// Under `--chat`, local Build disk rows are refused in dispatch (never coerced).
     LoadSession(String, Option<std::path::PathBuf>, bool),
-    /// Welcome Local workspace ACK confirmed (y); write ack + start session.
+    /// Welcome Local workspace ACK confirmed (y); write the ack and start the session.
     #[cfg(feature = "local-workspace")]
     ConfirmWelcomeLocalWorkspaceAck,
     /// Create a new session with a client-chosen session ID (`--session-id`).
@@ -265,78 +257,61 @@ pub enum Action {
     /// Send the current prompt text to the agent.
     SendPrompt(String),
     /// Submit a clicked follow-up suggestion chip as a LITERAL model prompt.
-    /// The suggestion text is server/model-controlled, so it must bypass
-    /// slash-command and exit-alias resolution (a `/always-approve` or `/quit`
-    /// chip must never execute as a command).
+    /// The suggestion text is server/model-controlled, so it must bypass slash-command and exit-alias resolution.
+    /// A `/always-approve` or `/quit` chip must never execute as a command.
     SubmitFollowUp(String),
     /// Execute a slash command without consuming the prompt textarea.
-    ///
-    /// Used by modal-driven slash dispatchers (command palette, ArgPicker)
-    /// where the user's draft text in the prompt should be preserved
-    /// rather than wiped as a side effect of the command. Behaves
-    /// identically to `SendPrompt` otherwise — same registry resolution,
-    /// same effect outputs — but skips the `prompt.set_text("")` calls.
+    /// Used by modal-driven slash dispatchers (command palette, ArgPicker) where the user's draft text in the prompt should survive the command.
+    /// Behaves identically to `SendPrompt` (same registry resolution, same effect outputs) but skips the `prompt.set_text("")` calls.
     SendSlashCommandPreservingDraft(String),
     /// Send a mid-turn interjection without canceling the running turn.
-    /// Reserved for text that answers the running turn (plan-review comments,
-    /// permission follow-ups); user send-now takes [`Self::SendPromptNow`].
+    /// Reserved for text that answers the running turn (plan-review comments, permission follow-ups); user send-now takes [`Self::SendPromptNow`].
     Interject {
         text: String,
-        /// Pasted images riding along with the interjection. Empty for
-        /// producers that carry plain text (plan-review comments, etc.).
+        /// Pasted images riding along with the interjection.
+        /// Empty for producers that carry plain text (plan-review comments, etc.).
         images: Vec<crate::prompt_images::PastedImage>,
     },
-    /// Cancel-and-send: cancel the running turn (background tasks and queued
-    /// rows survive shell-side) and run this text as the next prompt turn.
-    /// The send-now chord, empty-composer Enter on a queued local row, and
-    /// the deferred-paste re-issue produce this.
+    /// Cancel-and-send: cancel the running turn (background tasks and queued rows survive shell-side) and run this text as the next prompt turn.
+    /// The send-now chord, empty-composer Enter on a queued local row, and the deferred-paste re-issue produce this.
     SendPromptNow {
         text: String,
         /// Pasted images riding along with the prompt.
         images: Vec<crate::prompt_images::PastedImage>,
     },
-    /// Enable session voice mode and start recording (the Ctrl+Space
-    /// hold-to-talk key-press, on terminals that report key releases).
-    /// Start-only — never stops; use [`Self::VoiceStop`] / [`Self::VoiceToggle`]
-    /// / Esc to stop.
+    /// Enable session voice mode and start recording (the Ctrl+Space hold-to-talk key-press, on terminals that report key releases).
+    /// Start-only, never stops; use [`Self::VoiceStop`], [`Self::VoiceToggle`], or Esc to stop.
     EnableVoiceMode,
-    /// Toggle capture (`/voice`, Ctrl+Space, Esc while listening, recording-row
-    /// `[stop]`, and Ctrl+Space on terminals without key releases). Stops if
-    /// recording, otherwise starts.
+    /// Toggle capture (`/voice`, Ctrl+Space, Esc while listening, recording-row `[stop]`, and Ctrl+Space on terminals without key releases).
+    /// Stops if recording, otherwise starts.
     VoiceToggle,
-    /// Stop capture unconditionally (Ctrl+Space hold-to-talk key release). Clears
-    /// any pending cold-start so a release during pipeline spawn can't leave a
-    /// hot mic.
+    /// Stop capture unconditionally (Ctrl+Space hold-to-talk key release).
+    /// Clears any pending cold-start so a release during pipeline spawn can't leave a hot mic.
     VoiceStop,
     /// Send a direct bash command (bypasses agent loop).
     SendBashCommand(String),
-    /// The user wiped a substantial prompt draft: show the seen-gated
-    /// "ctrl+z to undo" ephemeral tip on the active agent. Gated by the per-tip
-    /// `contextual_hints.undo` gate.
+    /// The user wiped a substantial prompt draft: show the seen-gated "ctrl+z to undo" ephemeral tip on the active agent.
+    /// Gated by the per-tip `contextual_hints.undo` gate.
     ShowUndoTip,
-    /// The user typed a planning keyword into the prompt: show the seen-gated
-    /// "Planning? Check out plan mode via shift+tab" ephemeral tip on the active
-    /// agent. Gated by the per-tip `contextual_hints.plan_mode` gate.
+    /// The user typed a planning keyword into the prompt: show the seen-gated "Planning? Check out plan mode via shift+tab" ephemeral tip.
+    /// Gated by the per-tip `contextual_hints.plan_mode` gate.
     ShowPlanNudge,
     /// The user double-clicked scrollback while Text selection is fold/nav:
     /// show the seen-gated "/settings → Text selection → Word select" tip.
     /// Gated by the per-tip `contextual_hints.word_select` gate.
     ShowWordSelectTip,
-    /// Accept the word-select tip (its advertised chord, pressed while the
-    /// tip is on screen): flip `keep_text_selection` to `word_select`,
-    /// persist it, and retire the tip.
+    /// Accept the word-select tip (its advertised chord, pressed while the tip is on screen).
+    /// Flip `keep_text_selection` to `word_select`, persist it, and retire the tip.
     AcceptWordSelectTip,
     /// Try to drain the next queued prompt (after editing completes, etc.).
     DrainQueue,
-    /// Remove a server-authoritative (shared) queued prompt by its stable
-    /// `prompt_id`. Routed to the agent as `x.ai/queue/remove`;
-    /// the resulting `x.ai/queue/changed` rebroadcast is the source of truth.
+    /// Remove a server-authoritative (shared) queued prompt by its stable `prompt_id`.
+    /// Routed to the agent as `x.ai/queue/remove`; the resulting `x.ai/queue/changed` rebroadcast is the source of truth.
     QueueRemoveShared {
         id: String,
         expected_version: u64,
     },
-    /// Reorder the server-authoritative (shared) queued prompts to match
-    /// `ordered_ids`. Routed as `x.ai/queue/reorder`.
+    /// Reorder the server-authoritative (shared) queued prompts to match `ordered_ids`. Routed as `x.ai/queue/reorder`.
     QueueReorderShared {
         ordered_ids: Vec<String>,
     },
@@ -344,9 +319,8 @@ pub enum Action {
     /// Routed as `x.ai/queue/clear`.
     QueueClearShared,
     /// Replace the text of a server-authoritative (shared) queued prompt.
-    /// Routed to the agent as `x.ai/queue/edit`; the rebroadcast of
-    /// `x.ai/queue/changed` is the source of truth. Last write wins via the
-    /// session actor's serialized mailbox; no client-side conflict resolution.
+    /// Routed to the agent as `x.ai/queue/edit`; the rebroadcast of `x.ai/queue/changed` is the source of truth.
+    /// Last write wins via the session actor's serialized mailbox; no client-side conflict resolution.
     QueueEditShared {
         id: String,
         new_text: String,
@@ -359,46 +333,44 @@ pub enum Action {
     QueueReleaseEditShared {
         id: String,
     },
-    /// Interject a server-authoritative (shared) queued prompt into the running
-    /// turn: the agent atomically removes it from the queue and
-    /// merges its text into the in-flight turn. Routed as `x.ai/queue/interject`;
-    /// the `x.ai/session/interjection` + `x.ai/queue/changed` rebroadcasts are
-    /// the source of truth (no optimistic client-side block). Mirrors the local
-    /// "Send now" / `Ctrl+Enter` path, which uses [`Interject`](Self::Interject)
-    /// directly because the local queue is client-owned.
+    /// Interject a server-authoritative (shared) queued prompt into the running turn.
+    /// The agent atomically removes it from the queue and merges its text into the in-flight turn.
+    /// Mirrors the local "Send now" / `Ctrl+Enter` path, which uses [`Interject`](Self::Interject) directly because the local queue is client-owned.
     QueueInterjectShared {
         id: String,
         expected_version: u64,
-        /// Locally-edited replacement text (the edit-interject key while in
-        /// `PromptMode::EditingQueued`): without it the agent would interject
-        /// the original server-side text, not the edit. Atomicity semantics
-        /// live on [`Effect::QueueInterject`].
+        /// Locally-edited replacement text (the edit-interject key while in `PromptMode::EditingQueued`).
+        /// Without it the agent would interject the original server-side text, not the edit.
+        /// Atomicity is documented on [`Effect::QueueInterject`].
         new_text: Option<String>,
     },
-    /// A queued-row edit whose saved text is a complete pager builtin invocation: drop the row,
-    /// then run the command through the normal slash dispatch. The view only classifies; dispatch
-    /// stays the sole execution owner, and it removes the row only after its own guards pass, so a
-    /// failed run leaves the row queued.
+    /// A queued-row edit whose saved text is a complete pager builtin invocation: drop the row and run the command through the normal slash dispatch.
+    /// The view only classifies; dispatch stays the sole execution owner.
+    /// Dispatch removes the row only after its own guards pass, so a failed run leaves the row queued.
     RunEditedQueuedCommand {
-        /// `PromptMode::EditingQueued.id`: the local `pending_prompts` id, or the synthesized
-        /// selection id for a server row (unused there).
+        /// `PromptMode::EditingQueued.id`: the local `pending_prompts` id, or the synthesized selection id for a server row (unused there).
         local_id: u64,
-        /// `Some` for a server-authoritative row. `None` covers both a local row and a server row
-        /// that vanished from the mirror before Enter: with nothing to remove, no versioned
-        /// `x.ai/queue/remove` request is sent.
+        /// `Some` for a server-authoritative row.
+        /// `None` covers both a local row and a server row that vanished from the mirror before Enter.
+        /// With nothing to remove, no versioned `x.ai/queue/remove` request is sent.
         server: Option<SharedQueueTarget>,
-        text: String,
+        submission: crate::views::prompt_widget::StashedPrompt,
+    },
+    /// Resolution of the hard-modal blocked-prompt card.
+    PromptBlockAnswered {
+        /// The local queue row the blocked prompt was requeued into.
+        row_id: u64,
+        choice: PromptBlockChoice,
     },
     /// Focus the prompt pane.
     FocusPrompt,
     /// Focus the scrollback pane (leave prompt).
     FocusScrollback,
-    /// Clear the prompt (history-aware). Armed by idle Esc double-press via
-    /// [`super::app_view::InputOutcome::ArmPending`] (no ActionDef; not a keybinding).
+    /// Clear the prompt (history-aware).
+    /// Armed by idle Esc double-press via [`super::app_view::InputOutcome::ArmPending`] (no ActionDef; not a keybinding).
     ClearPrompt,
     /// Focus the scrollback pane and open an incremental search over it.
-    /// Drives the `/find` slash command so simple-mode users (where a bare
-    /// `/` goes to the prompt) reach the same search as the vim `/` key.
+    /// Drives the `/find` slash command so simple-mode users (where a bare `/` goes to the prompt) reach the same search as the vim `/` key.
     /// Carries the optional `/find <word>` argument to pre-fill the bar.
     OpenScrollbackSearch(Option<String>),
     /// Select next entry in scrollback.
@@ -409,9 +381,9 @@ pub enum Action {
     NextTurn,
     /// Jump to previous turn boundary.
     PrevTurn,
-    /// Jump to next assistant response.
+    /// Jump to the next turn at the viewport top.
     NextResponse,
-    /// Jump to previous assistant response.
+    /// Jump to the previous turn at the viewport top.
     PrevResponse,
     /// Scroll up by N lines.
     ScrollUp(u16),
@@ -441,45 +413,39 @@ pub enum Action {
     ExpandAllThinking,
     /// Toggle raw markdown on selected entry.
     ToggleRaw,
-    /// Toggle terminal mouse reporting (mouse capture). Disabling it lets
-    /// the terminal handle native click-drag text selection / copy-paste;
-    /// re-enabling restores in-app mouse handling. Bound to Ctrl+R while the
-    /// scrollback pane is focused.
+    /// Toggle terminal mouse reporting (mouse capture).
+    /// Disabling it lets the terminal handle native click-drag text selection and copy-paste; re-enabling restores in-app mouse handling.
+    /// Bound to Ctrl+R while the scrollback pane is focused.
     ToggleMouseCapture,
-    /// Toggle the scroll-diagnostics HUD (hidden `/scroll-debug` command,
-    /// also `/debug scroll`; `GROK_SCROLL_DEBUG=1` enables it from startup).
+    /// Toggle the scroll-diagnostics HUD (hidden `/scroll-debug` command, also `/debug scroll`; `GROK_SCROLL_DEBUG=1` enables it from startup).
     ToggleScrollDebugHud,
     /// Toggle the release-safe FPS HUD (`/debug fps`).
     ToggleFpsHud,
-    /// Toggle the scroll flight recorder at runtime (`/debug log`;
-    /// `GROK_SCROLL_LOG=1` enables it from startup).
+    /// Toggle the scroll flight recorder at runtime (`/debug log`; `GROK_SCROLL_LOG=1` enables it from startup).
     ToggleScrollLog,
     /// Print the `/debug` toggles and their on/off state to the transcript.
     ShowDebugStatus,
     /// Copy selected block's content to clipboard.
     CopyBlockContent,
-    /// Copy the Nth most recent assistant message (1 = latest).
-    /// `None` => clipboard (with file fallback on failure); `Some(p)` => write UTF-8 file.
+    /// Copy the Nth most recent assistant message (1 is the latest).
+    /// `None` copies to the clipboard (with file fallback on failure); `Some(p)` writes a UTF-8 file.
     CopyAssistantMessage {
         n: usize,
         file_path: Option<std::path::PathBuf>,
     },
     /// Export the active (sub)agent's conversation transcript as Markdown.
-    /// `None` => copy to clipboard (with route-aware toast + stats); `Some(p)` => write UTF-8 file
-    /// (all ~ expansion, parent dir creation, and fs::write live in the dispatch handler).
+    /// `None` copies to the clipboard (with route-aware toast and stats); `Some(p)` writes a UTF-8 file.
+    /// All ~ expansion, parent dir creation, and fs::write live in the dispatch handler.
     ExportConversation {
         file_path: Option<std::path::PathBuf>,
     },
-    /// Render the active (sub)agent's full transcript to a temp Markdown file and
-    /// open it in `$PAGER` (default `less`), suspending the inline TUI for the
-    /// duration. The dispatch handler renders + writes the file and arms
-    /// `AppView::pending_pager_path`; the event loop does the suspend/restore.
+    /// Render the active (sub)agent's full transcript to a temp Markdown file and open it in `$PAGER` (default `less`).
+    /// The inline TUI is suspended for the duration.
+    /// The dispatch handler renders and writes the file and arms `AppView::pending_pager_path`; the event loop does the suspend/restore.
     OpenTranscriptPager,
-    /// Minimal mode (`grok --minimal`): re-print the most-recently committed
-    /// folded block (collapsed reasoning / truncated tool output) into native
-    /// scrollback, fully expanded, below the conversation (design decision K10).
-    /// Bound to `Ctrl+E` and the `/expand` command. No-op outside minimal mode
-    /// or when nothing folded remains to expand.
+    /// Minimal mode (`grok --minimal`): re-print the last committed folded block, fully expanded, into native scrollback below the conversation.
+    /// Folded means collapsed reasoning or truncated tool output.
+    /// Bound to `Ctrl+E` and the `/expand` command. No-op outside minimal mode or when nothing folded remains to expand.
     MinimalExpandLast,
     /// Copy selected block's metadata (e.g., command for execute blocks).
     CopyBlockMeta,
@@ -567,9 +533,8 @@ pub enum Action {
     AnnouncementsHide,
     /// Show the announcements banner.
     AnnouncementsShow,
-    /// Open the promo CTA link (url resolved from current state at dispatch
-    /// time, mirroring how `AnnouncementsHide` resolves its target). The
-    /// payload records which surface activated it, for telemetry.
+    /// Open the promo CTA link (url resolved from current state at dispatch time, mirroring how `AnnouncementsHide` resolves its target).
+    /// The payload records which UI element activated it, for telemetry.
     AnnouncementsOpenCta(xai_grok_telemetry::events::AnnouncementCtaSurface),
     /// Cycle the current model's supported thinking level without switching models.
     CycleThinkingLevel,
@@ -580,55 +545,43 @@ pub enum Action {
     ToggleYolo,
     /// Set YOLO (auto-approve / `always-approve`) mode.
     SetYoloMode(bool),
-    /// Set the permission mode by canonical kind (`always-approve` /
-    /// `ask` / `default`). Typed wrapper over [`Action::SetYoloMode`]
-    /// that preserves the `default` canonical (the `bool` variant
-    /// collapses `default` to `ask`).
+    /// Set the permission mode by canonical kind (`always-approve` / `ask` / `default`).
+    /// Typed wrapper over [`Action::SetYoloMode`] that preserves the `default` canonical (the `bool` variant collapses `default` to `ask`).
     SetPermissionMode(PermissionModeKind),
     /// Toggle multiline input mode (swap Enter and Shift+Enter behavior).
     ToggleMultiline,
     /// Set multiline input mode (swap Enter and Shift+Enter behavior).
-    /// Pager-owned, NOT persisted to disk — reset each session.
+    /// Pager-owned, NOT persisted to disk; reset each session.
     SetMultilineMode(bool),
-    /// Open the prompt-history search panel on the active agent (composer
-    /// as filter query). Dispatched by `/history`.
+    /// Open the prompt-history search panel on the active agent (composer as filter query). Dispatched by `/history`.
     OpenHistorySearch,
     /// Set how ` ```mermaid ` code blocks are rendered (auto/on/off).
-    /// SHELL-owned: updates the process-wide cache mirror and persists to
-    /// `[ui].render_mermaid` in config.toml via `Effect::PersistSetting`.
+    /// SHELL-owned: updates the process-wide cache mirror and persists to `[ui].render_mermaid` in config.toml via `Effect::PersistSetting`.
     SetRenderMermaid(crate::appearance::RenderMermaid),
     /// Toggle vim-style scrollback keybindings (j/k, h/l, g/G, y/Y, etc.).
-    /// Delegates to `set_vim_mode` so the new value is persisted to
-    /// `[ui].vim_mode` in config.toml — same path as the settings modal.
+    /// Delegates to `set_vim_mode` so the new value is persisted to `[ui].vim_mode` in config.toml, the same path as the settings modal.
     ToggleVimMode,
-    /// Set vim-style scrollback keybindings. SHELL-owned: persisted to
-    /// `[ui].vim_mode` in config.toml via `Effect::PersistSetting`.
-    /// Used by the settings modal; the `ToggleVimMode` variant covers
-    /// the `/vim-mode` slash-command path.
+    /// Set vim-style scrollback keybindings. SHELL-owned: persisted to `[ui].vim_mode` in config.toml via `Effect::PersistSetting`.
+    /// Used by the settings modal; the `ToggleVimMode` variant covers the `/vim-mode` slash-command path.
     SetVimMode(bool),
-    /// Toggle the per-tool "Always allow …" prompt options. SHELL-owned;
-    /// persisted to `[ui].remember_tool_approvals`. Applies to new sessions.
+    /// Toggle the per-tool "Always allow …" prompt options. SHELL-owned; persisted to `[ui].remember_tool_approvals`. Applies to new sessions.
     SetRememberToolApprovals(bool),
-    /// Toggle the ask_user_question timeout. SHELL-owned; persisted to
-    /// `[toolset.ask_user_question].timeout_enabled`. Applies to new sessions.
+    /// Toggle the ask_user_question timeout. SHELL-owned; persisted to `[toolset.ask_user_question].timeout_enabled`. Applies to new sessions.
     SetAskUserQuestionTimeoutEnabled(bool),
-    /// SHELL-owned `keep_text_selection` (`flash` | `hold`); cache + persist.
+    /// SHELL-owned `keep_text_selection` (`flash` | `hold`); cache and persist.
     SetKeepTextSelection(crate::appearance::TextSelection),
-    /// Set the mouse-wheel scroll speed multiplier (1-100). Pager-owned
-    /// ephemeral — process-wide cache, no `Effect::PersistSetting`.
+    /// Set the mouse-wheel scroll speed multiplier (1-100).
+    /// Pager-owned ephemeral: process-wide cache, no `Effect::PersistSetting`.
     SetScrollSpeed(i64),
     /// Force scroll input classification (`auto` | `wheel` | `trackpad`).
-    /// SHELL-owned: cache mirror + `[ui].scroll_mode` via `Effect::PersistSetting`.
+    /// SHELL-owned: cache mirror and `[ui].scroll_mode` via `Effect::PersistSetting`.
     SetScrollMode(crate::appearance::ScrollMode),
-    /// Invert vertical scroll direction. SHELL-owned: cache mirror +
-    /// `[ui].invert_scroll` via `Effect::PersistSetting`.
+    /// Invert vertical scroll direction. SHELL-owned: cache mirror and `[ui].invert_scroll` via `Effect::PersistSetting`.
     SetInvertScroll(bool),
-    /// Set lines-per-tick for both wheel and trackpad (1-10). SHELL-owned:
-    /// cache mirror + `[ui].scroll_lines` via `Effect::PersistSetting`.
+    /// Set lines-per-tick for both wheel and trackpad (1-10). SHELL-owned: cache mirror and `[ui].scroll_lines` via `Effect::PersistSetting`.
     SetScrollLines(i64),
-    /// Set whether agent thinking blocks are shown. SHELL-owned: updates the
-    /// process-wide cache mirror and persists to `[ui].show_thinking_blocks`
-    /// via `Effect::PersistSetting`.
+    /// Set whether agent thinking blocks are shown.
+    /// SHELL-owned: updates the process-wide cache mirror and persists to `[ui].show_thinking_blocks` via `Effect::PersistSetting`.
     SetShowThinkingBlocks(bool),
     /// Set whether the normal prompt border follows the selected thinking/
     /// reasoning effort color. SHELL-owned: cache mirror +
@@ -639,9 +592,8 @@ pub enum Action {
     /// process-wide cache mirror and persists to `[ui].group_tool_verbs`
     /// via `Effect::PersistSetting`.
     SetGroupToolVerbs(bool),
-    /// Set whether Edit blocks default to the collapsed one-line diffstat
-    /// summary. SHELL-owned: updates the process-wide cache mirror and
-    /// persists to `[ui].collapsed_edit_blocks` via `Effect::PersistSetting`.
+    /// Set whether Edit blocks default to the collapsed one-line diffstat summary.
+    /// SHELL-owned: updates the process-wide cache mirror and persists to `[ui].collapsed_edit_blocks` via `Effect::PersistSetting`.
     SetCollapsedEditBlocks(bool),
     /// Set the grok-pi-only side-by-side edit renderer preference. PAGER-owned,
     /// process-local, default off, and applied on the next render frame.
@@ -664,23 +616,21 @@ pub enum Action {
     /// pager.toml via `Effect::PersistSetting`.
     SetPromptCursor(String),
     SetRespectManualFolds(bool),
-    /// Set the canonical for `[ui].default_selected_permission`. Persists
-    /// via `Effect::PersistSetting`. Payload is the registry's canonical
-    /// string (`default` | `allow_once` | `allow_always` | `reject`).
+    /// Set the canonical for `[ui].default_selected_permission`. Persists via `Effect::PersistSetting`.
+    /// Payload is the registry's canonical string (`default` | `allow_once` | `allow_always` | `reject`).
     SetDefaultSelectedPermission(String),
     /// Set the hunk-tracker mode. Payload is the registry canonical string.
     SetHunkTrackerMode(String),
     /// Set default screen mode (`fullscreen` | `minimal`); restart-required.
     SetScreenMode(String),
-    /// Enable/disable the Ctrl+Space / F8 voice-dictation shortcut. SHELL-owned;
-    /// persisted to `[ui].voice_keybind_enabled`. Takes effect on the next
-    /// keypress; `/voice` is unaffected.
+    /// Enable/disable the Ctrl+Space / F8 voice-dictation shortcut. SHELL-owned; persisted to `[ui].voice_keybind_enabled`.
+    /// Takes effect on the next keypress; `/voice` is unaffected.
     SetVoiceKeybindEnabled(bool),
-    /// Set the voice capture mode (`toggle` | `hold`). SHELL-owned; persisted to
-    /// `[ui].voice_capture_mode`. Takes effect for the next Ctrl+Space press.
+    /// Set the voice capture mode (`toggle` | `hold`). SHELL-owned; persisted to `[ui].voice_capture_mode`.
+    /// Takes effect for the next Ctrl+Space press.
     SetVoiceCaptureMode(String),
-    /// Set the voice STT language (catalog code or `auto`). SHELL-owned; persisted
-    /// to `[ui].voice_stt_language`. Takes effect for the next voice capture.
+    /// Set the voice STT language (catalog code or `auto`). SHELL-owned; persisted to `[ui].voice_stt_language`.
+    /// Takes effect for the next voice capture.
     SetVoiceSttLanguage(String),
     /// Toggle timestamp display on messages.
     ToggleTimestamps,
@@ -696,11 +646,9 @@ pub enum Action {
     SetPageFlipOnSend(bool),
     /// Set `[ui].confirm_before_rewind` (default ON). Persists via `Effect::PersistSetting`.
     SetConfirmBeforeRewind(bool),
-    /// Set whether the drain call site merges the run of leading queued
-    /// `Prompt` entries into one turn instead of sending them one by one.
-    /// SHARED-owned: updates the process-wide cache mirror (read by the
-    /// drain site) and persists to `[ui].combine_queued_prompts` via
-    /// `Effect::PersistSetting`.
+    /// Set whether the drain call site merges the run of leading queued `Prompt` entries into one turn instead of sending them one by one.
+    /// SHARED-owned: updates the process-wide cache mirror (read by the drain site).
+    /// Persists to `[ui].combine_queued_prompts` via `Effect::PersistSetting`.
     SetCombineQueuedPrompts(bool),
     /// Mid-turn follow-up routing (`queue` | `steer`).
     /// SHARED-owned: `[ui].follow_up_behavior`.
@@ -711,40 +659,38 @@ pub enum Action {
     /// Set simple mode (ASCII / minimal glyphs). Persists via `Effect::PersistSetting`.
     SetSimpleMode(bool),
     /// Set the per-tip contextual-hint user config (`[ui.contextual_hints]`).
-    /// Each persists via `Effect::PersistSetting` and re-resolves + re-propagates
-    /// the gates to every agent's prompt immediately (runtime live-apply).
+    /// Each persists via `Effect::PersistSetting`.
+    /// Each also immediately re-resolves and re-propagates the gates to every agent's prompt (runtime live-apply).
     SetContextualHintUndo(bool),
     SetContextualHintPlanMode(bool),
     SetContextualHintImageInput(bool),
     SetContextualHintSendNow(bool),
     SetContextualHintSmallScreen(bool),
     SetContextualHintWordSelect(bool),
+    SetContextualHintExportCopy(bool),
     SetContextualHintSshWrap(bool),
     /// Commit the active theme (canonical name, e.g. `"groknight"`, `"auto"`).
     SetTheme(String),
-    /// Commit the theme used when the OS is in dark mode. Only updates
-    /// the live display when `theme = "auto"` AND system is in dark mode.
+    /// Commit the theme used when the OS is in dark mode.
+    /// Only updates the live display when `theme = "auto"` AND system is in dark mode.
     SetAutoDarkTheme(String),
     /// Commit the theme used when the OS is in light mode.
     SetAutoLightTheme(String),
-    /// Commit the user's default model. Payload is a resolved `ModelId`
-    /// (NOT a free-form string). The dispatcher switches the active
-    /// session and persists via `Effect::PersistSetting`. Does not
-    /// carry effort — use `Action::SwitchModel` for that.
+    /// Commit the user's default model. Payload is a resolved `ModelId` (NOT a free-form string).
+    /// The dispatcher switches the active session and persists via `Effect::PersistSetting`.
+    /// Does not carry effort; use `Action::SwitchModel` for that.
     SetDefaultModel(acp::ModelId),
     /// Clear the persisted default model (`cfg.models.default = None`).
-    /// Active session's model is unchanged; next session resolves
-    /// via the shell's default-resolution chain.
+    /// Active session's model is unchanged; next session resolves via the shell's default-resolution chain.
     ClearDefaultModel,
     /// Commit the max-thoughts-width (column budget for the thoughts panel).
     /// Payload is `i64`; clamped to `u16` at the shell helper boundary.
     SetMaxThoughtsWidth(i64),
-    /// Commit the fork-secondary model. Typed `ModelId` payload,
-    /// persisted to `[ui].fork_secondary_model`. Rebroadcast via
-    /// `ConfigUpdate::Ui` so running agents pick up the change.
+    /// Commit the fork-secondary model. Typed `ModelId` payload, persisted to `[ui].fork_secondary_model`.
+    /// Rebroadcast via `ConfigUpdate::Ui` so running agents pick up the change.
     SetForkSecondaryModel(acp::ModelId),
-    /// Clear the persisted fork-secondary model — restores to built-in
-    /// default. Active agent keeps its value; next fork uses the default.
+    /// Clear the persisted fork-secondary model, restoring the built-in default.
+    /// Active agent keeps its value; next fork uses the default.
     ClearForkSecondaryModel,
     /// Commit the recap model override. Empty-clear via ClearRecapModel.
     /// Persisted to `[ui].recap_model`.
@@ -826,19 +772,18 @@ pub enum Action {
     /// Include read ops in `/review-*` (`[ui].review_include_reads`).
     SetReviewIncludeReads(bool),
     /// Commit the `show_tips` preference. Persisted to `[cli].show_tips`.
-    /// Restart-required — tips are resolved once at startup.
+    /// Restart-required: tips are resolved once at startup.
     SetShowTips(bool),
     /// Commit the `auto_update` preference. Persisted to `[cli].auto_update`.
-    /// Restart-required — auto-update check fires once at startup.
+    /// Restart-required: auto-update check fires once at startup.
     SetAutoUpdate(bool),
-    /// Commit `[ui.display_refresh].auto_cadence_enabled`. Restart-required —
-    /// cadence is pinned once at startup.
+    /// Commit `[ui.display_refresh].auto_cadence_enabled`. Restart-required: cadence is pinned once at startup.
     SetDisplayRefreshAutoCadence(bool),
-    /// Preview a theme without persisting — updates the live display
-    /// only. Used by the picker on Up/Down and Esc (revert).
+    /// Preview a theme without persisting; updates the live display only.
+    /// Used by the picker on Up/Down and Esc (revert).
     PreviewTheme(String),
-    /// Preview `auto_dark_theme` without persisting. Only applies when
-    /// `theme = "auto"` AND system is in dark mode.
+    /// Preview `auto_dark_theme` without persisting.
+    /// Only applies when `theme = "auto"` AND system is in dark mode.
     PreviewAutoDarkTheme(String),
     /// Preview `auto_light_theme` without persisting.
     PreviewAutoLightTheme(String),
@@ -865,9 +810,8 @@ pub enum Action {
     PrivacyBannerOptIn,
     /// Privacy banner `[Opt out]` (ack now, then record the decline).
     PrivacyBannerOptOut,
-    /// Open the command palette (`/help`). The keybinding path (Ctrl+P) opens it
-    /// directly in `handle_agent_action`; this lets a slash command reach the
-    /// same modal through dispatch.
+    /// Open the command palette (`/help`).
+    /// The keybinding path (Ctrl+P) opens it directly in `handle_agent_action`; this lets a slash command reach the same modal through dispatch.
     OpenCommandPalette,
     /// Open the keyboard shortcuts cheatsheet (`/hotkeys`, Pi name). Same modal
     /// as Ctrl+. / Ctrl+X (`ActionId::ShortcutsHelp`); slash path goes through
@@ -878,12 +822,10 @@ pub enum Action {
     OpenPiShortcutManager,
     /// Open the in-TUI How-to Guides doc picker (`/docs`, palette "How-to Guides").
     OpenHowtoGuides,
-    /// Open the onboarding tutorial overlay (`/tutorial` or the command
-    /// palette).
+    /// Open the onboarding tutorial overlay (`/tutorial` or the command palette).
     OpenTutorial,
     /// Open the reset-settings confirmation dialog for a specific key.
-    /// Moves the Settings modal state into `ResetSettingsConfirm` so
-    /// the underlying modal survives the confirm dialog.
+    /// Moves the Settings modal state into `ResetSettingsConfirm` so the underlying modal survives the confirm dialog.
     OpenResetConfirm {
         key: crate::settings::SettingKey,
     },
@@ -907,10 +849,8 @@ pub enum Action {
     SwitchAccount,
     /// User pressed login on the welcome screen.
     Login,
-    /// Cancel an in-progress login that was started from inside a session
-    /// (`/login` or a 401 re-auth prompt) and return to the previous view.
-    /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit
-    /// the app or lose the open session.
+    /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
+    /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
     CancelLogin,
     /// User submitted a manually-pasted auth token (loopback mode).
     SubmitAuthCode(String),
@@ -920,8 +860,8 @@ pub enum Action {
     ShowRawAuthUrl,
     /// Hide the raw auth URL and re-enable mouse capture.
     HideRawAuthUrl,
-    /// User accepted the folder-trust question: persist the grant for the cwd's
-    /// workspace, mark trust resolved, and replay any deferred session startup.
+    /// Persist the shown workspace key. `Done` only after a durable write, an already-durable key, or auto-trust. A process-local persist stays `Pending`.
+    /// already-durable key, or auto-trust. A process-local persist stays `Pending`.
     /// (Declining quits via [`Action::Quit`]; there is no decline action.)
     TrustFolder,
     /// Replays any session startup deferred behind the notice.
@@ -948,37 +888,39 @@ pub enum Action {
     ResetSessionTitleToAuto,
     /// Show detailed context usage (progress bar, token breakdown, stats).
     ShowContextInfo,
-    /// `/usage` — session token/cost, plus consumer credits when visible.
+    /// `/usage`: session token/cost, plus consumer credits when visible.
     ShowUsage,
-    /// `/usage manage` — open consumer billing (no-op if surface hidden).
+    /// `/usage manage`: open consumer billing (a no-op when billing is hidden).
     ManageBilling,
-    /// Commit a read-only list of the queued prompts as a system block
-    /// (`/queue`). The surface minimal mode uses in place of the `QueuePane`.
+    /// Commit a read-only list of the queued prompts as a system block (`/queue`).
+    /// This is what minimal mode uses in place of the `QueuePane`.
     ShowQueue,
-    /// Commit a read-only list of background tasks, subagents, and scheduled
-    /// tasks as a system block (`/tasks`). The surface minimal mode uses in
-    /// place of the `TasksPane`.
+    /// Commit a read-only list of background tasks, subagents, and scheduled tasks as a system block (`/tasks`).
+    /// This is what minimal mode uses in place of the `TasksPane`.
     ShowTasks,
     /// Show the current plan: preview popover if exists, toast if not.
     ShowPlan,
-    /// Enter plan mode. If a description is provided, also start a turn
-    /// with that text as the prompt.
+    /// Enter plan mode. If a description is provided, also start a turn with that text as the prompt.
     EnterPlanMode {
         description: Option<String>,
     },
-    /// Set plan mode on/off. Per-session, ACP-mediated (not persisted
-    /// to config.toml). `/plan <desc>` uses `EnterPlanMode` instead
-    /// because it also starts a turn.
+    /// Set plan mode on/off. Per-session, ACP-mediated (not persisted to config.toml).
+    /// `/plan <desc>` uses `EnterPlanMode` instead because it also starts a turn.
     SetPlanMode(PlanModeKind),
-    /// Open the freeform feedback card. `images` carries composer
-    /// attachments drained at slash-execution time (inline `/feedback`
-    /// composed alongside pasted images); the pane adopts them as chips.
-    OpenFeedbackPane {
-        prefill: Option<String>,
-        images: crate::views::prompt_widget::FeedbackImages,
+    /// Open the centered feedback modal (full TUI only; minimal mode refuses visibly).
+    /// The payload's images were drained at slash-execution time; the modal composer adopts them as chips.
+    OpenFeedbackModal(crate::views::feedback_modal::OpenFeedbackModal),
+    /// Submit the open feedback modal's report.
+    /// `modal_id` guards a deferred submit (paste probe in flight) against a modal that closed and reopened in between.
+    SubmitFeedbackModal {
+        modal_id: crate::views::feedback_modal::FeedbackModalId,
     },
-    /// Submit feedback (minimal inline `/feedback <text>`, or card
-    /// submit). `trace` is `None` when no trace-consent card was shown.
+    /// Execute one modal-scoped draft list/get/delete request.
+    RequestFeedbackDraft {
+        request: crate::views::feedback_modal::FeedbackDraftRequest,
+    },
+    /// Submit feedback immediately (inline `/feedback <text>` in any mode).
+    /// `trace` is `None` when no trace consent was collected.
     SendFeedback {
         text: String,
         images: crate::views::prompt_widget::FeedbackImages,
@@ -986,15 +928,15 @@ pub enum Action {
     },
     /// Enter remember mode (visual prompt change, not a send).
     EnterRememberMode,
-    /// Send a remember note from # mode. Routes through LLM rewrite when a
-    /// session is active; falls back to direct save otherwise.
+    /// Send a remember note from # mode.
+    /// Routes through LLM rewrite when a session is active; falls back to direct save otherwise.
     SendRememberNote(String),
     /// Save the currently displayed remember note from the review modal.
     SaveRememberNoteFromModal,
     /// Send a /btw side question (bypasses queue, works while agent is busy).
     SendBtw(String),
-    /// Request a session recap ("where was I" summary). `auto` is `true` for
-    /// the automatic return-from-away recap, `false` for an explicit `/recap`.
+    /// Request a session recap ("where was I" summary).
+    /// `auto` is `true` for the automatic return-from-away recap, `false` for an explicit `/recap`.
     /// Bypasses the prompt queue (works while the agent is busy).
     /// `custom_instructions` is optional free-text from `/recap …` / `/summarize …`.
     SendRecap {
@@ -1011,9 +953,8 @@ pub enum Action {
         session_id: String,
         cwd: String,
     },
-    /// Delete a session from history (local + remote). Fired from the
-    /// session picker: `d` arms delete confirmation on the focused row,
-    /// then `y` confirms (or `n`/other cancels).
+    /// Delete a session from history (local and remote).
+    /// Fired from the session picker: `d` arms delete confirmation on the focused row, then `y` confirms (or `n`/other cancels).
     DeleteSession {
         source: String,
         session_id: String,
@@ -1033,35 +974,28 @@ pub enum Action {
     SetCodingDataSharing {
         opted_in: bool,
     },
-    /// `/fork` slash command: parsed args produced by
-    /// [`crate::slash::commands::fork::parse_fork_args`]. The dispatcher
-    /// resolves the worktree question (via flag or the local
-    /// QuestionView modal) before constructing the placeholder.
+    /// `/fork` slash command: parsed args produced by [`crate::slash::commands::fork::parse_fork_args`].
+    /// The dispatcher resolves the worktree question (via flag or the local QuestionView modal) before constructing the placeholder.
     Fork(crate::slash::commands::fork::ForkArgs),
-    /// Submit-path action emitted by the local fork worktree question
-    /// modal. Routes directly to `dispatch_fork_resolved`.
+    /// Submit-path action emitted by the local fork worktree question modal.
+    /// Routes directly to `dispatch_fork_resolved`.
     ForkAnswered {
         worktree: bool,
         directive: Option<String>,
-        /// When `Some`, also persist this worktree mode preference so
-        /// future `/fork` invocations skip the popup.
+        /// When `Some`, also persist this worktree mode preference so future `/fork` invocations skip the popup.
         persist_mode: Option<crate::app::app_view::WorktreeMode>,
     },
-    /// Submit-path action emitted by the local `/new` worktree question
-    /// modal. `worktree: true` creates the new session in a worktree;
-    /// `worktree: false` creates it in the current cwd.
+    /// Submit-path action emitted by the local `/new` worktree question modal.
+    /// `worktree: true` creates the new session in a worktree; `worktree: false` creates it in the current cwd.
     NewSessionAnswered {
         worktree: bool,
-        /// When `Some`, also persist this worktree mode preference so
-        /// future `/new` invocations skip the popup.
+        /// When `Some`, also persist this worktree mode preference so future `/new` invocations skip the popup.
         persist_mode: Option<crate::app::app_view::WorktreeMode>,
     },
-    /// Answer from the agent-type-mismatch question modal. Shown when
-    /// the shell rejects a model switch because the target model requires
-    /// a different agent harness.
+    /// Answer from the agent-type-mismatch question modal.
+    /// Shown when the shell rejects a model switch because the target model requires a different agent harness.
     AgentTypeMismatchAnswered {
-        /// `true` = start a new session with the target model.
-        /// `false` = cancel, return to current session.
+        /// `true` starts a new session with the target model; `false` cancels and returns to the current session.
         start_new: bool,
         model_id: acp::ModelId,
         effort: Option<ReasoningEffort>,
@@ -1077,22 +1011,19 @@ pub enum Action {
     OpenDashboard,
     /// Close the dashboard, returning to the previous `ActiveView`.
     ExitDashboard,
-    /// Attach to a dashboard row — switches to the parent agent and
-    /// (for subagent rows) sets the parent's `active_subagent`.
+    /// Attach to a dashboard row: switches to the parent agent and (for subagent rows) sets the parent's `active_subagent`.
     DashboardAttach(crate::views::dashboard::DashboardRowId),
-    /// Submit the dispatch-input contents: either a filter, a new
-    /// top-level agent, or a no-op when too short.
-    /// `attach` mirrors Ctrl+S (dispatch + attach / "send + open").
+    DashboardCloseSessionPicker,
+    DashboardPickSession(usize),
+    /// Submit the dispatch-input contents: either a filter, a new top-level agent, or a no-op when too short.
+    /// `attach` mirrors Ctrl+S (dispatch and attach, "send and open").
     DashboardDispatch {
         text: String,
         attach: bool,
     },
-    /// Submit a slash command from the dashboard's dispatch input.
-    /// The text starts with `/`. The dispatcher resolves it through
-    /// the slash registry (builtin / ACP / unknown) without a
-    /// per-agent session context — commands like `/dashboard`,
-    /// `/exit`, `/theme`, `/settings`, `/help` work without a
-    /// session; commands that need one return a friendly toast.
+    /// Submit a slash command from the dashboard's dispatch input. The text starts with `/`.
+    /// The dispatcher resolves it through the slash registry (builtin / ACP / unknown) without a per-agent session context.
+    /// Commands like `/dashboard`, `/exit`, `/theme`, `/settings`, `/help` work without a session; commands that need one return a friendly toast.
     DashboardDispatchSlash {
         text: String,
     },
@@ -1104,8 +1035,8 @@ pub enum Action {
     DashboardCommitRename,
     /// Cancel an in-progress rename without committing.
     DashboardCancelRename,
-    /// Ctrl+X on the selected row. Top-level: cancels a running turn on a
-    /// busy row, else double-press permanently deletes an idle row.
+    /// Ctrl+X on the selected row.
+    /// Top-level: cancels a running turn on a busy row, else double-press permanently deletes an idle row.
     /// Subagent: kills the subagent.
     DashboardStop,
     /// Confirm permanent delete of the armed dashboard row.
@@ -1120,7 +1051,7 @@ pub enum Action {
     /// changes the existing agent directly. Emitted by the platform Plan
     /// shortcut while the peek panel is open.
     DashboardPeekCycleMode,
-    /// Toggle grouping (State ↔ Directory).
+    /// Toggle grouping between State and Directory.
     DashboardToggleGrouping,
     /// Set the live filter (typically driven by the dispatch input).
     DashboardSetFilter(crate::views::dashboard::FilterValue),
@@ -1132,125 +1063,82 @@ pub enum Action {
     DashboardReorderUp,
     /// Reorder the selected row one slot down (Shift+↓).
     DashboardReorderDown,
-    /// Exit the dashboard's session-overlay (the bordered
-    /// `[Prev] [Next] [✗]` chrome wrapped around an attached
-    /// agent view). Returns to the dashboard with the cursor on
-    /// the previously attached row. Bound to Esc / Ctrl+\\ /
-    /// `[✗]` click inside the overlay.
+    /// Exit the dashboard's session-overlay (the bordered `[Prev] [Next] [✗]` chrome wrapped around an attached agent view).
+    /// Returns to the dashboard with the cursor on the previously attached row.
+    /// Bound to Esc, Ctrl+\\, and `[✗]` click inside the overlay.
     DashboardOverlayExit,
-    /// Cycle the dashboard's session-overlay to the previous
-    /// top-level agent in the row list (`[Prev]` click or
-    /// Ctrl+\[).
+    /// Cycle the dashboard's session-overlay to the previous top-level agent in the row list (`[Prev]` click or Ctrl+\[).
     DashboardOverlayPrev,
-    /// Cycle the dashboard's session-overlay to the next
-    /// top-level agent in the row list (`[Next]` click or
-    /// Ctrl+\]).
+    /// Cycle the dashboard's session-overlay to the next top-level agent in the row list (`[Next]` click or Ctrl+\]).
     DashboardOverlayNext,
-    /// Confirmed stop from inside the dashboard's session-overlay:
-    /// close the attached session and return to the dashboard. State
-    /// machine documented at `dispatch_dashboard_overlay_stop`.
+    /// Confirmed stop from inside the dashboard's session-overlay: close the attached session and return to the dashboard.
+    /// State machine documented at `dispatch_dashboard_overlay_stop`.
     DashboardOverlayStop,
-    /// Toggle auto-approve (YOLO mode) on the selected row's
-    /// owning agent. Mirrors `Action::ToggleYolo` but targets
-    /// the dashboard's selected row instead of the active-view
-    /// agent.
+    /// Toggle auto-approve (YOLO mode) on the selected row's owning agent.
+    /// Mirrors `Action::ToggleYolo` but targets the dashboard's selected row instead of the active-view agent.
     DashboardToggleAutoApprove,
-    /// Toggle worktree-dispatch mode: when on, the next agent dispatched
-    /// from the dashboard spawns in a fresh git worktree (and the `[+ New
-    /// Agent]` button reads `[+ New Worktree]`). Bound to Ctrl+W. Gated on
-    /// the cwd being a git repo — worktrees require one, so the toggle is a
-    /// no-op (with an explanatory toast) outside a repo.
+    /// Toggle worktree-dispatch mode: when on, the next agent dispatched from the dashboard spawns in a fresh git worktree.
+    /// The `+ New Agent` button then reads `+ New Agent in Worktree`. Bound to Ctrl+W.
+    /// Worktrees require a git repo, so outside one the toggle is a no-op with an explanatory toast.
     DashboardToggleWorktree,
-    /// Open the dashboard's shortcuts cheatsheet modal — the
-    /// same searchable picker as the agent view's
-    /// `ShortcutsHelp`, scoped to dashboard-context bindings.
-    /// Bound to Ctrl+. (default) and `?` (alt). Dispatch wires
-    /// it to the modal-state field on `DashboardState`; the
-    /// renderer paints it on top of the row list.
+    /// Open the dashboard's shortcuts cheatsheet modal.
+    /// It is the same searchable picker as the agent view's `ShortcutsHelp`, scoped to dashboard-context bindings.
+    /// Bound to Ctrl+. (default) and `?` (alt).
     DashboardOpenShortcutsHelp,
-    /// Close the dashboard's shortcuts cheatsheet modal. Routed
-    /// from the modal-chrome `CloseRequested` outcome and from
-    /// Esc when the modal is open.
+    /// Close the dashboard's shortcuts cheatsheet modal.
+    /// Routed from the modal-chrome `CloseRequested` outcome and from Esc when the modal is open.
     DashboardCloseShortcutsHelp,
-    /// Focus the header's `[+ New Agent]` button. Mirrors a
-    /// row-selection action — the button becomes the cursor
-    /// target, the previous row selection (if any) clears, and
-    /// the dispatch input's placeholder flips back to the
-    /// new-session form. Wired to Esc deselect tier, Up-arrow
-    /// from the first row, and the button's mouse-click handler.
+    /// Focus the actions row's `+ New Agent` button.
+    /// Mirrors a row-selection action: the button becomes the cursor target and the previous row selection (if any) clears.
+    /// The dispatch input's placeholder flips back to the new-session form.
     DashboardFocusNewAgentButton,
-    /// Create a new session AND open its detail view. Routed
-    /// from `[+ New Agent]` click and from Enter-on-empty-prompt
-    /// while the button is focused. Distinct from
-    /// `DashboardDispatch` (which queues a prompt + stays on the
-    /// dashboard) because the no-prompt path has no text to
-    /// enqueue and the user expects to land inside the new
-    /// agent's view immediately.
+    /// Create a new session AND open its detail view.
+    /// Routed from `+ New Agent` click and from Enter-on-empty-prompt while the button is focused.
+    /// Distinct from `DashboardDispatch`, which queues a prompt and stays on the dashboard.
     DashboardCreateNewAgentWithDetail,
-    /// Open the dashboard's location picker — a floating modal that
-    /// lists recent project directories (plus the current cwd) and
-    /// accepts a typed path, letting the user change where newly
-    /// dispatched sessions run. Bound to Ctrl+L (default), a click on
-    /// the header location label, and `/cd` with no argument.
+    /// Open the dashboard's location picker: a floating modal that lists recent project directories (plus the current cwd) and accepts a typed path.
+    /// It lets the user change where newly dispatched sessions run.
+    /// Bound to Ctrl+L (default), a click on the header location label, and `/cd` with no argument.
     DashboardOpenLocationPicker,
-    /// Close the dashboard's location picker modal without changing
-    /// the working directory. Routed from Esc, the modal-chrome
-    /// `CloseRequested` outcome, and a click outside the modal.
+    /// Close the dashboard's location picker modal without changing the working directory.
+    /// Routed from Esc, the modal-chrome `CloseRequested` outcome, and a click outside the modal.
     DashboardCloseLocationPicker,
-    /// Change the working directory for newly dispatched dashboard
-    /// sessions. `input` is the raw path text — a picker row's path, a
-    /// path typed into the picker's query field, or the `/cd <path>`
-    /// argument. The dispatcher resolves `~` / relative paths against
-    /// `app.cwd`, validates the target is a directory, and on success
-    /// updates `app.cwd` + the process cwd (via `Effect::SetWorkingDir`).
+    /// Change the working directory for newly dispatched dashboard sessions.
+    /// `input` is the raw path text: a picker row's path, a path typed into the picker's query field, or the `/cd <path>` argument.
+    /// The dispatcher resolves `~` / relative paths against `app.cwd` and validates the target is a directory.
     DashboardChangeLocation {
         input: String,
     },
-    /// Confirm the dashboard worktree-label dialog: create the next
-    /// dashboard agent in a fresh git worktree (rooted at `app.cwd`) using
-    /// `label` (`None` → auto-generated). Any prompt stashed when the dialog
-    /// opened (a prompt-send) is replayed into the new agent. Routed from
-    /// the dialog's Enter submit.
+    /// Confirm the dashboard worktree-label dialog: create the next dashboard agent in a fresh git worktree rooted at `app.cwd`.
+    /// `label` names the worktree; `None` auto-generates one.
+    /// Any prompt stashed when the dialog opened (a prompt-send) is replayed into the new agent.
     DashboardConfirmWorktree {
         label: Option<String>,
     },
-    /// Answer a permission request via the dashboard peek panel.
-    ///
-    /// Carries `request_id` captured at peek-toggle time so that a
-    /// stale answer (the front-of-queue changed between snapshot and
-    /// number-key press) can be detected and dropped instead of
-    /// popping the wrong permission.
     DashboardPermissionSelect {
         row: crate::views::dashboard::DashboardRowId,
         request_id: usize,
         option_id: acp::PermissionOptionId,
     },
-    /// Reject the peeked agent's pending permission with a typed
-    /// feedback message (the peek panel's "No, type to add feedback"
-    /// path). Resolves the front request with the `RejectOnce` option
-    /// and the text attached as `followup_message` meta — mirroring the
-    /// agent view's `PermissionFollowup`. `request_id` guards against a
-    /// stale answer if the queue rotated.
+    /// Reject the peeked agent's pending permission with a typed feedback message (the peek panel's "No, type to add feedback" path).
+    /// Resolves the front request with the `RejectOnce` option and the text attached as `followup_message` meta.
+    /// Mirrors the agent view's `PermissionFollowup`. `request_id` guards against a stale answer if the queue rotated.
     DashboardPermissionFollowup {
         row: crate::views::dashboard::DashboardRowId,
         request_id: usize,
         text: String,
     },
-    /// Answer the peeked agent's pending `AskUserQuestion` (the Ask tool)
-    /// from the dashboard peek panel. `option_idx` selects an option;
-    /// `None` with non-empty `freeform` submits the "Other" free-text
-    /// answer. Only valid for a single-question, single-select ext ask.
+    /// Answer the peeked agent's pending `AskUserQuestion` (the Ask tool) from the dashboard peek panel.
+    /// `option_idx` selects an option; `None` with non-empty `freeform` submits the "Other" free-text answer.
+    /// Only valid for a single-question, single-select ext ask.
     DashboardQuestionAnswer {
         row: crate::views::dashboard::DashboardRowId,
         option_idx: Option<usize>,
         freeform: String,
     },
-    /// Send / queue a reply to the peeked agent from the dashboard
-    /// peek panel's `❯ reply` input. The reply targets `row`'s owning
-    /// top-level agent: when it is idle the prompt is sent immediately
-    /// (a turn starts), when it is mid-turn the prompt is queued and
-    /// drains after the current turn finishes. `attach` (Ctrl+S)
-    /// additionally walks into the agent's detail view.
+    /// Send or queue a reply to the peeked agent from the dashboard peek panel's `❯ reply` input.
+    /// The reply targets `row`'s owning top-level agent.
+    /// When it is idle the prompt is sent immediately (a turn starts); mid-turn it is queued and drains after the current turn finishes.
     DashboardPeekReply {
         row: crate::views::dashboard::DashboardRowId,
         text: String,
@@ -1290,8 +1178,7 @@ pub enum Action {
     RewindCancelOffer,
     RewindDismiss,
     RewindDismissError,
-    /// Submit an inline edit: conversation-only rewind to that prompt, then
-    /// resubmit the edited text (state lives on `AgentView::inline_edit`).
+    /// Submit an inline edit: conversation-only rewind to that prompt, then resubmit the edited text (state lives on `AgentView::inline_edit`).
     InlineEditSubmit,
     /// Open the `/jump` turn picker.
     JumpShowPicker,
@@ -1323,29 +1210,22 @@ pub struct SharedQueueTarget {
     pub id: String,
     pub expected_version: u64,
 }
-/// Persist-and-notify semantics for [`Effect::PersistPermissionMode`].
-///
+/// Persist-and-notify behavior for [`Effect::PersistPermissionMode`].
 /// Both variants write to `~/.grok/config.toml` and route ACP
-/// `x.ai/yolo_mode_changed` notifications. The ACP notification is
-/// gated on disk-write success when `WithRollback` is used.
+/// `x.ai/yolo_mode_changed` notifications.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionModePersist {
-    /// Typed-setter path: on disk-write failure, revert in-memory state
-    /// to the prior canonical (`&'static str`). ACP notification is
-    /// suppressed on failure so the agent never sees the optimistic value.
-    /// The soft-default latch is NOT restored — a failed persist leaves the
-    /// mode user-claimed until restart, matching the cycle path.
+    /// Typed-setter path: on disk-write failure, revert in-memory state to the prior canonical (`&'static str`).
+    /// ACP notification is suppressed on failure so the agent never sees the optimistic value.
+    /// The soft-default latch is NOT restored; a failed persist leaves the mode user-claimed until restart, matching the cycle path.
     WithRollback(&'static str),
-    /// Cycle-mode path: no clean single-field rollback. On disk failure,
-    /// logs a warning and leaves in-memory state at the optimistic value.
+    /// Cycle-mode path: no clean single-field rollback.
+    /// On disk failure, logs a warning and leaves in-memory state at the optimistic value.
     /// ACP notification fires unconditionally.
     BestEffort,
 }
 /// Canonical permission-mode state for the `permission_mode` setting.
-///
-/// `Default` and `Ask` both project onto `yolo_mode = false` at runtime
-/// but are distinct on disk — `Default` expresses "use the agent's
-/// default" while `Ask` is the explicit "prompt me every time".
+/// `Default` and `Ask` both project onto `yolo_mode = false` at runtime but are distinct on disk.
 /// `Auto` uses the LLM classifier (not full always-approve).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionModeKind {
@@ -1359,9 +1239,8 @@ pub enum PermissionModeKind {
     AlwaysApprove,
 }
 impl PermissionModeKind {
-    /// Canonical persisted/wire string for the kind. Matches the
-    /// `EnumChoice.canonical` values in
-    /// `settings/defs.rs::PERMISSION_MODE_CHOICES`.
+    /// Canonical persisted/wire string for the kind.
+    /// Matches the `EnumChoice.canonical` values in `settings/defs.rs::PERMISSION_MODE_CHOICES`.
     pub fn as_canonical(self) -> &'static str {
         match self {
             Self::Default => "default",
@@ -1370,12 +1249,9 @@ impl PermissionModeKind {
             Self::AlwaysApprove => "always-approve",
         }
     }
-    /// Bool projection onto the YOLO runtime flag — `AlwaysApprove
-    /// → true`, everything else → `false`. Used by `set_yolo_mode_inner`
-    /// to perform the actual state mutation (`agent.session.yolo_mode`,
-    /// `app.default_yolo`, permission_queue drain) without caring
-    /// about the canonical distinction. The canonical is restored
-    /// afterwards by `set_permission_mode`.
+    /// Bool projection onto the YOLO runtime flag: `AlwaysApprove` is `true`, everything else `false`.
+    /// Used by `set_yolo_mode_inner` to perform the actual state mutation without caring about the canonical distinction.
+    /// That mutation covers `agent.session.yolo_mode`, `app.default_yolo`, and the permission_queue drain.
     pub fn is_always_approve(self) -> bool {
         matches!(self, Self::AlwaysApprove)
     }
@@ -1383,10 +1259,8 @@ impl PermissionModeKind {
     pub fn is_auto(self) -> bool {
         matches!(self, Self::Auto)
     }
-    /// Construct from a canonical string. Returns `None` for unknown
-    /// strings. Used by `apply_setting_rollback("permission_mode", _)`
-    /// to recover the typed kind from the `SettingValue::Enum(canonical)`
-    /// rollback payload.
+    /// Construct from a canonical string. Returns `None` for unknown strings.
+    /// Used by `apply_setting_rollback("permission_mode", _)` to recover the typed kind from the `SettingValue::Enum(canonical)` rollback payload.
     pub fn from_canonical(s: &str) -> Option<Self> {
         match s {
             "default" => Some(Self::Default),
@@ -1395,6 +1269,33 @@ impl PermissionModeKind {
             "always-approve" => Some(Self::AlwaysApprove),
             _ => None,
         }
+    }
+}
+/// No `Default` arm, unlike [`PermissionModeKind`]: the runtime flags cannot tell `default` from `ask`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionLabel {
+    Ask,
+    Auto,
+    AlwaysApprove,
+}
+impl From<PermissionLabel> for PermissionModeKind {
+    fn from(label: PermissionLabel) -> Self {
+        match label {
+            PermissionLabel::Ask => Self::Ask,
+            PermissionLabel::Auto => Self::Auto,
+            PermissionLabel::AlwaysApprove => Self::AlwaysApprove,
+        }
+    }
+}
+impl PermissionLabel {
+    /// Shares [`PermissionModeKind::as_canonical`] so the info-line flags and the scrollback rows use one string table.
+    pub fn as_canonical(self) -> &'static str {
+        PermissionModeKind::from(self).as_canonical()
+    }
+}
+impl std::fmt::Display for PermissionLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_canonical())
     }
 }
 #[cfg(test)]
@@ -1425,46 +1326,72 @@ mod permission_mode_kind_tests {
         }
     }
 }
-/// What the user chose on the `/feedback` trace-consent question.
+/// What the user chose on the hard-modal blocked-prompt card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptBlockChoice {
+    Edit,
+    Resend,
+    Discard,
+}
+/// Which surface issued a feedback POST, echoed back on its completion.
+/// Every send thanks at send time; the [`FeedbackSubmissionId`](crate::views::feedback_modal::FeedbackSubmissionId)
+/// only correlates a completion with the consent parked for that exact POST.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedbackSendOrigin {
+    /// Inline `/feedback <text>`: fire-and-forget.
+    Immediate,
+    /// A feedback modal submit; the id correlates the completion with that exact POST attempt.
+    Modal {
+        submission_id: crate::views::feedback_modal::FeedbackSubmissionId,
+        modal_id: crate::views::feedback_modal::FeedbackModalId,
+        is_draft: bool,
+    },
+}
+#[derive(Debug, Clone)]
+pub struct DraftFeedbackBody {
+    pub draft_id: xai_grok_feedback::FeedbackDraftId,
+    pub title: String,
+    pub details: String,
+    pub area: Option<String>,
+    pub r#type: xai_grok_feedback::FeedbackType,
+    pub task_category: Option<xai_grok_feedback::FeedbackTaskCategory>,
+    pub failure_mode: Option<xai_grok_feedback::FeedbackFailureMode>,
+    pub images: Vec<xai_grok_shell::session::FeedbackImage>,
+}
+/// What the user chose on the legacy `/feedback` trace-consent card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeedbackTraceChoice {
-    /// Upload with this report and persist `[telemetry] trace_upload = true`.
     AlwaysUpload,
-    /// Send the report alone (also the Esc/skip outcome).
     NoUpload,
-    /// Send the report alone and persist `[features] feedback_trace_card = false`.
     NeverAsk,
 }
-/// Canonical on/off state for `plan_mode`. Binary today (single bit
-/// on `agent.plan_mode_active`); typed enum so a future third state
-/// can be added without churning dispatcher arms.
+/// Canonical on/off state for `plan_mode`.
+/// Binary today (single bit on `agent.plan_mode_active`); typed enum so a future third state can be added without churning dispatcher arms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanModeKind {
-    /// Agent in `SessionMode::Plan` — no tool writes, plan-first.
+    /// Agent in `SessionMode::Plan`: no tool writes, plan-first.
     On,
     /// Agent in `SessionMode::Default`.
     Off,
 }
 impl PlanModeKind {
-    /// Canonical persisted/wire string for the kind. Matches the
-    /// `EnumChoice.canonical` values in
-    /// `settings/defs.rs::PLAN_MODE_CHOICES`.
+    /// Canonical persisted/wire string for the kind.
+    /// Matches the `EnumChoice.canonical` values in `settings/defs.rs::PLAN_MODE_CHOICES`.
     pub fn as_canonical(self) -> &'static str {
         match self {
             Self::On => "on",
             Self::Off => "off",
         }
     }
-    /// Display label used in the toast and the picker. Mirrors
-    /// `EnumChoice.display`.
+    /// Display label used in the toast and the picker. Mirrors `EnumChoice.display`.
     pub fn as_display(self) -> &'static str {
         match self {
             Self::On => "On",
             Self::Off => "Off",
         }
     }
-    /// Bool projection — `On → true`, `Off → false`. Used by the
-    /// dispatcher's idempotency check against `plan_mode_active`.
+    /// Bool projection: `On` is `true`, `Off` is `false`.
+    /// Used by the dispatcher's idempotency check against `plan_mode_active`.
     pub fn to_bool(self) -> bool {
         matches!(self, Self::On)
     }
@@ -1473,9 +1400,8 @@ impl PlanModeKind {
         if b { Self::On } else { Self::Off }
     }
 }
-/// What user gesture triggered a turn cancel; sent as `session/cancel`'s
-/// `_meta.cancelTrigger`. The shell's deny-list treats every gesture value
-/// as a stop, so new variants need no shell change.
+/// What user gesture triggered a turn cancel; sent as `session/cancel`'s `_meta.cancelTrigger`.
+/// The shell's deny-list treats every gesture value as a stop, so new variants need no shell change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelTrigger {
     /// Wire value `"esc"` (bare Esc mid-turn cancel when enabled by the F2
@@ -1485,43 +1411,41 @@ pub enum CancelTrigger {
     CtrlC,
     /// The on-screen cancel button was clicked.
     Mouse,
-    /// The dashboard's stop key (Ctrl+X), from the overlay or a busy row,
-    /// downgraded to a turn cancel.
+    /// The dashboard's stop key (Ctrl+X), from the overlay or a busy row, downgraded to a turn cancel.
     DashboardStop,
 }
 impl CancelTrigger {
     /// Snake_case wire string sent as `_meta.cancelTrigger`.
     pub fn as_wire_str(self) -> &'static str {
         match self {
-            Self::Esc => "esc",
             Self::CtrlC => "ctrl_c",
             Self::Mouse => "mouse",
             Self::DashboardStop => "dashboard_stop",
         }
     }
 }
-/// Where a deferred clipboard-attachment paste lands once the off-thread probe
-/// finishes (see [`Effect::ProbeClipboardAttachment`]).
+/// Where a deferred clipboard-attachment paste lands once the off-thread probe finishes (see [`Effect::ProbeClipboardAttachment`]).
 #[derive(Debug, Clone)]
 pub enum ClipboardPasteTarget {
-    /// Agent prompt input. `images_dir` is the session images dir used for the
-    /// off-thread persist (`None` when no session exists yet).
+    /// Agent prompt input.
+    /// `images_dir` is the session images dir used for the off-thread persist (`None` when no session exists yet).
     AgentPrompt {
         agent_id: AgentId,
         images_dir: Option<std::path::PathBuf>,
-        /// Enqueued while the `/feedback` report pane owned the composer. The
-        /// completion drops the attachment when that pane is gone, so a
-        /// screenshot pasted into the pane cannot land in the composer draft
-        /// an Esc restored.
-        from_feedback_pane: bool,
     },
     /// Dashboard new-session dispatch input.
     DashboardDispatch,
-    /// Dashboard peek reply input. `row` is the peeked row at enqueue time; the
-    /// completion drops the paste if the panel closed or moved to another row,
-    /// so the attachment can't land in a different agent's reply.
+    /// Dashboard peek reply input. `row` is the peeked row at enqueue time.
+    /// The completion drops the paste if the panel closed or moved to another row, so the attachment can't land in a different agent's reply.
     DashboardPeek {
         row: crate::views::dashboard::DashboardRowId,
+    },
+    /// Feedback modal composer input. Both ids are captured at enqueue time, so a completion is
+    /// dropped after either the modal or its loaded composition changes.
+    FeedbackModal {
+        agent_id: AgentId,
+        modal_id: crate::views::feedback_modal::FeedbackModalId,
+        composition_id: crate::views::feedback_modal::FeedbackCompositionId,
     },
 }
 impl ClipboardPasteTarget {
@@ -1531,6 +1455,7 @@ impl ClipboardPasteTarget {
             Self::AgentPrompt { .. } => "agent",
             Self::DashboardDispatch => "dashboard",
             Self::DashboardPeek { .. } => "peek",
+            Self::FeedbackModal { .. } => "feedback_modal",
         }
     }
 }
@@ -1706,16 +1631,17 @@ pub struct DoctorFixTarget {
 /// Aftermath of a successful session delete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AfterSessionDelete {
-    /// Picker delete — stay put.
+    /// Picker delete: stay put.
     Stay,
-    /// `/delete` from a standalone agent — return to welcome.
+    /// `/delete` from a standalone agent: return to welcome.
     Welcome,
     /// `/delete` from a dashboard-attached agent, or dashboard row delete.
     Dashboard,
+    /// Unused optimistic home husk: remove on-disk data without a toast or view change.
+    UnusedHusk,
 }
-/// Async side effect produced by [`super::dispatch::dispatch`]. The event
-/// loop spawns these into a `JoinSet`; completions come back through
-/// [`TaskResult`] as `Action::TaskComplete`.
+/// Async side effect produced by [`super::dispatch::dispatch`].
+/// The event loop spawns these into a `JoinSet`; completions come back through [`TaskResult`] as `Action::TaskComplete`.
 #[derive(Debug)]
 pub enum Effect {
     /// Run a `command` status line.
@@ -1724,58 +1650,43 @@ pub enum Effect {
     CreateSession {
         agent_id: AgentId,
         cwd: std::path::PathBuf,
-        /// When set, injected as `_meta.modelId` into the
-        /// `NewSessionRequest` so the shell spawns the session with
-        /// the correct model and agent type from the start — avoids a
-        /// follow-up `SetSessionModel` roundtrip.
+        /// When set, injected as `_meta.modelId` into the `NewSessionRequest`.
+        /// The shell then spawns the session with the correct model and agent type from the start.
+        /// Avoids a follow-up `SetSessionModel` roundtrip.
         model_id: Option<acp::ModelId>,
-        /// Per-create permission mode. Dashboard dispatches set this so their
-        /// staged mode overrides process-global defaults without persisting.
+        /// Per-create permission mode.
+        /// Dashboard dispatches set this so their staged mode overrides process-global defaults without persisting.
         permission_mode_override: Option<PermissionModeKind>,
         /// Client-chosen session ID (`--session-id` / `meta.sessionId`).
         preferred_session_id: Option<String>,
-        /// Gateway light-frontend for **this** session only (`/chat` one-shot
-        /// or CLI `--chat` via `SessionFlags.chat_mode`). Does not sticky-set
-        /// process-wide mode.
+        /// Gateway light-frontend for **this** session only (`/chat` one-shot or CLI `--chat` via `SessionFlags.chat_mode`).
+        /// Does not sticky-set process-wide mode.
         chat_kind: bool,
     },
     /// Change the process working directory (dashboard location picker, `/cd`).
     SetWorkingDir { path: std::path::PathBuf },
     /// Create a git worktree and then create or load an ACP session in it.
-    /// When `load_session_id` is `Some`, loads that session in the new worktree
-    /// instead of creating a fresh one (`--resume` + `--worktree` combination).
+    /// When `load_session_id` is `Some`, loads that session in the new worktree instead of creating a fresh one (`--resume` with `--worktree`).
     CreateWorktreeSession {
         agent_id: AgentId,
         load_session_id: Option<String>,
         label: Option<String>,
         /// Optional branch/tag/commit to base the worktree on (CLI `--ref`).
         git_ref: Option<String>,
-        /// Staged dashboard `/model` selection, injected as `_meta.modelId`
-        /// into the worktree's `NewSessionRequest` so it spawns with the
-        /// right model — mirrors [`Effect::CreateSession::model_id`]. `None`
-        /// for the welcome / CLI / fork paths.
+        /// Staged dashboard `/model` selection, injected as `_meta.modelId` so the worktree's `NewSessionRequest` spawns with the right model.
+        /// Mirrors [`Effect::CreateSession::model_id`]. `None` for the welcome / CLI / fork paths.
         model_id: Option<acp::ModelId>,
-        /// Per-create permission mode for a fresh worktree session. Ignored
-        /// when resuming an existing session.
+        /// Per-create permission mode for a fresh worktree session. Ignored when resuming an existing session.
         permission_mode_override: Option<PermissionModeKind>,
-        /// Client-chosen session ID (`--session-id` with `--worktree`) used as
-        /// the worktree/session id and `meta.sessionId` on fresh create.
+        /// Client-chosen session ID (`--session-id` with `--worktree`) used as the worktree/session id and `meta.sessionId` on fresh create.
         /// Ignored when `load_session_id` is set (resume path owns the id).
         preferred_session_id: Option<String>,
-        /// One-shot `/chat` or sticky `--chat` — stamp `_meta` kind=chat on
-        /// fresh create (resume uses `LoadSession.chat_kind` instead).
+        /// One-shot `/chat` or sticky `--chat`: stamp `_meta` kind=chat on fresh create (resume uses `LoadSession.chat_kind` instead).
         chat_kind: bool,
     },
     /// Load (resume) an existing ACP session by ID.
-    ///
     /// `session_cwd` overrides the CWD sent in the `LoadSessionRequest`.
-    /// This is needed when resuming a session that was created in a different
-    /// CWD (e.g., a worktree) than the one the user is currently in.
-    ///
-    /// Strict load — does not create if missing.
-    ///
-    /// `chat_kind` is the conversation-entry bit; effects also stamp kind=chat
-    /// when [`SessionFlags::chat_mode`] (`--chat`) is set.
+    /// Strict load: does not create if missing.
     LoadSession {
         agent_id: AgentId,
         session_id: String,
@@ -1865,42 +1776,67 @@ pub enum Effect {
     },
     /// Fetch session list for the welcome screen session picker.
     FetchSessionList {
-        /// Text search pushed down to `x.ai/session/list` as `query` (chat
-        /// mode: forwarded to the backend conversations search). `None`
-        /// fetches the unfiltered list.
+        /// The picker this fetch was issued for; the result routes back to this host's storage only.
+        host: crate::views::session_picker_surface::SessionPickerHost,
+        cwd_override: Option<std::path::PathBuf>,
+        /// Live generation of the requesting picker at dispatch time.
+        generation: u64,
+        /// Text search pushed down to `x.ai/session/list` as `query` (chat mode: forwarded to the backend conversations search).
+        /// `None` fetches the unfiltered list.
         query: Option<String>,
-        /// Snapshot of [`crate::app::app_view::AppView::session_picker_list_seq`];
-        /// the response is dropped when no longer current, so out-of-order
-        /// completions can't clobber newer results.
+        /// Snapshot of [`crate::app::app_view::AppView::session_picker_list_seq`].
+        /// The response is dropped when no longer current, so out-of-order completions can't clobber newer results.
         seq: u64,
         /// Optional unified-list `kind` facet filter (`"chat"` / `"build"`).
-        /// When set, stamped as `_meta["x.ai/facetFilters"].kind` so the shell
-        /// honors multi-source history under `--chat` instead of forcing chat-only.
+        /// When set, stamped as `_meta["x.ai/facetFilters"].kind`.
+        /// The shell then honors multi-source history under `--chat` instead of forcing chat-only.
         kind_filter: Option<Vec<String>>,
+        /// Server-side `session_kind=headless` policy: `Only` while the picker is on the Headless page, `Exclude` everywhere else.
+        /// Applied by the shell before its page truncation, so it cannot be a client refilter.
+        headless_policy: xai_grok_shell::session::unified_list::HeadlessPolicy,
     },
-    /// Coalesce picker search keystrokes: fires
-    /// [`TaskResult::SessionSearchDebounceExpired`] after a short sleep; the
-    /// expiry acts only if `seq` is still current (Build: FTS5 deep search
-    /// against the deep-search seq; chat: server refetch against the list seq).
-    DebounceSessionSearch { query: String, seq: u64 },
-    /// Fetch the leader session roster (FleetView dashboard) via
-    /// `x.ai/sessions/list`. Only issued in leader mode while the
-    /// dashboard is open.
+    /// Coalesce picker search keystrokes: fires [`TaskResult::SessionSearchDebounceExpired`] after a short sleep.
+    /// The expiry acts only if `host`, `generation`, and `seq` still name the live picker.
+    /// Build runs an FTS5 deep search against the deep-search seq; chat refetches from the server against the list seq.
+    DebounceSessionSearch {
+        host: crate::views::session_picker_surface::SessionPickerHost,
+        generation: u64,
+        query: String,
+        seq: u64,
+    },
+    /// Fetch the leader session roster (FleetView dashboard) via `x.ai/sessions/list`.
+    /// Only issued in leader mode while the dashboard is open.
     FetchRoster,
-    /// Fetch the local on-disk session list (dormant/idle sessions) for the
-    /// dashboard via `x.ai/session/list` — the non-leader fallback for the
-    /// FleetView roster. Issued while the dashboard is open and NOT in leader
-    /// mode so the dashboard shows idle sessions instead of being empty.
+    /// Fetch the local on-disk session list (dormant/idle sessions) for the dashboard via `x.ai/session/list`.
+    /// This is the non-leader fallback for the FleetView roster.
+    /// Issued while the dashboard is open and NOT in leader mode so the dashboard shows idle sessions instead of being empty.
     FetchDashboardSessions,
+    /// Lazily open dashboard v2's process-owned SQLite store and read its initial snapshot off the event-loop thread.
+    LoadWorkspaceSnapshot { db_path: std::path::PathBuf },
+    /// Apply one mutation; [`TaskResult::WorkspaceWriteCompleted`] carries the handle and mutation back.
+    WriteWorkspace {
+        store: xai_grok_dashboard_store::WorkspaceStore,
+        mutation: WorkspaceMutation,
+    },
+    /// Reads a snapshot only when SQLite's per-connection data version changed.
+    RefreshWorkspace {
+        store: xai_grok_dashboard_store::WorkspaceStore,
+        known_data_version: i64,
+    },
     /// Load card detail for a specific session (lazy, reads chat history from disk).
     LoadCardDetail {
+        /// The picker whose row expansion requested the detail.
+        host: crate::views::session_picker_surface::SessionPickerHost,
+        /// Live generation of the requesting picker at dispatch time.
+        generation: u64,
         source: String,
         session_id: String,
         cwd: String,
-        generation: u64,
+        /// Snapshot of the requesting picker's detail seq; the result is dropped when the picker's rows or filters changed meanwhile.
+        seq: u64,
     },
-    /// Restore a remote session from GCS then load it. Only Build rows reach
-    /// this effect: conversation rows have no GCS archive.
+    /// Restore a remote session from GCS then load it.
+    /// Only Build rows reach this effect: conversation rows have no GCS archive.
     RestoreAndLoadSession {
         agent_id: AgentId,
         session_id: String,
@@ -1911,14 +1847,11 @@ pub enum Effect {
         agent_id: AgentId,
         session_id: acp::SessionId,
         text: String,
-        /// Client-generated UUID echoed back on every notification + the
-        /// PromptResponse so the client can correlate them to this prompt.
+        /// Client-generated UUID echoed back on every notification and the PromptResponse so the client can correlate them to this prompt.
         prompt_id: String,
-        /// Recognized slash-token byte ranges into `text`, stamped into the
-        /// content block `_meta` (`skillTokenRanges`) when non-empty so
-        /// replay restyles the echo like the composer did. Contract: the
-        /// offsets index the block's `text` displayed verbatim — never
-        /// combined with a `displayText` override.
+        /// Recognized slash-token byte ranges into `text`.
+        /// Stamped into the content block `_meta` (`skillTokenRanges`) when non-empty so replay restyles the echo like the composer did.
+        /// Contract: the offsets index the block's `text` displayed verbatim, never combined with a `displayText` override.
         skill_token_ranges: Vec<std::ops::Range<usize>>,
     },
     /// Send a prompt to an already-existing persistent subagent session.
@@ -1949,12 +1882,11 @@ pub enum Effect {
     CancelTurn {
         session_id: acp::SessionId,
         cancel_subagents: bool,
-        /// What user gesture triggered the cancel (ESC / Ctrl+C / mouse), sent
-        /// on `session/cancel` as `_meta.cancelTrigger` so the agent's
-        /// `mid_turn_abort` telemetry can distinguish them. `None` for
-        /// programmatic cancels (login/reauth flows).
+        /// What user gesture triggered the cancel (ESC / Ctrl+C / mouse).
+        /// Sent on `session/cancel` as `_meta.cancelTrigger` so the agent's `mid_turn_abort` telemetry can distinguish them.
+        /// `None` for programmatic cancels (login/reauth flows).
         trigger: Option<CancelTrigger>,
-        /// `_meta.rewindIfNoOutput` + `_meta.promptId` of the locally rewound turn.
+        /// `_meta.rewindIfNoOutput` and `_meta.promptId` of the locally rewound turn.
         /// Set only when the pager restored the prompt into the composer.
         rewind_prompt_id: Option<String>,
     },
@@ -1964,6 +1896,8 @@ pub enum Effect {
         session_id: acp::SessionId,
         /// Optional focus text from `/compact <instructions>`.
         custom_instructions: Option<String>,
+        /// Upstream shell context passed with the compaction request (`userContext`).
+        user_context: Option<String>,
     },
     /// Kill a background task.
     KillBgTask {
@@ -1975,6 +1909,7 @@ pub enum Effect {
     KillSubagent {
         session_id: acp::SessionId,
         subagent_id: String,
+        attempt_id: Option<String>,
     },
     DeleteScheduledTask {
         session_id: acp::SessionId,
@@ -1991,15 +1926,14 @@ pub enum Effect {
         session_id: acp::SessionId,
         model_id: acp::ModelId,
         effort: Option<ReasoningEffort>,
-        /// The model that was active before the optimistic UI update
-        /// in `set_default_model`. `None` for `Action::SwitchModel`
-        /// (no optimistic update). Threaded through to
-        /// `SwitchModelComplete` so `IncompatibleAgent` can roll back.
+        /// The model that was active before the optimistic UI update in `set_default_model`.
+        /// `None` for `Action::SwitchModel` (no optimistic update).
+        /// Threaded through to `SwitchModelComplete` so `IncompatibleAgent` can roll back.
         prev_model_id: Option<acp::ModelId>,
     },
-    /// Fetch changelog from CDN (both markdown + structured JSON).
-    /// Runs off the render path via `spawn_blocking`. Result is cached
-    /// on `AppView` so `/release-notes` and the welcome screen share it.
+    /// Fetch changelog from CDN (both markdown and structured JSON).
+    /// Runs off the render path via `spawn_blocking`.
+    /// Result is cached on `AppView` so `/release-notes` and the welcome screen share it.
     FetchChangelog,
     /// Persist the hidden announcement ids to disk.
     PersistAnnouncementsHidden {
@@ -2007,6 +1941,9 @@ pub enum Effect {
     },
     /// Persist `[privacy].privacy_banner_acked` (RFC 3339 dismiss time).
     PersistPrivacyBannerAcked { acked_at: String },
+    /// Persist a plugin CTA dismissal to `[plugin_cta].dismissed`; the locked write sleep-polls the config-init flock, so it must run off the render path.
+    /// config-init flock, so it must run off the render path.
+    PersistPluginCtaDismissed { plugin_id: String },
     /// Persist the consent answer to `[consent]` in config.toml.
     PersistConsentAnswer {
         account: Option<String>,
@@ -2019,14 +1956,11 @@ pub enum Effect {
     /// Persist memory modal fullscreen preference to `[hints]` in config.toml.
     PersistMemoryFullscreen { fullscreen: bool },
     /// Persist the dashboard's `[dashboard]` configuration to `~/.grok/config.toml`.
-    /// Edge case 15: multi-pager safe via `config_toml_edit::read_config_document_for_edit`,
-    /// which loads → modifies → writes the whole document. Concurrent
-    /// pagers may produce last-writer-wins behaviour but never corrupt
-    /// the file.
+    /// Multi-pager safe via `config_toml_edit::read_config_document_for_edit`, which loads, modifies, then writes the whole document.
+    /// Concurrent pagers may produce last-writer-wins behaviour but never corrupt the file.
     PersistDashboard(crate::views::dashboard::PersistedDashboard),
-    /// Persist a per-command worktree mode preference to `[hints]` in
-    /// config.toml. `config_key` is the TOML key under `[hints]`
-    /// (`"new_session_worktree_mode"` or `"fork_worktree_mode"`).
+    /// Persist a per-command worktree mode preference to `[hints]` in config.toml.
+    /// `config_key` is the TOML key under `[hints]` (`"new_session_worktree_mode"` or `"fork_worktree_mode"`).
     PersistWorktreeMode {
         mode: crate::app::app_view::WorktreeMode,
         config_key: &'static str,
@@ -2036,8 +1970,8 @@ pub enum Effect {
         model_id: acp::ModelId,
         reasoning_effort: Option<ReasoningEffort>,
     },
-    /// Persist the permission mode to config.toml and notify the agent
-    /// via ACP. See [`PermissionModePersist`] for rollback semantics.
+    /// Persist the permission mode to config.toml and notify the agent via ACP.
+    /// See [`PermissionModePersist`] for rollback behavior.
     PersistPermissionMode {
         /// One of `"ask"`, `"always-approve"`, or `"default"`.
         canonical: &'static str,
@@ -2051,9 +1985,12 @@ pub enum Effect {
         value: crate::settings::SettingValue,
         rollback_value: crate::settings::SettingValue,
     },
+    /// Toggle mouse reporting off and on to unwedge xterm.js's button tracker
+    /// (see `AgentView::reset_wedged_mouse_reporting`). An effect so it rides the escape
+    /// writer; `process_effects` re-checks capture so a toggle-off in the same batch wins.
+    ResetMouseReporting,
     /// Send structured prompt blocks to the agent.
-    /// Used for skill injection where the prompt consists of
-    /// multiple content blocks (metadata + skill body).
+    /// Used for skill injection where the prompt consists of multiple content blocks (metadata plus skill body).
     SendPromptBlocks {
         agent_id: AgentId,
         session_id: acp::SessionId,
@@ -2071,10 +2008,10 @@ pub enum Effect {
         /// See [`Effect::SendPrompt::prompt_id`].
         prompt_id: String,
     },
-    /// Toggle plan mode — fire-and-forget signal to the shell.
+    /// Toggle plan mode: fire-and-forget signal to the shell.
     TogglePlanMode { session_id: acp::SessionId },
-    /// Remove a server-owned queued prompt: fire-and-forget
-    /// `x.ai/queue/remove`. The agent re-broadcasts the authoritative queue.
+    /// Remove a server-owned queued prompt: fire-and-forget `x.ai/queue/remove`.
+    /// The agent re-broadcasts the authoritative queue.
     QueueRemove {
         session_id: acp::SessionId,
         id: String,
@@ -2085,20 +2022,17 @@ pub enum Effect {
         session_id: acp::SessionId,
         ordered_ids: Vec<String>,
     },
-    /// Clear the caller's server-owned queued prompts: fire-and-forget
-    /// `x.ai/queue/clear`.
+    /// Clear the caller's server-owned queued prompts: fire-and-forget `x.ai/queue/clear`.
     QueueClear { session_id: acp::SessionId },
-    /// Replace the text of a server-owned queued prompt in place: fire-and-forget
-    /// `x.ai/queue/edit`. The session actor's serialized mailbox makes this
-    /// last-writer-wins for concurrent edits; the rebroadcast of
-    /// `x.ai/queue/changed` is the truth signal.
+    /// Replace the text of a server-owned queued prompt in place: fire-and-forget `x.ai/queue/edit`.
+    /// The session actor's serialized mailbox makes this last-writer-wins for concurrent edits.
+    /// The rebroadcast of `x.ai/queue/changed` is the truth signal.
     QueueEdit {
         session_id: acp::SessionId,
         id: String,
         new_text: String,
     },
-    /// Hold a server-owned row out of combine-on-promote while the composer
-    /// edits it: fire-and-forget `x.ai/queue/hold_edit`.
+    /// Hold a server-owned row out of combine-on-promote while the composer edits it: fire-and-forget `x.ai/queue/hold_edit`.
     QueueHoldEdit {
         session_id: acp::SessionId,
         id: String,
@@ -2108,15 +2042,9 @@ pub enum Effect {
         session_id: acp::SessionId,
         id: String,
     },
-    /// Interject a server-owned queued prompt into the running turn:
-    /// fire-and-forget `x.ai/queue/interject`. The session actor atomically
-    /// removes it from the queue and merges its text into the in-flight turn,
-    /// then broadcasts both the interjection and the authoritative queue.
-    /// `new_text` (when `Some`, serialized as `newText`) replaces the stored
-    /// queue text in the interjection — same single version check, so a stale
-    /// version no-ops the edit too. If the turn already ended, the agent
-    /// saves a version-matching `new_text` to the row as an LWW edit instead
-    /// (the edit survives and drains; it is never silently lost).
+    /// The same single version check applies, so a stale version no-ops the edit too.
+    /// If the turn already ended, the agent saves a version-matching `new_text` to the row as an LWW edit instead.
+    /// The edit survives and drains; it is never silently lost.
     QueueInterject {
         session_id: acp::SessionId,
         id: String,
@@ -2129,8 +2057,7 @@ pub enum Effect {
         mode_id: acp::SessionModeId,
     },
     /// Set session mode then send a prompt, sequentially in one task.
-    /// Used by `/plan <desc>` to guarantee the mode switch ACP call
-    /// completes before the prompt is dispatched.
+    /// Used by `/plan <desc>` to guarantee the mode switch ACP call completes before the prompt is dispatched.
     SetModeThenPrompt {
         session_id: acp::SessionId,
         mode_id: acp::SessionModeId,
@@ -2141,9 +2068,8 @@ pub enum Effect {
         skill_token_ranges: Vec<std::ops::Range<usize>>,
     },
     /// Fetch prompt history for the current session from the ACP agent.
-    /// `session_id` scopes the per-CWD history file to this session (the agent's
-    /// `filter_session_id` param), so up-arrow recall and the `/history`
-    /// panel show only the current session's prompts.
+    /// `session_id` scopes the per-CWD history file to this session (the agent's `filter_session_id` param).
+    /// Up-arrow recall and the `/history` panel thus show only the current session's prompts.
     FetchPromptHistory {
         agent_id: AgentId,
         cwd: std::path::PathBuf,
@@ -2215,8 +2141,7 @@ pub enum Effect {
         agent_id: AgentId,
         session_id: acp::SessionId,
     },
-    /// Fetch the official-marketplace catalog into agent-level CTA state,
-    /// independent of the Extensions modal.
+    /// Fetch the official-marketplace catalog into agent-level CTA state, independent of the Extensions modal.
     FetchPluginCtaCatalog {
         agent_id: AgentId,
         session_id: acp::SessionId,
@@ -2257,40 +2182,35 @@ pub enum Effect {
         session_id: acp::SessionId,
         action: xai_hooks_plugins_types::MarketplaceAction,
     },
-    /// Install a plugin from the inline CTA via `x.ai/marketplace/action`,
-    /// reported back via `TaskResult::CtaPluginInstallDone`.
+    /// Install a plugin from the inline CTA via `x.ai/marketplace/action`, reported back via `TaskResult::CtaPluginInstallDone`.
     InstallPluginFromCta {
         agent_id: AgentId,
         session_id: acp::SessionId,
         source_url_or_path: String,
         plugin_relative_path: String,
     },
-    /// Reload plugins after a CTA install via `x.ai/plugins/action`
-    /// (`PluginsAction::Reload`), reported back via
-    /// `TaskResult::CtaPluginReloadDone`. Modal-independent.
+    /// Reload plugins after a CTA install via `x.ai/plugins/action` (`PluginsAction::Reload`), reported back via `TaskResult::CtaPluginReloadDone`.
+    /// Modal-independent.
     ReloadPluginsForCta {
         agent_id: AgentId,
         session_id: acp::SessionId,
         plugin_name: String,
     },
-    /// Read the MCP server list after a CTA install via `x.ai/mcp/list`,
-    /// reported back via `TaskResult::PluginCtaMcpsLoaded`. Modal-independent.
+    /// Read the MCP server list after a CTA install via `x.ai/mcp/list`, reported back via `TaskResult::PluginCtaMcpsLoaded`.
+    /// Modal-independent.
     FetchPluginCtaMcps {
         agent_id: AgentId,
         session_id: acp::SessionId,
         plugin_name: String,
     },
-    /// Re-probe the MCP server list after a short delay while waiting for a
-    /// just-installed plugin's servers to finish initializing. Sleeps, then runs
-    /// the same `x.ai/mcp/list` fetch as `FetchPluginCtaMcps`, reported back via
-    /// `TaskResult::PluginCtaMcpsLoaded`.
+    /// Re-probe the MCP server list after a short delay while waiting for a just-installed plugin's servers to finish initializing.
+    /// Sleeps, then runs the same `x.ai/mcp/list` fetch as `FetchPluginCtaMcps`, reported back via `TaskResult::PluginCtaMcpsLoaded`.
     RetryPluginCtaMcps {
         agent_id: AgentId,
         session_id: acp::SessionId,
         plugin_name: String,
     },
-    /// Auto-dismiss the CTA's brief "installed" confirmation after a delay,
-    /// reported back via `TaskResult::CtaInstalledDismissTimeout`.
+    /// Auto-dismiss the CTA's brief "installed" confirmation after a delay, reported back via `TaskResult::CtaInstalledDismissTimeout`.
     DismissCtaInstalled {
         agent_id: AgentId,
         plugin_name: String,
@@ -2329,7 +2249,7 @@ pub enum Effect {
         session_id: acp::SessionId,
     },
     /// Fetch and display session info via x.ai/session/info.
-    /// Auth lines are derived in the effect from SessionFlags + env (not Effect fields).
+    /// Auth lines are derived in the effect from SessionFlags and env (not Effect fields).
     ShowSessionInfo {
         agent_id: AgentId,
         session_id: acp::SessionId,
@@ -2349,22 +2269,43 @@ pub enum Effect {
     /// Fetch a bundled entry's raw content via `x.ai/bundle/entry/get`.
     FetchCatalogEntry { kind: String, name: String },
     /// Send feedback about the current session (fire-and-forget POST).
+    /// `origin` rides through to the completion so a modal send's parked consent can be matched or dropped.
     SendFeedback {
         agent_id: AgentId,
         session_id: acp::SessionId,
         feedback_text: String,
         images: Vec<xai_grok_shell::session::FeedbackImage>,
+        metadata: Option<serde_json::Value>,
+        /// Ask the shell to mint a one-shot upload capability after this report succeeds.
+        request_trace_upload_token: bool,
+        draft: Option<DraftFeedbackBody>,
+        origin: FeedbackSendOrigin,
+    },
+    FeedbackDraftRequest {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+        request: crate::views::feedback_modal::FeedbackDraftRequest,
     },
     /// One-shot session archive for a feedback report (after the text POST).
+    /// Emitted only from the matching successful feedback-POST reduction (modal path)
+    /// or the legacy card's persisted-consent path, never as a sibling of the POST.
     UploadFeedbackTrace {
         agent_id: AgentId,
         session_id: acp::SessionId,
+        /// `Some` for a modal one-shot: correlates the completion with the exact POST attempt that earned it.
+        submission_id: Option<crate::views::feedback_modal::FeedbackSubmissionId>,
+        /// Typed intent for a modal one-shot; legacy persisted-consent uploads carry `None`.
+        intent: Option<crate::views::feedback_modal::FeedbackTraceUploadIntent>,
+        /// Capability minted by the successful feedback POST; absent on the legacy persisted-consent path.
+        trace_upload_token: Option<String>,
     },
-    /// Save a remember note to global MEMORY.md (async file write).
+    /// Save a remember note to the active mode's global memory storage.
     SaveMemoryNote {
         agent_id: AgentId,
         text: String,
         cwd: std::path::PathBuf,
+        /// `Some` for an active session; `None` only for the pre-session fallback.
+        pinned_mode: Option<xai_grok_shell::config::MemoryMode>,
     },
     /// Send raw note to x.ai/memory/rewrite for LLM-powered reformatting.
     /// On success, the rewritten text populates the prompt for inline review.
@@ -2374,15 +2315,12 @@ pub enum Effect {
         session_id: acp::SessionId,
         raw_text: String,
         context_summary: String,
-        /// Monotonic nonce to correlate this request with the modal that
-        /// opened it, so stale results don't populate a different review.
+        /// Monotonic nonce correlating this request with the modal that opened it, so stale results don't populate a different review.
         nonce: u64,
     },
     /// Re-fetch available commands (including skills) from the shell.
-    ///
-    /// Sent after `SessionCreated` / `WorktreeSessionCreated` to work around
-    /// a race where the shell's `AvailableCommandsUpdate` notification arrives
-    /// before the pager has set `session_id`, causing it to be silently dropped.
+    /// Sent after `SessionCreated` / `WorktreeSessionCreated` to work around a race.
+    /// The shell's `AvailableCommandsUpdate` notification can arrive before the pager has set `session_id`, and is then silently dropped.
     RefreshAvailableCommands {
         agent_id: AgentId,
         session_id: acp::SessionId,
@@ -2397,8 +2335,8 @@ pub enum Effect {
         /// Correlates minimal responses; fullscreen leaves this unset.
         minimal_request_id: Option<uuid::Uuid>,
     },
-    /// Request a session recap via the x.ai/recap ext method. Fire-and-forget:
-    /// the recap arrives later as a `SessionRecap` notification.
+    /// Request a session recap via the x.ai/recap ext method.
+    /// Fire-and-forget: the recap arrives later as a `SessionRecap` notification.
     SendRecap {
         session_id: acp::SessionId,
         auto: bool,
@@ -2419,31 +2357,27 @@ pub enum Effect {
         agent_id: AgentId,
         session_id: acp::SessionId,
         text: String,
-        /// Client-minted id echoed back on the `x.ai/session/interjection`
-        /// broadcast so the originator can dedup its optimistic local block.
+        /// Client-minted id echoed back on the `x.ai/session/interjection` broadcast so the originator can dedup its optimistic local block.
         interjection_id: String,
-        /// Structured text + image content blocks. `None` for text-only
-        /// interjections — the wire shape stays byte-identical to legacy.
+        /// Structured text and image content blocks.
+        /// `None` for text-only interjections; the wire shape stays byte-identical to legacy.
         blocks: Option<Vec<acp::ContentBlock>>,
     },
-    /// Log out via `x.ai/auth/logout` (shell clears auth.json + in-memory state).
+    /// Log out via `x.ai/auth/logout` (shell clears auth.json and in-memory state).
     Logout,
     /// Cancel an in-flight interactive auth on the shell (`x.ai/auth/cancel`).
-    /// Used when the user abandons mid-session `/login` so the device-code
-    /// poll stops instead of running until the code expires. `request_seq`
-    /// scopes the cancel so a delayed RPC cannot tear down a successor login.
+    /// Used when the user abandons mid-session `/login` so the device-code poll stops instead of running until the code expires.
+    /// `request_seq` scopes the cancel so a delayed RPC cannot tear down a successor login.
     CancelAuth { request_seq: u64 },
     /// Re-check subscription status via `x.ai/auth/check_subscription`.
-    /// `verify` scopes the result to a deferred-gate verification (see
-    /// [`crate::app::subscription`]); `None` for generic checks.
+    /// `verify` scopes the result to a deferred-gate verification (see [`crate::app::subscription`]); `None` for generic checks.
     CheckSubscription { verify: Option<u64> },
     /// One-shot subscription re-check triggered by a credit-limit 403.
-    /// If the tier changed, the stashed prompt is retried instead of
-    /// showing the upsell modal.
+    /// If the tier changed, the stashed prompt is retried instead of showing the upsell modal.
     CreditLimitRecheck { agent_id: AgentId },
     /// Schedule a 5s timer that fires `TaskResult::PaywallCheckTick`.
     SchedulePaywallCheck,
-    /// Schedule `TaskResult::GateVerifyTimeout { generation }` after
+    /// Schedule `TaskResult::GateVerifyTimeout { generation }` after [`crate::app::subscription::GATE_VERIFY_TIMEOUT`].
     /// [`crate::app::subscription::GATE_VERIFY_TIMEOUT`].
     ScheduleGateVerifyTimeout { generation: u64 },
     /// Log out then authenticate sequentially in one task.
@@ -2476,10 +2410,9 @@ pub enum Effect {
         opted_in: bool,
         /// Pre-toggle value to revert to on failure.
         rollback_to_opted_in: bool,
-        /// Write generation, echoed back on the `TaskResult`. Writes to this
-        /// endpoint are concurrent, so a result that isn't the newest must
-        /// not touch state: its `rollback_to_opted_in` was captured against
-        /// a world that has since moved on.
+        /// Write generation, echoed back on the `TaskResult`.
+        /// Writes to this endpoint are concurrent, so a result that isn't the newest must not touch state.
+        /// Its `rollback_to_opted_in` was captured against a world that has since moved on.
         seq: u64,
     },
     /// Rename the current session.
@@ -2500,8 +2433,7 @@ pub enum Effect {
         previous_display_name: Option<String>,
         previous_generated_title: Option<String>,
     },
-    /// Delete a session's stored data (local + remote) via
-    /// `x.ai/session/delete`.
+    /// Delete a session's stored data (local and remote) via `x.ai/session/delete`.
     DeleteSession {
         source: String,
         session_id: String,
@@ -2509,7 +2441,17 @@ pub enum Effect {
         after: AfterSessionDelete,
     },
     /// Deep-search sessions by content (FTS via ACP).
-    DeepSearchSessions { query: String, seq: u64 },
+    DeepSearchSessions {
+        /// The picker this search was issued for; the result routes back to this host's storage only.
+        host: crate::views::session_picker_surface::SessionPickerHost,
+        /// Live generation of the requesting picker at dispatch time.
+        generation: u64,
+        query: String,
+        seq: u64,
+        /// Server-side headless policy of the page that consumes the hits: `Only` on the Headless page, `Exclude` everywhere else.
+        /// Unresolved index rows are omitted from both classified views.
+        headless_policy: xai_grok_shell::session::unified_list::HeadlessPolicy,
+    },
     /// Full-text search for external (Pi) sessions via PSM SQLite FTS5.
     PiSessionSearch {
         query: String,
@@ -2531,23 +2473,20 @@ pub enum Effect {
         agent_id: AgentId,
         parent_session_id: acp::SessionId,
         parent_cwd: std::path::PathBuf,
-        /// Whether the parent session lives in a git worktree. When `true`,
-        /// the fork payload sets `sourceWorkspaceDir` so the shell preserves
-        /// prompt-display provenance.
+        /// Whether the parent session lives in a git worktree.
+        /// When `true`, the fork payload sets `sourceWorkspaceDir` so the shell preserves prompt-display provenance.
         parent_is_worktree: bool,
-        /// Optional client-chosen ID for the forked session (`--session-id`
-        /// with `--fork-session`).
+        /// Optional client-chosen ID for the forked session (`--session-id` with `--fork-session`).
         new_session_id: Option<String>,
     },
-    /// Read session display fields from local `summary.json` after load/resume:
-    /// title (and `/rename` manual-ness) plus last-turn summary for the
-    /// dashboard secondary line.
+    /// Read session display fields from local `summary.json` after load/resume.
+    /// Those are the title (and `/rename` manual-ness) plus the last-turn summary for the dashboard secondary line.
     HydrateSessionMetaFromDisk {
         agent_id: AgentId,
         session_id: acp::SessionId,
         cwd: std::path::PathBuf,
-        /// [`crate::app::agent_view::AgentView::last_turn_summary_gen`] at enqueue;
-        /// the disk result applies only when this still matches on completion.
+        /// [`crate::app::agent_view::AgentView::last_turn_summary_gen`] at enqueue.
+        /// The disk result applies only when this still matches on completion.
         last_turn_summary_gen: u64,
     },
     FetchRewindPoints {
@@ -2560,19 +2499,20 @@ pub enum Effect {
         target_prompt_index: usize,
     },
     /// Fetch billing/credit usage from the agent's `x.ai/billing` extension.
-    /// When `silent` is true the result updates `credit_balance` without
-    /// pushing a system message into scrollback (used for automatic refreshes
-    /// on session init and after each turn).
+    /// When `silent` is true the result updates `credit_balance` without pushing a system message into scrollback.
+    /// The silent form is used for automatic refreshes on session init and after each turn.
     FetchBilling {
         agent_id: AgentId,
         silent: bool,
-        /// Usage-modal fetch generation (`0` = background refresh; those
-        /// never touch the modal's loading/error flags).
+        /// Usage-modal fetch generation (`0` means a background refresh; those never touch the modal's loading/error flags).
         nonce: u64,
     },
     /// Fetch billing data at the app level (no agent required).
-    /// Used on startup to populate the welcome-screen credit warning.
-    FetchAppBilling,
+    /// Used on startup to populate the welcome-screen credit warning, and by the dashboard's `/usage` modal.
+    FetchAppBilling {
+        /// Usage-modal fetch generation (`0` means a background refresh that settles no modal).
+        nonce: u64,
+    },
     /// Fetch per-session token/cost via `x.ai/session/usage` (auth-agnostic).
     FetchSessionUsage {
         agent_id: AgentId,
@@ -2582,15 +2522,13 @@ pub enum Effect {
     },
     /// Re-fetch remote settings to check subscription gate.
     RefreshGate,
-    /// Spawn a debounce sleep task for shell suggestions. `agent_id` rides
-    /// to the expiry so the fetch is built from the arming agent, not
-    /// whatever view is active when the timer fires.
+    /// Spawn a debounce sleep task for shell suggestions.
+    /// `agent_id` rides to the expiry so the fetch is built from the arming agent, not whatever view is active when the timer fires.
     DebounceSuggestions { agent_id: AgentId, generation: u64 },
     /// Spawn a debounce sleep task for plugin-CTA keyword matching.
     DebouncePluginCta { agent_id: AgentId, generation: u64 },
-    /// Send an ACP `x.ai/suggest` request to the shell. `agent_id` is echoed
-    /// on the result so the response routes to the agent that fetched, not
-    /// whatever view is active when it lands.
+    /// Send an ACP `x.ai/suggest` request to the shell.
+    /// `agent_id` is echoed on the result so the response routes to the agent that fetched, not whatever view is active when it lands.
     FetchShellSuggestions {
         agent_id: AgentId,
         text: String,
@@ -2601,31 +2539,34 @@ pub enum Effect {
         include_ai: bool,
         ai_model: Option<String>,
         session_id: Option<String>,
-        /// Deterministic Tab fetches run only the shell's token providers
-        /// (path/file); the as-you-type surface keeps all of them.
+        /// Deterministic Tab fetches run only the shell's token providers (path/file); the as-you-type pipeline keeps all of them.
         token_only: bool,
     },
-    /// Send an ACP `x.ai/suggestPrompt` request to the shell — predict the
-    /// user's likely next prompt after a completed turn (tab autocomplete
-    /// ghost text).
+    /// Send an ACP `x.ai/suggestPrompt` request to the shell.
+    /// It predicts the user's likely next prompt after a completed turn (tab autocomplete ghost text).
     FetchPromptSuggestion {
         agent_id: AgentId,
         generation: u64,
-        /// Suggestion model resolved by the pager (`grok-build-0.1` when the
-        /// catalog offers it); `None` = shell falls back to the session model.
+        /// Suggestion model resolved by the pager (`grok-4.6` when the catalog offers it).
+        /// `None` makes the shell fall back to the session model.
         model: Option<String>,
         session_id: Option<String>,
     },
-    /// Probe the clipboard for an attachment off the event-loop thread
-    /// (osascript image/file-url read + image decode + session persist), then
-    /// attach the chip via [`TaskResult::ClipboardAttachmentProbed`]. Keeps the
-    /// paste handler from blocking the render thread on that I/O.
+    /// Probe the clipboard for an attachment off the event-loop thread (osascript image/file-url read, image decode, session persist).
+    /// The chip then attaches via [`TaskResult::ClipboardAttachmentProbed`].
+    /// Keeps the paste handler from blocking the render thread on that I/O.
     ProbeClipboardAttachment {
         ctx: ClipboardPasteContext,
-        /// Pasteboard `changeCount` at enqueue time; the off-thread probe bails
-        /// (no image) if it no longer matches — a clipboard change or a second
-        /// racing paste can't attach the wrong image.
+        /// Pasteboard `changeCount` at enqueue time; the off-thread probe bails (no image) if it no longer matches.
+        /// A clipboard change or a second racing paste thus can't attach the wrong image.
         change_count: Option<u64>,
+    },
+    /// Bounded disk read for an adopted feedback image. The original file remains until completion installs the bytes.
+    RehydrateFeedbackImage {
+        agent_id: AgentId,
+        modal_id: crate::views::feedback_modal::FeedbackModalId,
+        image_identity: u64,
+        path: std::path::PathBuf,
     },
     /// Prepare terminal preview bytes off the event-loop thread.
     PreparePromptImagePreview {
@@ -2642,8 +2583,8 @@ pub enum Effect {
         plan: Box<crate::diagnostics::FixPlan>,
     },
 }
-/// Wire params for `x.ai/session/rename`. Shared with the effect executor
-/// so dispatch tests can pin the exact camelCase payload.
+/// Wire params for `x.ai/session/rename`.
+/// Shared with the effect executor so dispatch tests can pin the exact camelCase payload.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RenameSessionRequest {
@@ -2651,8 +2592,8 @@ pub(crate) struct RenameSessionRequest {
     pub title: String,
     pub cwd: String,
     pub kind: SessionKind,
-    /// Empty-title + `true` is the unpin convention. Omitted when false so
-    /// ordinary rename payloads stay byte-identical for old shells.
+    /// An empty title with `true` is the unpin convention.
+    /// Omitted when false so ordinary rename payloads stay byte-identical for old shells.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reset_to_auto: bool,
 }
@@ -2681,19 +2622,15 @@ impl RenameSessionRequest {
         }
     }
 }
-/// Outcome of an `x.ai/subagent/cancel` request, telling dispatch whether the
-/// pager must finalize the subagent row itself.
+/// Outcome of an `x.ai/subagent/cancel` request, telling dispatch whether the pager must finalize the subagent row itself.
 #[derive(Debug)]
 pub enum SubagentKillOutcome {
-    /// Shell stopped a live subagent — a real `SubagentFinished` is coming.
+    /// Shell stopped a live subagent; a real `SubagentFinished` is coming.
     StoppedLive,
-    /// Nothing live to stop (orphan / already finished) — no finish coming, so
-    /// the pager finalizes the row. `status` = the real terminal status for an
-    /// already-finished orphan, else `None` (unknown id / older shell) →
-    /// "cancelled".
+    /// Nothing live to stop (orphan / already finished), so no finish is coming and the pager finalizes the row.
+    /// `status` carries the real terminal status for an already-finished orphan; `None` (unknown id / older shell) renders as "cancelled".
     NothingLive { status: Option<String> },
-    /// The cancel RPC failed; the subagent may still be running, so leave the
-    /// row alone rather than show a false terminal state.
+    /// The cancel RPC failed; the subagent may still be running, so leave the row alone rather than show a false terminal state.
     RpcFailed,
 }
 #[derive(Debug)]
@@ -2711,22 +2648,59 @@ pub enum DoctorPlanningOutcome {
 ///
 /// Wrapped in `Action::TaskComplete` and dispatched synchronously.
 impl TaskResult {
-    /// True for results that deliver the first usable session. A quit
-    /// before dispatch abandons instead of recording; accepted so the
-    /// token stays single-owner.
+    /// True for results that deliver the first usable session.
+    /// A quit before dispatch abandons instead of recording; accepted so the token stays single-owner.
     pub fn ends_startup(&self) -> bool {
-        matches!(
-            self,
+        match self {
             TaskResult::SessionCreated { .. }
-                | TaskResult::SessionLoaded { .. }
-                | TaskResult::WorktreeSessionCreated { .. }
-                | TaskResult::WorktreeForked { .. }
-        )
+            | TaskResult::SessionLoaded { .. }
+            | TaskResult::WorktreeSessionCreated { .. }
+            | TaskResult::WorktreeForked { .. } => true,
+            TaskResult::WithPinnedMemoryMode { result, .. } => result.ends_startup(),
+            _ => false,
+        }
     }
+}
+#[derive(Debug)]
+pub enum WorkspaceMutation {
+    Upsert(Vec<xai_grok_dashboard_store::NewMember>),
+    Remove(Vec<xai_grok_dashboard_store::MemberKey>),
+    Layout(xai_grok_dashboard_store::LayoutPatch),
+}
+#[derive(Debug)]
+pub struct WorkspaceMutationFailure {
+    pub key: xai_grok_dashboard_store::MemberKey,
+    pub error: String,
+    pub retryable: bool,
+}
+#[derive(Debug)]
+pub enum WorkspaceWriteCompletion {
+    Upsert {
+        members: Vec<xai_grok_dashboard_store::NewMember>,
+        snapshot: Result<xai_grok_dashboard_store::WorkspaceSnapshot, String>,
+        failures: Vec<WorkspaceMutationFailure>,
+    },
+    Remove {
+        keys: Vec<xai_grok_dashboard_store::MemberKey>,
+        snapshot: Result<xai_grok_dashboard_store::WorkspaceSnapshot, String>,
+        failures: Vec<WorkspaceMutationFailure>,
+    },
+    Layout {
+        patch: xai_grok_dashboard_store::LayoutPatch,
+        outcome: xai_grok_dashboard_store::LayoutApplyOutcome,
+    },
 }
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum TaskResult {
+    /// Session lifecycle result paired with the memory mode pinned by the
+    /// actor that produced it. The wrapper lets all lifecycle variants share
+    /// one typed metadata path.
+    WithPinnedMemoryMode {
+        agent_id: AgentId,
+        memory_mode: Option<xai_grok_shell::config::MemoryMode>,
+        result: Box<TaskResult>,
+    },
     /// A `command` status line finished.
     StatusLineCommandFinished {
         id: crate::app::status_line::RunId,
@@ -2737,19 +2711,13 @@ pub enum TaskResult {
         agent_id: AgentId,
         session_id: acp::SessionId,
         models: Option<acp::SessionModelState>,
-        /// Whether this session's scheduled fires run detached, as the shell
-        /// resolved it at spawn (response
-        /// `_meta["x.ai/schedulerBackgroundLoops"]`). `None` from a shell that
-        /// predates the key. See
-        /// [`crate::app::effects::parse_session_scheduler_background_loops`].
-        scheduler_background_loops: Option<bool>,
     },
     /// Session creation failed.
     SessionFailed {
         agent_id: AgentId,
         error: String,
     },
-    /// Worktree session was created successfully (worktree + ACP session).
+    /// Worktree session was created successfully (worktree and ACP session).
     WorktreeSessionCreated {
         agent_id: AgentId,
         session_id: acp::SessionId,
@@ -2758,8 +2726,7 @@ pub enum TaskResult {
         /// Effective cwd inside the worktree (preserves subdirectory offset).
         session_cwd: std::path::PathBuf,
         models: Option<acp::SessionModelState>,
-        /// See [`TaskResult::SessionCreated::scheduler_background_loops`].
-        scheduler_background_loops: Option<bool>,
+        strategy_summary: Option<String>,
     },
     /// Worktree created and session forked, but not yet loaded.
     /// The dispatch handler sets session_id eagerly, then emits LoadSession.
@@ -2772,8 +2739,9 @@ pub enum TaskResult {
         restore_summary: Option<String>,
         restore_degree: Option<xai_grok_workspace::session::git::RestoreDegree>,
         /// Resume/parent id this worktree was created from (`load_session_id`).
-        /// Used to retarget one-shot restore-code suppress onto the child.
+        /// Used to retarget the one-shot restore-code suppression onto the child.
         resume_session_id: Option<String>,
+        strategy_summary: Option<String>,
     },
     /// Worktree session creation failed.
     WorktreeSessionFailed {
@@ -2788,16 +2756,10 @@ pub enum TaskResult {
         code_restored: bool,
         restore_summary: Option<String>,
         restore_degree: Option<xai_grok_workspace::session::git::RestoreDegree>,
-        /// The session's in-flight running prompt id (from the load response
-        /// `_meta["x.ai/runningPromptId"]`), present only when the session was
-        /// loaded MID-turn (another client is driving). The loader adopts it to
-        /// pass the live `session/update` gate without re-rendering the user
-        /// block (replay already rendered it).
+        /// The session's in-flight running prompt id (from the load response `_meta["x.ai/runningPromptId"]`).
+        /// Present only when the session was loaded MID-turn (another client is driving).
+        /// The loader adopts it to pass the live `session/update` gate without re-rendering the user block (replay already rendered it).
         running_prompt_id: Option<String>,
-        /// See [`TaskResult::SessionCreated::scheduler_background_loops`]. A
-        /// resumed session re-spawns its actor, so the load response carries
-        /// the value that spawn just pinned.
-        scheduler_background_loops: Option<bool>,
     },
     /// Session load (resume) failed.
     SessionLoadFailed {
@@ -2808,12 +2770,10 @@ pub enum TaskResult {
     /// Local `summary.json` display fields for [`Effect::HydrateSessionMetaFromDisk`].
     SessionMetaFromDisk {
         agent_id: AgentId,
-        /// The display title paired with whether it came from a manual
-        /// `/rename` (`summary.title_is_manual`, restores the prompt-border
-        /// title) — manual-ness cannot exist without a title.
+        /// The display title paired with whether it came from a manual `/rename` (`summary.title_is_manual`, restores the prompt-border title).
+        /// Manual-ness cannot exist without a title.
         title: Option<(String, bool)>,
-        /// Persisted per-turn dashboard summary, so a resumed session's row
-        /// shows it without waiting for the next turn.
+        /// Persisted per-turn dashboard summary, so a resumed session's row shows it without waiting for the next turn.
         last_turn_summary: Option<String>,
         /// Generation captured when the hydrate effect was enqueued.
         last_turn_summary_gen: u64,
@@ -2914,18 +2874,20 @@ pub enum TaskResult {
     },
     /// Session list fetched for the welcome screen picker.
     SessionListLoaded {
+        /// Echo of [`Effect::FetchSessionList::host`]; results apply only to the requesting host's picker storage.
+        host: crate::views::session_picker_surface::SessionPickerHost,
+        /// Echo of [`Effect::FetchSessionList::generation`]; results for a superseded picker incarnation are dropped.
+        generation: u64,
         sessions: Vec<crate::app::app_view::SessionPickerEntry>,
-        /// Degraded conversations lane (`_meta["x.ai/partial"]`), surfaced
-        /// as an actionable picker notice instead of a silent empty list.
+        /// A degraded conversations lane (`_meta["x.ai/partial"]`), shown as an actionable picker notice instead of a silent empty list.
         partial: Option<crate::app::effects::ConversationsPartial>,
         /// Directory scope `sessions` were drawn from (`x.ai/listScope`).
         scope: xai_grok_shell::session::unified_list::ListScope,
         /// Echo of [`Effect::FetchSessionList::seq`]; stale results are dropped.
         seq: u64,
-        /// Echo of [`Effect::FetchSessionList::query`]. `Some` marks the
-        /// sessions as server-side search results: stamped so the local fuzzy
-        /// re-filter doesn't hide content-only hits, with zero hits a normal
-        /// outcome rather than an empty-directory error.
+        /// Echo of [`Effect::FetchSessionList::query`].
+        /// `Some` marks the sessions as server-side search results, so the local fuzzy re-filter doesn't hide content-only hits.
+        /// Zero hits are then a normal outcome rather than an empty-directory error.
         query: Option<String>,
     },
     /// A background foreign-session scan completed.
@@ -2947,16 +2909,24 @@ pub enum TaskResult {
     },
     /// Session list fetch failed.
     SessionListFailed {
+        /// Echo of [`Effect::FetchSessionList::host`].
+        host: crate::views::session_picker_surface::SessionPickerHost,
+        /// Echo of [`Effect::FetchSessionList::generation`].
+        generation: u64,
         error: String,
         /// Echo of [`Effect::FetchSessionList::seq`]; stale failures are dropped.
         seq: u64,
-        /// Echo of [`Effect::FetchSessionList::query`]. `Some` (a failed
-        /// search) clears the search in-flight indicator; `None` must leave
-        /// it alone — in Build mode the flag belongs to the FTS5 deep search.
+        /// Echo of [`Effect::FetchSessionList::query`].
+        /// `Some` (a failed search) clears the search in-flight indicator.
+        /// `None` must leave it alone; in Build mode the flag belongs to the FTS5 deep search.
         query: Option<String>,
     },
     /// Picker search debounce elapsed ([`Effect::DebounceSessionSearch`]).
     SessionSearchDebounceExpired {
+        /// Echo of [`Effect::DebounceSessionSearch::host`].
+        host: crate::views::session_picker_surface::SessionPickerHost,
+        /// Echo of [`Effect::DebounceSessionSearch::generation`].
+        generation: u64,
         query: String,
         seq: u64,
     },
@@ -2964,26 +2934,59 @@ pub enum TaskResult {
     RosterLoaded {
         sessions: Vec<crate::app::roster::RosterEntry>,
     },
-    /// Leader session roster fetch failed (silent — no error modal).
+    /// Leader session roster fetch failed (silent; no error modal).
     RosterFailed {
         error: String,
     },
-    /// Local on-disk session list loaded for the dashboard (non-leader
-    /// fallback). Entries are pre-converted to `RosterEntry` (activity
-    /// `Dormant`) so they reuse the roster-row rendering path. A fetch
-    /// failure yields an empty list (silent — the next poll retries).
+    /// Local on-disk session list loaded for the dashboard (non-leader fallback).
+    /// Entries are pre-converted to `RosterEntry` (activity `Dormant`) so they reuse the roster-row rendering path.
+    /// A fetch failure yields an empty list (silent; the next poll retries).
     DashboardSessionsLoaded {
         sessions: Vec<crate::app::roster::RosterEntry>,
     },
+    /// Dashboard v2's process-owned store and initial consistent view.
+    WorkspaceSnapshotLoaded {
+        store: xai_grok_dashboard_store::WorkspaceStore,
+        snapshot: xai_grok_dashboard_store::WorkspaceSnapshot,
+    },
+    /// Dashboard v2 store open or initial snapshot failed.
+    WorkspaceSnapshotFailed {
+        error: String,
+        /// Only SQLite lock contention is expected to clear without user action.
+        retryable: bool,
+    },
+    WorkspaceWriteCompleted {
+        store: xai_grok_dashboard_store::WorkspaceStore,
+        completion: WorkspaceWriteCompletion,
+    },
+    /// The write task lost its moved handle; `db_path` identifies the store to reopen.
+    WorkspaceWriteTaskFailed {
+        db_path: std::path::PathBuf,
+        error: String,
+    },
+    WorkspaceRefreshed {
+        store: xai_grok_dashboard_store::WorkspaceStore,
+        snapshot: Result<Option<xai_grok_dashboard_store::WorkspaceSnapshot>, String>,
+    },
+    /// Reopens the store handle lost by a failed refresh task.
+    WorkspaceRefreshTaskFailed {
+        db_path: std::path::PathBuf,
+        error: String,
+    },
     /// Card detail loaded for a session in the picker.
     CardDetailLoaded {
+        /// Echo of [`Effect::LoadCardDetail::host`].
+        host: crate::views::session_picker_surface::SessionPickerHost,
+        /// Echo of [`Effect::LoadCardDetail::generation`].
+        generation: u64,
         source: String,
         session_id: String,
-        generation: u64,
+        /// Echo of [`Effect::LoadCardDetail::seq`].
+        seq: u64,
         detail: crate::app::app_view::CardDetail,
     },
-    /// Remote session restored successfully — now load it. Always a Build
-    /// disk row (see [`Effect::RestoreAndLoadSession`]).
+    /// Remote session restored successfully; now load it.
+    /// Always a Build disk row (see [`Effect::RestoreAndLoadSession`]).
     SessionRestored {
         agent_id: AgentId,
         /// The local session ID (may differ from remote ID).
@@ -3004,16 +3007,11 @@ pub enum TaskResult {
         agent_id: AgentId,
         result: Result<acp::PromptResponse, String>,
         /// HTTP status code from the upstream API error, if available.
-        /// Used by dispatch to show targeted UI (e.g. credit-limit
-        /// upsell on 403).
+        /// Used by dispatch to show targeted UI (e.g. credit-limit upsell on 403).
         http_status: Option<u16>,
-        /// The `prompt_id` the pager minted when it sent this `session/prompt`
-        /// RPC. On `Ok` the agent echoes `promptId` back in PR meta, but an
-        /// `acp::Error` carries no meta — so this is the ONLY way to attribute
-        /// an *error* response to the prompt it belongs to. The dispatch gate
-        /// uses it to discard errors from queued/stale prompts instead of
-        /// painting them onto the running turn. `None` for synthetic/test
-        /// constructions that don't need gating.
+        /// This is therefore the ONLY way to attribute an *error* response to its prompt.
+        /// The dispatch gate uses it to discard errors from queued/stale prompts instead of painting them onto the running turn.
+        /// `None` for synthetic/test constructions that don't need gating.
         prompt_id: Option<String>,
     },
     /// Prompt response for a persistent child/subagent session. Kept separate
@@ -3042,8 +3040,7 @@ pub enum TaskResult {
         notice_id: String,
         version: i32,
     },
-    /// The answer stands for this run, but nothing on disk holds it,
-    /// so the notice returns at the next launch.
+    /// The answer stands for this run, but nothing on disk holds it, so the notice returns at the next launch.
     ConsentPersistFailed {
         error: String,
     },
@@ -3051,6 +3048,7 @@ pub enum TaskResult {
     KillSubagentComplete {
         session_id: acp::SessionId,
         subagent_id: String,
+        attempt_id: Option<String>,
         outcome: SubagentKillOutcome,
     },
     PreferredModelPersisted {
@@ -3059,11 +3057,10 @@ pub enum TaskResult {
     /// Manual `/compact` command completed.
     CompactComplete {
         agent_id: AgentId,
-        result: Result<(), String>,
+        result: Result<(), crate::app::effects::CompactError>,
     },
-    /// Background task kill result. `outcome` is `None` when the agent
-    /// returned an error envelope or an unparseable payload (treated as
-    /// "clear pending state, keep the row").
+    /// Background task kill result.
+    /// `outcome` is `None` when the agent returned an error envelope or an unparseable payload (treated as "clear pending state, keep the row").
     BgTaskKilled {
         session_id: String,
         task_id: String,
@@ -3081,8 +3078,7 @@ pub enum TaskResult {
         model_id: acp::ModelId,
         effort: Option<ReasoningEffort>,
         result: Result<(), SwitchModelError>,
-        /// Forwarded from `Effect::SwitchModel.prev_model_id` for
-        /// rollback on `IncompatibleAgent`.
+        /// Forwarded from `Effect::SwitchModel.prev_model_id` for rollback on `IncompatibleAgent`.
         prev_model_id: Option<acp::ModelId>,
     },
     /// Changelog fetched from CDN (both formats).
@@ -3118,8 +3114,8 @@ pub enum TaskResult {
     AuthUrlReady {
         request_seq: u64,
         auth_url: Option<String>,
-        /// Deprecated: superseded by `mode` (authoritative). Kept only as a
-        /// back-compat fallback for older agents that don't send `mode`.
+        /// Deprecated: superseded by `mode` (authoritative).
+        /// Kept only as a back-compat fallback for older agents that don't send `mode`.
         external: bool,
         /// Presentation mode from `x.ai/auth/get_url`; `None` on older agents.
         mode: Option<String>,
@@ -3337,31 +3333,61 @@ pub enum TaskResult {
         nonce: u64,
     },
     /// Feedback submitted successfully (fire-and-forget).
+    /// A modal-origin completion only takes the consent parked for its exact submission; anything else is stale and a no-op.
     FeedbackComplete {
         agent_id: AgentId,
+        origin: FeedbackSendOrigin,
+        outcome: xai_grok_shell::session::FeedbackOutcome,
+        /// Present only when the shell consumed explicit modal consent and minted a one-shot capability.
+        trace_upload_token: Option<String>,
     },
     /// Feedback submission failed. The shell already persisted the report locally, so only the error is surfaced.
+    /// A modal-origin failure additionally drops its parked consent so a failed report never uploads a trace.
     FeedbackFailed {
         agent_id: AgentId,
+        origin: FeedbackSendOrigin,
         error: String,
     },
+    FeedbackDraftListComplete {
+        agent_id: AgentId,
+        modal_id: crate::views::feedback_modal::FeedbackModalId,
+        generation: u64,
+        result: Result<Vec<xai_grok_feedback::FeedbackDraft>, String>,
+    },
+    FeedbackDraftLoadComplete {
+        agent_id: AgentId,
+        load: crate::views::feedback_modal::FeedbackDraftLoad,
+        result: Result<xai_grok_feedback::FeedbackDraft, String>,
+    },
+    FeedbackDraftDeleteComplete {
+        agent_id: AgentId,
+        delete: crate::views::feedback_modal::FeedbackDraftDelete,
+        result: Result<(), String>,
+    },
+    FeedbackDraftUpdateComplete {
+        agent_id: AgentId,
+        update: crate::views::feedback_modal::FeedbackDraftUpdate,
+        result: Result<(), String>,
+    },
     /// One-shot feedback trace archive finished (or was skipped).
+    /// `submission_id` echoes the effect's correlation: a modal one-shot completion only ever
+    /// touches its registered pending submission, never a later modal.
     FeedbackTraceUploaded {
         agent_id: AgentId,
+        submission_id: Option<crate::views::feedback_modal::FeedbackSubmissionId>,
         error: Option<String>,
     },
-    /// Memory note saved to global MEMORY.md.
+    /// Memory note save completed.
     MemoryNoteSaved {
         agent_id: AgentId,
         result: Result<(), String>,
     },
     /// LLM-rewritten memory note ready for inline review.
-    /// `Ok(text)` = rewritten markdown; `Err(error)` = rewrite failed.
+    /// `Ok(text)` carries the rewritten markdown; `Err(error)` means the rewrite failed.
     MemoryNoteRewritten {
         agent_id: AgentId,
         result: Result<String, String>,
-        /// Nonce from the originating RewriteMemoryNote effect; must match
-        /// the modal's `rewrite_nonce` before populating enhanced_content.
+        /// Nonce from the originating RewriteMemoryNote effect; must match the modal's `rewrite_nonce` before populating enhanced_content.
         nonce: u64,
     },
     /// Bundle status fetched successfully.
@@ -3396,15 +3422,13 @@ pub enum TaskResult {
         /// Correlates minimal responses; fullscreen leaves this unset.
         minimal_request_id: Option<uuid::Uuid>,
     },
-    /// `x.ai/recap` request acknowledged (fire-and-forget). The recap itself
-    /// arrives separately as a `SessionRecap` notification; this only carries
-    /// a transport error, if any, for logging.
+    /// `x.ai/recap` request acknowledged (fire-and-forget).
+    /// The recap itself arrives separately as a `SessionRecap` notification; this only carries a transport error, if any, for logging.
     RecapRequested {
-        /// Session the recap was requested for — lets the handler find the
-        /// agent whose manual loading spinner must be cleared on failure.
+        /// Session the recap was requested for; lets the handler find the agent whose manual loading spinner must be cleared on failure.
         session_id: acp::SessionId,
-        /// Whether this was an automatic recap. Only a manual `/recap` shows a
-        /// loading spinner, so only a manual failure needs to clear one.
+        /// Whether this was an automatic recap.
+        /// Only a manual `/recap` shows a loading spinner, so only a manual failure needs to clear one.
         auto: bool,
         error: Option<String>,
     },
@@ -3412,10 +3436,9 @@ pub enum TaskResult {
     InterjectQueued {
         agent_id: AgentId,
     },
-    /// Interjection send failed. Carries the payload so the dispatcher can
-    /// requeue it (mirrors the batch path's `failed_local` requeue) — the
-    /// queue row was already removed optimistically, so dropping the text
-    /// here would silently lose the user's message.
+    /// Interjection send failed.
+    /// Carries the payload so the dispatcher can requeue it (mirrors the batch path's `failed_local` requeue).
+    /// The queue row was already removed optimistically, so dropping the text here would silently lose the user's message.
     InterjectFailed {
         agent_id: AgentId,
         error: String,
@@ -3431,20 +3454,19 @@ pub enum TaskResult {
     LogoutComplete,
     /// Best-effort `x.ai/auth/cancel` finished (no UI update; state already left Authenticating).
     AuthCancelComplete,
-    /// Shell responded to `x.ai/auth/check_subscription`. `verify` echoes
-    /// the generation from `Effect::CheckSubscription` for deferred-gate
-    /// verifications.
+    /// Shell responded to `x.ai/auth/check_subscription`.
+    /// `verify` echoes the generation from `Effect::CheckSubscription` for deferred-gate verifications.
     CheckSubscriptionComplete {
         verify: Option<u64>,
         meta: Option<serde_json::Value>,
     },
-    /// Result of the credit-limit subscription re-check. If the tier
-    /// changed the stashed prompt is retried; otherwise the upsell is shown.
+    /// Result of the credit-limit subscription re-check.
+    /// If the tier changed the stashed prompt is retried; otherwise the upsell is shown.
     CreditLimitRecheckComplete {
         agent_id: AgentId,
         meta: Option<serde_json::Value>,
     },
-    /// 5s paywall check timer fired -- time to send another check.
+    /// 5s paywall check timer fired: time to send another check.
     PaywallCheckTick,
     /// The deferred-gate verification window expired.
     GateVerifyTimeout {
@@ -3455,6 +3477,10 @@ pub enum TaskResult {
         generation: u64,
     },
     DeepSearchResults {
+        /// Echo of [`Effect::DeepSearchSessions::host`].
+        host: crate::views::session_picker_surface::SessionPickerHost,
+        /// Echo of [`Effect::DeepSearchSessions::generation`].
+        generation: u64,
         results: Vec<xai_grok_shell::extensions::session_search::SearchSessionHit>,
         seq: u64,
     },
@@ -3471,12 +3497,11 @@ pub enum TaskResult {
         agent_id: AgentId,
         new_session_id: acp::SessionId,
         cwd: std::path::PathBuf,
-        /// Parent session id the fork was taken from (for one-shot
-        /// restore-code suppress retarget).
+        /// Parent session id the fork was taken from (to retarget the one-shot restore-code suppression).
         parent_session_id: acp::SessionId,
     },
-    /// `x.ai/session/fork` failed. The placeholder agent stays in
-    /// `app.agents` with no `session_id` so the user can switch away.
+    /// `x.ai/session/fork` failed.
+    /// The placeholder agent stays in `app.agents` with no `session_id` so the user can switch away.
     ForkSessionFailed {
         agent_id: AgentId,
         error: String,
@@ -3507,13 +3532,21 @@ pub enum TaskResult {
         subscription_tier: Option<String>,
         /// Auto top-up rule fetch result; `Unchanged` keeps any cached rule.
         autotopup: crate::views::credit_bar::AutoTopupFetch,
-        /// Usage-modal fetch generation (`0` = background refresh).
+        /// Usage-modal fetch generation (`0` means a background refresh).
         nonce: u64,
     },
-    /// App-level billing data (welcome screen).
+    /// App-level billing data (welcome screen, dashboard usage modal).
     AppBillingFetched {
         balance: Option<crate::views::credit_bar::CreditBalance>,
         autotopup: crate::views::credit_bar::AutoTopupFetch,
+        /// Usage-modal fetch generation (`0` means a background refresh).
+        nonce: u64,
+    },
+    /// App-level billing fetch failed (transport or parse); the cached balance is kept.
+    AppBillingError {
+        error: String,
+        /// Usage-modal fetch generation (`0` means a background refresh).
+        nonce: u64,
     },
     GateRefreshed {
         settings: Option<xai_grok_shell::util::config::RemoteSettings>,
@@ -3524,11 +3557,11 @@ pub enum TaskResult {
         error: String,
         /// When true, swallow the error silently (background refresh).
         silent: bool,
-        /// Usage-modal fetch generation (`0` = background refresh).
+        /// Usage-modal fetch generation (`0` means a background refresh).
         nonce: u64,
     },
-    /// Debounce timer for shell suggestions expired. Routed by the arming
-    /// `agent_id`, like the sibling `PluginCtaDebounceExpired`.
+    /// Debounce timer for shell suggestions expired.
+    /// Routed by the arming `agent_id`, like the sibling `PluginCtaDebounceExpired`.
     SuggestionDebounceExpired {
         agent_id: AgentId,
         generation: u64,
@@ -3538,11 +3571,9 @@ pub enum TaskResult {
         agent_id: AgentId,
         generation: u64,
     },
-    /// Shell suggestions loaded from ACP `x.ai/suggest`. `request_text` /
-    /// `request_cursor` echo what the request was built from — the anchor
-    /// the items' `replaceRange` offsets index into and the position Tab
-    /// targets, paired atomically with them; `agent_id` routes the landing
-    /// to the agent that fetched.
+    /// Shell suggestions loaded from ACP `x.ai/suggest`.
+    /// `request_text` / `request_cursor` echo what the request was built from, paired atomically with the items.
+    /// They are the anchor the items' `replaceRange` offsets index into and the position Tab targets.
     ShellSuggestionsLoaded {
         agent_id: AgentId,
         response: crate::views::suggestion_controller::SuggestResponseParsed,
@@ -3561,27 +3592,32 @@ pub enum TaskResult {
         key: crate::settings::SettingKey,
         value: crate::settings::SettingValue,
     },
-    /// Setting persist failed. Rolls back in-memory cache to
-    /// `rollback_value` and shows a failure toast.
+    /// Setting persist failed.
+    /// Rolls back in-memory cache to `rollback_value` and shows a failure toast.
     SettingPersistFailed {
         key: crate::settings::SettingKey,
         rollback_value: crate::settings::SettingValue,
         error: String,
     },
-    /// Best-effort persist failed (cycle_mode path). Logs + toasts but
-    /// does NOT roll back in-memory state.
+    /// Best-effort persist failed (cycle_mode path).
+    /// Logs and toasts but does NOT roll back in-memory state.
     SettingPersistFailedBestEffort {
         key: crate::settings::SettingKey,
         error: String,
     },
-    /// Off-thread clipboard attachment probe finished (see
-    /// [`Effect::ProbeClipboardAttachment`]); dispatch attaches the chip.
+    /// Off-thread clipboard attachment probe finished (see [`Effect::ProbeClipboardAttachment`]); dispatch attaches the chip.
     ClipboardAttachmentProbed {
         ctx: ClipboardPasteContext,
         /// Decoded/persisted image outcome from the off-thread probe.
         image: ProbedAttachment,
         /// File URL(s) the completion resolves via the existing path handling.
         file_urls: Option<String>,
+    },
+    FeedbackImageRehydrated {
+        agent_id: AgentId,
+        modal_id: crate::views::feedback_modal::FeedbackModalId,
+        image_identity: u64,
+        result: Result<Vec<u8>, String>,
     },
     /// Shared prompt-image preview state was resolved off-thread.
     PromptImagePreviewPrepared,
@@ -3597,8 +3633,7 @@ pub enum TaskResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// `as_canonical` must return the wire strings that the settings
-    /// picker and dispatcher pattern-match against.
+    /// `as_canonical` must return the wire strings that the settings picker and dispatcher pattern-match against.
     #[test]
     fn plan_mode_kind_as_canonical() {
         assert_eq!(PlanModeKind::On.as_canonical(), "on");
@@ -3610,7 +3645,7 @@ mod tests {
         assert_eq!(PlanModeKind::On.as_display(), "On");
         assert_eq!(PlanModeKind::Off.as_display(), "Off");
     }
-    /// `to_bool` must project `On → true`, `Off → false`.
+    /// `to_bool` must map `On` to `true` and `Off` to `false`.
     #[test]
     fn plan_mode_kind_to_bool() {
         assert!(PlanModeKind::On.to_bool());
@@ -3636,8 +3671,7 @@ mod tests {
             );
         }
     }
-    /// Drift-guard: `PLAN_MODE_CHOICES` canonicals must match
-    /// `PlanModeKind::as_canonical`.
+    /// Drift-guard: `PLAN_MODE_CHOICES` canonicals must match `PlanModeKind::as_canonical`.
     #[test]
     fn plan_mode_kind_canonical_strings_match_choices_catalog() {
         let catalog_canonicals: std::collections::HashSet<&str> =

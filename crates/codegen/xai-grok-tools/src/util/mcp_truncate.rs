@@ -46,10 +46,9 @@ pub const ENV_GROK_MAX_MCP_OUTPUT_BYTES: &str = "GROK_MAX_MCP_OUTPUT_BYTES";
 /// function tool dispatch (no live `Config`) sees the same value.
 static EFFECTIVE_MCP_MAX_OUTPUT_BYTES: AtomicUsize = AtomicUsize::new(0);
 
-/// Host (shell) sets the fully-resolved MCP output cap in bytes.
-///
-/// Pass the already-resolved limit (requirements > env > config > remote config >
-/// default). Pass `0` only in tests to clear and fall through to env / default.
+/// Host (shell) sets the fully-resolved MCP output cap in bytes. Pass the already-resolved limit
+/// (requirements > env > config > remote config > default). Pass `0` only in tests to clear and
+/// fall through to env / default.
 pub fn set_mcp_max_output_bytes(bytes: usize) {
     EFFECTIVE_MCP_MAX_OUTPUT_BYTES.store(bytes, Ordering::Relaxed);
 }
@@ -61,11 +60,9 @@ fn parse_positive_bytes_env(name: &str) -> Option<usize> {
     usize::try_from(n).ok().filter(|n| *n > 0)
 }
 
-/// Env tier: `GROK_MAX_MCP_OUTPUT_BYTES` then `MAX_MCP_OUTPUT_BYTES`.
-///
-/// Grok-native wins when both are set. Positive integers only. Used by the
-/// shell resolver and as the standalone fallback when the host has not called
-/// [`set_mcp_max_output_bytes`].
+/// Env tier: `GROK_MAX_MCP_OUTPUT_BYTES` then `MAX_MCP_OUTPUT_BYTES`. Grok-native wins when both
+/// are set. Positive integers only. Used by the shell resolver and as the standalone fallback when
+/// the host has not called [`set_mcp_max_output_bytes`].
 pub fn mcp_max_output_bytes_from_env() -> Option<usize> {
     parse_positive_bytes_env(ENV_GROK_MAX_MCP_OUTPUT_BYTES)
         .or_else(|| parse_positive_bytes_env(ENV_MAX_MCP_OUTPUT_BYTES))
@@ -251,10 +248,9 @@ async fn truncate_mcp_text(text: &mut String, trunc_ctx: &McpTruncateContext) {
     );
 }
 
-/// Bound the `MCP`/`Text` variants to the inline size limit, keeping a preview
-/// and dumping the text that remains after any MCP image extract. Other
-/// variants pass through. MCP data-URI images go into `extracted_images`
-/// before the bound.
+/// Bound the `MCP`/`Text` variants to the inline size limit, keeping a preview and dumping the text
+/// that remains after any MCP image extract. Other variants pass through. MCP data-URI images go
+/// into `extracted_images` before the bound.
 pub async fn truncate_tool_output(
     mut output: ToolOutput,
     trunc_ctx: &McpTruncateContext,

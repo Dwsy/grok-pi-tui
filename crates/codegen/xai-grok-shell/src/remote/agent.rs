@@ -1,13 +1,10 @@
-//! Remote sandbox client for cli-chat-proxy.
-//!
-//! This module provides an HTTP client to interact with cli-chat-proxy
-//! for managing sandbox sessions and environments via REST API.
+//! HTTP client for managing sandbox sessions and environments via the cli-chat-proxy REST API.
 
 use std::sync::Arc;
 
-use crate::auth::{AuthManager, GrokComConfig};
 use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
+use xai_grok_login::{AuthManager, GrokComConfig};
 
 // Re-export sandbox API types from cli-chat-proxy-types for convenience.
 // Sorted alphabetically; see sandbox_types.rs for logical grouping.
@@ -26,12 +23,8 @@ pub use prod_mc_cli_chat_proxy_types::{
 // Sandbox Client
 // ============================================================================
 
-/// HTTP client for interacting with the sandbox API via cli-chat-proxy.
-///
-/// Path parameters (`session_id`, `environment_id`) are interpolated directly
-/// into URLs without percent-encoding. This is safe because these IDs are
-/// UUIDs in practice. If ID formats ever change to include URL-unsafe
-/// characters, the `format!()` calls should be updated to use percent-encoding.
+/// HTTP client for interacting with the sandbox API via cli-chat-proxy. Path parameters (`session_id`, `environment_id`) are interpolated directly into URLs without percent-encoding.
+/// This is safe because these IDs are UUIDs in practice. If ID formats ever change to include URL-unsafe characters, the `format!()` calls should be updated to use percent-encoding.
 pub struct SandboxClient {
     client: reqwest::Client,
     base_url: String,
@@ -47,12 +40,11 @@ impl SandboxClient {
         }
     }
 
-    /// Returns the base URL.
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
 
-    // Do not set Content-Type — callers use .json() and reqwest .header() appends.
+    // Do not set Content-Type: callers use .json() and reqwest .header() appends
     async fn auth_headers(
         &self,
         builder: reqwest::RequestBuilder,
@@ -82,7 +74,7 @@ impl SandboxClient {
                 crate::http::process_client_mode(),
             );
 
-        Ok(xai_file_utils::trace_context::inject_trace_context_into_request(builder))
+        Ok(xai_grok_otel::inject_trace_context_into_request(builder))
     }
 
     /// Check an HTTP response for errors, then deserialize the JSON body.
@@ -111,7 +103,6 @@ impl SandboxClient {
         Ok(())
     }
 
-    /// Fork an existing sandbox session.
     pub async fn fork_session(&self, request: &SandboxForkRequest) -> Result<SandboxForkResponse> {
         let url = format!("{}/sandbox/sessions/fork", self.base_url);
         let response = self
@@ -124,7 +115,6 @@ impl SandboxClient {
         Self::parse_response(response, "fork session").await
     }
 
-    /// Terminate a sandbox session.
     pub(crate) async fn terminate_session(
         &self,
         session_id: &str,
@@ -156,7 +146,6 @@ impl SandboxClient {
     // Environment CRUD
     // ========================================================================
 
-    /// List sandbox environments.
     pub async fn list_environments(
         &self,
         request: &SandboxListEnvironmentsRequest,
@@ -176,7 +165,6 @@ impl SandboxClient {
         Self::parse_response(response, "list environments").await
     }
 
-    /// Create a new sandbox environment.
     pub(crate) async fn create_environment(
         &self,
         request: &SandboxCreateEnvironmentRequest,
@@ -192,7 +180,6 @@ impl SandboxClient {
         Self::parse_response(response, "create environment").await
     }
 
-    /// Update a sandbox environment.
     pub(crate) async fn update_environment(
         &self,
         environment_id: &str,
@@ -209,7 +196,6 @@ impl SandboxClient {
         Self::parse_response(response, "update environment").await
     }
 
-    /// Delete a sandbox environment.
     pub(crate) async fn delete_environment(&self, environment_id: &str) -> Result<()> {
         let url = format!("{}/sandbox/environments/{}", self.base_url, environment_id);
         let response = self

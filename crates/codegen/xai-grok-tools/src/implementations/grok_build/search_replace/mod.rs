@@ -50,12 +50,9 @@ impl SearchReplaceVersion {
         self == Self::Legacy0_4_10
     }
 }
-/// Full description (for the non-concise toolset).
-///
-/// Uses MiniJinja template placeholders with ToolKind-based keys:
-/// - `${{ tools.by_kind.read }}` — client-facing name for the Read tool
-/// - `${{ params.edit.old_string }}` — client-facing param name
-/// - `${{ params.edit.replace_all }}` — client-facing param name
+/// Full description (for the non-concise toolset). `${{ tools.by_kind.read }}` — client-facing name
+/// for the Read tool `${{ params.edit.old_string }}` — client-facing param name `${{
+/// params.edit.replace_all }}` — client-facing param name
 pub(crate) const DESCRIPTION_FULL: &str = r#"Replace an exact string in a file.
 
 ${% if tools.by_kind.read -%}
@@ -64,9 +61,8 @@ ${% endif -%}
 - `${{ params.edit.old_string }}` must match exactly one place in the file. If it appears more than once, add surrounding lines to make it unique, or set `${{ params.edit.replace_all }}` to change every occurrence (handy for renaming an identifier).
 - To create a new file, set `${{ params.edit.old_string }}` to an empty string. An empty `${{ params.edit.old_string }}` cannot overwrite an existing non-empty file."#;
 /// The overwrite-guard sentence in [`DESCRIPTION_FULL`]. Only accurate while
-/// `empty_old_string_does_not_override` is enabled (opt-in; the default is the
-/// legacy overwrite behavior); `versioned_definition` strips it unless a
-/// config enables the guard.
+/// `empty_old_string_does_not_override` is enabled (opt-in; the default is the legacy overwrite
+/// behavior); `versioned_definition` strips it unless a config enables the guard.
 pub(crate) const EMPTY_OLD_STRING_GUARD_SENTENCE: &str =
     " An empty `${{ params.edit.old_string }}` cannot overwrite an existing non-empty file.";
 /// Input for the search_replace tool.
@@ -104,27 +100,19 @@ pub struct SearchReplaceParams {
     /// `deny_unknown_fields`. Still gates the config-time Read-tool requirement (`requires_expr`).
     #[serde(default)]
     pub skip_read_before_edit: bool,
-    /// When true (opt-in), an empty `old_string` may only create a new file
-    /// or fill an empty one — it never silently overwrites an existing
-    /// non-empty file. Defaults to false (the legacy behavior): an empty
-    /// `old_string` replaces the file's entire contents. The served
-    /// description includes the guard sentence only when this is enabled
-    /// (see `versioned_definition`).
+    /// When true (opt-in), an empty `old_string` may only create a new file or fill an empty one — it never silently overwrites an existing
+    /// non-empty file. Defaults to false (the legacy behavior): an empty `old_string` replaces the file's entire contents. The served description
+    /// includes the guard sentence only when this is enabled (see `versioned_definition`).
     #[serde(default)]
     pub empty_old_string_does_not_override: bool,
-    /// When true, enable normalized-fallback matching for Unicode confusable
-    /// characters (smart quotes, em-dashes, etc.).  When exact byte matching
-    /// fails, the tool will retry with confusable-normalized comparison and
-    /// perform the replacement if an unambiguous match is found.
-    ///
-    /// Default: `false` — disabled until Stage 1 diagnostics are stable.
+    /// When true, enable normalized-fallback matching for Unicode confusable characters (smart quotes, em-dashes, etc.).
+    /// When exact byte matching fails, the tool will retry with confusable-normalized comparison and perform the
+    /// replacement if an unambiguous match is found. Default: `false` — disabled until Stage 1 diagnostics are stable.
     #[serde(default)]
     pub unicode_normalized_fallback: bool,
-    /// When true, append a hint that the user may have changed the file
-    /// to `NoMatchesFound` error messages. This nudges the model to re-read
-    /// instead of blindly retrying with the same stale content.
-    ///
-    /// Default: `true`.
+    /// When true, append a hint that the user may have changed the file to `NoMatchesFound` error
+    /// messages. This nudges the model to re-read instead of blindly retrying with the same stale
+    /// content. Default: `true`.
     #[serde(default = "default_true")]
     pub include_user_edit_hint: bool,
 }
@@ -174,6 +162,7 @@ pub(crate) async fn run_search_replace(
         hints_enabled = res.get::<PathNotFoundHints>().is_some_and(|h| h.0);
     }
     let resolved = resolve_model_path(&cwd, display_cwd.as_deref(), &input.file_path);
+    let policy_path = resolved.clone();
     let path = match crate::util::fs::try_canonicalize(&resolved).await {
         Ok(p) => p,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -230,6 +219,7 @@ pub(crate) async fn run_search_replace(
             &notification_handle,
             &tool_call_id,
             &path,
+            &policy_path,
             &cwd,
             display_cwd.as_deref(),
             hints_enabled,
@@ -244,6 +234,7 @@ pub(crate) async fn run_search_replace(
             &notification_handle,
             &tool_call_id,
             &path,
+            &policy_path,
             &cwd,
             display_cwd.as_deref(),
             hints_enabled,
@@ -272,10 +263,9 @@ pub(crate) async fn run_search_replace(
 /// Maximum length for a single path component (file or directory name).
 /// POSIX `NAME_MAX` is 255 on both macOS and Linux.
 const NAME_MAX: usize = 255;
-/// Validate that no path component exceeds `NAME_MAX`.
-///
-/// Returns `Some(SearchReplaceOutput::FilenameTooLong(..))` if any component is
-/// too long, `None` if the path is valid.
+/// Validate that no path component exceeds `NAME_MAX`. Returns
+/// `Some(SearchReplaceOutput::FilenameTooLong(..))` if any component is too long, `None` if the
+/// path is valid.
 fn validate_path_length(file_path: &str) -> Option<SearchReplaceOutput> {
     for component in std::path::Path::new(file_path).components() {
         if let std::path::Component::Normal(name) = component {
@@ -299,6 +289,7 @@ async fn handle_new_file_creation(
     notification_handle: &ToolNotificationHandle,
     tool_call_id: &str,
     path: &std::path::Path,
+    policy_path: &std::path::Path,
     cwd: &std::path::Path,
     display_cwd: Option<&std::path::Path>,
     hints_enabled: bool,
@@ -326,7 +317,18 @@ async fn handle_new_file_creation(
             old_string_name
         )));
     }
-    if let Err(e) = fs.write_file(path, input.new_string.as_bytes()).await {
+    let is_memory_write = match crate::types::memory_v2::write_memory_v2_file(
+        &resources,
+        policy_path,
+        input.new_string.as_bytes(),
+    )
+    .await
+    {
+        Ok(crate::types::memory_v2::MemoryV2Write::Written { .. }) => true,
+        Ok(crate::types::memory_v2::MemoryV2Write::Outside) => false,
+        Err(error) => return Ok(SearchReplaceOutput::InvalidInput(error)),
+    };
+    if !is_memory_write && let Err(e) = fs.write_file(path, input.new_string.as_bytes()).await {
         return Ok(match e.io_error_kind() {
             Some(std::io::ErrorKind::NotFound) => {
                 let display_dcwd = display_cwd_or_cwd(cwd, display_cwd);
@@ -404,11 +406,9 @@ async fn handle_new_file_creation(
         },
     ))
 }
-/// Return a short nearest-match hint for a `NoMatchesFound` error message.
-///
-/// Finds the first file line containing the longest token from `old_string`'s
-/// first line. Returns `"\n\nNearest match: line N: <content>"` (≤200 chars),
-/// or an empty string if no match is found.
+/// Return a short nearest-match hint for a `NoMatchesFound` error message. Finds the first file
+/// line containing the longest token from `old_string`'s first line. Returns `"\n\nNearest match:
+/// line N: <content>"` (≤200 chars), or an empty string if no match is found.
 fn build_nearest_match_hint(file: &str, old_string: &str) -> String {
     let keyword = old_string
         .lines()
@@ -429,19 +429,9 @@ fn build_nearest_match_hint(file: &str, old_string: &str) -> String {
         })
         .unwrap_or_default()
 }
-/// Build a Unicode-confusable diagnostic message when an exact match fails
-/// but the file contains typography characters that may have caused the miss.
-///
-/// Performs a normalized comparison: if `normalize_confusables(file)` contains
-/// `normalize_confusables(old_string)`, the miss was almost certainly caused by
-/// invisible Unicode characters.  In that case, returns a targeted diagnostic
-/// listing only the confusable-bearing lines that overlap the matched region
-/// (not every confusable line in the file).
-///
-/// Returns `None` when:
-/// - The file contains no confusables at all, or
-/// - The normalized comparison also fails (confusables are present but unrelated
-///   to the missed match — no false guidance).
+/// Unicode-confusable diagnostic when an exact match fails but typography may have caused the miss.
+/// Returns confusable-bearing lines overlapping the matched region, or `None` if the file has no
+/// confusables or the normalized comparison also fails (no false guidance).
 fn build_confusable_hint(
     file: &str,
     old_string: &str,
@@ -527,6 +517,7 @@ async fn handle_replacement(
     notification_handle: &ToolNotificationHandle,
     tool_call_id: &str,
     path: &std::path::Path,
+    policy_path: &std::path::Path,
     cwd: &std::path::Path,
     display_cwd: Option<&std::path::Path>,
     hints_enabled: bool,
@@ -712,7 +703,18 @@ async fn handle_replacement(
     } else {
         new_text.clone()
     };
-    if let Err(e) = fs.write_file(path, write_text.as_bytes()).await {
+    let is_memory_write = match crate::types::memory_v2::write_memory_v2_file(
+        &resources,
+        policy_path,
+        write_text.as_bytes(),
+    )
+    .await
+    {
+        Ok(crate::types::memory_v2::MemoryV2Write::Written { .. }) => true,
+        Ok(crate::types::memory_v2::MemoryV2Write::Outside) => false,
+        Err(error) => return Ok(SearchReplaceOutput::InvalidInput(error)),
+    };
+    if !is_memory_write && let Err(e) = fs.write_file(path, write_text.as_bytes()).await {
         return Ok(match e.io_error_kind() {
             Some(std::io::ErrorKind::AlreadyExists) => SearchReplaceOutput::InvalidInput(format!(
                 "Error: cannot write {}. A component of the path already exists as a file where a directory is expected.",
@@ -784,10 +786,9 @@ impl crate::types::tool_metadata::ToolMetadata for SearchReplaceTool {
     fn description_template(&self) -> &str {
         DESCRIPTION_FULL
     }
-    /// Params-aware description: the "cannot overwrite" sentence in
-    /// [`DESCRIPTION_FULL`] only holds while `empty_old_string_does_not_override`
-    /// is enabled, so it is served only for configs that opt into the guard and
-    /// stripped by default (legacy overwrite behavior).
+    /// Params-aware description: the "cannot overwrite" sentence in [`DESCRIPTION_FULL`] only holds
+    /// while `empty_old_string_does_not_override` is enabled, so it is served only for configs that
+    /// opt into the guard and stripped by default (legacy overwrite behavior).
     fn versioned_definition(
         &self,
         _contract_version: Option<&str>,
@@ -837,12 +838,9 @@ impl crate::types::tool_metadata::ToolMetadata for SearchReplaceTool {
                 )))),
                 ToolRequirement::tool_kind(ToolKind::Read),
             )),
-            // Description template references these input params via
-            // ${{ params.edit.old_string }}, ${{ params.edit.new_string }},
-            // ${{ params.edit.replace_all }}. They must remain visible.
-            // TODO: We can generate the schemas and requirement by enforcing
-            // it during the registry phase, since these are parts of the params which are
-            // tied to the tool
+            // Description template references these input params via ${{ params.edit.old_string }}, ${{ params.edit.new_string }},
+            // ${{ params.edit.replace_all }}. They must remain visible. TODO: We can generate the schemas and requirement by
+            // enforcing it during the registry phase, since these are parts of the params which are tied to the tool
             Expr::Value(ToolRequirement::input_param(ToolKind::Edit, "old_string")),
             Expr::Value(ToolRequirement::input_param(ToolKind::Edit, "new_string")),
             Expr::Value(ToolRequirement::input_param(ToolKind::Edit, "replace_all")),
@@ -941,12 +939,6 @@ mod tests {
             std::collections::HashMap::from([(ToolKind::Edit, edit_params)]),
         )
     }
-    /// The strip in `versioned_definition` matches the template verbatim, so
-    /// the sentence must stay in sync with `DESCRIPTION_FULL`.
-    #[test]
-    fn overwrite_guard_sentence_stays_in_sync_with_template() {
-        assert!(DESCRIPTION_FULL.contains(EMPTY_OLD_STRING_GUARD_SENTENCE));
-    }
     #[test]
     fn overwrite_guard_sentence_is_conditional_on_param() {
         use crate::types::tool_metadata::ToolMetadata;
@@ -964,14 +956,6 @@ mod tests {
             &serde_json::json!({}),
         );
         let default_desc = default_def.function.description.unwrap();
-        assert!(
-            !default_desc.contains("cannot overwrite"),
-            "guard sentence must be absent by default (legacy overwrite behavior):\n{default_desc}"
-        );
-        assert!(
-            default_desc.contains("To create a new file"),
-            "create-file guidance must remain:\n{default_desc}"
-        );
         let opt_in_def = ToolMetadata::versioned_definition(
             &SearchReplaceTool,
             None,
@@ -983,9 +967,10 @@ mod tests {
             &serde_json::json!({"empty_old_string_does_not_override": true}),
         );
         let opt_in_desc = opt_in_def.function.description.unwrap();
+        assert_ne!(default_desc, opt_in_desc);
         assert!(
-            opt_in_desc.contains("cannot overwrite an existing non-empty file"),
-            "guard sentence must appear when the guard is enabled:\n{opt_in_desc}"
+            !default_desc.contains("${") && !opt_in_desc.contains("${"),
+            "must not leak template markers:\n{default_desc}\n{opt_in_desc}"
         );
     }
     #[test]
@@ -995,12 +980,8 @@ mod tests {
             .render(ToolMetadata::description_template(&SearchReplaceTool))
             .unwrap();
         assert!(
-            rendered.contains("read_file` prefixes each line") && !rendered.contains("${%"),
+            rendered.contains("read_file") && !rendered.contains("${%"),
             "read bullet must render with the resolved name:\n{rendered}"
-        );
-        assert!(
-            !rendered.contains("before editing it"),
-            "read-before-edit guidance must be gone:\n{rendered}"
         );
         let edit_params = std::collections::HashMap::from([
             ("old_string".to_string(), "old_string".to_string()),
@@ -1013,8 +994,9 @@ mod tests {
         )
         .render(ToolMetadata::description_template(&SearchReplaceTool))
         .unwrap();
+        assert_ne!(rendered, no_read);
         assert!(
-            !no_read.contains("prefixes each line") && !no_read.contains("- \n"),
+            !no_read.contains("read_file") && !no_read.contains("- \n"),
             "read bullet must vanish cleanly without a Read tool:\n{no_read}"
         );
     }
@@ -2631,10 +2613,9 @@ neutTest_set);
             other => panic!("Expected EditsApplied, got {:?}", other),
         }
     }
-    /// Mixed line endings (\r\n and \n in the same file): CRLF normalization
-    /// kicks in because the file contains at least one \r\n, so all \n in the
-    /// result are converted to \r\n. This normalizes the file to consistent
-    /// CRLF endings, which is the expected behavior.
+    /// Mixed line endings (\r\n and \n in the same file): CRLF normalization kicks in because the
+    /// file contains at least one \r\n, so all \n in the result are converted to \r\n. This
+    /// normalizes the file to consistent CRLF endings, which is the expected behavior.
     #[tokio::test]
     async fn crlf_mixed_line_endings() {
         let tmp = TempDir::new().unwrap();

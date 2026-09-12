@@ -23,13 +23,9 @@ pub const ENV_AUTO_GC_MAX_AGE: &str = "GROK_WORKTREE_AUTO_GC_MAX_AGE";
 /// `1` / `true` / `on` enables optional discovery rebuild + stale git prune.
 pub const ENV_AUTO_GC_REBUILD: &str = "GROK_WORKTREE_AUTO_GC_REBUILD";
 
-/// Remove every `GROK_WORKTREE_AUTO_GC*` env var so a test starts from a clean
-/// slate. Exposed (not `cfg(test)`) so other crates' tests can share the single
-/// source of truth for the var list; not intended for production use.
-///
+/// Test-only: clear every `GROK_WORKTREE_AUTO_GC*` var (shared list, not for production).
 /// # Safety
-/// `remove_var` is unsound under concurrent environment access. The caller must
-/// hold its env test lock and run no other thread that touches the environment.
+/// Caller must hold the env test lock; `remove_var` is unsound under concurrent env access.
 #[doc(hidden)]
 pub unsafe fn clear_auto_gc_env_for_test() {
     unsafe {
@@ -397,10 +393,9 @@ pub fn maybe_auto_gc(db: &WorktreeDb, auto_opts: &ResolvedWorktreeAutoGc) -> Res
         }
     }
 
-    // Rebuild before the prune snapshot (so new worktrees' source repos are in
-    // it) and before dead-GC (so sole-dead repos survive unregister). Meta is
-    // stamped by the caller after GC succeeds, not here: a GC failure must leave
-    // rebuild unthrottled so the next pass sees worktrees made in between.
+    // Rebuild before prune (new sources stay in the snapshot) and before dead-GC
+    // (sole-dead repos survive unregister). Caller stamps meta only after GC
+    // succeeds so a failure leaves rebuild unthrottled.
     let (rebuild, rebuild_due_to_stamp) = maybe_run_rebuild(
         db,
         include_rebuild,
@@ -558,11 +553,9 @@ fn classify_rebuild_meta(
     }
 }
 
-/// Optional rebuild; never fails the GC pass.
-///
-/// Returns `(report, due_to_stamp)`. Stamp is applied by the caller **only
-/// after** GC succeeds: stamping here would throttle rebuild while GC can
-/// still `Err` and leave `last_auto_gc_at` unstamped.
+/// Optional rebuild; never fails the GC pass. Returns `(report, due_to_stamp)`.
+/// Caller stamps only after GC succeeds — stamping here would throttle rebuild
+/// while GC can still `Err` and leave `last_auto_gc_at` unstamped.
 fn maybe_run_rebuild(
     db: &WorktreeDb,
     include_rebuild: bool,
@@ -625,10 +618,9 @@ fn collect_source_repos_for_prune(db: &WorktreeDb) -> BTreeSet<PathBuf> {
         .collect()
 }
 
-/// Scrub stale grok-owned registrations from each known source repo,
-/// scoped to worktrees under the grok home to prove ownership (see
-/// [`crate::git::remove_stale_worktree_registrations_under`] for why a blanket
-/// `git worktree prune` is unsafe here).
+/// Scrub stale grok-owned registrations, scoped under the grok home to prove
+/// ownership. A blanket `git worktree prune` is unsafe; see
+/// [`crate::git::remove_stale_worktree_registrations_under`].
 fn prune_stale_git_worktree_registrations(repos: &BTreeSet<PathBuf>) -> u64 {
     let Ok(grok_home) = resolve_grok_home() else {
         tracing::warn!("auto worktree registration scrub skipped: grok home unresolved");
@@ -771,10 +763,9 @@ mod tests {
         }
     }
 
-    /// Builder invariants across the dry-run matrix: `force` is never set, the
-    /// dry-run flag propagates, and the real age path (`max_age` + kind map) is
-    /// present iff `age_expiry_allowed(scan, dry_run)` (`scan` is the
-    /// compile-time platform capability).
+    /// `force` is never set, dry-run propagates, and the real age path is present
+    /// iff `age_expiry_allowed(scan, dry_run)` (`scan` is the compile-time
+    /// platform capability).
     #[test]
     fn build_auto_gc_options_table() {
         let _g = env_guard();
@@ -808,10 +799,8 @@ mod tests {
         }
     }
 
-    /// Real age-expiry (scan platform): an unguarded expired session is
-    /// deleted while a live `creator_pid` session and a Manual tree (never
-    /// age-expires by default) both survive. `force` is never applied by the
-    /// auto path; the live tree would be deleted if it were.
+    /// Unguarded expired sessions are deleted; a live `creator_pid` and a Manual
+    /// tree survive. Auto path never sets `force` (the live tree would die if it did).
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn maybe_auto_gc_age_path_expires_unguarded_protects_live_and_manual() {
@@ -1103,10 +1092,8 @@ mod tests {
         );
     }
 
-    /// Fail-closed: a broken schema surfaces as `Err` (never a silent success)
-    /// and never stamps, for both a GC-time failure (worktrees table gone,
-    /// which fails after the meta read) and a meta-read failure (meta table
-    /// gone, which fails before GC even starts).
+    /// Fail-closed: a broken schema is `Err` (never silent success) and never
+    /// stamps, whether the worktrees table or the meta table is gone.
     #[test]
     fn fail_closed_paths_return_err_without_stamp() {
         {
@@ -1424,10 +1411,8 @@ mod tests {
         );
     }
 
-    /// Rebuild + prune run only on a real (non-dry-run) pass with
-    /// `include_rebuild=true`. Every other flag combination leaves the DB
-    /// untouched: no rebuild report, no rebuild-meta stamp, the untracked tree
-    /// stays unregistered, and stale git registrations are not pruned.
+    /// Rebuild + prune run only on a real pass with `include_rebuild=true`.
+    /// Any other flag combination leaves the DB and git registrations untouched.
     #[test]
     fn rebuild_prune_gated_on_real_rebuild_pass() {
         for (include_rebuild, dry_run) in [(false, false), (true, true), (false, true)] {
@@ -1571,10 +1556,9 @@ mod tests {
         assert!(report.stamped, "GC Ok must still stamp last_auto_gc_at");
     }
 
-    /// A real rebuild pass prunes a stale grok-owned git registration. The
-    /// source repo is discovered from the tracked row's snapshot, which holds
-    /// even when that row is the sole record and is *dead* (GC unregisters it
-    /// only after the prune snapshot is taken).
+    /// A real rebuild pass prunes a stale grok-owned registration even when the
+    /// tracked row is the sole record and already dead — prune snapshots before
+    /// GC unregisters it.
     #[test]
     fn prune_removes_stale_registration_alive_and_dead_source() {
         for dead_source in [false, true] {

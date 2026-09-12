@@ -37,7 +37,7 @@ const fn default_true() -> bool {
 }
 
 /// Skill info returned by the list extension method.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SkillInfo {
     /// Command identity: slash name, dedup key, listing label. Plugin skills
     /// and same-scope name-collision losers (`dedupe_skills` re-key) use the
@@ -138,10 +138,9 @@ impl SkillInfo {
     }
 }
 
-/// Extract the skill name from a path if it points to a `SKILL.md` file.
-///
-/// Returns the parent directory name (e.g. `"/skills/deploy/SKILL.md"` → `"deploy"`).
-/// Returns `None` for non-SKILL.md paths or bare `"SKILL.md"` with no parent.
+/// Extract the skill name from a path if it points to a `SKILL.md` file. Returns the parent
+/// directory name (e.g. `"/skills/deploy/SKILL.md"` → `"deploy"`). Returns `None` for non-SKILL.md
+/// paths or bare `"SKILL.md"` with no parent.
 pub fn skill_name_from_path(path: &str) -> Option<&str> {
     let p = std::path::Path::new(path);
     if p.file_name()?.to_str()? == "SKILL.md" {

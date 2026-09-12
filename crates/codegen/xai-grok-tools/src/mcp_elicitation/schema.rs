@@ -31,10 +31,9 @@ fn schema_bytes_ok(schema: &Value) -> bool {
         .unwrap_or(false)
 }
 
-/// Immutable description of one form field, parsed from the server's
-/// `requestedSchema`. Carries schema constraints and defaults only — user
-/// input, selections, and display errors live with the consumer (the pager),
-/// which submits values back through [`super::validate_form`].
+/// Immutable description of one form field, parsed from the server's `requestedSchema`. Carries
+/// schema constraints and defaults only — user input, selections, and display errors live with the
+/// consumer (the pager), which submits values back through [`super::validate_form`].
 #[derive(Debug, Clone)]
 pub struct ElicitFieldSpec {
     pub name: String,
@@ -292,10 +291,9 @@ fn field_kind_from_schema(
     Ok(kind)
 }
 
-/// Multi-select enum: `items.enum` (untitled) or `items.anyOf` const/title
-/// entries (titled; `oneOf` accepted as an alias). Any other `items` shape
-/// is unsupported rather than a parse error, matching how unknown scalar
-/// types degrade.
+/// Multi-select enum: `items.enum` (untitled) or `items.anyOf` const/title entries (titled; `oneOf`
+/// accepted as an alias). Any other `items` shape is unsupported rather than a parse error,
+/// matching how unknown scalar types degrade.
 fn multi_select_from_schema(prop: &Value) -> Result<ElicitFieldKind, String> {
     let Some(items) = prop.get("items") else {
         return Ok(ElicitFieldKind::Unsupported {

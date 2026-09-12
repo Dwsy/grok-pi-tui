@@ -24,20 +24,9 @@ use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
-/// Process-global registry of external "tool packs" — functions that
-/// contribute additional tool registrations into every
-/// [`ToolRegistryBuilder::new`].
-///
-/// This inverts the dependency for harness code that must live outside
-/// this crate: instead of `xai-grok-tools` referencing an out-of-tree tool
-/// pack, the pack calls
-/// [`register_tool_pack`] at startup and registers itself here.
-///
-/// # Ordering contract
-/// [`register_tool_pack`] MUST run before the FIRST `ToolRegistryBuilder::new()`
-/// in the process. Packs registered after a builder
-/// has been constructed do not retroactively apply to that builder.
-/// A tool pack: a function that contributes registrations to a builder.
+/// Process-global registry of external "tool packs" — functions that contribute additional tool registrations into every
+/// [`ToolRegistryBuilder::new`]. This inverts the dependency for harness code that must live outside this crate: instead of `xai-grok-tools`
+/// referencing an out-of-tree tool pack, the pack calls [`register_tool_pack`] at startup and registers itself here.
 pub type ToolPack = fn(&mut ToolRegistryBuilder);
 static TOOL_PACKS: OnceLock<Mutex<Vec<ToolPack>>> = OnceLock::new();
 fn tool_packs() -> &'static Mutex<Vec<ToolPack>> {
@@ -58,31 +47,18 @@ pub struct ToolConfig {
     pub name_override: Option<String>,
     /// { canonical param → client-facing param }.
     pub params_name_overrides: Option<HashMap<String, String>>,
-    /// When `Some`, replaces the tool's `description_template()` entirely.
-    ///
-    /// Use this when the same built-in tool needs a context-specific
-    /// description — e.g. `run_terminal_cmd` in a container environment
-    /// vs. the default host-shell description.
+    /// When `Some`, replaces the tool's `description_template()` entirely. Use this when the same
+    /// built-in tool needs a context-specific description — e.g. `run_terminal_cmd` in a container
+    /// environment vs. the default host-shell description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description_override: Option<String>,
     /// Per-tool behavior version override. Wins over `ToolServerConfig::behavior_preset`.
     /// Only valid for version-managed tools (see `versions::MANAGED_TOOLS`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior_version: Option<String>,
-    /// The tool's capability category. Populated automatically by
-    /// `for_tool::<T>()` / `From<&T: Tool>` and used by capability-mode
-    /// enforcement to filter tools without a hardcoded ID mapping.
-    ///
-    /// `None` means the tool's kind is unknown (e.g. MCP/custom tools
-    /// created via `ToolConfig::from_id()`). Capability-mode filtering
-    /// preserves tools with `kind: None` — this is intentional to avoid
-    /// breaking extensibility.
-    ///
-    /// `ToolKind` is `#[serde(other)]`, so an unknown deserialized `kind` becomes
-    /// `Some(Other)` (dropped by restrictive modes) rather than an error — not a
-    /// live path today since `kind` is auto-populated and `from_id` leaves it
-    /// `None`. [`deserialize_config_kind`] warns on that sink so a config typo
-    /// doesn't silently demote the tool.
+    /// The tool's capability category. Populated automatically by `for_tool::<T>()` / `From<&T: Tool>` and used by capability-mode enforcement to
+    /// filter tools without a hardcoded ID mapping. `ToolKind` is `#[serde(other)]`, so an unknown deserialized `kind` becomes `Some(Other)`
+    /// (dropped by restrictive modes) rather than an error — not a live path today since `kind` is auto-populated and `from_id` leaves it `None`.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -108,28 +84,18 @@ where
     Ok(Some(kind))
 }
 impl ToolConfig {
-    /// Build a `ToolConfig` from a tool TYPE.
-    ///
-    /// The fully-qualified id (`"<namespace>:<id>"`) and `kind` are derived
-    /// from the type via `ToolMetadata::tool_namespace()` and
-    /// `xai_tool_runtime::Tool::id()`. Use this for built-in tools known
-    /// at compile time — it gives compile-time checking of the tool name
-    /// and auto-populates `kind` so capability-mode filtering works.
-    ///
-    /// Requires `T: Default` because deriving the namespace/id needs an
-    /// instance. All built-in tools satisfy this (it is also a bound on
-    /// `ToolRegistryBuilder::register`).
+    /// Build a `ToolConfig` from a tool TYPE. The fully-qualified id (`"<namespace>:<id>"`) and `kind` are derived from the type via
+    /// `ToolMetadata::tool_namespace()` and `xai_tool_runtime::Tool::id()`. Requires `T: Default` because deriving the namespace/id needs an
+    /// instance. All built-in tools satisfy this (it is also a bound on `ToolRegistryBuilder::register`).
     pub fn for_tool<T>() -> Self
     where
         T: crate::types::tool_metadata::ToolMetadata + xai_tool_runtime::Tool + Default,
     {
         Self::from(&T::default())
     }
-    /// Build a `ToolConfig` from a string id (no associated Rust type).
-    ///
-    /// Use this for MCP/custom tools or anywhere the id is only known at
-    /// runtime. `kind` is left as `None`; capability-mode filtering then
-    /// preserves the tool unconditionally.
+    /// Build a `ToolConfig` from a string id (no associated Rust type). Use this for MCP/custom
+    /// tools or anywhere the id is only known at runtime. `kind` is left as `None`; capability-mode
+    /// filtering then preserves the tool unconditionally.
     pub fn from_id(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -169,10 +135,8 @@ impl ToolConfig {
             .insert(from.into(), to.into());
         self
     }
-    /// Resolve the client-facing tool name.
-    ///
-    /// Returns `name_override` when set, otherwise falls back to `default_id`
-    /// (typically `ToolEntry::id` — the unqualified tool name such as
+    /// Resolve the client-facing tool name. Returns `name_override` when set, otherwise falls back
+    /// to `default_id` (typically `ToolEntry::id` — the unqualified tool name such as
     /// `"read_file"`).
     pub fn resolve_client_name(&self, default_id: &str) -> String {
         self.name_override
@@ -219,11 +183,9 @@ pub struct SubagentSessionResources {
     pub depth: crate::implementations::grok_build::task::types::SubagentDepthCounter,
     pub session_id: crate::implementations::grok_build::task::types::SessionIdResource,
 }
-/// Everything a session provides at finalization time.
-///
-/// This is the **public API boundary** — callers pass concrete, strongly-typed
-/// values. The builder converts these into type-erased `Resources` entries
-/// internally, so callers never touch `Resources` directly.
+/// Everything a session provides at finalization time. This is the **public API boundary** —
+/// callers pass concrete, strongly-typed values. The builder converts these into type-erased
+/// `Resources` entries internally, so callers never touch `Resources` directly.
 pub struct SessionContext {
     /// Terminal backend for shell execution (bash, kill_task, task_output).
     pub backend: Arc<dyn TerminalBackend>,
@@ -249,23 +211,17 @@ pub struct SessionContext {
         Option<crate::implementations::grok_build::scheduler::types::SchedulerHandle>,
     /// Available skills for the Skill tool and description templates.
     pub skills: Vec<SkillInfo>,
-    /// File path for persisting Resources state across restarts.
-    ///
-    /// The toolset loads existing state on construction and auto-saves
-    /// after every tool execution. The file stores serialized `State<T>`
-    /// values (e.g., `TodoState`).
-    ///
-    /// Empty means this registry gives the session a handle that reads and writes nothing. `xai-grok-agent` reads
-    /// the same empty value as "use the temp directory" for `session_folder`; unifying the two is a follow-up.
+    /// File path for persisting Resources state across restarts. The toolset loads existing state on construction and
+    /// auto-saves after every tool execution. The file stores serialized `State<T>` values (e.g., `TodoState`). Empty means
+    /// this registry gives the session a handle that reads and writes nothing.
     pub state_path: PathBuf,
     /// Optional memory backend for cross-session knowledge retrieval.
     /// When `Some`, injected into `Resources` so `memory_search` / `memory_get`
     /// tools can access it. When `None`, the tools return "not enabled".
     pub memory_backend: Option<Arc<dyn crate::types::memory_backend::MemoryBackend>>,
-    /// Optional web search configuration. When `Enabled`, a `WebSearchClient`
-    /// is created and injected into `Resources` so the `web_search` tool can
-    /// call the Responses API. When `Disabled` (default), the tool returns a
-    /// graceful error if invoked.
+    /// Optional web search configuration. When `Enabled`, a `WebSearchClient` is created and
+    /// injected into `Resources` so the `web_search` tool can call the Responses API. When
+    /// `Disabled` (default), the tool returns a graceful error if invoked.
     pub web_search_config: crate::implementations::web_search::WebSearchConfig,
     /// Optional web fetch configuration. When `Enabled`, a `WebFetchClient`
     /// is created and injected into `Resources` so the `web_fetch` tool can
@@ -275,37 +231,30 @@ pub struct SessionContext {
     /// passed to every session. Same pattern as `fs` and `backend`.
     /// When `Some`, inserted into `Resources` so `LspTool` can use it.
     pub lsp: Option<std::sync::Arc<dyn crate::implementations::lsp::LspBackend>>,
-    /// Optional image generation configuration. When `Enabled`, an `ImageGenClient`
-    /// is created and injected into `Resources` so the `image_gen` tool can
-    /// call the xAI Imagine API. When `Disabled` (default), the tool is not
-    /// registered and image generation is unavailable.
+    /// Optional image generation configuration. When `Enabled`, an `ImageGenClient` is created and
+    /// injected into `Resources` so the `image_gen` tool can call the xAI Imagine API. When
+    /// `Disabled` (default), the tool is not registered and image generation is unavailable.
     pub image_gen_config: crate::implementations::grok_build::image_gen::ImageGenConfig,
-    /// Optional video generation configuration. When `Enabled`, a `VideoGenClient`
-    /// is created and injected into `Resources` so the `video_gen` tool can
-    /// call the xAI Video Generation API. When `Disabled` (default), the tool is not
-    /// registered and video generation is unavailable.
+    /// Optional video generation configuration. When `Enabled`, a `VideoGenClient` is created and
+    /// injected into `Resources` so the `video_gen` tool can call the xAI Video Generation API.
+    /// When `Disabled` (default), the tool is not registered and video generation is unavailable.
     pub video_gen_config: crate::implementations::grok_build::video_gen::VideoGenConfig,
     /// Optional deploy service configuration. When enabled, the
     /// `deploy_app` tool connects to the service at call time using the shared
     /// API key provider.
     pub app_builder_deployer_config:
         crate::implementations::grok_build::app_builder::AppBuilderDeployerConfig,
-    /// Dynamic API key provider for tool HTTP clients.
-    /// When set, clients resolve the API key per-request from this provider
-    /// instead of using the key baked into their config at construction time.
-    /// Prevents 401 failures when a session outlives the initial token lifetime.
+    /// Dynamic API key provider for tool HTTP clients. When set, clients resolve the API key
+    /// per-request from this provider instead of using the key baked into their config at
+    /// construction time. Prevents 401 failures when a session outlives the initial token lifetime.
     pub api_key_provider: Option<crate::types::SharedApiKeyProvider>,
-    /// Auth provider which returns a xai_computer_hub_sdk::AuthCredential. Can be used by
-    /// tools that need to authenticate with services.
-    ///
-    /// Not to be confused with the api_key_provider, which is a legacy
-    /// provider used by the shell's auth manager.
+    /// Auth provider which returns a xai_computer_hub_sdk::AuthCredential. Can be used by tools
+    /// that need to authenticate with services. Not to be confused with the api_key_provider, which
+    /// is a legacy provider used by the shell's auth manager.
     pub auth_provider: Option<xai_computer_hub_sdk::SharedAuthProvider>,
-    /// Optional 401-attribution callback for tool HTTP clients. When
-    /// set, a 401 from `image_gen` / `video_gen` / `web_search`
-    /// emits an `auth_401_attribution` event via this hook. Hosts can
-    /// wire this to the same attribution sink used for inference-side
-    /// 401s so tool and chat auth failures share one telemetry path.
+    /// Optional 401-attribution callback for tool HTTP clients. When set, a 401 from `image_gen` / `video_gen` /
+    /// `web_search` emits an `auth_401_attribution` event via this hook. Hosts can wire this to the same attribution sink
+    /// used for inference-side 401s so tool and chat auth failures share one telemetry path.
     pub attribution_callback: Option<crate::SharedAttributionCallback>,
     /// Tag name for `<system-reminder>` wrappers in tool result text.
     /// Defaults to [`crate::reminders::DEFAULT_REMINDER_TAG`] (hyphen).
@@ -357,10 +306,9 @@ fn stream_no_terminal_error() -> xai_tool_runtime::ToolError {
 /// Converts a dispatch's `serde_json::Value` back into a `ToolOutput`.
 type OutputConverter =
     Arc<dyn Fn(serde_json::Value) -> Result<ToolOutput, serde_json::Error> + Send + Sync>;
-/// Everything captured during pre-dispatch setup that the dispatch and the
-/// post-dispatch tail need. Produced by [`FinalizedToolset::prepare_dispatch`]
-/// after the tools read guard has been dropped, so none of this is held across
-/// `.await`.
+/// Everything captured during pre-dispatch setup that the dispatch and the post-dispatch tail need.
+/// Produced by [`FinalizedToolset::prepare_dispatch`] after the tools read guard has been dropped,
+/// so none of this is held across `.await`.
 struct DispatchParts {
     /// Resolved `LocalRegistry` handle to dispatch through.
     lr_handle: Arc<dyn xai_computer_hub_core::ToolHandle>,
@@ -374,10 +322,8 @@ struct DispatchParts {
     /// `use_tool` target tool name, surfaced in the final `ToolRunResult`.
     effective_tool_name: Option<String>,
 }
-/// Per-tool metadata + instance stored in the builder.
-///
-/// Stores a type-erased dispatch handle (`ToolDispatchHandle`) and
-/// metadata (`ToolMetadata`) for each registered tool. Params-related
+/// Per-tool metadata + instance stored in the builder. Stores a type-erased dispatch handle
+/// (`ToolDispatchHandle`) and metadata (`ToolMetadata`) for each registered tool. Params-related
 /// closures capture the concrete `P` type at registration time.
 #[allow(clippy::type_complexity)]
 struct ToolEntry {
@@ -417,10 +363,9 @@ struct ReminderEntry {
 struct FinalizedTool {
     namespace: String,
     id: String,
-    /// The key under which this tool is stored in the `LocalRegistry`.
-    /// For built-in tools this equals `id`; for dynamically-registered
-    /// (MCP) tools it is `Tool::id().as_str()` which may differ from
-    /// the client-facing `id` / `client_name`.
+    /// The key under which this tool is stored in the `LocalRegistry`. For built-in tools this
+    /// equals `id`; for dynamically-registered (MCP) tools it is `Tool::id().as_str()` which may
+    /// differ from the client-facing `id` / `client_name`.
     registry_id: String,
     client_name: String,
     /// Tool metadata — kind, fingerprinting, doom-loop, reminders.
@@ -433,10 +378,9 @@ struct FinalizedTool {
     /// Kept for building `ProposedTool` during reminder evaluation and for
     /// params-aware finalized definition construction.
     effective_params: serde_json::Value,
-    /// Canonical input schema (JSON Schema) derived from the Rust input type.
-    /// This remains the internal schema used for `InputParam` requirement checks
-    /// and TemplateRenderer param-name exposure, even if the exported tool
-    /// definition schema is specialized per effective params.
+    /// Canonical input schema (JSON Schema) derived from the Rust input type. This remains the
+    /// internal schema used for `InputParam` requirement checks and TemplateRenderer param-name
+    /// exposure, even if the exported tool definition schema is specialized per effective params.
     input_schema: serde_json::Value,
     /// Client-facing param → canonical param, for reverse-remapping at dispatch.
     reverse_params: HashMap<String, String>,
@@ -449,11 +393,9 @@ struct FinalizedTool {
     /// registered (MCP) tools.
     contract_version: Option<String>,
 }
-/// Toolset produced by `ToolRegistryBuilder::finalize()`.
-///
-/// The tools vector is wrapped in `parking_lot::RwLock` to allow concurrent
-/// read access (tool dispatch) with rare write access (MCP tool registration).
-/// The read guard is held only for microsecond lookups — never across `.await`.
+/// Toolset produced by `ToolRegistryBuilder::finalize()`. The tools vector is wrapped in `parking_lot::RwLock` to allow
+/// concurrent read access (tool dispatch) with rare write access (MCP tool registration). The read guard is held only
+/// for microsecond lookups — never across `.await`.
 pub struct FinalizedToolset {
     tools: parking_lot::RwLock<Vec<FinalizedTool>>,
     reminders: Vec<Box<dyn Reminder + Send + Sync>>,
@@ -532,13 +474,9 @@ pub struct ToolRegistryBuilder {
     tools: HashMap<String, ToolEntry>,
     reminders: Vec<ReminderEntry>,
     shared_local_registry: Option<xai_computer_hub_sdk::LocalRegistry>,
-    /// Whether the client delivers system reminders (completion
-    /// notifications for backgrounded commands/subagents) to the model.
-    /// Exposed to description templates as `system_reminders_enabled` so
-    /// "you are notified on completion" promises are only rendered when
-    /// the client actually delivers them. Defaults to `true` (prod CLI
-    /// behavior); the tools server sets it from
-    /// `FinalizeToolServerConfigRequest.system_reminders_enabled`.
+    /// Whether the client delivers system reminders (completion notifications for backgrounded commands/subagents) to the
+    /// model. Exposed to description templates as `system_reminders_enabled` so "you are notified on completion" promises
+    /// are only rendered when the client actually delivers them.
     system_reminders_enabled: bool,
 }
 impl Default for ToolRegistryBuilder {
@@ -547,11 +485,8 @@ impl Default for ToolRegistryBuilder {
     }
 }
 impl ToolRegistryBuilder {
-    /// Register a built-in tool with no configuration params.
-    ///
-    /// For tools with typed params, use [`register_with_params`] instead.
-    ///
-    /// `pub` so out-of-tree tool packs registered via
+    /// Register a built-in tool with no configuration params. For tools with typed params, use
+    /// [`register_with_params`] instead. `pub` so out-of-tree tool packs registered via
     /// [`register_tool_pack`] can contribute tool registrations.
     pub fn register<T>(&mut self)
     where
@@ -567,14 +502,9 @@ impl ToolRegistryBuilder {
     {
         self.register_with_params::<T, ()>();
     }
-    /// Register a built-in tool with typed configuration params.
-    ///
-    /// `P` is the tool's configuration type (e.g. `BashParams`), stored
-    /// as `Params<P>` in Resources. For tools with no config, use
-    /// [`register`] which defaults `P = ()`.
-    ///
-    /// `pub` so out-of-tree tool packs registered via
-    /// [`register_tool_pack`] can contribute tool registrations.
+    /// Register a built-in tool with typed configuration params. `P` is the tool's configuration type (e.g. `BashParams`),
+    /// stored as `Params<P>` in Resources. For tools with no config, use [`register`] which defaults `P = ()`. `pub` so
+    /// out-of-tree tool packs registered via [`register_tool_pack`] can contribute tool registrations.
     pub fn register_with_params<T, P>(&mut self)
     where
         T: xai_tool_runtime::Tool
@@ -647,23 +577,18 @@ impl ToolRegistryBuilder {
     pub fn known_tool_ids(&self) -> std::collections::HashSet<String> {
         self.tools.keys().cloned().collect()
     }
-    /// Fully-qualified tool id (`"GrokBuild:read_file"`) → declared
-    /// [`ToolKind`], for every registered tool. Lets consumers that receive
-    /// kind-less tool configs (e.g. hub `session.bind` wire entries) backfill
-    /// the kind from the binary's own registry before capability filtering.
+    /// Fully-qualified tool id (`"GrokBuild:read_file"`) → declared [`ToolKind`], for every
+    /// registered tool. Lets consumers that receive kind-less tool configs (e.g. hub `session.bind`
+    /// wire entries) backfill the kind from the binary's own registry before capability filtering.
     pub fn known_tool_kinds(&self) -> HashMap<String, ToolKind> {
         self.tools
             .iter()
             .map(|(name, entry)| (name.clone(), entry.kind))
             .collect()
     }
-    /// Register a cross-cutting reminder.
-    ///
-    /// Cross-cutting reminders fire after every tool call. They inspect
-    /// `ToolOutput` and `Resources` to decide whether to emit reminder text.
-    ///
-    /// Reminders that need tool/param names use `TemplateRenderer` from
-    /// Resources at runtime — no per-reminder configuration needed.
+    /// Register a cross-cutting reminder. Cross-cutting reminders fire after every tool call. They inspect `ToolOutput` and
+    /// `Resources` to decide whether to emit reminder text. Reminders that need tool/param names use `TemplateRenderer`
+    /// from Resources at runtime — no per-reminder configuration needed.
     fn register_reminder<R>(&mut self, reminder: R)
     where
         R: Reminder + Send + Sync + 'static,
@@ -698,6 +623,8 @@ impl ToolRegistryBuilder {
         b.register::<grok_build::GetTerminalCommandOutputTool>();
         b.register::<grok_build::WaitTasksTool>();
         b.register::<grok_build::TaskTool>();
+        b.register::<grok_build::SendSubagentMessageTool>();
+        b.register::<grok_build::SendFeedbackTool>();
         b.register::<grok_build::WebSearchTool>();
         b.register_with_params::<grok_build::WebFetchTool, grok_build::web_fetch::WebFetchParams>();
         b.register::<grok_build::LspTool>();
@@ -935,12 +862,9 @@ impl ToolRegistryBuilder {
         }
         errors
     }
-    /// Validate and finalize into an immutable toolset.
-    /// Consumes the builder — no further modifications possible.
-    /// Set whether the client delivers system reminders to the model.
-    /// Must be called before [`finalize`]; affects how description
-    /// templates render notification promises (see
-    /// `TemplateContext::system_reminders_enabled`).
+    /// Validate and finalize into an immutable toolset. Consumes the builder — no further modifications possible. Set
+    /// whether the client delivers system reminders to the model. Must be called before [`finalize`]; affects how
+    /// description templates render notification promises (see `TemplateContext::system_reminders_enabled`).
     pub fn set_system_reminders_enabled(&mut self, enabled: bool) {
         self.system_reminders_enabled = enabled;
     }
@@ -993,15 +917,19 @@ impl ToolRegistryBuilder {
                 map.extend(overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
             }
         }
+        let session_folder = crate::types::resources::SessionFolder(ctx.session_folder.clone());
+        let feedback_drafts_path =
+            crate::implementations::grok_build::send_feedback::drafts_file_path(&session_folder.0);
         let renderer = TemplateRenderer::new(kind_to_name.clone(), kind_params.clone())
-            .with_system_reminders_enabled(self.system_reminders_enabled);
+            .with_system_reminders_enabled(self.system_reminders_enabled)
+            .with_feedback_drafts_path(feedback_drafts_path);
         let mut tools = Vec::new();
         let mut resources = Resources::new();
         resources.insert(crate::types::resources::Terminal(ctx.backend));
         resources.insert(crate::types::resources::FileSystem(ctx.fs));
         let cwd = ctx.cwd;
         resources.insert(crate::types::resources::Cwd(cwd.clone()));
-        resources.insert(crate::types::resources::SessionFolder(ctx.session_folder));
+        resources.insert(session_folder);
         resources.insert(crate::types::resources::SessionEnv(ctx.session_env));
         if let Some(owner_session_id) = ctx.owner_session_id.clone() {
             resources.insert(crate::types::resources::OwnerSessionId(owner_session_id));
@@ -1203,6 +1131,13 @@ impl ToolRegistryBuilder {
         resources.insert(crate::types::resources::EnabledNativeToolNames(
             native_tool_names,
         ));
+        resources.insert(crate::types::resources::NativeToolClientNames(
+            tools
+                .iter()
+                .filter(|tool| !tool.client_name.contains("__"))
+                .map(|tool| (tool.registry_id.clone(), tool.client_name.clone()))
+                .collect(),
+        ));
         let proposed: Vec<ProposedTool> = tools
             .iter()
             .map(|t| ProposedTool {
@@ -1274,17 +1209,9 @@ impl Drop for FinalizedToolset {
         }
     }
 }
-/// Calls `FinalizedToolset::call_raw()`, bypassing the outer `ToolBridge`
-/// mutex to avoid deadlock when `use_tool` dispatches to a target MCP tool.
-///
-/// Stored in [`InnerDispatch`] inside `ToolCallContext::extensions` —
-/// stack-bounded, dropped when `Tool::run()` returns.
-///
-/// Implements the canonical `xai_tool_runtime::ToolDispatch` trait so the
-/// dispatch contract is uniform across all boundaries. The impedance
-/// mismatch (`ToolStream<Value>` vs `Result<ToolOutput>`) is bridged by
-/// serializing `ToolOutput` to `Value` in the stream; callers use
-/// `call_terminal()` and deserialize back.
+/// Calls `FinalizedToolset::call_raw()`, bypassing the outer `ToolBridge` mutex to avoid deadlock when `use_tool` dispatches to a target MCP
+/// tool. Stored in [`InnerDispatch`] inside `ToolCallContext::extensions` — stack-bounded, dropped when `Tool::run()` returns. Implements the
+/// canonical `xai_tool_runtime::ToolDispatch` trait so the dispatch contract is uniform across all boundaries.
 struct InnerDispatchForToolset {
     toolset: Arc<FinalizedToolset>,
 }
@@ -1352,12 +1279,19 @@ impl FinalizedToolset {
             .map(|t| t.definition.clone())
             .collect()
     }
-    /// Client-facing name of the (first) enabled tool of `kind`, honoring
-    /// `name_override` / preset renames — `None` if no tool of that kind is
-    /// enabled. Mirrors `${{ tools.by_kind.<kind> }}` template resolution; used
-    /// e.g. to label a background task with its real creator tool name.
+    /// Client-facing name of the (first) enabled tool of `kind`, honoring `name_override` / preset
+    /// renames — `None` if no tool of that kind is enabled. Mirrors `${{ tools.by_kind.<kind> }}`
+    /// template resolution; used
     pub fn tool_name_for_kind(&self, kind: ToolKind) -> Option<String> {
         self.renderer.tool_for_kind(kind).map(str::to_owned)
+    }
+    /// Client-facing name for a canonical registry ID, honoring name overrides.
+    pub fn tool_name_for_registry_id(&self, registry_id: &str) -> Option<String> {
+        self.tools
+            .read()
+            .iter()
+            .find(|tool| tool.registry_id == registry_id)
+            .map(|tool| tool.client_name.clone())
     }
     /// Map of client-facing tool name → snake_case [`ToolKind`] key.
     pub fn tool_kinds(&self) -> HashMap<String, String> {
@@ -1367,12 +1301,9 @@ impl FinalizedToolset {
             .map(|t| (t.client_name.clone(), t.metadata.kind().as_key().to_owned()))
             .collect()
     }
-    /// Map of client-facing tool name → typed [`ToolKind`].
-    ///
-    /// Unlike the finalize-request `ToolConfig`s (whose `kind` is `None` when
-    /// built from raw IDs over gRPC), the finalized tools always know their
-    /// real kind from the registry metadata — use this for kind-derived
-    /// metadata in server responses (e.g. capability-mode classification).
+    /// Map of client-facing tool name → typed [`ToolKind`]. Unlike the finalize-request `ToolConfig`s (whose `kind` is
+    /// `None` when built from raw IDs over gRPC), the finalized tools always know their real kind from the registry
+    /// metadata — use this for kind-derived metadata in server responses (e.g. capability-mode classification).
     pub fn tool_kind_map(&self) -> HashMap<String, ToolKind> {
         self.tools
             .read()
@@ -1394,14 +1325,15 @@ impl FinalizedToolset {
     ) {
         seed(&mut *self.resources.lock().await);
     }
-    /// Clone a typed resource out of this toolset, if present.
-    ///
-    /// Used to carry session-scoped backends (e.g. the browser service)
-    /// across toolset rebuilds so live state survives a hot reload.
+    /// Clone a typed resource out of this toolset, if present. Used to carry session-scoped
+    /// backends (e.g. the browser service) across toolset rebuilds so live state survives a hot
+    /// reload.
     pub async fn get_resource_cloned<T: Clone + Send + Sync + 'static>(&self) -> Option<T> {
         self.resources.lock().await.get::<T>().cloned()
     }
-    /// Get only built-in tool definitions (exclude MCP tools).
+    /// Get only built-in tool definitions (exclude MCP tools). TODO: use ToolNamespace metadata
+    /// instead of the "__" string heuristic. This breaks if a built-in tool ever has "__" in its
+    /// name or an MCP server omits the delimiter.
     pub fn tool_definitions_builtins_only(&self) -> Vec<ToolDefinition> {
         self.tools
             .read()
@@ -1410,11 +1342,9 @@ impl FinalizedToolset {
             .map(|t| t.definition.clone())
             .collect()
     }
-    /// Get the resolved contract version for a tool by its client-facing name.
-    ///
-    /// Returns `None` if the tool is not found or is not version-managed.
-    /// Returns an owned `String` because the internal `RwLock` read guard
-    /// cannot outlive this call.
+    /// Get the resolved contract version for a tool by its client-facing name. Returns `None` if
+    /// the tool is not found or is not version-managed. Returns an owned `String` because the
+    /// internal `RwLock` read guard cannot outlive this call.
     pub fn get_contract_version(&self, tool_name: &str) -> Option<String> {
         self.tools
             .read()
@@ -1430,10 +1360,9 @@ impl FinalizedToolset {
             .find(|t| t.client_name == tool_name)
             .map(|t| t.metadata.clone())
     }
-    /// Resolve canonical [`ToolIdentity`] (kind, namespace, presentation label)
-    /// for a tool by its client-facing wire name. Drives the first-party
-    /// `x.ai/*` tool `_meta` contract (tool normalization). Returns `None` for
-    /// unknown tools (e.g. uninitialized MCP, backend-only tools).
+    /// Resolve canonical [`ToolIdentity`] (kind, namespace, presentation label) for a tool by its client-facing wire name.
+    /// Drives the first-party `x.ai/*` tool `_meta` contract (tool normalization). Returns `None` for unknown tools (e.g.
+    /// uninitialized MCP, backend-only tools).
     pub fn tool_identity(&self, tool_name: &str) -> Option<crate::normalization::ToolIdentity> {
         self.tools
             .read()
@@ -1466,22 +1395,9 @@ impl FinalizedToolset {
         };
         (parse_input)(canonical_params)
     }
-    /// Execute a tool, returning only its raw output.
-    ///
-    /// Unlike [`call()`], this skips reminders and persistence. Used by
-    /// `InnerDispatchForToolset` so that `use_tool`'s
-    /// dispatch to a target tool does not double-run post-processing: the
-    /// outer `call("use_tool")` does one round of post-processing over the
-    /// target's output.
-    ///
-    /// Inner dispatch is intentionally **not** populated in the forwarded
-    /// context. MCP tools (the targets of `use_tool`) are passthrough
-    /// implementations that never call `use_tool` themselves, so they do
-    /// not need inner dispatch.
-    ///
-    /// The `parent_ctx` carries call-id, cwd, resources, etc. from the
-    /// outer call. A fresh child context is built from it — stripping
-    /// `InnerDispatch` to prevent recursion.
+    /// Execute a tool, returning only its raw output. Unlike [`call()`], this skips reminders and persistence. Used by `InnerDispatchForToolset` so
+    /// that `use_tool`'s dispatch to a target tool does not double-run post-processing: the outer `call("use_tool")` does one round of
+    /// post-processing over the target's output. Inner dispatch is intentionally **not** populated in the forwarded context.
     async fn call_raw(
         &self,
         tool_name: &str,
@@ -1530,12 +1446,9 @@ impl FinalizedToolset {
         (output_converter)(value)
             .map_err(|e| xai_tool_runtime::ToolError::custom("output_decoding", e.to_string()))
     }
-    /// Dispatch a tool call by client-facing name with client-facing params.
-    ///
-    /// `cwd_override` — optional per-call working directory. When `Some`, tools
-    /// will use this instead of the session `Cwd` from Resources. This is
-    /// stack-local (not shared state), so concurrent calls with different
-    /// overrides don't race.
+    /// Dispatch a tool call by client-facing name with client-facing params. `cwd_override` — optional per-call working
+    /// directory. When `Some`, tools will use this instead of the session `Cwd` from Resources. This is stack-local (not
+    /// shared state), so concurrent calls with different overrides don't race.
     pub async fn call(
         self: &Arc<Self>,
         tool_name: &str,
@@ -1571,20 +1484,9 @@ impl FinalizedToolset {
         }
         Err(stream_no_terminal_error())
     }
-    /// Streaming sibling of [`call`].
-    ///
-    /// Forwards every inner [`ToolStreamItem::Progress`] unchanged, and when the
-    /// inner dispatch stream reaches its terminal, runs the shared
-    /// post-processing tail ([`finalize_output`]) on it and yields the resulting
-    /// [`ToolRunResult`] as the single terminal of the outer stream.
-    ///
-    /// This is a non-`async` inherent method: it synchronously builds and
-    /// returns a `'static` boxed stream. Because [`ToolStream`] is `'static`,
-    /// all `.await` and `Arc::clone(self)` happen *inside* the stream block so
-    /// nothing borrows `self` across the stream.
-    ///
-    /// [`ToolStream`]: xai_tool_runtime::ToolStream
-    /// [`ToolStreamItem::Progress`]: xai_tool_runtime::ToolStreamItem::Progress
+    /// Streaming sibling of [`call`]. This is a non-`async` inherent method: it synchronously builds and returns a `'static` boxed stream. Because
+    /// [`ToolStream`] is `'static`, all `.await` and `Arc::clone(self)` happen *inside* the stream block so nothing borrows `self` across the
+    /// stream. [`ToolStream`]: xai_tool_runtime::ToolStream [`ToolStreamItem::Progress`]: xai_tool_runtime::ToolStreamItem::Progress
     pub fn call_streaming(
         self: &Arc<Self>,
         tool_name: &str,
@@ -1657,12 +1559,9 @@ impl FinalizedToolset {
             yield xai_tool_runtime::ToolStreamItem::Terminal(Err(stream_no_terminal_error()));
         })
     }
-    /// Pre-dispatch setup shared by [`call`] / [`call_streaming`].
-    ///
-    /// Acquires the tools read lock, clones the per-tool metadata, remaps the
-    /// params, builds the runtime context, and resolves the `LocalRegistry`
-    /// handle. Everything needed across `.await` is captured here so the read
-    /// guard is dropped before returning.
+    /// Pre-dispatch setup shared by [`call`] / [`call_streaming`]. Acquires the tools read lock, clones the per-tool
+    /// metadata, remaps the params, builds the runtime context, and resolves the `LocalRegistry` handle. Everything needed
+    /// across `.await` is captured here so the read guard is dropped before returning.
     fn prepare_dispatch(
         self: &Arc<Self>,
         tool_name: &str,
@@ -1741,12 +1640,9 @@ impl FinalizedToolset {
             effective_tool_name,
         })
     }
-    /// Post-dispatch tail shared by [`call`] / [`call_streaming`].
-    ///
-    /// Applies the `output_converter` to the terminal `value`, collects
-    /// reminders, renders prompt text, persists resources, and builds the final
-    /// [`ToolRunResult`]. This is the single source of truth for terminal-result
-    /// construction so the streaming and non-streaming paths can never diverge.
+    /// Post-dispatch tail shared by [`call`] / [`call_streaming`]. Applies the `output_converter` to the terminal `value`,
+    /// collects reminders, renders prompt text, persists resources, and builds the final [`ToolRunResult`]. This is the
+    /// single source of truth for terminal-result construction so the streaming and non-streaming paths can never diverge.
     async fn finalize_output(
         &self,
         value: serde_json::Value,
@@ -1813,22 +1709,9 @@ impl FinalizedToolset {
         let res = self.resources.lock().await;
         self.resources_persistence.save(&res);
     }
-    /// Register a tool at runtime (e.g., MCP tools).
-    ///
-    /// The tool must implement `xai_tool_runtime::Tool + ToolMetadata`.
-    /// MCP tools typically use:
-    /// - `type Args = serde_json::Value` (untyped JSON passthrough)
-    /// - `kind() -> ToolKind::Other`
-    ///
-    /// The `name` is used as both the canonical and client-facing name
-    /// (no param remapping, no name overrides for dynamic tools).
-    ///
-    /// `input_schema_override` — when `Some`, this JSON Schema is used as
-    /// the tool's input schema instead of deriving one from `T::Args` via
-    /// `schemars`. This is required for MCP tools whose schemas come from
-    /// the remote server at runtime and cannot be derived from a Rust type.
-    ///
-    /// Returns an error if a tool with the same name already exists.
+    /// Register a tool at runtime (e.g., MCP tools). The tool must implement `xai_tool_runtime::Tool + ToolMetadata`. `type Args =
+    /// serde_json::Value` (untyped JSON passthrough) `kind() -> ToolKind::Other` This is required for MCP tools whose schemas come from the remote
+    /// server at runtime and cannot be derived from a Rust type. Returns an error if a tool with the same name already exists.
     pub fn register_tool<T>(
         &self,
         name: String,
@@ -1912,10 +1795,9 @@ impl FinalizedToolset {
     pub async fn flush_persistence(&self) {
         self.resources_persistence.flush().await;
     }
-    /// Serialize current in-memory state, write it to disk, and wait for the write to complete.
-    /// Returns where it landed, or `None` for a session that persists nothing.
-    ///
-    /// Unlike `flush_persistence()`, which only flushes previously queued snapshots, this takes a fresh snapshot first.
+    /// Serialize current in-memory state, write it to disk, and wait for the write to complete. Returns where it landed, or
+    /// `None` for a session that persists nothing. Unlike `flush_persistence()`, which only flushes previously queued
+    /// snapshots, this takes a fresh snapshot first.
     pub async fn save_and_flush_persistence(&self) -> Option<&std::path::Path> {
         {
             let res = self.resources.lock().await;
@@ -2223,17 +2105,9 @@ mod tests {
             system_reminder_tag: crate::reminders::DEFAULT_REMINDER_TAG,
         }
     }
-    /// Regression test: `kind_params` must merge input params from ALL tools
-    /// that share a `ToolKind`, not just the first one.
-    ///
-    /// Before the fix, the `kind_params` builder used `if map.is_empty()` to
-    /// seed identity param-name mappings only from the **first** tool of each
-    /// kind. When `codex:apply_patch` (`ToolKind::Edit`, input: `{ patch }`)
-    /// appeared before `grok_build:search_replace` (`ToolKind::Edit`, input:
-    /// `{ file_path, old_string, new_string, replace_all }`), the renderer's
-    /// context had `params.edit = { "patch": "patch" }` — missing
-    /// `replace_all`. At runtime, the template `${{ params.edit.replace_all }}`
-    /// failed with "undefined value".
+    /// Regression test: `kind_params` must merge input params from ALL tools that share a `ToolKind`, not just the first one. Before the fix, the
+    /// `kind_params` builder used `if map.is_empty()` to seed identity param-name mappings only from the **first** tool of each kind. At runtime,
+    /// the template `${{ params.edit.replace_all }}` failed with "undefined value".
     #[tokio::test]
     async fn kind_params_merged_across_multiple_tools_of_same_kind() {
         let tmp = TempDir::new().unwrap();
@@ -2296,15 +2170,7 @@ mod tests {
             result.prompt_text
         );
     }
-    /// Verify the exact tool output variants for all template-rendered error
-    /// paths in `search_replace` when it is the **sole** Edit tool in the config.
-    ///
-    /// Exercises two code paths that use `TemplateRenderer` at runtime:
-    /// 1. `MultipleMatchesFound` — renders `${{ params.edit.replace_all }}`
-    /// 2. `NoMatchesFound` — renders `${{ tools.by_kind.read }}`
-    ///
-    /// Verify that the rendered `search_replace` description exposed to the model
-    /// contains the new minimum-anchor guidance and has no unresolved placeholders.
+    /// Rendered `search_replace` description: Read tool name substitutes, no leftover placeholders.
     #[tokio::test]
     async fn search_replace_description_renders_minimum_anchor_guidance() {
         let builder = ToolRegistryBuilder::new();
@@ -2347,23 +2213,23 @@ mod tests {
             .as_deref()
             .expect("description must be present");
         assert!(
-            !desc.contains("larger string with more surrounding context"),
-            "old guidance encouraging longer blocks must be absent"
+            desc.contains("read_file"),
+            "read tool name must render: {desc}"
         );
         assert!(
             !desc.contains("${{"),
             "rendered description must not contain raw template placeholders"
         );
     }
-    /// Smoke test: finalize the full GrokBuild toolset and verify every
-    /// tool description is fully rendered -- no unresolved MiniJinja vars,
-    /// no stale `{max_*}` placeholders, no empty tool-name references from
-    /// missing conditional guards.
+    /// Smoke test: finalize the full GrokBuild toolset and verify every tool description is fully
+    /// rendered -- no unresolved MiniJinja vars, no stale `{max_*}` placeholders, no empty
+    /// tool-name references from missing conditional guards.
     #[tokio::test]
     async fn full_toolset_descriptions_render_cleanly() {
         use crate::implementations::grok_build::{
             IMAGE_GEN_TOOL_NAME, IMAGE_TO_VIDEO_TOOL_NAME, REFERENCE_TO_VIDEO_TOOL_NAME,
             SCHEDULER_CREATE_TOOL_NAME, SCHEDULER_DELETE_TOOL_NAME,
+            SEND_SUBAGENT_MESSAGE_TOOL_NAME,
         };
         let builder = ToolRegistryBuilder::new();
         let config = ToolServerConfig {
@@ -2380,6 +2246,7 @@ mod tests {
                 "exit_plan_mode",
                 "todo_write",
                 "task",
+                SEND_SUBAGENT_MESSAGE_TOOL_NAME,
                 "web_search",
                 "web_fetch",
                 "lsp",
@@ -2559,10 +2426,9 @@ mod tests {
         assert_eq!(unchanged["backend"], true);
         assert!(unchanged.get(TOOL_META_KEY).is_none());
     }
-    /// The wire (`ToolMetadata::is_read_only`) and doom-loop
-    /// (`Tool::capabilities().is_read_only`) must agree for every registered
-    /// tool. Drift here is a client classifying a tool differently from
-    /// in-process loop detection.
+    /// The wire (`ToolMetadata::is_read_only`) and doom-loop (`Tool::capabilities().is_read_only`)
+    /// must agree for every registered tool. Drift here is a client classifying a tool differently
+    /// from in-process loop detection.
     #[test]
     fn capabilities_is_read_only_matches_metadata() {
         let builder = ToolRegistryBuilder::new();
@@ -2703,12 +2569,9 @@ mod tests {
             "replace_all description should reference the renamed param: {replace_all_desc}"
         );
     }
-    /// Descriptions promising completion notifications ("You are notified on
-    /// completion") render conditionally on the client's system-reminders
-    /// setting, plumbed via `set_system_reminders_enabled` into the
-    /// `TemplateRenderer`. With reminders disabled, the bash description and
-    /// the `is_background` field description must not promise notifications;
-    /// they point at the get-output tool instead when one is served.
+    /// Bash tool descriptions branch on the client's system-reminders setting, plumbed via
+    /// `set_system_reminders_enabled` into the `TemplateRenderer`. With reminders disabled they
+    /// name the get-output tool when one is served.
     #[tokio::test]
     async fn bash_descriptions_track_system_reminders_setting() {
         let config_with = |ids: &[&str]| ToolServerConfig {
@@ -2741,34 +2604,23 @@ mod tests {
         let toolset = ToolRegistryBuilder::new()
             .finalize(config_with(&ids), test_session_context(&tmp))
             .expect("finalize");
-        let (desc, field_desc) = bash_texts(&toolset);
-        assert!(
-            desc.contains("You are notified on completion"),
-            "reminders on: description should promise notification: {desc}"
-        );
-        assert!(
-            field_desc.contains("you are notified on completion"),
-            "reminders on: is_background description should promise notification: {field_desc}"
-        );
+        let (desc_on, field_on) = bash_texts(&toolset);
         let tmp = TempDir::new().unwrap();
         let mut builder = ToolRegistryBuilder::new();
         builder.set_system_reminders_enabled(false);
         let toolset = builder
             .finalize(config_with(&ids), test_session_context(&tmp))
             .expect("finalize");
-        let (desc, field_desc) = bash_texts(&toolset);
+        let (desc_off, field_off) = bash_texts(&toolset);
+        assert_ne!(desc_on, desc_off);
+        assert_ne!(field_on, field_off);
         assert!(
-            !desc.contains("notified on completion"),
-            "reminders off: description must not promise notification: {desc}"
+            desc_off.contains("get_task_output"),
+            "reminders off: description should name get_task_output: {desc_off}"
         );
         assert!(
-            desc.contains("Check on it later with the get_task_output tool"),
-            "reminders off: description should point at get_task_output: {desc}"
-        );
-        assert!(
-            !field_desc.contains("notified on completion")
-                && field_desc.contains("check on it later with the get_task_output tool"),
-            "reminders off: is_background description should point at get_task_output: {field_desc}"
+            field_off.contains("get_task_output"),
+            "reminders off: is_background description should name get_task_output: {field_off}"
         );
     }
     /// Each assertion pattern-matches on the exact `ToolOutput::SearchReplace`
@@ -2983,10 +2835,9 @@ mod tests {
             "lookup is by fully-qualified id, not the bare tool id"
         );
     }
-    /// Consumers backfill kinds onto kind-less pinned toolsets (hub
-    /// `session.bind` wire entries) from this map before capability
-    /// filtering; a wrong or missing kind here silently changes which
-    /// tools a `capability_mode` keeps.
+    /// Consumers backfill kinds onto kind-less pinned toolsets (hub `session.bind` wire entries)
+    /// from this map before capability filtering; a wrong or missing kind here silently changes
+    /// which tools a `capability_mode` keeps.
     #[test]
     fn known_tool_kinds_maps_pinned_tool_config_ids() {
         let kinds = ToolRegistryBuilder::new().known_tool_kinds();
@@ -3008,14 +2859,9 @@ mod tests {
             "unknown ids must be absent"
         );
     }
-    /// Regression test: `validate_config` must reject configurations where
-    /// two tools resolve to the same `client_name`.
-    ///
-    /// Without `name_override`, the client_name defaults to `entry.id`
-    /// (e.g. `"read_file"`). If both `GrokBuild:read_file` and
-    /// `Codex:read_file` are in the config, both would get
-    /// `client_name = "read_file"`, making the second unreachable at
-    /// dispatch time.
+    /// Regression test: `validate_config` must reject configurations where two tools resolve to the same `client_name`. Without `name_override`,
+    /// the client_name defaults to `entry.id` (e.g. `"read_file"`). If both `GrokBuild:read_file` and `Codex:read_file` are in the config, both
+    /// would get `client_name = "read_file"`, making the second unreachable at dispatch time.
     #[test]
     fn validate_config_rejects_duplicate_client_name() {
         let builder = ToolRegistryBuilder::new();
@@ -3381,10 +3227,9 @@ mod tests {
         );
         assert!(result.effective_tool_name.is_none());
     }
-    /// `call_streaming` forwards the inner `Progress` item(s) in order and then
-    /// yields exactly one `Terminal` whose `ToolRunResult` still carries
-    /// `prompt_text`. Driving the same tool through `call` drops the progress
-    /// and produces a result of the same shape.
+    /// `call_streaming` forwards the inner `Progress` item(s) in order and then yields exactly one
+    /// `Terminal` whose `ToolRunResult` still carries `prompt_text`. Driving the same tool through
+    /// `call` drops the progress and produces a result of the same shape.
     #[tokio::test]
     async fn call_streaming_forwards_progress_and_finalizes_terminal() {
         use futures::StreamExt;
@@ -3436,11 +3281,9 @@ mod tests {
         assert_eq!(via_call.prompt_text, streamed.prompt_text);
         assert_eq!(via_call.effective_tool_name, streamed.effective_tool_name);
     }
-    /// A misbehaving tool whose `execute` returns an *empty* stream — no
-    /// `Progress`, no `Terminal`. This breaks the `Tool` streaming contract;
-    /// the registry's drain in `call` must surface the violation as a
-    /// `stream_no_terminal` error rather than panicking. Defends against a
-    /// single buggy tool implementation tearing down the workspace process.
+    /// A misbehaving tool whose `execute` returns an *empty* stream — no `Progress`, no `Terminal`. This breaks the `Tool`
+    /// streaming contract; the registry's drain in `call` must surface the violation as a `stream_no_terminal` error rather
+    /// than panicking. Defends against a single buggy tool implementation tearing down the workspace process.
     #[derive(Debug)]
     struct NoTerminalStub;
     impl crate::types::tool_metadata::ToolMetadata for NoTerminalStub {
@@ -3481,25 +3324,9 @@ mod tests {
             Box::pin(futures::stream::empty())
         }
     }
-    /// End-to-end "no panic on misbehaving tool" guard: a tool whose `execute`
-    /// emits an empty stream (zero `Progress`, zero `Terminal`) must surface
-    /// through `call` as `Err(stream_no_terminal)` — never a panic.
-    ///
-    /// Behaviorally, two layers cooperate to deliver this:
-    ///   1. `call_streaming`'s own fallback yields
-    ///      `Terminal(Err(stream_no_terminal_error()))` when its inner
-    ///      dispatch stream ends without a terminal (the path actually
-    ///      exercised by this stub).
-    ///   2. `call`'s drain loop now also returns `Err(stream_no_terminal_error())`
-    ///      instead of `unreachable!()` if the outer `call_streaming` stream
-    ///      itself ever ends without yielding a terminal — defense-in-depth
-    ///      that cannot be reached under the `call_streaming` contract but
-    ///      whose presence guarantees no `unreachable!()` panic at this
-    ///      callsite.
-    ///
-    /// Both layers raise the same `stream_no_terminal` error kind so consumers
-    /// see one consistent shape regardless of which layer caught the
-    /// violation.
+    /// End-to-end "no panic on misbehaving tool" guard: a tool whose `execute` emits an empty stream (zero `Progress`, zero `Terminal`) must
+    /// surface through `call` as `Err(stream_no_terminal)` — never a panic. Both layers raise the same `stream_no_terminal` error kind so consumers
+    /// see one consistent shape regardless of which layer caught the violation.
     #[tokio::test]
     async fn call_returns_error_when_inner_stream_has_no_terminal() {
         let tmp = TempDir::new().unwrap();
@@ -3826,6 +3653,58 @@ mod tests {
         let task_def = defs.iter().find(|d| d.function.name == "task");
         assert!(task_def.is_some(), "task tool should be in definitions");
     }
+    fn scheduler_validate(ids: &[&str]) -> Vec<RequirementError> {
+        ToolRegistryBuilder::new().validate_config(&ToolServerConfig {
+            tools: ids
+                .iter()
+                .map(|id| ToolConfig::from_id((*id).to_string()))
+                .collect(),
+            behavior_preset: None,
+        })
+    }
+    #[test]
+    fn scheduler_create_rejected_without_delete_list_and_poll() {
+        let errors = scheduler_validate(&["GrokBuild:scheduler_create"]);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.tool == "GrokBuild:scheduler_create"),
+            "{errors:?}"
+        );
+    }
+    #[test]
+    fn scheduler_trio_rejected_without_poll_tool() {
+        let errors = scheduler_validate(&[
+            "GrokBuild:scheduler_create",
+            "GrokBuild:scheduler_delete",
+            "GrokBuild:scheduler_list",
+        ]);
+        assert!(!errors.is_empty(), "{errors:?}");
+    }
+    #[test]
+    fn scheduler_bundle_accepted_with_get_task_output() {
+        let errors = scheduler_validate(&[
+            "GrokBuild:scheduler_create",
+            "GrokBuild:scheduler_delete",
+            "GrokBuild:scheduler_list",
+            "GrokBuild:get_task_output",
+            "GrokBuild:kill_task",
+            "GrokBuild:run_terminal_cmd",
+        ]);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+    #[test]
+    fn scheduler_bundle_accepted_with_terminal_command_output() {
+        let errors = scheduler_validate(&[
+            "GrokBuild:scheduler_create",
+            "GrokBuild:scheduler_delete",
+            "GrokBuild:scheduler_list",
+            "GrokBuild:get_terminal_command_output",
+            "GrokBuild:kill_terminal_command",
+            "GrokBuild:run_terminal_cmd",
+        ]);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
     /// Verify that the task tool description renders correctly with the default
     /// grok-build agent config (all tools present) and that the new examples
     /// section is included with no unresolved template placeholders.
@@ -3949,14 +3828,9 @@ mod tests {
             "enabled background should preserve is_background guidance in default description"
         );
     }
-    /// Regression guard: background-param template references must use the real
-    /// input-schema property names — `${{ params.execute.is_background }}` and
-    /// `${{ params.task.run_in_background }}`. A mistyped key (e.g. the old
-    /// `params.execute.background`) has no entry in `kind_params`, so the
-    /// renderer silently emits "" — producing prompt text like "set =true" or
-    /// "=true commands". This finalizes the full background-capable toolset and
-    /// asserts no rendered description leaks a blank param, and that the
-    /// cross-tool refs resolve to their canonical keys.
+    /// Regression guard: background-param template references must use the real input-schema property names — `${{ params.execute.is_background }}`
+    /// and `${{ params.task.run_in_background }}`. A mistyped key (e.g. the old `params.execute.background`) has no entry in `kind_params`, so the
+    /// renderer silently emits "" — producing prompt text like "set =true" or "=true commands".
     #[tokio::test]
     async fn background_param_templates_reference_real_schema_keys() {
         let builder = ToolRegistryBuilder::new();
@@ -4798,12 +4672,9 @@ mod tests {
             "SkillManager.cwd must be set for discovery to work"
         );
     }
-    /// Startup skills passed via `SessionContext.skills` must survive a
-    /// dynamic discovery. Before the fix, `SkillManager` was seeded with
-    /// `startup_skills: vec![]`, so `take_pending()` would compute
-    /// `dedup_by_canonical_path(discovered, [])` and overwrite
-    /// `AvailableSkills` with only the new discoveries, dropping boot
-    /// skills.
+    /// Startup skills passed via `SessionContext.skills` must survive a dynamic discovery. Before the fix, `SkillManager`
+    /// was seeded with `startup_skills: vec![]`, so `take_pending()` would compute `dedup_by_canonical_path(discovered,
+    /// [])` and overwrite `AvailableSkills` with only the new discoveries, dropping boot skills.
     #[tokio::test]
     async fn test_startup_skills_survive_dynamic_discovery() {
         let tmp = TempDir::new().unwrap();
@@ -4873,10 +4744,9 @@ mod tests {
             assert_eq!(skills.0.len(), 2, "should have exactly 2 skills");
         }
     }
-    /// generate_schema strips the boilerplate root `title` (struct name) and
-    /// root `description` (struct doc "Input for the <canonical> tool") so the
-    /// canonical name can't leak via parameters.description after randomization
-    /// renames the tool. $schema and per-property descriptions are retained.
+    /// generate_schema strips the boilerplate root `title` (struct name) and root `description` (struct doc "Input for the
+    /// <canonical> tool") so the canonical name can't leak via parameters.description after randomization renames the tool.
+    /// $schema and per-property descriptions are retained.
     #[test]
     fn generate_schema_strips_root_title_and_description() {
         let schema = generate_schema::<crate::implementations::grok_build::bash::BashToolInput>();

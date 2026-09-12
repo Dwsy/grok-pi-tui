@@ -52,9 +52,7 @@ use crate::scope_graph::ScopeGraphIndex;
 use crate::types::{FileMeta, IndexStats};
 
 /// Global registry of active IndexManager handles per workspace.
-///
-/// This ensures that at most one IndexManager exists per workspace per process.
-/// Uses `Weak` references so handles are automatically cleaned up when dropped.
+/// At most one IndexManager per workspace per process. `Weak` refs so dropped handles are cleaned up.
 static ACTIVE_MANAGERS: Lazy<DashMap<PathBuf, Weak<IndexManagerHandle>>> = Lazy::new(DashMap::new);
 
 /// File system event kind - maps from notify::EventKind.
@@ -177,9 +175,7 @@ pub struct QueryResult {
 }
 
 /// A symbol location in a file.
-///
-/// `path` is stored as **relative** to the index root_path (for portability across machines/sessions).
-/// Use `to_relative_path` helper when creating from absolute paths.
+/// `path` is relative to the index root for portability. Use `to_relative_path` from absolute paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolLocation {
     /// Path to the file (relative to index root_path).
@@ -266,9 +262,7 @@ impl IndexManagerHandle {
     }
 
     /// Get a shared snapshot of the current index (blocking).
-    ///
-    /// Returns an `Arc<ScopeGraphIndex>` — the clone is zero-cost when no
-    /// mutation is in flight inside the manager.
+    /// `Arc` clone is zero-cost when no mutation is in flight.
     pub fn get_snapshot(&self) -> Result<Arc<ScopeGraphIndex>, channel::SendError<IndexCommand>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.command_tx.send(IndexCommand::GetSnapshot(tx))?;
@@ -310,10 +304,7 @@ impl IndexManagerHandle {
     }
 
     /// Check if the index contains at least one definition for `symbol` (blocking).
-    ///
-    /// Returns `Some(true/false)` on success, or `None` if the manager is
-    /// unavailable.  Prefer this over `get_snapshot()` + `has_definition()`
-    /// when you only need a boolean existence check.
+    /// `None` if the manager is unavailable. Prefer this over snapshot + `has_definition` for a boolean.
     pub fn has_definition_blocking(&self, symbol: &str) -> Option<bool> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.command_tx
@@ -333,11 +324,7 @@ impl IndexManagerHandle {
     // ========== Async Query APIs ==========
 
     /// Go to definition at the given position (async).
-    ///
-    /// # Arguments
-    /// * `file_path` - Path to the file
-    /// * `row` - 1-indexed line number
-    /// * `col` - 1-indexed column number
+    /// `row` and `col` are 1-indexed.
     pub async fn goto_definition(
         &self,
         file_path: PathBuf,
@@ -355,12 +342,7 @@ impl IndexManagerHandle {
     }
 
     /// Go to references at the given position (async).
-    ///
-    /// # Arguments
-    /// * `file_path` - Path to the file
-    /// * `row` - 1-indexed line number
-    /// * `col` - 1-indexed column number
-    /// * `include_definition` - Whether to include definition locations in results
+    /// `row` and `col` are 1-indexed. `include_definition` controls whether definition locations are included.
     pub async fn goto_references(
         &self,
         file_path: PathBuf,
@@ -380,10 +362,7 @@ impl IndexManagerHandle {
     }
 
     /// Find definitions by symbol name (async).
-    ///
-    /// # Arguments
-    /// * `symbol` - The symbol name to look up
-    /// * `context_file` - Optional file path for context-aware ranking
+    /// `context_file` is an optional path for context-aware ranking.
     pub async fn find_definitions(
         &self,
         symbol: String,
@@ -399,10 +378,7 @@ impl IndexManagerHandle {
     }
 
     /// Find references by symbol name (async).
-    ///
-    /// # Arguments
-    /// * `symbol` - The symbol name to look up
-    /// * `context_file` - Optional file path for context-aware ranking
+    /// `context_file` is an optional path for context-aware ranking.
     pub async fn find_references(
         &self,
         symbol: String,
@@ -550,14 +526,10 @@ impl Drop for ExitBeacon {
 }
 
 /// The IndexManager owns and manages the ScopeGraphIndex.
-///
-/// It processes file events through a channel and updates the index incrementally.
-/// This design avoids Arc<Mutex> by having a single owner of the index.
+/// Single owner processes file events through a channel, avoiding `Arc<Mutex>`.
 pub struct IndexManager {
-    /// The index being managed. Wrapped in `Arc` so that `GetSnapshot` can
-    /// hand out a shared reference without cloning.  Mutations use
-    /// `Arc::make_mut` which is zero-cost when no snapshot is alive and
-    /// performs a single clone (COW) when one is.
+    /// The index being managed. `Arc` so `GetSnapshot` can hand out a shared reference.
+    /// Mutations use `Arc::make_mut` (zero-cost if no snapshot is alive; one COW clone otherwise).
     index: Arc<ScopeGraphIndex>,
     /// Language registry for parsing
     registry: LanguageRegistry,
@@ -575,18 +547,7 @@ pub struct IndexManager {
 
 impl IndexManager {
     /// Spawn an IndexManager in a background thread, returning immediately.
-    ///
-    /// Unlike `new()`, this never blocks the caller. The index is loaded/built
-    /// in a background thread. Queries will wait in the channel until the index
-    /// is ready, then get processed.
-    ///
-    /// This is the recommended API for integrations that need non-blocking startup.
-    ///
-    /// ## Deduplication
-    ///
-    /// This function ensures that at most one `IndexManager` exists per workspace
-    /// per process. If an active manager already exists for the workspace, its
-    /// handle is returned instead of creating a new one.
+    /// Queries wait in the channel until the index is ready. At most one manager per workspace per process.
     pub fn spawn(config: IndexManagerConfig) -> Arc<IndexManagerHandle> {
         let canonical_root =
             dunce::canonicalize(&config.root_path).unwrap_or_else(|_| config.root_path.clone());
@@ -790,10 +751,8 @@ impl IndexManager {
         }
     }
 
-    /// Run the manager, processing commands until shutdown.
-    ///
-    /// This should be called in a dedicated thread.
-    /// Event loop. Drains and coalesces pending file events before processing.
+    /// Run the manager, processing commands until shutdown. Call from a dedicated thread.
+    /// Drains and coalesces pending file events before processing.
     fn run_loop(&mut self) {
         let (files, defs, refs) = self.index.stats();
         tracing::info!(
@@ -828,12 +787,7 @@ impl IndexManager {
     }
 
     /// Process a command with event coalescing and time-throttled cache saving.
-    ///
-    /// For file events: drains pending events from the channel and coalesces
-    /// by path (last-writer-wins) before processing. A `Removed` after a
-    /// `Created`/`Modified` cancels both. A `Created`/`Modified` after
-    /// `Removed` processes as `Created` (file was replaced).
-    ///
+    /// File events drain and coalesce by path (last-writer-wins); `Removed` cancels a prior create/modify.
     /// Returns false if shutdown was requested.
     fn process_command_coalesced(
         &mut self,
@@ -1170,15 +1124,9 @@ impl IndexManager {
         }
     }
 
-    /// Reindex a single file: read, parse, and intern symbols directly.
-    ///
-    /// Unlike the parallel builder path, this interns symbol names directly
-    /// from `&content[byte_range]` into the index's `StringInterner` — zero
-    /// intermediate `Arc<str>` allocations.
-    ///
-    /// Old entries are removed before re-extraction. If the file can't be
-    /// read/parsed (transient error, binary, oversized), it stays absent
-    /// from the index until the next successful reindex.
+    /// Reindex a single file: read, parse, and intern symbols directly from `&content[byte_range]`.
+    /// Zero intermediate `Arc<str>` allocations. Old entries are removed first.
+    /// If read/parse fails, the file stays absent until the next successful reindex.
     fn reindex_file(&mut self, path: &Path) {
         let rel_path = to_relative_path(&self.config.root_path, path);
         let rel_str = rel_path.to_string_lossy();
@@ -1291,15 +1239,7 @@ impl IndexManager {
 }
 
 /// Background index refresh: validates cached files and discovers new ones.
-///
-/// This runs in a background thread and sends a BackgroundRefresh command
-/// when complete. Uses parallel processing for fast stat operations.
-///
-/// ## Deduplication
-///
-/// This function acquires an exclusive lock before starting. If another
-/// process is already performing background refresh on this workspace,
-/// this call returns early without doing any work.
+/// Acquires an exclusive lock first; if another process is already refreshing this workspace, returns early.
 fn background_index_refresh(
     root_path: PathBuf,
     cached_data: Vec<(String, FileMeta)>,
@@ -1435,15 +1375,8 @@ fn background_index_refresh(
 }
 
 /// Extract symbols from a parsed tree and intern them directly into the index.
-///
-/// This is the zero-alloc alternative to `extract_symbols_inline` for the
-/// incremental reindex path. Instead of creating `Arc<str>` for each symbol
-/// and collecting into Vecs, it interns symbol names directly from
-/// `&src[byte_range]` into the index's `StringInterner` and adds
-/// definition/reference entries inline.
-///
-/// Invalid UTF-8 byte ranges are skipped (indicates binary content in that
-/// region of the file — no lossy replacement needed).
+/// Zero-alloc alternative to `extract_symbols_inline` for incremental reindex.
+/// Invalid UTF-8 byte ranges are skipped (binary region; no lossy replacement).
 fn intern_symbols_directly(
     query: &tree_sitter::Query,
     root_node: tree_sitter::Node<'_>,
@@ -1511,12 +1444,8 @@ fn intern_symbols_directly(
 }
 
 /// Event coalescing state: deduplicates file events by path.
-///
-/// Semantics:
-/// - `Created` + `Modified` → `Modified` (already exists, just reindex)
-/// - `Created/Modified` + `Removed` → cancelled (nothing to do)
-/// - `Removed` + `Created/Modified` → `Created` (file was replaced)
-/// - Multiple `Modified` → single `Modified`
+/// Create/modify then remove cancels both; remove then create is a replace (`Created`).
+/// Multiple modifies collapse to one.
 struct CoalescedEvents {
     events: HashMap<PathBuf, FileEventKind>,
 }
@@ -1576,11 +1505,8 @@ pub fn is_binary_content(content: &[u8]) -> bool {
     content[..check_len].contains(&0)
 }
 
-/// Check if a file appears to be binary by reading only the first 8KB.
-///
-/// Unlike `is_binary_content` (which takes an already-loaded buffer), this
-/// reads a small prefix from disk — avoiding loading the entire file into
-/// memory just to discover it contains null bytes.
+/// Check if a file appears binary by reading only the first 8KB.
+/// Avoids loading the entire file just to discover null bytes.
 fn is_binary_file(path: &Path) -> bool {
     use std::io::Read;
     let Ok(mut f) = std::fs::File::open(path) else {
@@ -1594,10 +1520,7 @@ fn is_binary_file(path: &Path) -> bool {
 }
 
 /// Check if a path is under a hidden directory (component starting with `.`).
-///
-/// Returns `true` for paths like `.claude/worktrees/x/src/main.rs` or
-/// `.grok/worktrees/repo/lib.rs`, which should not be indexed since they
-/// are typically tool-managed worktrees or caches.
+/// Those paths are typically tool-managed worktrees or caches and should not be indexed.
 fn is_under_hidden_dir(path: &Path) -> bool {
     path.components().any(|c| {
         c.as_os_str()
@@ -2043,11 +1966,8 @@ mod tests {
         handle.shutdown().unwrap();
     }
 
-    // COW isolation: an Arc snapshot taken before a mutation must
-    // continue to reflect the original index contents (COW isolation), while
-    // a snapshot taken after the mutation must reflect the updated index.
-    // Also verifies that the two snapshots no longer share the same backing
-    // allocation once a mutation has caused Arc::make_mut to detach.
+    // COW isolation: a snapshot taken before a mutation must keep the original contents.
+    // A snapshot taken after must see the update, and the two must not share backing once `make_mut` detaches.
     #[test]
     fn test_snapshot_isolation_across_mutation() {
         let dir = tempdir().unwrap();

@@ -48,8 +48,7 @@ fn open_block_viewer_on_group_header_toggles_group() {
         assert!(agent.scrollback.is_selected_group_header());
     }
 
-    // Enter on the "N more" header expands the group instead of opening
-    // the hidden first entry in the block viewer.
+    // Enter on the "N more" header expands the group instead of opening the hidden first entry in the block viewer
     dispatch(Action::OpenBlockViewer, &mut app);
     {
         let agent = app.agents.get_mut(&id).unwrap();
@@ -250,8 +249,7 @@ fn open_block_viewer_prefers_markdown_viewer_over_image_refs() {
         )));
     agent.scrollback.set_selected(Some(0));
 
-    // Need a graphics protocol so the top-level media guard doesn't
-    // short-circuit before reaching the block viewer.
+    // Without a graphics protocol the top-level media guard returns early before the block viewer is reached
     let _guard = set_protocol_for_test(GraphicsProtocol::Kitty);
     let effects = dispatch(Action::OpenBlockViewer, &mut app);
 
@@ -285,9 +283,208 @@ fn open_block_viewer_uses_markdown_viewer_for_agent_message_with_image_ref() {
 
     assert!(effects.is_empty());
     let agent = app.agents.get(&id).unwrap();
-    // Agent messages with image refs now open the normal markdown viewer
-    // (inline media rendering moved to the tool call block).
+    // Agent messages with image refs now open the normal markdown viewer (inline media rendering moved to the tool call block)
     assert!(agent.block_viewer.is_some());
+}
+
+fn long_agent_lines() -> String {
+    (0..40)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn push_selected_running_message(
+    app: &mut AppView,
+    text: String,
+) -> crate::scrollback::entry::EntryId {
+    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+    let entry_id = agent
+        .scrollback
+        .push_block(RenderBlock::agent_message(text));
+    agent
+        .scrollback
+        .get_by_id_mut(entry_id)
+        .expect("just pushed")
+        .is_running = true;
+    agent.scrollback.set_selected(Some(0));
+    entry_id
+}
+
+fn follow_viewer_area() -> ratatui::layout::Rect {
+    ratatui::layout::Rect::new(0, 0, 80, 8)
+}
+
+#[test]
+fn open_block_viewer_restores_place_for_same_entry() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let entry_id = {
+        let agent = app.agents.get_mut(&id).unwrap();
+        let entry_id = agent
+            .scrollback
+            .push_block(RenderBlock::agent_message("line a\nline b\nline c"));
+        agent.scrollback.set_selected(Some(0));
+        entry_id
+    };
+    dispatch(Action::OpenBlockViewer, &mut app);
+    let (selected_id, scroll_offset) = {
+        let agent = app.agents.get_mut(&id).unwrap();
+        let viewer = agent.block_viewer.as_mut().expect("opened");
+        viewer.prepare_for_test(ratatui::layout::Rect::new(0, 0, 80, 24));
+        viewer.list_state.set_scroll_offset(12);
+        let selected_id = viewer.list_state.selected_id();
+        let scroll_offset = viewer.list_state.scroll_offset();
+        agent.dismiss_block_viewer();
+        (selected_id, scroll_offset)
+    };
+    dispatch(Action::OpenBlockViewer, &mut app);
+    let agent = app.agents.get(&id).unwrap();
+    let viewer = agent.block_viewer.as_ref().expect("reopened");
+    assert_eq!(viewer.entry_id, entry_id);
+    assert_eq!(viewer.list_state.selected_id(), selected_id);
+    assert_eq!(viewer.list_state.scroll_offset(), scroll_offset);
+}
+
+#[test]
+fn open_block_viewer_restores_place_after_follow_dismiss() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let entry_id = push_selected_running_message(&mut app, long_agent_lines());
+    dispatch(Action::OpenBlockViewer, &mut app);
+    let (selected_id, scroll_offset) = {
+        let agent = app.agents.get_mut(&id).unwrap();
+        let viewer = agent.block_viewer.as_mut().expect("opened");
+        viewer.prepare_for_test(follow_viewer_area());
+        assert!(viewer.list_state.follow_mode);
+        assert_eq!(viewer.list_state.selected_id(), None);
+        let scroll_offset = viewer.list_state.scroll_offset();
+        assert!(scroll_offset > 0);
+        agent.dismiss_block_viewer();
+        let resume = agent.block_viewer_resume.expect("resume");
+        (resume.selected_id, scroll_offset)
+    };
+    assert!(selected_id.is_some());
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .scrollback
+        .get_by_id_mut(entry_id)
+        .expect("entry")
+        .is_running = false;
+    dispatch(Action::OpenBlockViewer, &mut app);
+    let agent = app.agents.get_mut(&id).unwrap();
+    let viewer = agent.block_viewer.as_mut().expect("reopened");
+    viewer.prepare_for_test(follow_viewer_area());
+    assert!(!viewer.list_state.follow_mode);
+    assert_eq!(viewer.list_state.selected_id(), selected_id);
+    let vi = viewer.list_state.selected_index().expect("selected");
+    assert!(
+        viewer.list_state.visible_range().contains(&vi),
+        "pinned last nonempty line must stay on screen (was offset {scroll_offset})"
+    );
+}
+
+#[test]
+fn open_block_viewer_restores_scrolled_place_while_still_running() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    push_selected_running_message(&mut app, long_agent_lines());
+    dispatch(Action::OpenBlockViewer, &mut app);
+    let (selected_id, scroll_offset) = {
+        let agent = app.agents.get_mut(&id).unwrap();
+        let viewer = agent.block_viewer.as_mut().expect("opened");
+        viewer.prepare_for_test(follow_viewer_area());
+        assert!(viewer.list_state.follow_mode);
+        viewer.list_state.follow_mode = false;
+        viewer.prepare_for_test(follow_viewer_area());
+        viewer.list_state.set_scroll_offset(3);
+        viewer.prepare_for_test(follow_viewer_area());
+        let selected_id = viewer.list_state.selected_id();
+        let scroll_offset = viewer.list_state.scroll_offset();
+        assert!(!viewer.list_state.follow_mode);
+        agent.dismiss_block_viewer();
+        (selected_id, scroll_offset)
+    };
+    dispatch(Action::OpenBlockViewer, &mut app);
+    let agent = app.agents.get_mut(&id).unwrap();
+    let viewer = agent.block_viewer.as_mut().expect("reopened");
+    viewer.prepare_for_test(follow_viewer_area());
+    assert!(!viewer.list_state.follow_mode);
+    assert_eq!(viewer.list_state.selected_id(), selected_id);
+    let vi = viewer.list_state.selected_index().expect("selected");
+    assert!(
+        viewer.list_state.visible_range().contains(&vi),
+        "restored cursor must be on screen (saved offset {scroll_offset})"
+    );
+}
+
+#[test]
+fn open_block_viewer_keeps_follow_when_dismissed_while_following() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    push_selected_running_message(&mut app, long_agent_lines());
+    dispatch(Action::OpenBlockViewer, &mut app);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        let viewer = agent.block_viewer.as_mut().expect("opened");
+        viewer.prepare_for_test(follow_viewer_area());
+        assert!(viewer.list_state.follow_mode);
+        agent.dismiss_block_viewer();
+        assert!(agent.block_viewer_resume.expect("resume").follow_mode);
+    }
+    dispatch(Action::OpenBlockViewer, &mut app);
+    let agent = app.agents.get_mut(&id).unwrap();
+    let viewer = agent.block_viewer.as_mut().expect("reopened");
+    viewer.prepare_for_test(follow_viewer_area());
+    assert!(viewer.list_state.follow_mode);
+    assert_eq!(viewer.list_state.selected_id(), None);
+}
+
+#[test]
+fn open_block_viewer_pins_tail_when_follow_ids_remap() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let finished = (0..8)
+        .map(|i| format!("done {i}"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        + "\n\n";
+    let entry_id = push_selected_running_message(&mut app, long_agent_lines());
+    dispatch(Action::OpenBlockViewer, &mut app);
+    let stale_id = {
+        let agent = app.agents.get_mut(&id).unwrap();
+        let viewer = agent.block_viewer.as_mut().expect("opened");
+        viewer.prepare_for_test(follow_viewer_area());
+        assert!(viewer.list_state.follow_mode);
+        agent.dismiss_block_viewer();
+        let resume = agent.block_viewer_resume.expect("resume");
+        assert!(resume.follow_mode);
+        resume
+            .selected_id
+            .expect("follow dismiss snapshots last line")
+    };
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        let entry = agent.scrollback.get_by_id_mut(entry_id).expect("entry");
+        entry.block = RenderBlock::agent_message(finished);
+        entry.is_running = false;
+    }
+    let expected_last = {
+        let agent = app.agents.get(&id).unwrap();
+        let entry = agent.scrollback.get_by_id(entry_id).expect("entry");
+        crate::views::block_viewer::BlockViewerPane::for_markdown(entry_id, entry)
+            .expect("markdown")
+            .resume_selected_id()
+            .expect("finished body")
+    };
+    assert_ne!(stale_id, expected_last);
+    dispatch(Action::OpenBlockViewer, &mut app);
+    let agent = app.agents.get_mut(&id).unwrap();
+    let viewer = agent.block_viewer.as_mut().expect("reopened");
+    viewer.prepare_for_test(follow_viewer_area());
+    assert!(!viewer.list_state.follow_mode);
+    assert_eq!(viewer.list_state.selected_id(), Some(expected_last));
 }
 
 #[test]
@@ -313,15 +510,12 @@ fn open_block_viewer_opens_image_only_blocks_natively() {
     assert!(entry.block.supports_fullscreen());
     assert!(!entry.block.has_normal_fullscreen_viewer());
 
-    // Pretend the host terminal speaks Kitty graphics so the media
-    // short-circuit guard (`guard_image_support`) doesn't fire and the
-    // dispatch reaches the image branch, which opens the file natively
-    // rather than an in-app viewer.
+    // Pretend the host terminal speaks Kitty graphics so `guard_image_support` doesn't return early
+    // The dispatch then reaches the image branch, which opens the file natively rather than in an in-app viewer
     let _guard = set_protocol_for_test(GraphicsProtocol::Kitty);
     let effects = dispatch(Action::OpenBlockViewer, &mut app);
 
-    // Generated media now opens in the OS-native viewer (fire-and-forget),
-    // so neither the in-app block viewer nor image viewer is shown.
+    // Generated media now opens in the OS-native viewer without being tracked, so neither the in-app block viewer nor the image viewer is shown
     assert!(effects.is_empty());
     let agent = app.agents.get(&id).unwrap();
     assert!(agent.block_viewer.is_none());
@@ -400,7 +594,7 @@ fn plugins_list_delivery_seeds_once_then_always_preserves() {
     open_plugins_modal(&mut app, id);
     deliver_plugins_list(&mut app, id);
 
-    // User expands a group, then the post-action refetch arrives.
+    // The user expands a group, then the refetch that follows an action arrives
     app.agents
         .get_mut(&id)
         .unwrap()
@@ -417,7 +611,7 @@ fn plugins_list_delivery_seeds_once_then_always_preserves() {
         "post-action refetch must not re-collapse an expanded group"
     );
 
-    // Reload sets Loading, but seeding is once-per-modal: still preserves.
+    // Reload sets Loading, but seeding happens once per modal, so the expanded group is still preserved
     app.agents
         .get_mut(&id)
         .unwrap()
@@ -453,9 +647,8 @@ fn open_block_viewer_skips_image_viewer_when_no_graphics() {
         )));
     agent.scrollback.set_selected(Some(0));
 
-    // Terminal has no inline-image protocol (e.g. Windows / ConPTY).
-    // The dispatch should refuse to open the image-viewer modal and
-    // surface the situation via a toast instead.
+    // The terminal has no inline-image protocol (e.g. Windows ConPTY).
+    // The dispatch refuses to open the image-viewer modal and shows a toast instead
     let _guard = set_protocol_for_test(GraphicsProtocol::None);
     let effects = dispatch(Action::OpenBlockViewer, &mut app);
 

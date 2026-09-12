@@ -16,7 +16,6 @@ fn task(id: &str, recurring: bool, durable: bool) -> ScheduledTask {
         prompt: format!("run {id}"),
         recurring,
         durable,
-        foreground: true,
         created_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
         last_fired_at: None,
         expires_at: None,

@@ -1,28 +1,27 @@
 //! Feedback, remember-note, btw, and recap dispatchers.
 
 use super::ctx::{NO_SESSION_NOTICE, with_active_agent};
-use crate::app::actions::{Effect, FeedbackTraceChoice};
+use crate::app::actions::{Effect, FeedbackSendOrigin, FeedbackTraceChoice};
 use crate::app::agent::AgentId;
 use crate::app::agent_view::{AgentView, PromptInputMode};
 use crate::app::app_view::{ActiveView, AppView};
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::{SessionEvent, ToolCallBlock};
-use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
 use std::sync::atomic::{AtomicU64, Ordering};
-use xai_grok_tools::implementations::grok_build::ask_user_question::Question;
 
-/// Monotonic counter for correlating async rewrite responses with the modal
-/// that requested them. Prevents stale results from populating a different
-/// note's review modal when the user closes and re-opens quickly.
+/// Monotonic counter for correlating async rewrite responses with the modal that requested them.
+/// It prevents stale results from populating a different note's review modal when the user closes and re-opens quickly.
 static REWRITE_NONCE: AtomicU64 = AtomicU64::new(0);
 
 fn next_rewrite_nonce() -> u64 {
     REWRITE_NONCE.fetch_add(1, Ordering::Relaxed)
 }
 
-pub(crate) use crate::views::question_view::FEEDBACK_QUESTION_LABEL;
+/// One copy of the send-time thank-you, shared by the immediate and modal commit paths.
+pub(crate) const FEEDBACK_THANKS_NOTICE: &str =
+    "Thanks for the feedback! The Grok Build team is on it.";
 
-/// Minimal mode has no toast surface, so the notice goes to the transcript instead.
+/// Minimal mode cannot show a toast, so the notice goes to the transcript instead.
 fn feedback_notice(app: &mut AppView, message: &str) {
     if app.screen_mode.is_minimal() {
         with_active_agent(app, |agent| {
@@ -35,122 +34,301 @@ fn feedback_notice(app: &mut AppView, message: &str) {
     }
 }
 
-/// Why the bare `/feedback` pane refuses to open, if anything blocks it.
-fn feedback_pane_blocked(agent: &AgentView) -> Option<&'static str> {
-    if agent.active_subagent.is_some() {
-        // A fullscreen subagent view hides the prompt, so the pane would have nowhere to draw while still swallowing every key.
-        Some("Close the subagent view before sending feedback")
-    } else if agent.question_view.is_some() {
-        Some("Finish answering the current question first")
-    } else if !agent.no_input_overlay_pending()
-        || agent.key_owner() != crate::app::agent_view::KeyOwner::Pane
-    {
-        // Two ways the pane cannot work here. A permission or plan approval holds the composer, even parked in the scrollback, so the
-        // pane would hand it the wrong draft on the way out. A viewer outranks every card for keys, so the box would be untypeable.
-        Some("Close or answer what's open before sending feedback")
-    } else if agent.session.session_id.is_none() {
-        Some(NO_SESSION_NOTICE)
-    } else {
-        None
-    }
-}
-
-/// Open the freeform report pane. Early exits drop `images`, whose owner
-/// cleans up the staged temp files.
-pub(super) fn dispatch_open_feedback_pane(
+/// Open the centered feedback modal.
+/// Every refusal is visible (minimal-mode notice, blocker notice, or no-session notice); the state is never set invisibly.
+/// Early exits drop `open`, whose image owner cleans up the staged temp files.
+pub(super) fn dispatch_open_feedback_modal(
     app: &mut AppView,
-    prefill: Option<String>,
-    mut images: crate::views::prompt_widget::FeedbackImages,
+    open: crate::views::feedback_modal::OpenFeedbackModal,
 ) -> Vec<Effect> {
     let ActiveView::Agent(id) = app.active_view else {
+        if matches!(app.active_view, ActiveView::AgentDashboard)
+            && let Some(dashboard) = app.dashboard.as_mut()
+        {
+            dashboard.dispatch.set_text("");
+            dashboard.set_error_toast(NO_SESSION_NOTICE);
+        }
         return vec![];
     };
-
+    // Minimal mode has no renderer for the modal; an invisible input owner would swallow every key.
+    if app.screen_mode.is_minimal() {
+        with_active_agent(app, |agent| {
+            agent.scrollback.push_block(RenderBlock::system(
+                "Use `/feedback <text>` in minimal mode, or run without --minimal to open the feedback form."
+                    .to_string(),
+            ));
+        });
+        return vec![];
+    }
+    if matches!(
+        app.voice_recording_target(),
+        Some(crate::app::app_view::VoiceTarget::Agent(target)) if target == id
+    ) {
+        feedback_notice(app, "Stop voice input before opening the feedback form");
+        return vec![];
+    }
     let blocked = {
         let Some(agent) = app.agents.get(&id) else {
             return vec![];
         };
-        feedback_pane_blocked(agent)
+        agent.feedback_modal_open_blocker().or_else(|| {
+            agent
+                .session
+                .session_id
+                .is_none()
+                .then_some(NO_SESSION_NOTICE)
+        })
     };
     if let Some(message) = blocked {
         feedback_notice(app, message);
         return vec![];
     }
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    let prefill_chars = open.text.as_deref().map_or(0, |t| t.chars().count());
+    let prefill_images = open.images.len();
+    crate::unified_log::info(
+        "feedback.modal_open",
+        agent.session.session_id.as_ref().map(|s| s.0.as_ref()),
+        Some(serde_json::json!({
+            "prefill_chars": prefill_chars,
+            "prefill_images": prefill_images,
+            // Fixed taxonomy labels only, never user-authored text.
+            "type": open.r#type.as_ref().map(crate::views::feedback_modal::FeedbackType::label),
+            "task_category": open
+                .task_category
+                .as_ref()
+                .map(crate::views::feedback_modal::FeedbackTaskCategory::label),
+            "failure_mode": open
+                .failure_mode
+                .as_ref()
+                .map(crate::views::feedback_modal::FeedbackFailureMode::label),
+            "has_draft_id": open.draft_id.is_some(),
+        })),
+    );
+    let draft_id = open.draft_id.clone();
+    let modal = crate::views::feedback_modal::FeedbackModalState::new(open);
+    let modal_id = modal.id();
+    let rehydrations = modal.image_rehydration_requests();
+    agent.feedback_modal = Some(modal);
+    let mut effects = rehydrations
+        .into_iter()
+        .map(|(image_identity, path)| Effect::RehydrateFeedbackImage {
+            agent_id: id,
+            modal_id,
+            image_identity,
+            path,
+        })
+        .collect::<Vec<_>>();
+    if draft_id.is_none()
+        && let Some(modal) = agent.feedback_modal.as_mut()
+    {
+        modal.start_open_draft_list();
+        if let Some(request) = modal.take_pending_request()
+            && let Some(session_id) = agent.session.session_id.clone()
+        {
+            effects.push(Effect::FeedbackDraftRequest {
+                agent_id: id,
+                session_id,
+                request,
+            });
+        }
+    }
+    if let Some(draft_id) = draft_id
+        && let Some(modal) = agent.feedback_modal.as_mut()
+    {
+        modal.start_external_draft_load(draft_id);
+        if let Some(request) = modal.take_pending_request() {
+            let Some(session_id) = agent.session.session_id.clone() else {
+                return effects;
+            };
+            effects.push(Effect::FeedbackDraftRequest {
+                agent_id: id,
+                session_id,
+                request,
+            });
+        }
+    }
+    effects
+}
 
-    // An individual coding-data opt-out does not suppress the offer: the card
-    // is how opted-out users switch sharing back on. ZDR/team locks have no
-    // self-serve path, so they still suppress it. Minimal mode never offers:
-    // its `/feedback <text>` path documents sends without a consent card.
+/// (when the offer applies and no choice was made yet) or encode the images, close the modal, thank immediately, and emit only the POST. The one-shot upload is never a sibling of the POST:
+/// "Never submit while paste probes are in flight" is owned by the modal's key layer
+/// (`FeedbackModalState::handle_key` defers behind the probe count); every producer of `Action::SubmitFeedbackModal` must route through it or `take_deferred_submit`.
+pub(super) fn dispatch_submit_feedback_modal(
+    app: &mut AppView,
+    modal_id: crate::views::feedback_modal::FeedbackModalId,
+) -> Vec<Effect> {
+    use crate::views::feedback_modal::{
+        FeedbackTraceChoice as ModalTraceChoice, FeedbackTraceUploadIntent,
+    };
+
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
     let offer_trace = app.feedback_trace_offer()
+        && !app.feedback_trace_choice_latched
+        && !app.coding_data_retention_opt_out
         && app.coding_data_sharing_lock().is_none()
         && app.team_name.is_none()
         && !app.is_zdr
         && !app.screen_mode.is_minimal();
-    let offer_reenables_sharing = app.coding_data_retention_opt_out;
+    // Modal copy never discloses re-enabling coding-data sharing (one archive, this report only).
+    // Unlike the legacy AlwaysUpload card, this path does not call `set_coding_data_sharing`.
+    let trace_reenables_sharing = false;
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };
-    let question = Question {
-        question: FEEDBACK_QUESTION_LABEL.to_string(),
-        options: vec![],
-        multi_select: Some(false),
-        id: None,
-    };
-    let stashed = agent.prompt.stash();
-    let mut state = QuestionViewState::new(
-        format!("feedback-{}", uuid::Uuid::new_v4()),
-        vec![question],
-        stashed,
-    )
-    .with_local_kind(LocalQuestionKind::Feedback);
-    state.feedback_offer_trace = offer_trace;
-    state.feedback_offer_reenables_sharing = offer_reenables_sharing;
-    let prefill_text = prefill.filter(|s| !s.is_empty());
-    if let Some(text) = prefill_text.as_ref()
-        && let Some(slot) = state.per_question_freeform.get_mut(0)
-    {
-        *slot = text.clone();
-    }
-    let freeform = state.activate_freeform_input();
-    agent.prompt.set_text_preserving(&freeform);
-    // Inline `/feedback` composed alongside pasted images: the prefill kept
-    // their `[Image #N]` placeholders as plain text, so rebind the drained
-    // records to them and the pane shows live, removable chips.
-    let image_count = images.len();
-    agent.prompt.adopt_images(images.take());
-
     let session_id = agent.session.session_id.clone();
-    let report = prefill_text.unwrap_or_default();
-    crate::unified_log::info(
-        "feedback.pane_open",
-        session_id.as_ref().map(|s| s.0.as_ref()),
-        Some(serde_json::json!({
-            "prefill_chars": report.chars().count(),
-            "prefill_images": image_count,
-            "offer_trace": offer_trace,
-            "screen_mode": app.screen_mode.meta_label(),
-        })),
-    );
-    agent.question_view = Some(state);
-    vec![]
+    let has_trace_capacity = agent.has_feedback_trace_capacity();
+    let Some(modal) = agent.feedback_modal.as_mut() else {
+        return vec![];
+    };
+    // A stale submit (deferred behind a paste, or replayed) must never send a different modal's
+    // draft; a duplicate after the send-time close finds no modal at all and already returned.
+    if !modal.matches_id(modal_id) {
+        return vec![];
+    }
+    // Only an Enter-confirmed trace choice may send; a stray submit while the user is still choosing is a no-op.
+    let trace_choice = if modal.in_trace_step() {
+        let Some(choice) = modal.decided_trace_choice() else {
+            return vec![];
+        };
+        Some(choice)
+    } else {
+        None
+    };
+    if trace_choice == Some(ModalTraceChoice::SendThisSession) && !has_trace_capacity {
+        modal.set_error(
+            "Wait for an earlier feedback trace upload to finish, then try again.".to_string(),
+        );
+        return vec![];
+    }
+    let Some(session_id) = session_id else {
+        modal.set_error(NO_SESSION_NOTICE.to_string());
+        return vec![];
+    };
+    if !modal.is_sendable() {
+        modal.set_error(crate::views::feedback_modal::FEEDBACK_EMPTY_SUBMIT_ERROR.to_string());
+        return vec![];
+    }
+    let text = modal.submitted_text().trim().to_string();
+    modal.reconcile_feedback_images();
+    let (encoded_images, dropped) = encode_feedback_image_slice(modal.images());
+    if text.is_empty() && encoded_images.is_empty() {
+        if let Some(notice) = dropped {
+            modal.set_error(notice);
+        } else {
+            modal.set_error(crate::views::feedback_modal::FEEDBACK_EMPTY_SUBMIT_ERROR.to_string());
+        }
+        return vec![];
+    }
+    // Refuse a typeless loaded draft before the in-modal trace step, or the choose-a-type error is hidden until after the user confirms a trace choice.
+    // choose-a-type error is hidden until after the user confirms a trace choice.
+    let draft_id = modal.draft_id().cloned();
+    let draft_fields = modal.draft_body();
+    if draft_id.is_some() && draft_fields.is_none() {
+        modal.cancel_draft_submit_pending("Choose a type before sending this draft.".to_owned());
+        return vec![];
+    }
+    // First validated Write submit with an offer available: ask inside the modal instead of sending.
+    if trace_choice.is_none() && offer_trace {
+        modal.begin_trace_step();
+        // Funnel denominator for the in-modal trace step; logged once when Write actually advances.
+        xai_grok_telemetry::session_ctx::log_event(
+            xai_grok_telemetry::events::FeedbackTraceCardShown {
+                reenables_sharing: trace_reenables_sharing,
+            },
+        );
+        return vec![];
+    }
+    let draft = draft_id
+        .clone()
+        .zip(draft_fields)
+        .map(
+            |(draft_id, fields)| crate::app::actions::DraftFeedbackBody {
+                draft_id,
+                title: fields.title,
+                details: text.clone(),
+                area: fields.area,
+                r#type: fields.r#type,
+                task_category: fields.task_category,
+                failure_mode: fields.failure_mode,
+                images: encoded_images.clone(),
+            },
+        );
+    if let Some(choice) = trace_choice {
+        modal.report_confirmed_trace_choice(choice);
+        let _ = modal.take_decided_trace_choice();
+    }
+    let metadata = Some(modal.structured_feedback_metadata());
+    if draft_id.is_none() {
+        drop(modal.take_images());
+    }
+    // `send_this_session` is one archive for this successfully posted report; every other
+    // choice parks nothing, so no path from this modal can persist `[telemetry] trace_upload`.
+    let intent = match trace_choice {
+        Some(ModalTraceChoice::SendThisSession) => Some(FeedbackTraceUploadIntent::SendThisSession),
+        _ => None,
+    };
+    let logged_trace = trace_choice.map(|choice| format!("{choice:?}"));
+    let submission_id = crate::views::feedback_modal::FeedbackSubmissionId::next();
+    if draft_id.is_some() {
+        modal.mark_draft_submit_pending();
+    } else {
+        agent.feedback_modal = None;
+    }
+    if let Some(intent) = intent {
+        agent.park_feedback_trace_consent(
+            submission_id,
+            crate::views::feedback_modal::ParkedFeedbackTraceConsent {
+                intent,
+                session_id: session_id.0.as_ref().to_string(),
+            },
+        );
+    }
+    if let Some(notice) = dropped {
+        agent.scrollback.push_block(RenderBlock::system(notice));
+    }
+    if draft_id.is_none() {
+        agent
+            .scrollback
+            .push_block(RenderBlock::system(FEEDBACK_THANKS_NOTICE.to_string()));
+    }
+    let mut effects = vec![feedback_send_effect(
+        id,
+        session_id,
+        text,
+        encoded_images,
+        /*trace*/ None,
+        logged_trace,
+        metadata,
+        /* request_trace_upload_token */ intent.is_some(),
+        draft,
+        FeedbackSendOrigin::Modal {
+            submission_id,
+            modal_id,
+            is_draft: draft_id.is_some(),
+        },
+    )];
+    if trace_choice == Some(ModalTraceChoice::NeverAsk) {
+        // Stop re-offers this session and persist the existing feature latch; never `[telemetry] trace_upload = true`.
+        app.feedback_trace_choice_latched = true;
+        effects.push(Effect::PersistSetting {
+            key: "feedback_trace_card",
+            value: crate::settings::SettingValue::Bool(false),
+            rollback_value: crate::settings::SettingValue::Bool(false),
+        });
+    }
+    effects
 }
 
-/// How long the background trace upload may run before it is reported as
-/// failed; longer than the shell's own upload timeout so its error wins.
+/// How long the background trace upload may run before it is reported as failed; longer than the shell's own upload timeout so its error wins.
 pub(crate) const FEEDBACK_TRACE_UPLOAD_TIMEOUT_MS: u64 = 150_000;
 
-/// The `[telemetry] trace_upload = true` write the /feedback card's "Yes"
-/// collects.
-pub(super) fn persist_trace_upload_consent() -> Effect {
-    Effect::PersistSetting {
-        key: "trace_upload",
-        value: crate::settings::SettingValue::Bool(true),
-        rollback_value: crate::settings::SettingValue::Bool(false),
-    }
-}
-
 /// Enter remember mode: visual change to prompt bar (remember accent, `#` prefix).
-/// No side effects — the user types a memory note and presses Enter to send.
+/// No side effects: the user types a memory note and presses Enter to send.
 pub(super) fn dispatch_enter_remember_mode(app: &mut AppView) -> Vec<Effect> {
     with_active_agent(app, |agent| {
         agent.prompt_input_mode = PromptInputMode::Remember;
@@ -159,8 +337,7 @@ pub(super) fn dispatch_enter_remember_mode(app: &mut AppView) -> Vec<Effect> {
     vec![]
 }
 
-/// Close the trace-consent funnel opened by `FeedbackTraceCardShown`. Every
-/// outcome of a shown card (answer, Esc, displacement) must log exactly once.
+/// Log the trace-consent outcome carried on an immediate send exactly once.
 pub(crate) fn log_trace_consent_selected(reenables_sharing: bool, choice: FeedbackTraceChoice) {
     use xai_grok_telemetry::events::{FeedbackTraceConsentChoice, FeedbackTraceConsentSelected};
     xai_grok_telemetry::session_ctx::log_event(FeedbackTraceConsentSelected {
@@ -172,27 +349,30 @@ pub(crate) fn log_trace_consent_selected(reenables_sharing: bool, choice: Feedba
         reenables_sharing,
     });
 }
-
-/// The `feedback.send` unified log plus the POST effect for a committed
-/// report. Single writer for both, shared with the displaced-card path.
+/// The `feedback.send` unified log plus the POST effect for a committed report.
+/// This is the single writer for both, shared with the modal submit path.
 pub(crate) fn feedback_send_effect(
     agent_id: AgentId,
     session_id: agent_client_protocol::SessionId,
     text: String,
     images: Vec<xai_grok_shell::session::FeedbackImage>,
     trace: Option<FeedbackTraceChoice>,
-    displaced: bool,
+    trace_log: Option<String>,
+    metadata: Option<serde_json::Value>,
+    request_trace_upload_token: bool,
+    draft: Option<crate::app::actions::DraftFeedbackBody>,
+    origin: FeedbackSendOrigin,
 ) -> Effect {
     let mut payload = serde_json::json!({
         "chars": text.chars().count(),
         "images": images.len(),
-        "trace": match trace {
+        "trace": trace_log.unwrap_or_else(|| match trace {
             Some(choice) => format!("{choice:?}"),
             None => "NotOffered".to_string(),
-        },
+        }),
     });
-    if displaced {
-        payload["displaced"] = serde_json::Value::Bool(true);
+    if matches!(origin, FeedbackSendOrigin::Modal { .. }) {
+        payload["modal"] = serde_json::Value::Bool(true);
     }
     crate::unified_log::info("feedback.send", Some(session_id.0.as_ref()), Some(payload));
     Effect::SendFeedback {
@@ -200,14 +380,15 @@ pub(crate) fn feedback_send_effect(
         session_id,
         feedback_text: text,
         images,
+        metadata,
+        request_trace_upload_token,
+        draft,
+        origin,
     }
 }
 
-/// Commit a report: encode images (with the dropped-attachment notice), close
-/// the consent funnel, apply the "no text and no surviving images means do not
-/// send" rule, and build the send effect. The single owner of that policy,
-/// shared by [`dispatch_send_feedback`] and the displaced-consent-card path in
-/// `acp_handler`. `displaced` selects that path's user-facing copy.
+/// Commit a report: encode images (with the dropped-attachment notice), close the consent funnel, and build the send effect.
+/// The "no text and no surviving images means do not send" rule lives only here.
 pub(crate) fn commit_feedback(
     agent: &mut crate::app::agent_view::AgentView,
     coding_data_retention_opt_out: bool,
@@ -216,16 +397,16 @@ pub(crate) fn commit_feedback(
     text: String,
     images: crate::views::prompt_widget::FeedbackImages,
     trace: Option<FeedbackTraceChoice>,
-    displaced: bool,
 ) -> Option<Effect> {
-    // Encode before the emptiness check: encoding can drop attachments, and
-    // a report left with no text and no images must not go out blank.
-    let (encoded_images, dropped) = encode_feedback_images(images);
+    // Encode before the emptiness check: encoding can drop attachments, and a report left with no text and no images must not go out blank
+    let (encoded_images, dropped) = encode_feedback_image_slice(images.as_slice());
+    // Encoding is done with the records; dropping the owner deletes the staged temp files
+    drop(images);
     if let Some(notice) = dropped {
         agent.scrollback.push_block(RenderBlock::system(notice));
     }
 
-    // A shown consent card closes its funnel exactly once, sent or not.
+    // A collected consent closes its funnel exactly once, sent or not.
     if let Some(choice) = trace {
         log_trace_consent_selected(coding_data_retention_opt_out, choice);
     }
@@ -233,24 +414,14 @@ pub(crate) fn commit_feedback(
     let trimmed = text.trim().to_string();
     if trimmed.is_empty() && encoded_images.is_empty() {
         agent.scrollback.push_block(RenderBlock::system(
-            if displaced {
-                "/feedback cancelled because another question opened."
-            } else {
-                "Please provide feedback text."
-            }
-            .to_string(),
+            "Please provide feedback text.".to_string(),
         ));
         return None;
     }
 
-    agent.scrollback.push_block(RenderBlock::system(
-        if displaced {
-            "Another question interrupted /feedback. Your report was sent without a trace."
-        } else {
-            "Thanks for the feedback! The Grok Build team is on it."
-        }
-        .to_string(),
-    ));
+    agent
+        .scrollback
+        .push_block(RenderBlock::system(FEEDBACK_THANKS_NOTICE.to_string()));
 
     Some(feedback_send_effect(
         id,
@@ -258,11 +429,17 @@ pub(crate) fn commit_feedback(
         trimmed,
         encoded_images,
         trace,
-        displaced,
+        /*trace_log*/ None,
+        // Direct actions carry no taxonomy enums.
+        /*metadata*/ None,
+        /* request_trace_upload_token */ false,
+        /*draft*/ None,
+        FeedbackSendOrigin::Immediate,
     ))
 }
 
-/// Thank-you is shown immediately; POST is a background effect. The composer is not cleared: the text arrives with the action, not from the prompt.
+/// Thank-you is shown immediately; POST is a background effect.
+/// The composer is not cleared: the text arrives with the action, not from the prompt.
 /// Early exits drop `images`, whose owner cleans up the staged temp files.
 pub(super) fn dispatch_send_feedback(
     app: &mut AppView,
@@ -295,7 +472,6 @@ pub(super) fn dispatch_send_feedback(
         text,
         images,
         trace,
-        false,
     ) else {
         // Nothing went out, so no trace-upload side effects either.
         return vec![];
@@ -314,142 +490,77 @@ pub(super) fn dispatch_send_feedback(
         }
         Some(FeedbackTraceChoice::AlwaysUpload) => {
             app.feedback_trace_choice_latched = true;
-            // The storage proxy rejects uploads while the account is opted
-            // out of coding-data sharing, so an opted-out account flips
-            // sharing first and parks the upload on that write generation.
-            let mut park_seq = None;
             if app.coding_data_retention_opt_out {
-                let (sharing, outcome) = super::status::set_coding_data_sharing_tracked(
+                effects.extend(super::status::set_coding_data_sharing(
                     app,
                     true,
                     xai_grok_telemetry::events::CodingDataConsentSource::FeedbackTraceCard,
-                );
-                effects.extend(sharing);
-                match outcome {
-                    super::status::SharingWriteOutcome::Claimed(seq) => park_seq = Some(seq),
-                    // Sharing is already on (the opt-out mirror was stale):
-                    // nothing to wait on, upload now.
-                    super::status::SharingWriteOutcome::AlreadySet => {}
-                    // The guard refused the opt-in this consent depends on:
-                    // send the report alone — no upload, no persisted
-                    // consent, and no latch, since nothing happened.
-                    super::status::SharingWriteOutcome::Refused => {
-                        app.feedback_trace_choice_latched = false;
-                        return effects;
-                    }
-                }
+                ));
             }
-            match park_seq {
-                // The consent persist also waits for the confirm: written
-                // now, a failed opt-in would leave `trace_upload = true` on
-                // disk while the storage proxy keeps rejecting uploads.
-                Some(seq) => {
-                    app.feedback_trace_upload_pending =
-                        Some(crate::app::app_view::PendingFeedbackTraceUpload {
-                            seq,
-                            agent_id: id,
-                            session_id,
-                        });
-                }
-                None => {
-                    effects.push(Effect::UploadFeedbackTrace {
-                        agent_id: id,
-                        session_id,
-                    });
-                    effects.push(persist_trace_upload_consent());
-                }
-            }
+            effects.push(Effect::UploadFeedbackTrace {
+                agent_id: id,
+                session_id,
+                submission_id: None,
+                intent: None,
+                trace_upload_token: None,
+            });
+            // The `[telemetry] trace_upload = true` write an `AlwaysUpload` consent collects.
+            effects.push(Effect::PersistSetting {
+                key: "trace_upload",
+                value: crate::settings::SettingValue::Bool(true),
+                rollback_value: crate::settings::SettingValue::Bool(false),
+            });
         }
     }
     effects
 }
 
-fn encode_feedback_images(
-    images: crate::views::prompt_widget::FeedbackImages,
+/// The `#` composer path. Nothing else records the note, so this records it.
+pub(super) fn dispatch_send_remember_note(app: &mut AppView, text: String) -> Vec<Effect> {
+    send_remember_note(app, text, true)
+}
+
+/// The `/remember <text>` path. `dispatch_send_prompt_inner` already recorded the typed command.
+pub(super) fn dispatch_send_remember_note_from_command(
+    app: &mut AppView,
+    text: String,
+) -> Vec<Effect> {
+    send_remember_note(app, text, false)
+}
+
+/// Encode a borrowed image snapshot for the POST.
+fn encode_feedback_image_slice(
+    images: &[crate::prompt_images::PastedImage],
 ) -> (Vec<xai_grok_shell::session::FeedbackImage>, Option<String>) {
     use base64::Engine as _;
-    use xai_grok_shell::session::{
-        MAX_FEEDBACK_IMAGE_BYTES, MAX_FEEDBACK_IMAGE_TOTAL_BYTES, MAX_FEEDBACK_IMAGES,
-        feedback_image_extension,
-    };
 
-    let mut encoded = Vec::new();
-    let mut over_count = 0usize;
-    let mut unsupported = 0usize;
-    let mut too_large = 0usize;
-    let mut unreadable = 0usize;
-    let mut total_bytes = 0usize;
-    for image in images.as_slice() {
-        let Some((bytes, mime_type)) = crate::prompt_images::load_for_send(image) else {
-            unreadable += 1;
-            continue;
-        };
-        if encoded.len() >= MAX_FEEDBACK_IMAGES {
-            over_count += 1;
-            continue;
-        }
-        if feedback_image_extension(&mime_type).is_none() {
-            unsupported += 1;
-            continue;
-        }
-        if bytes.len() > MAX_FEEDBACK_IMAGE_BYTES
-            || total_bytes + bytes.len() > MAX_FEEDBACK_IMAGE_TOTAL_BYTES
-        {
-            too_large += 1;
-            continue;
-        }
-        total_bytes += bytes.len();
-        encoded.push(xai_grok_shell::session::FeedbackImage {
-            data: base64::engine::general_purpose::STANDARD.encode(&bytes),
-            mime_type,
-            file_name: image
-                .source_path
-                .as_deref()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().into_owned()),
-        });
-    }
-    // Encoding done with the records; dropping the owner deletes the
-    // staged temp files.
-    drop(images);
-
-    let dropped = over_count + unsupported + too_large + unreadable;
-    let notice = (dropped > 0).then(|| {
-        const MIB: usize = 1024 * 1024;
-        let mut reasons = Vec::new();
-        if over_count > 0 {
-            reasons.push(format!(
-                "{over_count} over the {MAX_FEEDBACK_IMAGES}-image limit"
-            ));
-        }
-        if unsupported > 0 {
-            reasons.push(format!(
-                "{unsupported} in a format feedback can't carry (PNG, JPEG, or GIF only)"
-            ));
-        }
-        if too_large > 0 {
-            reasons.push(format!(
-                "{too_large} over the size limit ({} MB each, {} MB combined)",
-                MAX_FEEDBACK_IMAGE_BYTES / MIB,
-                MAX_FEEDBACK_IMAGE_TOTAL_BYTES / MIB,
-            ));
-        }
-        if unreadable > 0 {
-            reasons.push(format!("{unreadable} unreadable"));
-        }
-        let plural = if dropped == 1 { "" } else { "s" };
-        format!(
-            "Dropped {dropped} image{plural} from the feedback: {}.",
-            reasons.join(", ")
-        )
-    });
+    let loaded: Vec<Option<(Vec<u8>, String)>> = images
+        .iter()
+        .map(crate::prompt_images::load_for_send)
+        .collect();
+    let (accepted, notice) = super::inline_feedback::select_feedback_images(&loaded);
+    let encoded = accepted
+        .into_iter()
+        .filter_map(|index| {
+            let (bytes, mime_type) = loaded[index].as_ref()?;
+            Some(xai_grok_shell::session::FeedbackImage {
+                data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                mime_type: mime_type.clone(),
+                file_name: images[index]
+                    .source_path
+                    .as_deref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned()),
+            })
+        })
+        .collect();
     (encoded, notice)
 }
 
 /// Send a raw remember note for LLM-powered rewriting via `x.ai/memory/rewrite`.
-/// Clears remember mode and prompts the LLM to reformat the note with session
-/// context. Falls back to direct `SaveMemoryNote` when no session is available.
-pub(super) fn dispatch_send_remember_note(app: &mut AppView, text: String) -> Vec<Effect> {
+/// Clears remember mode and prompts the LLM to reformat the note with session context.
+/// Falls back to direct `SaveMemoryNote` when no session is available.
+fn send_remember_note(app: &mut AppView, text: String, record_in_history: bool) -> Vec<Effect> {
     use crate::views::modal::ActiveModal;
 
     let ActiveView::Agent(id) = app.active_view else {
@@ -461,7 +572,6 @@ pub(super) fn dispatch_send_remember_note(app: &mut AppView, text: String) -> Ve
 
     agent.prompt_input_mode = PromptInputMode::Normal;
     agent.prompt.set_text("");
-    // Submitting a memory note retires any edit-contextual ephemeral tip.
     agent.ephemeral_tip.clear_on_submit();
 
     let trimmed = text.trim().to_string();
@@ -473,14 +583,18 @@ pub(super) fn dispatch_send_remember_note(app: &mut AppView, text: String) -> Ve
     }
 
     agent.note_draft_consumed();
+    if record_in_history {
+        // The note is stored without the `#`; recall decodes a prefix back into its mode, which would turn `# Context` into a note
+        agent.record_prompt_in_history(&trimmed);
+    }
 
     let cwd = agent.session.cwd.clone();
 
     let Some(session_id) = agent.session.session_id.clone() else {
-        // No session — open modal with raw content only (no LLM rewrite).
+        // No session: open the modal with raw content only (no LLM rewrite)
         agent.active_modal = Some(ActiveModal::RememberNoteReview {
             raw_content: trimmed.clone(),
-            enhanced_content: None, // no session → no LLM rewrite, Tab disabled
+            enhanced_content: None, // No session, so no LLM rewrite and Tab is disabled
             showing_enhanced: false,
             scroll: 0,
             window: crate::views::modal_window::ModalWindowState::new(),
@@ -545,6 +659,11 @@ pub(super) fn dispatch_save_remember_note_from_modal(app: &mut AppView) -> Vec<E
     } else {
         return vec![];
     };
+    let pinned_mode = agent
+        .session
+        .session_id
+        .as_ref()
+        .map(|_| agent.memory_mode.unwrap_or_default());
 
     agent.active_modal = None;
     agent
@@ -555,15 +674,12 @@ pub(super) fn dispatch_save_remember_note_from_modal(app: &mut AppView) -> Vec<E
         agent_id: id,
         text: content,
         cwd,
+        pinned_mode,
     }]
 }
 
 /// Extract session context for the LLM memory rewrite request.
-///
-/// Walks scrollback in reverse, collecting:
-/// - Last 5 user prompts
-/// - File paths from recent tool calls (Read, Edit, ListDir)
-/// - CWD and git branch
+/// File paths from recent tool calls (Read, Edit, ListDir)
 fn extract_session_context(agent: &AgentView) -> String {
     let mut user_prompts: Vec<String> = Vec::new();
     let mut file_paths: Vec<String> = Vec::new();
@@ -610,7 +726,6 @@ fn extract_session_context(agent: &AgentView) -> String {
             }
             _ => {}
         }
-        // Stop early once we have enough context.
         if user_prompts.len() >= 5 && file_paths.len() >= 20 {
             break;
         }
@@ -648,8 +763,9 @@ fn extract_session_context(agent: &AgentView) -> String {
     parts.join("\n")
 }
 
-/// Send a /btw side question. Bypasses the prompt queue — works even while
-/// the agent is mid-turn. Fires an ACP ext method and shows a loading overlay.
+/// Send a /btw side question.
+/// Bypasses the prompt queue, so it works even while the agent is mid-turn.
+/// Fires an ACP ext method and shows a loading overlay.
 pub(super) fn dispatch_send_btw(app: &mut AppView, question: String) -> Vec<Effect> {
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
@@ -689,15 +805,15 @@ pub(super) fn dispatch_send_btw(app: &mut AppView, question: String) -> Vec<Effe
             return vec![];
         };
 
-        // Composer clearing belongs to the submit funnel: `dispatch_send_prompt_inner` clears it
-        // when `consume_input` is set, so draft-preserving callers (palette, edited
-        // queue row) keep theirs.
+        // Composer clearing belongs to the submit funnel: `dispatch_send_prompt_inner` clears it when `consume_input` is set
+        // Draft-preserving callers (the palette, an edited queue row) keep theirs
         let minimal_request_id = if minimal {
             Some(crate::minimal_api::start_minimal_btw(
                 agent,
                 question.clone(),
             ))
         } else {
+            agent.clear_btw_owned_selection();
             agent.btw_state = Some(crate::views::btw_overlay::BtwOverlayState::Loading {
                 question: question.clone(),
             });
@@ -756,6 +872,7 @@ pub(super) fn side_model_chain(slots: &[&str], session_model: Option<&str>) -> V
 /// Toast when a manual `/recap` produces no summary. Empty sessions get a clear
 /// empty-state message; anything else (model failure, empty summary, etc.) keeps
 /// the generic failure toast.
+
 pub(crate) fn recap_unavailable_toast(has_user_messages: bool) -> &'static str {
     if has_user_messages {
         "Couldn't generate recap"
@@ -764,10 +881,9 @@ pub(crate) fn recap_unavailable_toast(has_user_messages: bool) -> &'static str {
     }
 }
 
-/// Whether scrollback already has a user prompt. Scans entries (not
-/// `turn_count`) so it stays correct during `begin_batch`/`end_batch` session
-/// load, when `push` defers `rebuild_turns` and `turn_count` can stay 0 while
-/// replayed prompts are already present.
+/// Whether scrollback already has a user prompt.
+/// Scans entries rather than `turn_count` so it stays correct during `begin_batch`/`end_batch` session load.
+/// There `push` defers `rebuild_turns`, so `turn_count` can stay 0 while replayed prompts are already present.
 pub(crate) fn scrollback_has_user_messages(
     scrollback: &crate::scrollback::state::ScrollbackState,
 ) -> bool {
@@ -789,6 +905,7 @@ pub(super) fn dispatch_send_recap(
     auto: bool,
     custom_instructions: Option<String>,
 ) -> Vec<Effect> {
+
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
@@ -796,8 +913,8 @@ pub(super) fn dispatch_send_recap(
         return vec![];
     };
 
-    // Shell is authoritative (remote settings / config / env). Skip client requests
-    // entirely when the feature is off so we never hit `x.ai/recap`.
+    // The shell is authoritative (remote settings, config, env)
+    // Skip client requests entirely when the feature is off so we never hit `x.ai/recap`
     if !app.session_recap_available {
         if !auto {
             agent.show_toast("Session recap is not enabled");
@@ -814,21 +931,16 @@ pub(super) fn dispatch_send_recap(
 
     if !auto {
         agent.prompt.set_text("");
-        // Nothing to summarize yet — show a clear empty-state toast instead of
-        // a spinner that ends in "Couldn't generate recap".
-        //
-        // Skip the short-circuit while session replay is still loading (prompts
-        // may not have arrived yet). Prefer an entry scan over `turn_count()`
-        // so mid-batch resume (deferred `rebuild_turns`) still sees history.
+        // Nothing to summarize yet: show a clear empty-state toast instead of a spinner that ends in "Couldn't generate recap"
+        // Skip the short-circuit while session replay is still loading (prompts may not have arrived yet)
+        // Prefer an entry scan over `turn_count()` so mid-batch resume (deferred `rebuild_turns`) still sees history
         if !agent.session.loading_replay && !scrollback_has_user_messages(&agent.scrollback) {
             agent.show_toast(recap_unavailable_toast(false));
             return vec![];
         }
-        // Show an immediate loading block with the animated "running" sidebar so
-        // the user has feedback that a recap is being generated. The
-        // `SessionRecap` handler fills this entry in and stops the animation.
-        // Reuse an existing in-flight loading block instead of stacking spinners
-        // when `/recap` is pressed repeatedly.
+        // Show an immediate loading block with the animated "running" sidebar so the user has feedback that a recap is being generated
+        // The `SessionRecap` handler fills this entry in and stops the animation
+        // Reuse an existing in-flight loading block instead of stacking spinners when `/recap` is pressed repeatedly
         let already_loading = agent.pending_recap_entry.is_some_and(|eid| {
             agent
                 .scrollback
@@ -848,10 +960,9 @@ pub(super) fn dispatch_send_recap(
             agent.pending_recap_entry = Some(entry_id);
         }
     } else {
-        // Retry backoff only — do not consume the away period on dispatch.
-        // The shell often no-ops auto recap until ≥3 min since the last main
-        // turn; mark_recap_shown runs when any SessionRecap arrives (auto or
-        // manual `/recap`).
+        // Retry backoff only: do not consume the away period on dispatch
+        // The shell often no-ops auto recap until at least 3 min since the last main turn
+        // mark_recap_shown runs when any SessionRecap arrives (auto or manual `/recap`)
         app.notification_service
             .focus_tracker
             .note_auto_recap_attempt();
@@ -913,10 +1024,9 @@ pub(super) fn handle_memory_note_saved(
             Ok(()) => {
                 agent
                     .scrollback
-                    .push_block(crate::scrollback::block::RenderBlock::system(format!(
-                        "Memory saved to {}",
-                        crate::util::display_user_grok_path("memory/MEMORY.md")
-                    )));
+                    .push_block(crate::scrollback::block::RenderBlock::system(
+                        "Memory note saved".to_string(),
+                    ));
             }
             Err(error) => {
                 agent
@@ -955,8 +1065,7 @@ pub(super) fn handle_btw_response(
         };
         match result {
             Ok(response) => {
-                // Answer arrived: show it (until Esc) and focus the panel
-                // so Up/Down scroll it until the user returns to the prompt.
+                // Answer arrived: show it (until Esc) and focus the panel so Up/Down scroll it until the user returns to the prompt
                 agent.btw_state = Some(BtwOverlayState::done(question, response));
                 agent.btw_focused = true;
             }

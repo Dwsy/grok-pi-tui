@@ -79,12 +79,15 @@ pub use git::{
     remove_stale_worktree_registrations_under,
 };
 pub use metrics::{
-    grove_wt_create_count, grove_wt_create_last_duration_ns, record_grove_wt_create,
+    DisposeMethod, grove_wt_create_count, grove_wt_create_last_duration_ns, record_grove_wt_create,
+    record_grove_wt_dispose,
 };
 pub use nfs::create_latency_stamp;
 pub use nfs::{
-    CleanArtifactsReply, DetachReply, NfsAdopted, NfsCreateDecision, NfsStatusView,
-    NfsWorktreeClient, NfsWorktreeOpts, SalvageReply, dest_is_mountpoint, dest_is_nfs_mount,
+    CAP_CANCEL_WORKTREE_CREATE, CleanArtifactsReply, DetachReply, GroveHardFail, NfsAdopted,
+    NfsCreateDecision, NfsStatusView, NfsWorktreeClient, NfsWorktreeOpts, SalvageReply,
+    daemon_capability_class, dest_is_known_unmounted, dest_is_mountpoint, dest_is_nfs_mount,
+    grove_hard_fail, source_is_linked_local_view,
 };
 pub fn local_salvage(
     _dest: &std::path::Path,
@@ -98,12 +101,12 @@ pub fn local_clean_artifacts(_dest: &std::path::Path) -> anyhow::Result<CleanArt
 pub use sync::{SourceDirtyState, SyncReport, WorktreeSync, collect_source_dirty_state};
 #[cfg(target_os = "linux")]
 pub use worktree::execute::cleanup_snapshot_git_state;
-pub use worktree::{STRATEGY_GROVE_FUSE, STRATEGY_GROVE_NFS, STRATEGY_NFS, is_grove_strategy};
-/// Count the number of tracked files in a git repository's index.
-///
-/// Reads the index header via `gix`, which contains the entry count — this
-/// is an O(1) read (no directory walk). Useful for deciding whether a repo
-/// is large enough to benefit from worktree pooling.
+pub use worktree::{
+    ArmSkip, GroveSkip, SKIP_SOURCE_IS_GROVE_MOUNT, STRATEGY_GROVE_FUSE, STRATEGY_GROVE_NFS,
+    STRATEGY_NFS, WorktreeArm, is_grove_strategy, render_arm_skips,
+};
+/// O(1) index-header entry count via `gix` (no directory walk). Used to decide
+/// whether a repo is large enough to benefit from worktree pooling.
 pub fn count_tracked_files(repo_path: &std::path::Path) -> anyhow::Result<usize> {
     let repo = gix::discover(repo_path)
         .map_err(|e| anyhow::anyhow!("failed to discover git repo: {e}"))?;

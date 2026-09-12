@@ -5,35 +5,22 @@
 //! (`x.ai/session/info` → formatted system message).
 
 use crate::app::actions::Action;
-use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
+use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
 
 /// Show session info (session ID, cwd, model, context usage).
 pub struct SessionInfoCommand;
 
 impl SlashCommand for SessionInfoCommand {
-    fn name(&self) -> &str {
-        "session-info"
-    }
-
-    fn aliases(&self) -> &[&str] {
+    slash_meta! {
+        name: "session-info",
         // Pi interactive uses `/session`; keep Grok canonical name as primary.
-        &["session"]
-    }
-
-    fn description(&self) -> &str {
-        "Show session info"
-    }
-
-    fn session_scoped(&self) -> bool {
-        true
-    }
-
-    fn usage(&self) -> &str {
-        "/session-info"
+        aliases: ["session"],
+        description: "Show session info",
+        usage: "/session-info",
+        session_scoped: true,
     }
 
     fn run(&self, ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
-        // Check if we have an active session
         if ctx.session_id.is_none() {
             return CommandResult::Error("No active session".to_string());
         }

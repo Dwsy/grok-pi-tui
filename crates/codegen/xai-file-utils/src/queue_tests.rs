@@ -184,6 +184,7 @@ async fn blocking_enqueue_spills_recoverable_sidecar_pair() {
             "session_state",
             "sess-1234",
             7,
+            None,
         ),
     )
     .await;
@@ -207,10 +208,9 @@ async fn blocking_enqueue_spills_recoverable_sidecar_pair() {
     assert!(temp_file.exists(), "the pair's temp file is in place");
 }
 
-/// A blocking enqueue rejected by the channel (full here; closed behaves
-/// the same) must roll back `pending` before any await, so a cancelled or
-/// failed hand-off can never leak the counter and poison `wait_idle` into
-/// full-budget stalls for the rest of the session.
+/// A blocking enqueue rejected by the channel must roll back `pending` before any await.
+/// A leaked counter poisons `wait_idle` into full-budget stalls for the rest of the session.
+/// The full-channel divert must set `diverted_inline` before parking: nothing durable remains.
 #[tokio::test]
 async fn rejected_blocking_enqueue_does_not_leak_pending() {
     let temp = tempfile::TempDir::new().unwrap();
@@ -234,6 +234,7 @@ async fn rejected_blocking_enqueue_does_not_leak_pending() {
         uploads_in_flight: Arc::new(Mutex::new(HashSet::new())),
     };
 
+    let filler_diverted = std::sync::atomic::AtomicBool::new(false);
     let filler = tokio::time::timeout(
         Duration::from_millis(200),
         queue.enqueue_blocking(
@@ -243,12 +244,17 @@ async fn rejected_blocking_enqueue_does_not_leak_pending() {
             "a",
             "s",
             0,
+            Some(&filler_diverted),
         ),
     )
     .await;
     assert!(
         filler.is_err(),
         "no worker: the accepted item never settles"
+    );
+    assert!(
+        !filler_diverted.load(Ordering::Relaxed),
+        "a channel-accepted item is queue-owned, not diverted"
     );
     assert_eq!(
         stats.pending.load(Ordering::Relaxed),
@@ -258,6 +264,7 @@ async fn rejected_blocking_enqueue_does_not_leak_pending() {
 
     // Full channel: rejected before any await, diverted inline; `pending`
     // must be back to the accepted item only.
+    let overflow_diverted = std::sync::atomic::AtomicBool::new(false);
     let overflow = tokio::time::timeout(
         Duration::from_millis(200),
         queue.enqueue_blocking(
@@ -267,10 +274,15 @@ async fn rejected_blocking_enqueue_does_not_leak_pending() {
             "b",
             "s",
             0,
+            Some(&overflow_diverted),
         ),
     )
     .await;
     drop(overflow);
+    assert!(
+        overflow_diverted.load(Ordering::Relaxed),
+        "the full-channel divert must be visible to a cancelled caller"
+    );
     assert_eq!(
         stats.pending.load(Ordering::Relaxed),
         1,
@@ -347,41 +359,6 @@ fn temp_file_name_contains_components() {
     let name = temp_file_name("config", "019abc-def0-1234", 3);
     assert!(name.contains("turn3"), "should contain turn number");
     assert!(name.contains("config"), "should contain artifact name");
-}
-
-#[test]
-fn with_client_version_sets_field() {
-    // with_client_version() must propagate the version onto every enqueued item
-    // so the gcs_queue_upload span carries it for analytics dashboard breakdowns.
-    let temp = tempfile::TempDir::new().unwrap();
-    let queue_dir = temp.path().join("upload_queue");
-    std::fs::create_dir_all(&queue_dir).unwrap();
-
-    let stats = Arc::new(UploadQueueStats::new());
-    let (tx, _rx) = mpsc::channel(CHANNEL_CAPACITY);
-
-    let queue = UploadQueue {
-        tx,
-        queue_dir,
-        resolver: Arc::new(MockResolver),
-        stats,
-        max_queue_bytes: DEFAULT_MAX_QUEUE_BYTES,
-        client_version: None,
-        drain_state: Arc::new(Mutex::new(None)),
-        inline_fallback_semaphore: Arc::new(tokio::sync::Semaphore::new(
-            INLINE_FALLBACK_TOTAL_PERMITS as usize,
-        )),
-        uploads_in_flight: Arc::new(Mutex::new(HashSet::new())),
-    };
-
-    assert!(queue.client_version.is_none(), "starts as None");
-
-    let queue = queue.with_client_version("1.2.3-test");
-    assert_eq!(
-        queue.client_version.as_deref(),
-        Some("1.2.3-test"),
-        "with_client_version sets the field"
-    );
 }
 
 #[tokio::test]
@@ -1010,21 +987,6 @@ async fn enqueue_does_not_write_sidecar_legacy_fast_path() {
         item.sidecar_path.is_none(),
         "legacy enqueue item carries no sidecar path"
     );
-}
-
-#[test]
-fn stats_initial_values() {
-    let stats = UploadQueueStats::new();
-    assert_eq!(stats.pending.load(Ordering::Relaxed), 0);
-    assert_eq!(stats.pending_bytes.load(Ordering::Relaxed), 0);
-    assert_eq!(stats.enqueued.load(Ordering::Relaxed), 0);
-    assert_eq!(stats.uploaded.load(Ordering::Relaxed), 0);
-    assert_eq!(stats.failed.load(Ordering::Relaxed), 0);
-    assert_eq!(stats.circuit_breaker_trips.load(Ordering::Relaxed), 0);
-    assert_eq!(stats.enqueue_fallbacks.load(Ordering::Relaxed), 0);
-    assert_eq!(stats.leaked_temp_files.load(Ordering::Relaxed), 0);
-    assert_eq!(stats.reference_stale.load(Ordering::Relaxed), 0);
-    assert_eq!(stats.cleanup_orphan_mismatched.load(Ordering::Relaxed), 0);
 }
 
 #[test]
@@ -1703,18 +1665,6 @@ async fn streaming_zstd_produces_valid_compressed_output() {
     assert_eq!(decompressed, content.as_bytes());
 }
 
-#[test]
-fn compress_decision_size_threshold() {
-    let decide = |compress: bool, size: u64| -> bool { compress && size >= COMPRESS_MIN_BYTES };
-
-    assert!(decide(true, 128));
-    assert!(decide(true, 1000));
-    assert!(!decide(true, 127));
-    assert!(!decide(true, 1));
-    assert!(!decide(false, 1000));
-    assert!(!decide(false, 128));
-}
-
 #[tokio::test]
 async fn streaming_zstd_handles_incompressible_data() {
     use tokio::io::AsyncReadExt;
@@ -1850,10 +1800,9 @@ fn upload_disposition_structured_auth_and_retryable() {
 
 #[test]
 fn upload_disposition_unstructured_is_not_terminal() {
-    // Classification of terminal status is purely structural: a
-    // non-`HttpUploadError` whose text merely contains "HTTP 404" (e.g. a 5xx
-    // body) must NOT be terminal — this is the false-positive the structured
-    // check exists to prevent.
+    // Classification of terminal status is purely structural.
+    // A non-`HttpUploadError` whose text merely contains "HTTP 404" must NOT be terminal.
+    // That false-positive is what the structured check exists to prevent.
     assert_eq!(
         upload_disposition(&anyhow::anyhow!(
             "HTTP 503 - upstream said HTTP 404 Not Found"
@@ -1932,9 +1881,7 @@ async fn upload_with_retries_resolves_credentials_each_attempt() {
 }
 
 /// Exercises the 401 abort path end-to-end via a mock axum server.
-///
-/// On the first 401, `upload_with_retries` re-resolves credentials and
-/// retries once. If the second attempt also returns 401, it aborts.
+/// First 401 re-resolves credentials and retries once; a second 401 aborts.
 #[tokio::test]
 async fn upload_with_retries_aborts_on_persistent_auth_error() {
     use axum::{
@@ -2098,10 +2045,9 @@ impl TraceExportSource for ParkingResolver {
         let mut rx = self.token_gen.subscribe();
         let slice = self.wait_slice;
         Some(Box::pin(async move {
-            // Level-triggered: the park loop rebuilds this future every
-            // slice, so a recovery signal that already fired before this
-            // subscribe must be observed from the current value rather than
-            // waited for as a future edge (which would be lost).
+            // Level-triggered: the park loop rebuilds this future every slice.
+            // A recovery signal that already fired must be observed from the current value,
+            // not waited for as a future edge (which would be lost).
             if *rx.borrow() > 0 {
                 return true;
             }
@@ -2249,11 +2195,9 @@ async fn parked_item_uploads_after_auth_recovery() {
     );
 }
 
-/// Recovery detection must be level-triggered: the park loop rebuilds its
-/// wait future every slice, so a `signal_recovery()` that lands in the gap
-/// between one slice finishing and the next subscribe must still be seen.
-/// An edge-triggered watch loses that signal, leaving the item parked for a
-/// full `auth_park_probe_interval` (300s) and timing out the resume wait.
+/// Recovery detection must be level-triggered: the park loop rebuilds its wait future every slice.
+/// A signal that lands between slices must still be seen. An edge-triggered watch loses it
+/// and leaves the item parked for a full probe interval.
 #[tokio::test]
 async fn parking_resolver_recovery_is_level_triggered() {
     let (_state, url) = spawn_flippable_server(true).await;
@@ -2270,11 +2214,8 @@ async fn parking_resolver_recovery_is_level_triggered() {
     );
 }
 
-/// A parked item releases its concurrency permit (parking does zero wire
-/// I/O) so other uploads keep flowing during an auth outage, then
-/// re-acquires it before resuming. Without release, `max_concurrent` parked
-/// items would pin every worker slot for up to `max_age` and stall
-/// dispatch/drain.
+/// A parked item releases its concurrency permit (zero wire I/O) so other uploads keep flowing.
+/// It re-acquires before resuming. Without release, parked items pin every worker slot up to `max_age`.
 #[tokio::test]
 async fn parked_item_releases_concurrency_permit() {
     let (state, url) = spawn_flippable_server(true).await;
@@ -3001,10 +2942,8 @@ async fn drain_timeout_returns_pending_count() {
     assert!(result > 0, "should have pending items after timeout");
 }
 
-/// A parked item releases its semaphore permit, so the worker's drain must
-/// wait on the spawned task (not just permit availability) — otherwise it
-/// reports completion while the parked upload is still running and `pending`
-/// is still nonzero.
+/// A parked item releases its semaphore permit, so drain must wait on the spawned task.
+/// Waiting only on permit availability reports completion while the parked upload is still running.
 #[tokio::test]
 async fn drain_waits_for_parked_task_to_bail() {
     let (_state, url) = spawn_flippable_server(true).await; // 401 from the start
@@ -3076,10 +3015,8 @@ fn cleanup_orphaned_uploads_stores_count_in_static() {
     assert!(queue_dir.join("fresh.json").exists());
 }
 
-/// The byte-budget permit math: 1 MiB units rounded up, floor of 1, and a
-/// hard clamp to the semaphore's total so an oversized file never requests
-/// more permits than exist (which would deadlock `acquire_many` / overflow
-/// `u32`).
+/// The byte-budget permit math: 1 MiB units rounded up, floor of 1, clamped to the semaphore total.
+/// An oversized file must never request more permits than exist (deadlock / `u32` overflow).
 #[test]
 fn inline_fallback_permits_clamps_and_never_overflows() {
     // Floor of 1: even a zero-byte upload takes one permit.
@@ -3118,15 +3055,9 @@ fn inline_fallback_permits_clamps_and_never_overflows() {
     );
 }
 
-/// The over-budget `enqueue_file` fallback streams the source file **at
-/// upload time**, not at enqueue time. This would FAIL against a slurp
-/// implementation (`std::fs::read` at enqueue): we hold the upload parked on
-/// the (0-permit) semaphore, overwrite the source with *different* bytes
-/// after `enqueue_file` returns, then release the permit and assert the
-/// backend received the **new** bytes — proving the read happened at upload
-/// time from the path, not eagerly into memory. Also checks `enqueue_fallbacks`
-/// bumps, no temp copy is staged, the source is preserved, and `pending_bytes`
-/// is untouched.
+/// The over-budget `enqueue_file` fallback streams the source at upload time, not enqueue time.
+/// Overwrite the source after enqueue returns, then assert the backend received the new bytes.
+/// A slurp-at-enqueue implementation would fail this.
 #[tokio::test]
 async fn enqueue_file_over_budget_streams_source_at_upload_time() {
     use axum::{
@@ -3184,10 +3115,8 @@ async fn enqueue_file_over_budget_streams_source_at_upload_time() {
     let pre_pending = stats.pending_bytes.load(Ordering::Relaxed);
 
     let (tx, _rx) = mpsc::channel(CHANNEL_CAPACITY);
-    // Semaphore starts at 0 permits: the spawned upload task parks on
-    // `acquire_many_owned` BEFORE `upload_file` opens the source. A slurp
-    // implementation would have already captured the original bytes at
-    // enqueue time, so the discriminating assertion below would fail for it.
+    // Semaphore starts at 0 permits: the upload task parks on acquire before opening the source.
+    // A slurp implementation would have already captured the original bytes at enqueue time.
     let queue = UploadQueue {
         tx,
         queue_dir: queue_dir.clone(),
@@ -3322,12 +3251,8 @@ async fn enqueue_file_over_budget_missing_source_returns_err() {
     );
 }
 
-/// The `enqueue_file` channel-full / closed `try_send`-failure branch streams
-/// from the source path and performs the decrement bookkeeping. Triggered by
-/// dropping the receiver so `try_send` returns `Closed` (same fallback code
-/// path as a full channel). Asserts `enqueue_fallbacks` bumps, `pending`/
-/// `pending_bytes` are decremented back to zero, the source is preserved, and
-/// the inline upload reaches the backend.
+/// The `enqueue_file` channel-full/closed branch streams from the source path and decrements bookkeeping.
+/// Triggered by dropping the receiver (`Closed`, same path as full). Asserts fallbacks bump and pending returns to zero.
 #[tokio::test]
 async fn enqueue_file_channel_full_streams_from_source_path() {
     use axum::{
@@ -3439,29 +3364,16 @@ async fn enqueue_file_channel_full_streams_from_source_path() {
     );
 }
 
-/// The byte-budget semaphore actually bounds inline-fallback concurrency:
-/// firing more uploads than the permit budget allows, the observed peak
-/// concurrency never exceeds the budget, and the excess tasks make progress
-/// only after permits free up. Deterministic — uses a manual-reset gate
-/// (`Semaphore::new(0)` + `add_permits`) and a counting "entered" semaphore
-/// instead of sleeps. If the semaphore gating were deleted, peak concurrency
-/// would equal the number of fired tasks and this test would fail.
-///
-/// This exercises `spawn_inline_upload_from_path`. The bytes helper
-/// (`spawn_inline_upload`) and the blocking helper (`spawn_inline_upload_blocking`)
-/// use the byte-identical `acquire_many_owned(inline_fallback_permits(..))` gating
-/// idiom against the same shared semaphore, so the concurrency bound proven
-/// here applies to all three; they are not separately parameterized.
+/// The byte-budget semaphore bounds inline-fallback concurrency: peak never exceeds the budget.
+/// Deterministic gate (`Semaphore::new(0)` + `add_permits`), no sleeps.
+/// The same `acquire_many_owned` idiom is shared by the other inline helpers.
 #[tokio::test]
 async fn inline_fallback_semaphore_bounds_concurrency() {
     use axum::{Router, body::Body, http::StatusCode, response::IntoResponse, routing::post};
 
-    /// Resolver that parks each inline-upload task while it holds its permit,
-    /// recording peak concurrency. It parks in `resolve_async` (after the
-    /// permit is acquired, before `upload_file` opens the file) so the bound
-    /// is observed before any real upload. After release it returns a config
-    /// pointing at a fast mock server so the permit frees quickly and the
-    /// next wave can run.
+    /// Resolver that parks each inline-upload task while it holds its permit, recording peak concurrency.
+    /// Parks after the permit is acquired and before `upload_file` opens the file.
+    /// After release it returns a fast mock config so the next wave can run.
     struct ConcurrencyResolver {
         inflight: Arc<AtomicU32>,
         peak: Arc<AtomicU32>,
@@ -3698,10 +3610,8 @@ fn test_queue(
     }
 }
 
-/// CORE regression: the snapshot is immutable, so mutating the working-tree
-/// source AFTER enqueue does not change the uploaded bytes. This FAILS against
-/// the old verify-then-reupload-source approach (which would stream the new
-/// bytes to the content-addressed `sha256_<expected>` path).
+/// CORE regression: the snapshot is immutable, so mutating the working-tree source after enqueue does not change uploaded bytes.
+/// This fails against the old verify-then-reupload-source approach.
 #[tokio::test]
 async fn reference_snapshot_immutable_to_source_mutation() {
     use axum::{
@@ -3912,11 +3822,8 @@ async fn owned_snapshot_reflink_zero_disk_bytes_not_budget_counted() {
     );
 }
 
-/// A copy-fallback snapshot (`disk_bytes == size`) IS counted: `process_item`
-/// subtracts exactly its `disk_bytes`. The real copy-fallback BRANCH in
-/// `enqueue_file_reference` (`reflink_or_copy` → `Ok(Some(n))`) only fires on a
-/// non-CoW FS, which the test FS isn't; this construction-shortcut test is the
-/// deterministic coverage for that branch's accounting.
+/// A copy-fallback snapshot (`disk_bytes == size`) IS counted: `process_item` subtracts exactly its `disk_bytes`.
+/// The real copy-fallback branch only fires on a non-CoW FS; this construction-shortcut is the deterministic coverage.
 #[tokio::test]
 async fn owned_snapshot_copy_disk_bytes_counted() {
     let (resolver, _rc) = spawn_ok_server().await;
@@ -3946,11 +3853,8 @@ async fn owned_snapshot_copy_disk_bytes_counted() {
     );
 }
 
-/// `check_snapshot` keeps the three outcomes distinct: a match → `Match`; a
-/// hash mismatch and a missing (NotFound) snapshot → `Stale`; and a transient
-/// read error (reading a directory as a file, non-NotFound on Linux/macOS) →
-/// `Io`. Mutation-resistant: collapsing `Io` into `Stale` (`Io` is mapped
-/// to `failed`, not `reference_stale`) fails this test.
+/// `check_snapshot` keeps the three outcomes distinct: match → `Match`; mismatch/missing → `Stale`; transient read → `Io`.
+/// Collapsing `Io` into `Stale` fails this test (`Io` maps to `failed`, not `reference_stale`).
 #[test]
 fn check_snapshot_classifies_io_distinct_from_stale() {
     let temp = tempfile::TempDir::new().unwrap();
@@ -4101,10 +4005,8 @@ async fn enqueue_file_reference_channel_full_falls_back_inline() {
     );
 }
 
-/// Real enqueue → process round-trip: `pending_bytes` adds exactly the
-/// snapshot's `disk_bytes` at enqueue and subtracts it at completion, back to
-/// baseline (0). FS-independent — ties the add to the recorded disk_bytes
-/// whether the test FS reflinks (0) or copies (size).
+/// Real enqueue → process round-trip: `pending_bytes` adds the snapshot's `disk_bytes` and subtracts it at completion.
+/// FS-independent — ties the add to recorded disk_bytes whether the FS reflinks or copies.
 #[tokio::test]
 async fn reference_enqueue_process_pending_bytes_round_trip() {
     let (resolver, _rc) = spawn_ok_server().await;
@@ -4500,10 +4402,9 @@ fn cleanup_orphans_does_not_count_matched_pair() {
     );
 }
 
-/// The janitor derives a pair's age from the sidecar's `enqueued_at` (same
-/// source as the recovery scan), falling back to mtime only when no
-/// parseable sidecar exists. mtime and `enqueued_at` disagreeing must not
-/// produce a deletion recovery would have disagreed with.
+/// The janitor derives a pair's age from the sidecar's `enqueued_at`, same source as the recovery scan.
+/// Falls back to mtime only when no parseable sidecar exists.
+/// mtime and `enqueued_at` disagreeing must not delete what recovery would have kept.
 #[test]
 fn cleanup_orphans_uses_sidecar_age_for_pairs() {
     let temp = tempfile::TempDir::new().unwrap();

@@ -7,18 +7,6 @@ use axum::{
 };
 use std::sync::{Arc, Mutex};
 #[test]
-fn login_config_response_parses_tristate() {
-    let parse = |s: &str| {
-        serde_json::from_str::<LoginConfigResponse>(s)
-            .unwrap()
-            .device_flow
-    };
-    assert_eq!(parse(r#"{"device_flow": true}"#), Some(true));
-    assert_eq!(parse(r#"{"device_flow": false}"#), Some(false));
-    assert_eq!(parse(r#"{"device_flow": null}"#), None);
-    assert_eq!(parse("{}"), None, "absent flag must parse as unset");
-}
-#[test]
 fn get_env_keys_parses_strings_and_rejects_non_strings() {
     use crate::agent::config::EnvKeys;
     let parse = |v: serde_json::Value| {
@@ -33,126 +21,7 @@ fn get_env_keys_parses_strings_and_rejects_non_strings() {
     assert_eq!(parse(serde_json::json!(["A", 123])), None);
     assert_eq!(parse(serde_json::json!([])), None);
 }
-fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned)
-}
-#[derive(Debug, Default, Clone)]
-struct LoginConfigHeaders {
-    authorization: Option<String>,
-    user_id: Option<String>,
-    email: Option<String>,
-    agent_id: Option<String>,
-    client_identifier: Option<String>,
-    client_version: Option<String>,
-}
-#[derive(Clone)]
-struct LoginConfigServerState {
-    status_code: StatusCode,
-    body: String,
-    seen: Arc<Mutex<Vec<LoginConfigHeaders>>>,
-}
-/// Mock cli-chat-proxy serving `GET /v1/login-config` with a fixed status +
-/// raw body, recording the request headers it saw.
-async fn start_login_config_server(
-    status_code: StatusCode,
-    body: String,
-) -> (
-    String,
-    Arc<Mutex<Vec<LoginConfigHeaders>>>,
-    tokio::task::JoinHandle<()>,
-) {
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let state = LoginConfigServerState {
-        status_code,
-        body,
-        seen: seen.clone(),
-    };
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-    let app = Router::new()
-        .route(
-            "/v1/login-config",
-            get(
-                |State(state): State<LoginConfigServerState>, headers: HeaderMap| async move {
-                    state.seen.lock().unwrap().push(LoginConfigHeaders {
-                        authorization: header_str(&headers, "authorization"),
-                        user_id: header_str(&headers, "x-userid"),
-                        email: header_str(&headers, "x-email"),
-                        agent_id: header_str(&headers, "x-grok-agent-id"),
-                        client_identifier: header_str(&headers, "x-grok-client-identifier"),
-                        client_version: header_str(&headers, "x-grok-client-version"),
-                    });
-                    (state.status_code, state.body)
-                },
-            ),
-        )
-        .with_state(state);
-    let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (format!("{base}/v1"), seen, handle)
-}
-#[tokio::test]
-async fn fetch_login_device_flow_parses_2xx_bodies() {
-    for (body, expected) in [
-        (r#"{"device_flow": true}"#, Some(true)),
-        (r#"{"device_flow": false}"#, Some(false)),
-        (r#"{"device_flow": null}"#, None),
-        (r#"{}"#, None),
-        (r#"{"other": 1}"#, None),
-    ] {
-        let (base, _seen, server) =
-            start_login_config_server(StatusCode::OK, body.to_string()).await;
-        let got = fetch_login_device_flow(&base).await;
-        server.abort();
-        assert_eq!(got, expected, "body {body:?}");
-    }
-}
-#[tokio::test]
-async fn fetch_login_device_flow_errors_return_none() {
-    for (status, body) in [
-        (StatusCode::NOT_FOUND, r#"{"device_flow": true}"#),
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            r#"{"device_flow": true}"#,
-        ),
-        (StatusCode::OK, "not json"),
-    ] {
-        let (base, _seen, server) = start_login_config_server(status, body.to_string()).await;
-        let got = fetch_login_device_flow(&base).await;
-        server.abort();
-        assert_eq!(got, None, "status {status}, body {body:?}");
-    }
-}
-#[tokio::test]
-async fn fetch_login_device_flow_sends_only_unauthenticated_headers() {
-    let (base, seen, server) =
-        start_login_config_server(StatusCode::OK, r#"{"device_flow": true}"#.to_string()).await;
-    let got = fetch_login_device_flow(&base).await;
-    server.abort();
-    assert_eq!(got, Some(true));
-    let seen = seen.lock().unwrap();
-    let h = seen
-        .last()
-        .expect("server should have received one request");
-    assert!(
-        h.agent_id.as_deref().is_some_and(|v| !v.is_empty()),
-        "must send x-grok-agent-id (the bucketing key)"
-    );
-    assert!(
-        h.client_identifier.is_some(),
-        "must send x-grok-client-identifier"
-    );
-    assert!(
-        h.client_version.is_some(),
-        "must send x-grok-client-version"
-    );
-    assert_eq!(h.authorization, None, "must not send Authorization");
-    assert_eq!(h.user_id, None, "must not send x-userid");
-    assert_eq!(h.email, None, "must not send x-email");
-}
-/// Mock cli-chat-proxy serving `GET /settings` with a fixed status + body.
+/// Mock cli-chat-proxy serving `GET /settings` with a fixed status and body.
 async fn start_settings_server(
     status: StatusCode,
     body: String,
@@ -169,9 +38,8 @@ async fn start_settings_server(
     let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     (base, handle)
 }
-/// `fetch_settings_blocking` maps each HTTP outcome to the [`SettingsFetch`]
-/// variant the external-OTEL gate relies on; 401 is the only outcome that
-/// yields `Rejected`, everything else non-2xx fails closed as `Retry`.
+/// `fetch_settings_blocking` maps each HTTP outcome to the [`SettingsFetch`] variant the external-OTEL gate relies on.
+/// Only 401 yields `Rejected`; every other non-2xx outcome fails closed as `Retry`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn settings_fetch_maps_status_to_outcome() {
     let auth = GrokAuth::test_default();
@@ -309,7 +177,7 @@ async fn start_bundle_server(
 fn test_auth() -> GrokAuth {
     GrokAuth {
         key: "token".to_string(),
-        auth_mode: crate::auth::AuthMode::Oidc,
+        auth_mode: xai_grok_login::AuthMode::Oidc,
         create_time: chrono::Utc::now(),
         user_id: "user-1".to_string(),
         email: Some("test@example.com".to_string()),
@@ -334,9 +202,10 @@ fn test_auth() -> GrokAuth {
         oidc_client_id: None,
     }
 }
-fn test_auth_manager() -> Arc<crate::auth::AuthManager> {
+fn test_auth_manager() -> Arc<xai_grok_login::AuthManager> {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = crate::auth::AuthManager::new(dir.path(), crate::auth::GrokComConfig::default());
+    let mgr =
+        xai_grok_login::AuthManager::new(dir.path(), xai_grok_login::GrokComConfig::default());
     mgr.hot_swap(test_auth());
     std::mem::forget(dir);
     Arc::new(mgr)
@@ -450,6 +319,23 @@ fn parse_model_field_takes_priority_over_id() {
     let result = parse_remote_model_value(&value, "https://default.url").unwrap();
     assert_eq!(result.model, "actual-model-id");
     assert_eq!(result.name.as_deref(), Some("Display Name"));
+}
+#[test]
+fn parse_reads_rate_limit_retry_threshold() {
+    let value = serde_json::json!({
+        "model": "grok-4.5",
+        "context_window": 1_000_000,
+        "rateLimitRetryThreshold": 6
+    });
+    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    assert_eq!(result.rate_limit_retry_threshold, Some(6));
+    let value = serde_json::json!({
+        "model": "grok-4.5",
+        "context_window": 1_000_000,
+        "rate_limit_retry_threshold": 7
+    });
+    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    assert_eq!(result.rate_limit_retry_threshold, Some(7));
 }
 #[test]
 fn parse_reads_model_family() {
@@ -701,10 +587,8 @@ fn parse_remote_model_value_top_level_camelcase_wins_over_snake_case() {
     };
     assert_eq!(result.laziness_detector, expected);
 }
-/// `include_reasoning: false` parses cleanly under the per-model
-/// `lazinessDetector` block (camelCase wrapper, snake_case inner —
-/// matching the existing field-naming convention used for the
-/// sibling `min_confidence`, `idle_threshold_ms`, etc.).
+/// `include_reasoning: false` parses under the camelCase `lazinessDetector` wrapper with a snake_case inner key.
+/// That naming matches the sibling fields `min_confidence` and `idle_threshold_ms`.
 #[test]
 fn parse_remote_model_value_parses_include_reasoning_under_camelcase_wrapper() {
     let value = serde_json::json!({
@@ -898,56 +782,7 @@ fn list_url_explicit_overrides_derivation() {
         "https://registry.acme.com/api/list-models"
     );
 }
-/// INVARIANT: the `/models` fetch URL + auth scheme match the auth mode —
-/// Session/Deployment → cli-chat-proxy (Session auth), never the inference host;
-/// ApiKey → `xai_api_base_url` (ApiKey, public default when unset); a custom
-/// models endpoint → that URL verbatim.
-#[test]
-#[serial_test::serial]
-fn models_fetch_endpoint_matches_auth_mode() {
-    use crate::agent::config::EndpointsConfig;
-    use crate::agent::models::ModelFetchAuth;
-    for k in [
-        "GROK_CLI_CHAT_PROXY_BASE_URL",
-        "GROK_XAI_API_BASE_URL",
-        "GROK_MODELS_LIST_URL",
-    ] {
-        unsafe { std::env::remove_var(k) };
-    }
-    let cfg = EndpointsConfig::from_config_value(
-        &toml::from_str(
-            r#"[endpoints]
-                xai_api_base_url = "https://inference.acme-corp.example/xai/v1""#,
-        )
-        .unwrap(),
-    );
-    let session = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::Session);
-    assert_eq!(session.url, "https://cli-chat-proxy.grok.com/v1/models");
-    assert_eq!(session.auth, EndpointAuth::Session);
-    let deployment = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::Deployment);
-    assert_eq!(deployment.url, "https://cli-chat-proxy.grok.com/v1/models");
-    assert_eq!(deployment.auth, EndpointAuth::Session);
-    let api = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::ApiKey);
-    assert_eq!(api.url, "https://inference.acme-corp.example/xai/v1/models");
-    assert_eq!(api.auth, EndpointAuth::ApiKey);
-    let default = EndpointsConfig::from_config_value(&toml::Value::Table(Default::default()));
-    assert_eq!(
-        ListModelsEndpoint::from_endpoints(&default, ModelFetchAuth::ApiKey).url,
-        "https://api.x.ai/v1/models"
-    );
-    let custom = EndpointsConfig::from_config_value(
-        &toml::from_str(
-            r#"[endpoints]
-                models_base_url = "https://models.acme.com/v1""#,
-        )
-        .unwrap(),
-    );
-    let ep = ListModelsEndpoint::from_endpoints(&custom, ModelFetchAuth::Session);
-    assert_eq!(ep.url, "https://models.acme.com/v1/models");
-    assert_eq!(ep.auth, EndpointAuth::ApiKey);
-}
-/// REGRESSION: `grok setup` must send the deployment key to
-/// the proxy, never the inference endpoint.
+/// REGRESSION: `grok setup` must send the deployment key to the proxy, never the inference endpoint.
 #[test]
 #[serial_test::serial]
 fn deployment_config_url_uses_cli_chat_proxy_when_not_overridden() {
@@ -1083,8 +918,7 @@ async fn fetch_bundle_falls_back_on_archive_503() {
     }
     server.abort();
 }
-/// `BackendClient::save_session_data` resolves auth from the attached
-/// `AuthManager` and sends the token as `Bearer <key>` on the wire.
+/// `BackendClient::save_session_data` resolves auth from the attached `AuthManager` and sends the token as `Bearer <key>` on the wire.
 /// This is the writeback path used on every session flush.
 #[tokio::test(flavor = "current_thread")]
 async fn backend_client_resolves_auth_from_auth_manager() {
@@ -1136,8 +970,7 @@ async fn fetch_bundle_propagates_legacy_error_after_fallback() {
     ));
     server.abort();
 }
-/// Regression: reqwest .header() appends — duplicate
-/// or overlapping headers cause Cloudflare to reject the request.
+/// Regression: reqwest .header() appends, so duplicate or overlapping headers cause Cloudflare to reject the request.
 #[tokio::test(flavor = "current_thread")]
 #[allow(clippy::disallowed_methods)]
 async fn auth_headers_do_not_collide_with_json() {

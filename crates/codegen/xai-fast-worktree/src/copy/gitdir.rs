@@ -24,13 +24,14 @@ pub(crate) struct GitDirCopyStats {
     pub entries_skipped: u64,
 }
 
-/// Top-level `.git/` entries to skip when creating a standalone copy.
-///
-/// These are either transient state (merge/rebase in-progress markers) or
-/// linked-worktree metadata that would be stale in the copy.
+/// Top-level `.git/` entries to skip in a standalone copy: transient state or
+/// linked-worktree metadata that would be stale.
 const SKIP_TOP_LEVEL: &[&str] = &[
     // Linked worktree registrations — stale in a standalone copy
     "worktrees",
+    // The source's reflog is stale in a fresh copy and is usually the bulk of
+    // .git on a long-lived checkout. Git recreates logs/ on the first ref update.
+    "logs",
     // Transient HEAD-like state files
     "FETCH_HEAD",
     "ORIG_HEAD",
@@ -46,10 +47,9 @@ const SKIP_TOP_LEVEL: &[&str] = &[
     "rebase-apply",
     // GC state
     "gc.log",
-    // fsmonitor daemon state — a host-local Unix-domain IPC socket
-    // (`fsmonitor--daemon.ipc`, which cannot be reflinked/copied) plus its
-    // transient `cookies/` dir. Both are runtime state of the source repo's
-    // daemon and must never be inherited by a standalone copy.
+    // fsmonitor daemon state: a host-local IPC socket (cannot be copied) plus
+    // its transient `cookies/` dir. Runtime state of the source daemon; a
+    // standalone copy must never inherit it.
     "fsmonitor--daemon",
     "fsmonitor--daemon.ipc",
 ];
@@ -60,23 +60,9 @@ struct CopyWork {
     dest: PathBuf,
 }
 
-/// Copy `.git/` directory contents using CoW, skipping unnecessary entries.
-///
-/// Creates a standalone git repository's `.git/` at `dest_git` by selectively
-/// copying from `source_git`. Files are copied using reflink (CoW) when the
-/// filesystem supports it, falling back to regular copy otherwise.
-///
-/// The `objects/` subtree is copied in parallel (it's typically the largest
-/// part and has no ordering dependencies). Other top-level entries are copied
-/// sequentially.
-///
-/// Skips:
-/// - Lock files (`*.lock`) at any depth
-/// - Stale worktree registrations (`worktrees/`)
-/// - Transient state files (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, etc.)
-/// - In-progress rebase/cherry-pick state (`sequencer/`, `rebase-merge/`)
-/// - Extra `refs/remotes/origin/*` tips (keeps HEAD/main/master/current/@{upstream})
-/// - `.git/shallow` when its grafts are not on HEAD's first-parent chain
+/// Standalone `.git/` via reflink (or copy). `objects/` is parallel; other
+/// top-level entries are sequential. Skips locks, stale worktree metadata,
+/// in-progress merge/rebase state, extra origin tips, and unused shallow grafts.
 #[cfg(test)]
 pub(crate) fn copy_git_dir(source_git: &Path, dest_git: &Path) -> Result<GitDirCopyStats> {
     copy_git_dir_keeping_origin(source_git, dest_git, &HashSet::new())
@@ -135,10 +121,9 @@ fn copy_git_dir_with_workers(
             copy_single_entry(&item.source, &item.dest, &files_copied, &symlinks_copied)?;
         }
     } else {
-        // Shard work items across threads (simple round-robin). Each thread
-        // returns its first copy error; the sequential branch propagates errors
-        // with `?`, so this branch must too — a failed `.git/index`/pack copy
-        // would otherwise yield a silently-corrupt standalone repo.
+        // Each thread returns its first copy error; this branch must propagate
+        // like the sequential `?` path, or a failed index/pack copy yields a
+        // silently-corrupt standalone repo.
         let chunk_size = work_items.len().div_ceil(num_workers);
         let first_error = crossbeam::scope(|scope| {
             let handles: Vec<_> = work_items
@@ -204,10 +189,8 @@ fn copy_git_dir_with_workers(
     Ok(stats)
 }
 
-/// Recursively collect work items (files/symlinks to copy), creating directories eagerly.
-///
-/// Directories are created immediately (they must exist before files are written),
-/// but file copies are deferred to the work list for parallel processing.
+/// Collect files/symlinks to copy. Directories are created immediately (they
+/// must exist before writes); file copies are deferred for parallel processing.
 fn collect_work_recursive(
     source: &Path,
     dest: &Path,
@@ -261,11 +244,9 @@ fn collect_work_recursive(
                 dest: dest_path,
             });
         } else {
-            // Non-regular file (Unix socket, FIFO, device): it cannot be
-            // reflinked or copied as a file, and it is transient host-local
-            // state with no meaning in a copy (e.g. git's leftover
-            // `fsmonitor--daemon.ipc` socket). Skip it instead of failing the
-            // whole `.git/` copy.
+            // Non-regular file (socket, FIFO, device) cannot be copied and is
+            // host-local state. Skip it instead of failing the whole `.git/`
+            // copy.
             entries_skipped.fetch_add(1, Ordering::Relaxed);
             tracing::debug!(entry = %name_str, rel = %child_rel.display(), "skipping non-regular .git/ entry");
         }
@@ -432,6 +413,24 @@ mod tests {
     }
 
     #[test]
+    fn test_copy_git_dir_skips_reflogs() {
+        let temp = TempDir::new().unwrap();
+        let source_git = temp.path().join("source/.git");
+        let dest_git = temp.path().join("dest/.git");
+
+        std::fs::create_dir_all(source_git.join("logs")).unwrap();
+        std::fs::create_dir_all(source_git.join("refs/heads")).unwrap();
+        std::fs::write(source_git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(source_git.join("refs/heads/main"), "abc123\n").unwrap();
+        std::fs::write(source_git.join("logs/HEAD"), "reflog\n").unwrap();
+
+        copy_git_dir(&source_git, &dest_git).unwrap();
+
+        assert!(!dest_git.join("logs").exists());
+        assert!(dest_git.join("refs/heads/main").exists());
+    }
+
+    #[test]
     fn test_copy_git_dir_skips_transient_state() {
         let temp = TempDir::new().unwrap();
         let source_git = temp.path().join("source/.git");
@@ -482,10 +481,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_copy_git_dir_skips_non_regular_files() {
-        // A leftover Unix-domain socket (e.g. git's `fsmonitor--daemon.ipc`)
-        // cannot be reflinked or copied as a file. It must be skipped, not fail
-        // the whole `.git/` copy. Uses a non-fsmonitor name so this exercises
-        // the type-based skip rather than the SKIP_TOP_LEVEL name match.
+        // A leftover Unix socket cannot be copied and must be skipped, not fail
+        // the whole `.git/` copy. Non-fsmonitor name so this hits the type-based
+        // skip, not the SKIP_TOP_LEVEL name match.
         use std::os::unix::net::UnixListener;
 
         let temp = TempDir::new().unwrap();

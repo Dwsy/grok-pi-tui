@@ -40,25 +40,22 @@ const FD_TARBALL_SHA256: &[(&str, &str, &str)] = &[
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     bundle_rg()?;
-    // fd is an optional vendored file-search binary backing a feature-gated
-    // toolset; skip the download/embed entirely when that feature is off
-    // (shipped TUI binaries).
-    if env::var_os("CARGO_FEATURE_PI").is_some() {
-        bundle_fd()?;
-    }
-    // bfs/ugrep back the bash-harness find/grep shadows (embedded_search_tools).
+    bundle_fd()?;
     bundle_search_tool("bfs", "BFS", BFS_VER)?;
     bundle_search_tool("ugrep", "UGREP", UGREP_VER)?;
     Ok(())
 }
 
-/// Download + embed fd as an optional vendored file-search binary, mirroring
-/// the ripgrep bundling
-/// (release-only or `GROK_TOOLS_BUNDLE_FD_PATH` override), plus pinned
-/// per-asset SHA-256 verification of the downloaded tarball.
+/// Download + embed fd as an optional vendored file-search binary, mirroring the ripgrep bundling
+/// (release-only or `GROK_TOOLS_BUNDLE_FD_PATH` override), plus pinned per-asset SHA-256
+/// verification of the downloaded tarball.
 fn bundle_fd() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-env-changed=GROK_TOOLS_BUNDLE_FD_PATH");
     println!("cargo:rustc-check-cfg=cfg(bundle_fd)");
+
+    if env::var_os("CARGO_FEATURE_PI").is_none() {
+        return Ok(());
+    }
 
     let gen_dir = PathBuf::from(env::var("OUT_DIR")?).join("bundle-fd");
     fs::create_dir_all(&gen_dir)?;
@@ -107,6 +104,7 @@ fn bundle_fd() -> Result<(), Box<dyn std::error::Error>> {
                 dest.display()
             )
         })?;
+        compress_and_pin(&dest, "FD")?;
         return Ok(());
     }
 
@@ -178,6 +176,7 @@ fn bundle_fd() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
+    compress_and_pin(&dest, "FD")?;
     Ok(())
 }
 
@@ -189,15 +188,28 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-/// Bundle a prebuilt **static** search-tool binary (`bfs`/`ugrep`) when
-/// `GROK_TOOLS_BUNDLE_<NAME>_PATH` points at one (supplied by the release
-/// pipeline). Emits
-/// `cfg(bundle_<name>)` so the crate's `include_bytes!` + self-extract engages.
-///
-/// No auto-download (unlike ripgrep): bfs/ugrep publish no prebuilt static
-/// release assets, so the release pipeline supplies the path. Unset → not
-/// bundled (the runtime resolver falls back to `~/.grok/vendor` / `$PATH`);
-/// never a hard failure, so an un-wired build still succeeds.
+fn compress_and_pin(
+    dest: &std::path::Path,
+    name_uc: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = fs::read(dest)?;
+    let sha = {
+        use sha2::Digest as _;
+        hex_encode(&sha2::Sha256::digest(&bytes))
+    };
+
+    let compressed = zstd::encode_all(&bytes[..], 19)?;
+    let mut zst = dest.to_path_buf().into_os_string();
+    zst.push(".zst");
+    fs::write(&zst, &compressed)?;
+
+    println!("cargo:rustc-env=GROK_TOOLS_{name_uc}_SHA256={sha}");
+    Ok(())
+}
+
+/// Bundle a prebuilt **static** search-tool binary (`bfs`/`ugrep`) when `GROK_TOOLS_BUNDLE_<NAME>_PATH` points at one (supplied by the release
+/// pipeline). Emits `cfg(bundle_<name>)` so the crate's `include_bytes!` + self-extract engages. No auto-download (unlike ripgrep): bfs/ugrep
+/// publish no prebuilt static release assets, so the release pipeline supplies the path.
 fn bundle_search_tool(
     name: &str,
     name_uc: &str,
@@ -205,7 +217,6 @@ fn bundle_search_tool(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let override_env = format!("GROK_TOOLS_BUNDLE_{name_uc}_PATH");
     println!("cargo:rerun-if-env-changed={override_env}");
-    // Always declare the cfg so `#[cfg(bundle_<name>)]` is lint-clean when unset.
     println!("cargo:rustc-check-cfg=cfg(bundle_{name})");
 
     // The consumer (`embedded_search_tools`) is `#[cfg(unix)]`, so embedding on a
@@ -228,6 +239,7 @@ fn bundle_search_tool(
     println!("cargo:rustc-cfg=bundle_{name}");
     println!("cargo:rustc-env=GROK_TOOLS_{name_uc}_VER={ver}");
     println!("cargo:rustc-env=GROK_TOOLS_{name_uc}_TARGET=override");
+    compress_and_pin(&dest, name_uc)?;
     Ok(())
 }
 
@@ -236,7 +248,6 @@ fn bundle_search_tool(
 fn bundle_rg() -> Result<(), Box<dyn std::error::Error>> {
     // Only bundle in release builds to avoid slowing down cargo check.
     println!("cargo:rerun-if-env-changed=GROK_TOOLS_BUNDLE_RG_PATH");
-    // Declare our custom cfg to the compiler so cfg(bundle_rg) is recognized by lints
     println!("cargo:rustc-check-cfg=cfg(bundle_rg)");
 
     let gen_dir = PathBuf::from(env::var("OUT_DIR")?).join("bundle-rg");
@@ -249,12 +260,9 @@ fn bundle_rg() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Skip auto-bundling on Windows: ripgrep ships .zip on Windows (not
-    // .tar.gz) and we have no zip-extraction path. Returning here BEFORE
-    // emitting `cargo:rustc-cfg=bundle_rg` keeps include_bytes! macros gated
-    // on cfg(bundle_rg) compiled-out, so the runtime falls back to `rg` on
-    // PATH. Users install ripgrep separately (winget / scoop). An explicit
-    // GROK_TOOLS_BUNDLE_RG_PATH still bundles regardless of target.
+    // Skip auto-bundling on Windows: ripgrep ships .zip on Windows (not .tar.gz) and we have no zip-extraction path. Returning here BEFORE
+    // emitting `cargo:rustc-cfg=bundle_rg` keeps include_bytes! macros gated on cfg(bundle_rg) compiled-out, so the runtime falls back to `rg` on
+    // PATH. Users install ripgrep separately (winget / scoop). An explicit GROK_TOOLS_BUNDLE_RG_PATH still bundles regardless of target.
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os == "windows" && path_override.is_none() {
         return Ok(());
@@ -275,6 +283,7 @@ fn bundle_rg() -> Result<(), Box<dyn std::error::Error>> {
                 dest.display()
             )
         })?;
+        compress_and_pin(&dest, "RG")?;
         return Ok(());
     }
 
@@ -347,5 +356,6 @@ fn bundle_rg() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
+    compress_and_pin(&dest, "RG")?;
     Ok(())
 }

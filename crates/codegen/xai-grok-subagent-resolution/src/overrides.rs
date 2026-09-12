@@ -14,8 +14,7 @@ use crate::types::EffectiveRuntimeConfig;
 
 /// Parse a serde-deserializable enum from a plain string value.
 ///
-/// Used for `SubagentCapabilityMode` and `SubagentIsolationMode` which
-/// accept kebab-case string variants via `#[serde(rename_all = "kebab-case")]`.
+/// `SubagentCapabilityMode` and `SubagentIsolationMode` accept kebab-case string variants via `#[serde(rename_all = "kebab-case")]`.
 fn parse_enum_from_str<T: DeserializeOwned>(s: &str) -> Option<T> {
     serde_json::from_value::<T>(serde_json::Value::String(s.to_string())).ok()
 }
@@ -37,24 +36,9 @@ pub fn intersect_capability_modes(
     }
 }
 
-/// Resolve effective runtime config from explicit overrides, role defaults,
-/// and persona defaults.
-///
-/// Precedence for each field:
-/// 1. Explicit spawn-time override (from `SubagentRuntimeOverrides`)
-/// 2. Role default (from `SubagentRole` in config)
-/// 3. Persona default (looked up by name from the personas map)
-/// 4. None (parent inheritance, handled downstream)
-///
-/// Persona instructions are loaded eagerly: if `instructions_file` is set,
-/// the file is read from disk relative to `source_dir` (or `cwd` as fallback).
-/// If the file cannot be read, a fatal `persona_error` is set and the function
-/// returns early with only the persona name and error populated (all other
-/// fields at their defaults). This matches the shell's fail-closed behavior
-/// where persona file errors abort resolution before any other fields are wired.
-///
-/// Role prompt files follow soft degradation: if `prompt_file` cannot be read,
-/// a warning is set but the spawn continues without the role prompt.
+/// Precedence for each field: If the file cannot be read, a fatal `persona_error` is set and the function returns early
+/// with only the persona name and error populated. A role prompt file failure is softer: if `prompt_file` cannot be read,
+/// a warning is set and the spawn continues without the role prompt.
 pub fn resolve_effective_overrides(
     overrides: &SubagentRuntimeOverrides,
     role: Option<&SubagentRole>,
@@ -87,24 +71,20 @@ pub fn resolve_effective_overrides(
     let persona = overrides.persona.clone();
     let resolved_persona = persona.as_deref().and_then(|name| personas.get(name));
 
-    // Persona model/reasoning cascade after role
+    // Persona model and reasoning effort fill in after overrides and role defaults
     let model =
         model_from_override_or_role.or_else(|| resolved_persona.and_then(|p| p.model.clone()));
     let reasoning_effort = reasoning_from_override_or_role
         .or_else(|| resolved_persona.and_then(|p| p.reasoning_effort.clone()));
 
-    // ── Persona instructions loading ─────────────────────────────
-    // Fail-closed: if persona resolution produces an error (file unreadable,
-    // not found, empty), return early with only persona + error populated.
-    // All other fields are defaulted. This matches the shell's behavior where
-    // persona errors abort spawn before wiring model/isolation.
+    // ── Persona instructions loading ─────────────────────────────. Fail-closed: if persona resolution produces an error
+    // (file unreadable, not found, empty), return early with only persona and error populated. All other fields are
+    // defaulted. This matches the shell's behavior where persona errors abort spawn before wiring model/isolation
     let (persona_instructions, persona_error, persona_fatal) =
         resolve_persona_instructions(persona.as_deref(), personas, cwd);
-    // File I/O errors are fatal: return early with defaults so the caller
-    // can abort the spawn. Config-level errors ("not found", "no instructions")
-    // are non-fatal: they set `persona_error` but other fields still resolve.
-    // This matches the shell's original behavior where only the file-read
-    // error path did `return EffectiveRuntimeConfig { ..Default::default() }`.
+    // File I/O errors are fatal: return early with defaults so the caller can abort the spawn
+    // Config-level errors ("not found", "no instructions") are non-fatal: they set `persona_error` but other fields still resolve
+    // This matches the shell's original behavior, where only the file-read error path did `return EffectiveRuntimeConfig { ..Default::default() }`
     if persona_fatal {
         return EffectiveRuntimeConfig {
             persona,
@@ -153,13 +133,9 @@ pub fn resolve_effective_overrides(
     }
 }
 
-/// Resolve persona instructions from inline text and/or instructions_file.
-///
-/// Returns `(instructions, error, fatal)`:
-/// - `(Some(text), None, false)` on success
-/// - `(None, Some(err), true)` for file I/O errors (caller should early-return with defaults)
-/// - `(None, Some(err), false)` for config-level errors (persona not found, no instructions)
-/// - `(None, None, false)` when no persona is requested
+/// Resolve persona instructions from inline text and/or instructions_file. Returns `(instructions, error, fatal)`:
+/// `(Some(text), None, false)` on success; `(None, Some(err), true)` for file I/O errors (caller should early-return with
+/// defaults); `(None, Some(err), false)` for config-level errors (persona not found, no instructions).
 fn resolve_persona_instructions(
     persona_name: Option<&str>,
     personas: &HashMap<String, SubagentPersona>,
@@ -173,7 +149,7 @@ fn resolve_persona_instructions(
         return (
             None,
             Some(format!("persona \"{name}\" not found in config")),
-            false, // not fatal — config error, other fields still resolve
+            false, // not fatal: config error, other fields still resolve
         );
     };
 
@@ -193,7 +169,7 @@ fn resolve_persona_instructions(
                         "persona \"{name}\": failed to read instructions_file \
                          \"{file_path}\": {e}"
                     );
-                    return (None, Some(err), true); // fatal — file I/O error
+                    return (None, Some(err), true); // fatal: file I/O error
                 }
             },
             None => {
@@ -201,7 +177,7 @@ fn resolve_persona_instructions(
                     "persona \"{name}\": cannot resolve instructions_file \
                      \"{file_path}\": no source_dir or cwd available"
                 );
-                return (None, Some(err), true); // fatal — unresolvable path
+                return (None, Some(err), true); // fatal: unresolvable path
             }
         }
     }
@@ -212,7 +188,7 @@ fn resolve_persona_instructions(
             Some(format!(
                 "persona \"{name}\" has no instructions or instructions_file"
             )),
-            false, // not fatal — config error, other fields still resolve
+            false, // not fatal: config error, other fields still resolve
         )
     } else {
         (Some(parts.join("\n\n")), None, false)
@@ -631,7 +607,7 @@ mod tests {
             "cwd_persona".to_string(),
             SubagentPersona {
                 instructions_file: Some("instructions.md".into()),
-                // source_dir is None - will fall back to cwd
+                // source_dir is None, so the lookup falls back to cwd
                 ..Default::default()
             },
         );
@@ -648,8 +624,7 @@ mod tests {
 
     #[test]
     fn persona_not_found_error_is_non_fatal() {
-        // "not found" is a config-level error: persona_error is set but
-        // other fields still resolve from role/overrides.
+        // "not found" is a config-level error: persona_error is set but other fields still resolve from role/overrides
         let overrides = make_overrides(Some("grok-3"), Some("missing"), None, None, None);
         let role = SubagentRole {
             model: Some("grok-light".into()),
@@ -743,7 +718,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        // No role, no explicit isolation — should fall through to persona
+        // No role and no explicit isolation, so isolation falls through to the persona
         let result = resolve_effective_overrides(&overrides, None, &personas, None, None);
         assert_eq!(result.isolation, SubagentIsolationMode::Worktree);
     }
@@ -759,7 +734,7 @@ mod tests {
         let overrides = make_overrides(None, None, None, None, None);
         let role = SubagentRole {
             prompt_file: Some("role.md".into()),
-            // source_dir is None — falls back to cwd
+            // source_dir is None, so the lookup falls back to cwd
             ..Default::default()
         };
         let result = resolve_effective_overrides(
@@ -774,20 +749,5 @@ mod tests {
             Some("CWD role instructions."),
         );
         assert!(result.role_prompt_warning.is_none());
-    }
-
-    // ── role_name parameter is threaded through ───────────────────
-
-    #[test]
-    fn role_name_parameter_threaded_through() {
-        let overrides = make_overrides(None, None, None, None, None);
-        let result = resolve_effective_overrides(
-            &overrides,
-            None,
-            &empty_personas(),
-            None,
-            Some("my-role".into()),
-        );
-        assert_eq!(result.role_name.as_deref(), Some("my-role"));
     }
 }

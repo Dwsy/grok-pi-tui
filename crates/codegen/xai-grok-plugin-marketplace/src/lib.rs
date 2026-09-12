@@ -1,8 +1,5 @@
-//! Plugin marketplace browse and index crate.
-//!
-//! Provides marketplace source configuration, plugin discovery (indexed +
-//! filesystem fallback), and install integration with the existing
-//! `InstallRegistry` pipeline.
+//! Provides marketplace source configuration and plugin discovery, indexed with a filesystem fallback.
+//! Install integration goes through the existing `InstallRegistry` pipeline.
 
 pub mod catalog;
 pub mod config;
@@ -16,8 +13,8 @@ pub mod scanner;
 pub mod types;
 
 pub use config::{
-    env_require_sha, load_extra_sources_from_settings, load_extra_sources_from_settings_in,
-    load_require_sha, load_sources,
+    env_require_sha, foreign_settings_roots, load_extra_sources_from_settings,
+    load_extra_sources_from_settings_in, load_require_sha, load_sources, native_settings_roots,
 };
 pub use error::MarketplaceError;
 pub use scanner::scan_marketplace;
@@ -26,17 +23,16 @@ pub use types::*;
 /// Display name of the official xAI marketplace source.
 pub const OFFICIAL_SOURCE_NAME: &str = "xAI Official";
 
-/// Git URL of the official xAI marketplace source. Auto-registered on first run.
+/// Git URL of the official xAI marketplace source, auto-registered on first run.
 pub const OFFICIAL_SOURCE_GIT_URL: &str = "https://github.com/xai-org/plugin-marketplace.git";
 
-/// Whether `url` is the official xAI marketplace source, normalizing case, a
-/// `www.` prefix, a trailing `/` or `.git`, and HTTPS/SSH forms before comparing.
+/// Whether `url` is the official xAI marketplace source.
+/// Case, a `www.` prefix, a trailing `/` or `.git`, and HTTPS/SSH forms are normalized before comparing.
 pub fn is_official_source_url(url: &str) -> bool {
     canonical_github_owner_repo(url).as_deref() == Some("xai-org/plugin-marketplace")
 }
 
-/// Normalized lowercase `owner/repo` from a GitHub URL (HTTPS/http/ssh/scp,
-/// `www.`, trailing `.git`/`/`), or `None` if not a GitHub URL.
+/// Normalized lowercase `owner/repo` from a GitHub URL (HTTPS/http/ssh/scp, `www.`, trailing `.git`/`/`), or `None` if not a GitHub URL.
 pub(crate) fn canonical_github_owner_repo(url: &str) -> Option<String> {
     let s = url.trim();
     let s = s.strip_suffix('/').unwrap_or(s);

@@ -31,9 +31,8 @@ pub struct PtyHandle {
 }
 
 /// Resize-capable master half of a dismantled [`PtyHandle`].
-///
-/// portable-pty's unix master is not `Sync` (interior `RefCell`), so it sits
-/// behind a mutex that is only held for the synchronous resize ioctl.
+/// portable-pty's unix master is not `Sync` (`RefCell`), so it sits behind a mutex
+/// held only for the synchronous resize ioctl.
 pub struct PtyMaster {
     master: std::sync::Mutex<Box<dyn MasterPty + Send>>,
 }

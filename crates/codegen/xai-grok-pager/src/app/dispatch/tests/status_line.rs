@@ -1,5 +1,4 @@
-//! Status row dispatch: what it draws, when it recomputes, and which results
-//! it still accepts.
+//! Status row dispatch: what it draws, when it recomputes, and which results it still accepts.
 
 use super::*;
 
@@ -13,8 +12,7 @@ use crate::views::status_line::{StatusLineDisplay, StatusLineFrame, StatusSegmen
 use xai_grok_status_line::test_support::StatusLineConfigFixture;
 use xai_grok_status_line::{StatusLineConfig, StatusLineItem, StatusLineType};
 
-/// A `command` is set whatever the mode, so a test can switch mode without
-/// losing the script.
+/// A `command` is set whatever the mode, so a test can switch mode without losing the script.
 fn command_row(kind: StatusLineType) -> StatusLineConfigFixture {
     StatusLineConfigFixture::from_kind(kind).with_command("true")
 }
@@ -43,9 +41,8 @@ fn settled_refresh_timer_app(now: Instant) -> AppView {
     app
 }
 
-/// A row that painted one result and has a second run outstanding. Moves the
-/// caller's clock to the instant that second run began, so a deadline the
-/// caller measures runs from the run it is about.
+/// A row that painted one result and has a second run outstanding.
+/// Moves the caller's clock to the instant that second run began, so a deadline the caller measures runs from the run it is about.
 fn app_with_a_second_run(now: &mut Instant) -> AppView {
     let mut app = status_line_app(StatusLineType::Command);
     app.update_status_line_at(*now);
@@ -178,8 +175,7 @@ fn row_that_cannot_resolve_paints_the_problem_verbatim() {
 
     app.update_status_line_at(now);
 
-    // A warning segment, not dim text: the row is chrome, and this is the one
-    // thing in it the user has to notice.
+    // A warning segment, not dim text: the row is chrome, and this is the one thing in it the user has to notice
     let problem = StatusLineDisplay::Segments(vec![StatusSegment::warn(
         "[ui.status_line] type = \"command\" needs command = \"…\"",
     )]);
@@ -227,8 +223,7 @@ fn renaming_the_session_rebuilds_a_row_that_had_already_settled() {
         "the row asks for the tick that rebuilds it"
     );
 
-    // Throttled like any other rebuild: the new name lands on the tick after
-    // the floor passes.
+    // Throttled like any other rebuild: the new name lands on the tick after the floor passes
     app.update_status_line_at(now);
     now += MIN_REFRESH_INTERVAL_MS;
     app.update_status_line_at(now);
@@ -270,8 +265,7 @@ fn row_that_settled_on_nothing_gives_its_line_back() {
 #[test]
 fn run_past_its_deadline_asks_for_the_tick_that_abandons_it() {
     let mut now = Instant::now();
-    // A settled row raises no other demand, so the deadline is the only thing
-    // left that can ask for the tick the watchdog runs on.
+    // A settled row raises no other demand, so the deadline is the only thing left that can ask for the tick the watchdog runs on
     let mut app = app_with_a_second_run(&mut now);
     assert_eq!(
         app.status_line_tick_demand_at(now),
@@ -318,8 +312,7 @@ fn settled_row_recovers_an_abandoned_run_on_its_next_refresh() {
     let mut now = Instant::now();
     let mut app = app_with_a_second_run(&mut now);
     now += ABANDON_AFTER;
-    // Recovery through a refresh rather than through the tick the row now asks
-    // for, since a keystroke or a resize can arrive first.
+    // Recovery through a refresh rather than through the tick the row now asks for, since a keystroke or a resize can arrive first
     app.pending_effects.clear();
     app.refresh_status_line_now_at(now);
     assert!(
@@ -409,6 +402,26 @@ fn gap_between_runs_is_measured_from_the_end_of_the_last_one() {
 }
 
 #[test]
+fn minimal_mode_runs_the_row_like_fullscreen() {
+    let now = Instant::now();
+    let mut app = status_line_app(StatusLineType::Command);
+    app.screen_mode = crate::app::ScreenMode::Minimal;
+    app.update_status_line_at(now);
+    assert!(queued_a_run(&app), "the script runs in minimal mode too");
+
+    let mut app = status_line_app(StatusLineType::Builtin);
+    app.current_ui.status_line = command_row(StatusLineType::Builtin)
+        .with_items(vec![StatusLineItem::Cwd])
+        .into_config();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
+    app.update_status_line_at(now);
+    assert!(
+        matches!(app.status_line_frame(), StatusLineFrame::On { .. }),
+        "a builtin row fills for the minimal live region to paint"
+    );
+}
+
+#[test]
 fn resize_arms_the_next_run_only_when_there_is_a_row() {
     let mut app = status_line_app(StatusLineType::Command);
     app.queue_status_line_resize();
@@ -447,8 +460,7 @@ fn row_belonging_to_another_agent_is_not_painted_under_this_one() {
 fn cycling_agents_cannot_re_run_a_script_faster_than_the_floor() {
     let mut now = Instant::now();
     let mut app = status_line_app(StatusLineType::Command);
-    // A second agent the row can legitimately describe, so the switch reaches
-    // the throttle rather than stopping at "no session to report on".
+    // A second agent the row can legitimately describe, so the switch reaches the throttle rather than stopping at "no session to report on"
     let second = AgentId(1);
     let session = make_test_agent_session(&app, second, "second-session");
     let mut agent = AgentView::new(session, ScrollbackState::new());
@@ -496,8 +508,7 @@ fn only_a_row_that_can_change_mid_turn_holds_the_loop_awake_for_one() {
             .with_items(vec![StatusLineItem::Cwd])
             .into_config();
         app.update_status_line_at(now);
-        // Settle the run a `command` row just started, so the only thing left
-        // that could ask for a tick is the turn.
+        // Settle the run a `command` row just started, so the only thing left that could ask for a tick is the turn
         app.on_status_line_command_finished_at(
             now,
             RunId(0),

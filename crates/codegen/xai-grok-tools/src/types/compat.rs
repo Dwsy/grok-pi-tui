@@ -15,24 +15,15 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum CompatVendor {
     Cursor,
     Claude,
     Codex,
 }
-
-impl CompatVendor {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Cursor => "cursor",
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum CompatSurface {
     Skills,
     Rules,
@@ -41,20 +32,6 @@ pub enum CompatSurface {
     Hooks,
     Sessions,
 }
-
-impl CompatSurface {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Skills => "skills",
-            Self::Rules => "rules",
-            Self::Agents => "agents",
-            Self::Mcps => "mcps",
-            Self::Hooks => "hooks",
-            Self::Sessions => "sessions",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompatRemoteKey {
     CursorSkills,
@@ -111,10 +88,9 @@ impl CompatCell {
         self.remote_key
     }
 
-    /// Whether Grok currently implements this compatibility surface.
-    ///
-    /// Codex non-session cells remain reserved in the registry so their config
-    /// shape is stable, but runtime discovery does not consume them.
+    /// Whether Grok currently implements this compatibility surface. Codex non-session cells remain
+    /// reserved in the registry so their config shape is stable, but runtime discovery does not
+    /// consume them.
     pub const fn is_runtime_supported(self) -> bool {
         match self.vendor {
             CompatVendor::Cursor | CompatVendor::Claude => true,
@@ -329,10 +305,8 @@ impl Default for VendorCompat {
     }
 }
 
-/// Resolved `[compat]` configuration threaded into compatibility consumers.
-///
-/// Every cell defaults on. Codex's non-session cells are reserved and are not
-/// consumed by discovery.
+/// Resolved `[compat]` configuration threaded into compatibility consumers. Every cell defaults on.
+/// Codex's non-session cells are reserved and are not consumed by discovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CompatConfig {
     pub cursor: VendorCompat,
@@ -357,13 +331,9 @@ impl CompatConfig {
         }
     }
 
-    /// Config directories that may contain `skills/` subdirectories, in
-    /// priority order. `.grok` and `.agents` are always included; `.claude`
-    /// and `.cursor` are gated on their respective `skills` cell.
-    ///
-    /// Replaces the hard-coded `[".grok", ".agents", ".claude", ".cursor"]`
-    /// in `collect_skill_config_dirs`. When all cells are on, the returned
-    /// list is identical to the historical constant.
+    /// Config directories that may contain `skills/` subdirectories, in priority order. `.grok` and `.agents` are always included; `.claude` and
+    /// `.cursor` are gated on their respective `skills` cell. Replaces the hard-coded `[".grok", ".agents", ".claude", ".cursor"]` in
+    /// `collect_skill_config_dirs`. When all cells are on, the returned list is identical to the historical constant.
     pub fn skill_config_dirs(&self) -> Vec<&'static str> {
         let mut dirs = vec![xai_grok_config::project_config_dirname(), ".agents"];
         if self.claude.skills {
@@ -375,12 +345,9 @@ impl CompatConfig {
         dirs
     }
 
-    /// Subdirectories scanned for `*.md` rules files. `.grok/rules` is always
-    /// included; `.claude/rules` and `.cursor/rules` are gated on their
-    /// respective `rules` cell.
-    ///
-    /// Replaces the hard-coded `RULES_DIRS` constant. When all cells are on,
-    /// the returned list is identical.
+    /// Subdirectories scanned for `*.md` rules files. `.grok/rules` is always included;
+    /// `.claude/rules` and `.cursor/rules` are gated on their respective `rules` cell. Replaces the
+    /// hard-coded `RULES_DIRS` constant. When all cells are on, the returned list is identical.
     pub fn rules_dirs(&self) -> Vec<&'static str> {
         use std::sync::OnceLock;
         static GROK_RULES: OnceLock<&'static str> = OnceLock::new();
@@ -399,12 +366,9 @@ impl CompatConfig {
         dirs
     }
 
-    /// Filenames (and relative paths) recognized as project-instruction files.
-    /// The generic names are always included; the `.claude/`-prefixed entries
-    /// are gated on `claude.agents`.
-    ///
-    /// Replaces the hard-coded `AGENT_FILENAMES` constant. When `claude.agents`
-    /// is on, the returned list is identical (same order).
+    /// Filenames (and relative paths) recognized as project-instruction files. The generic names are always included; the
+    /// `.claude/`-prefixed entries are gated on `claude.agents`. Replaces the hard-coded `AGENT_FILENAMES` constant. When
+    /// `claude.agents` is on, the returned list is identical (same order).
     pub fn agent_filenames(&self) -> Vec<&'static str> {
         let mut names = vec![
             "Agents.md",
@@ -421,12 +385,9 @@ impl CompatConfig {
         names
     }
 
-    /// Home-level vendor directories scanned for AGENTS.md / rules files
-    /// (e.g. `~/.claude`, `~/.cursor`). `.claude` is gated on `claude.agents`
-    /// and `.cursor` on `cursor.agents`.
-    ///
-    /// Replaces the hard-coded `[".claude", ".cursor"]` home scan. When both
-    /// cells are on, the returned list is identical (same order).
+    /// Home-level vendor directories scanned for AGENTS.md / rules files (e.g. `~/.claude`, `~/.cursor`). `.claude` is
+    /// gated on `claude.agents` and `.cursor` on `cursor.agents`. Replaces the hard-coded `[".claude", ".cursor"]` home
+    /// scan. When both cells are on, the returned list is identical (same order).
     pub fn agents_home_dirs(&self) -> Vec<&'static str> {
         let mut dirs = Vec::new();
         if self.claude.agents {
@@ -450,8 +411,8 @@ mod tests {
         assert_eq!(
             COMPAT_CELLS.map(|cell| {
                 (
-                    cell.vendor().as_str(),
-                    cell.surface().as_str(),
+                    Into::<&'static str>::into(cell.vendor()),
+                    Into::<&'static str>::into(cell.surface()),
                     cell.remote_key(),
                 )
             }),
@@ -482,8 +443,8 @@ mod tests {
             assert!(
                 defaults.value(cell),
                 "{}.{}",
-                cell.vendor().as_str(),
-                cell.surface().as_str()
+                Into::<&'static str>::into(cell.vendor()),
+                Into::<&'static str>::into(cell.surface())
             );
         }
         for vendor in [defaults.cursor, defaults.claude, defaults.codex] {
@@ -496,7 +457,12 @@ mod tests {
             COMPAT_CELLS
                 .into_iter()
                 .filter(|cell| cell.is_runtime_supported())
-                .map(|cell| (cell.vendor().as_str(), cell.surface().as_str()))
+                .map(|cell| {
+                    (
+                        Into::<&'static str>::into(cell.vendor()),
+                        Into::<&'static str>::into(cell.surface()),
+                    )
+                })
                 .collect::<Vec<_>>(),
             [
                 ("cursor", "skills"),
@@ -613,10 +579,9 @@ mod tests {
 
     #[test]
     fn toml_struct_deserializes_partial_cells() {
-        // The raw TOML struct is parsed from `[compat]` in the shell crate
-        // (where `toml` is a dep). Here we exercise the same serde shape via
-        // YAML (available in this crate) to pin the `Option<bool>` + `#[serde(default)]`
-        // semantics: unset cells stay `None`, unset vendors default-construct.
+        // The raw TOML struct is parsed from `[compat]` in the shell crate (where `toml` is a dep). Here we exercise the same
+        // serde shape via YAML (available in this crate) to pin the `Option<bool>` + `#[serde(default)]` semantics: unset
+        // cells stay `None`, unset vendors default-construct.
         let parsed: CompatConfigToml = serde_yaml::from_str(
             "cursor:\n  skills: false\n  sessions: true\ncodex:\n  sessions: true\n",
         )

@@ -211,9 +211,7 @@ async fn handle_resize(
 }
 
 /// Long-poll until a screen condition is met or the timeout elapses.
-///
-/// Timeout is a normal outcome (200 with `matched: false` + diagnostics),
-/// not an error — `--gone`/`--stable_ms` waits time out routinely.
+/// Timeout is a normal outcome (200 with `matched: false`), not an error.
 async fn handle_wait(
     State(state): State<AppState>,
     Query(params): Query<WaitParams>,
@@ -291,19 +289,8 @@ async fn handle_ws_upgrade(
 }
 
 /// Handle a single WebSocket connection.
-///
-/// Protocol:
-///
-/// **Server -> Client:**
-/// - Binary frames: raw PTY output bytes (high-throughput streaming)
-/// - Text frames: JSON `{"type":"closed","exit_code":N}` on process exit
-///
-/// **Client -> Server:**
-/// - Binary frames: raw bytes written to PTY stdin
-/// - Text frames: JSON with `type` field:
-///   - `{"type":"input","data":"text"}` — send text to PTY
-///   - `{"type":"keys","keys":"<C-c>"}` — vim-notation keystrokes
-///   - `{"type":"resize","cols":120,"rows":40}` — resize terminal
+/// Server sends binary PTY bytes and a text `closed` frame on exit.
+/// Client sends binary stdin or text `input` / `keys` / `resize` JSON.
 async fn handle_ws_connection(socket: WebSocket, state: AppState) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 

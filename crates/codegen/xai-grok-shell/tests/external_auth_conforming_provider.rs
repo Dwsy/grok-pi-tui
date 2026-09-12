@@ -1,9 +1,9 @@
 //! The published external-auth contract, end to end.
 //!
-//! Operator binaries live outside this repo and read `GROK_AUTH_EXPIRED=1` as
-//! "headless, don't prompt", declining a run they cannot complete silently. So
-//! a binary that declines the boot probe must still be able to sign the user
-//! in, and the two runs have to reach it in the order boot produces them.
+//! Operator binaries live outside this repo and read `GROK_AUTH_EXPIRED=1` as "headless, don't prompt".
+//! They decline a run they cannot complete silently.
+//! So a binary that declines the boot probe must still be able to sign the user in.
+//! The two runs have to reach it in the order boot produces them.
 
 #![cfg(unix)]
 
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use xai_grok_shell::auth::{
+use xai_grok_login::{
     AuthMode, GrokAuth, GrokComConfig, ensure_authenticated, try_ensure_fresh_auth,
 };
 
@@ -22,12 +22,10 @@ const SSO_TOKEN: &str = "token-minted-by-the-interactive-flow";
 /// A regression here reaches the browser login, which hangs rather than fails.
 const LOGIN_BUDGET: Duration = Duration::from_secs(60);
 
-/// Measured at ~0.3s healthy and 47s while the flow contended with its own
-/// `auth.json.lock`; loose enough for a loaded CI runner in between.
+/// Measured at ~0.3s healthy and 47s while the flow contended with its own `auth.json.lock`; loose enough for a loaded CI runner in between.
 const NO_SELF_CONTENTION: Duration = Duration::from_secs(20);
 
-/// The skeleton published in `README.md` and `docs/user-guide/02-authentication.md`,
-/// which operators copy.
+/// The skeleton published in `README.md` and `docs/user-guide/02-authentication.md`, which operators copy.
 fn write_conforming_provider(home: &Path) -> String {
     use std::os::unix::fs::PermissionsExt;
 
@@ -112,7 +110,12 @@ async fn a_provider_that_declines_the_headless_run_can_still_sign_the_user_in() 
     seed_expired_credential(home.path(), &config.auth_scope());
 
     assert!(
-        try_ensure_fresh_auth(&config).await.is_none(),
+        try_ensure_fresh_auth(
+            &config,
+            xai_grok_shell::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT.to_string(),
+        )
+        .await
+        .is_none(),
         "the provider declines a run it cannot complete silently"
     );
     assert_eq!(
@@ -122,10 +125,19 @@ async fn a_provider_that_declines_the_headless_run_can_still_sign_the_user_in() 
     );
 
     let started = Instant::now();
-    let auth = tokio::time::timeout(LOGIN_BUDGET, ensure_authenticated(&config, false, None))
-        .await
-        .expect("the sign-in must reach the provider's interactive branch, not the browser login")
-        .expect("the provider mints when it is allowed to prompt");
+    let auth = tokio::time::timeout(
+        LOGIN_BUDGET,
+        ensure_authenticated(
+            &config,
+            None,
+            xai_grok_shell::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT.to_string(),
+            false,
+            None,
+        ),
+    )
+    .await
+    .expect("the sign-in must reach the provider's interactive branch, not the browser login")
+    .expect("the provider mints when it is allowed to prompt");
     let elapsed = started.elapsed();
 
     assert_eq!(

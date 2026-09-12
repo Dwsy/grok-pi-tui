@@ -74,6 +74,7 @@ fn terminal() -> TerminalContext {
         vte_version: None,
         tmux_extended_keys: None,
         term_program_version: None,
+        term_features: None,
         env_term_version: None,
     }
 }
@@ -330,7 +331,7 @@ fn full_preview_safely_renders_backtick_requested_symlink_target_and_backup_path
     use std::os::unix::fs::symlink;
 
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
+    let root = dunce::canonicalize(temp.path()).unwrap();
     let home = root.join("home`dir");
     let target_dir = root.join("target`dir");
     std::fs::create_dir_all(&home).unwrap();
@@ -926,8 +927,7 @@ fn validator_prefers_custom_executable_shell_and_uses_path_for_basename_only() {
     assert_eq!(resolve_validator_program(&custom), Some(custom.clone()));
 
     std::fs::set_permissions(&custom, std::fs::Permissions::from_mode(0o644)).unwrap();
-    // A non-executable explicit SHELL path is not silently substituted with a
-    // different same-basename shell from PATH.
+    // A non-executable explicit SHELL path is not silently substituted with a different same-basename shell from PATH
     assert_eq!(resolve_validator_program(&custom), None);
 
     assert_eq!(
@@ -999,9 +999,8 @@ fn stale_plan_is_rejected_and_apply_verifies_postcondition() {
 
 #[test]
 fn ssh_wrap_outcome_verifies_with_planned_shell_not_process_shell() {
-    // Post-apply verification must use the shell stored on the outcome. Even if
-    // `$SHELL` is missing or points at a different shell family, a successful
-    // apply against bash must still report the managed alias as configured.
+    // Post-apply verification must use the shell stored on the outcome
+    // Even if `$SHELL` is missing or points at a different shell family, a successful apply against bash must still report the alias configured
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join(".bashrc");
     let plan = plan_fix(request(temp.path(), "/bin/bash"), &report(), &terminal()).unwrap();
@@ -1010,8 +1009,8 @@ fn ssh_wrap_outcome_verifies_with_planned_shell_not_process_shell() {
     assert_eq!(outcome.changed_path(), path);
     assert!(outcome.managed_alias_is_configured());
 
-    // Fish uses a different alias syntax; checking the bash-written path with
-    // fish must not count as configured. The outcome keeps bash regardless.
+    // Fish uses a different alias syntax; checking the bash-written path with fish must not count as configured
+    // The outcome keeps bash regardless
     assert!(!managed_alias_configured(&path, ShellKind::Fish));
     assert!(
         outcome.managed_alias_is_configured(),
@@ -1212,9 +1211,9 @@ fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
     }
 }
 
-/// An accumulating remedy is additive, so a user's own `terminal-features`
-/// lines are not a conflict: tmux applies Grok's managed block last and the
-/// features merge. A direct-assignment remedy would refuse to touch the file.
+/// An accumulating remedy is additive, so a user's own `terminal-features` lines are not a conflict.
+/// tmux applies Grok's managed block last and the features merge.
+/// A direct-assignment remedy would refuse to touch the file.
 #[test]
 fn tmux_truecolor_fix_appends_alongside_existing_terminal_features() {
     let temp = tempfile::tempdir().unwrap();

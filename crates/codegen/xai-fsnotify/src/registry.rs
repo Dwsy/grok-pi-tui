@@ -13,12 +13,8 @@ use crate::error::FsNotifyError;
 use crate::source::{FsConfig, FsEventSource};
 
 /// Long-lived runtime that shared [`FsEventSource`] event loops run on.
-///
-/// Sessions are short-lived and each builds its own current-thread runtime;
-/// if a shared watcher's event loop ran on the *creating* session's runtime
-/// it would die when that session ended, silently breaking every other
-/// subscriber for the same directory. [`set_runtime_handle`] registers a
-/// process-lifetime runtime so the event loop outlives any single session.
+/// A loop on the creating session's runtime would die with that session and break other subscribers.
+/// [`set_runtime_handle`] registers a process-lifetime runtime.
 static RUNTIME_HANDLE: OnceLock<Handle> = OnceLock::new();
 
 /// Process-wide registry of shared sources keyed by canonical watch path.
@@ -48,12 +44,8 @@ pub struct FsWatcherStats {
     pub reused_total: u64,
 }
 
-/// Snapshot shared-watcher stats. Prunes dead registry entries first so
-/// `live_watchers` counts only watchers that still have a subscriber.
-///
-/// `created_total` vs `reused_total` is the headline measure: with sharing,
-/// `reused_total` grows with session/subagent count while `live_watchers`
-/// stays bounded by the number of distinct working directories.
+/// Snapshot shared-watcher stats. Prunes dead registry entries first.
+/// `reused_total` should grow with session count while `live_watchers` stays bounded by distinct directories.
 pub fn stats() -> FsWatcherStats {
     let live = {
         let mut map = registry().lock().unwrap_or_else(PoisonError::into_inner);
@@ -93,14 +85,10 @@ fn event_loop_handle() -> Result<Handle, FsNotifyError> {
     }
 }
 
-/// Get a shared [`FsEventSource`] for `cwd`, reusing a live watcher for the
-/// same canonical directory or creating one if none exists. The OS watcher is
-/// dropped when the last returned [`Arc`] goes away, so callers must keep the
-/// `Arc` alive for as long as they want events — and must **not** call
-/// [`FsEventSource::shutdown`] (that would stop the watcher for every sharer).
-///
-/// `config` is honored only when a watcher is actually created; a live watcher
-/// for the same directory is reused as-is regardless of the requested config.
+/// Get a shared [`FsEventSource`] for `cwd`, reusing a live watcher for the same canonical directory.
+/// The OS watcher drops when the last returned [`Arc`] goes away — do not call `shutdown` (that stops every sharer).
+/// `config` is honored only when a watcher is actually created.
+#[tracing::instrument(name = "fsnotify.watcher_install", skip_all)]
 pub fn shared(cwd: PathBuf, config: FsConfig) -> Result<Arc<FsEventSource>, FsNotifyError> {
     let key = canonical_key(&cwd);
 

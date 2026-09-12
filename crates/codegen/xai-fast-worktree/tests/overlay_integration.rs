@@ -138,10 +138,8 @@ fn extract_opt(options: &str, key: &str) -> Option<String> {
     None
 }
 
-/// Unescape octal escapes in mountinfo fields (e.g., `\040` → space).
-///
-/// The kernel encodes special characters (space, tab, backslash, newline)
-/// as octal sequences in `/proc/self/mountinfo` — see `proc(5)`.
+/// Unescape octal escapes in mountinfo fields (`\040` → space). The kernel
+/// encodes space, tab, backslash, and newline that way — see `proc(5)`.
 fn unescape_mountinfo(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let bytes = s.as_bytes();
@@ -694,10 +692,7 @@ fn test_cleanup_worktrees_in_removes_overlay_worktrees() {
 
     let base_name = unique_name("wt-bulk");
 
-    // Create a temporary worktrees directory structure:
-    //   <overlay_root>/worktrees/<base_name>-cleanup/
-    //     ├── wt-a/mnt/   (overlay worktree)
-    //     └── wt-b/mnt/   (overlay worktree)
+    // Two overlay worktrees under `<overlay_root>/worktrees/<base>-cleanup/`.
     let cleanup_dir = env
         .overlay_root
         .join("worktrees")
@@ -875,11 +870,9 @@ fn test_overlay_metadata_survives_unmount() {
     let _ = std::fs::remove_dir_all(&wt_base);
 }
 
-/// Regression: the overlay worktree must use a dedicated work dir
-/// ("overlay-work"), never the source overlay's "work". Reusing "work" required
-/// deleting the snapshot's copy, whose kernel-created internals are root-owned
-/// mode-000 and undeletable by a rootless creator — which forced the slow file
-/// copy fallback on rootless FUSE+overlay hosts.
+/// Overlay worktree must use a dedicated "overlay-work" dir, never the source
+/// overlay's "work". Reusing "work" deletes root-owned mode-000 internals that
+/// a rootless creator cannot remove, forcing the slow copy fallback.
 #[test]
 fn test_overlay_worktree_uses_dedicated_work_dir() {
     let Some(env) = detect_overlay_env() else {

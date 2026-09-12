@@ -1,13 +1,12 @@
 //! Optional multi-user workspace helpers for loading per-user agent config.
 //!
-//! When optional workspace root and user env vars are set and the resolved
-//! directory exists, that path can contribute AGENTS.md / rules / skills
-//! discovery. Unset env vars are a no-op (typical for standalone installs).
+//! When `XAI_ROOT` and `XAI_USER` are set and the resolved directory exists, that path can contribute AGENTS.md / rules / skills discovery.
+//! Unset env vars are a no-op (typical for standalone installs).
 
 use std::path::PathBuf;
 
-/// If optional workspace env vars are set, returns the user's config directory
-/// when the resolved path exists on disk. Unset or missing paths yield `None`.
+/// If optional workspace env vars are set, returns the user's config directory when the resolved path exists on disk.
+/// Unset or missing paths yield `None`.
 pub fn optional_workspace_user_dir() -> Option<PathBuf> {
     let root = std::env::var("XAI_ROOT").ok()?;
     let user = std::env::var("XAI_USER").ok()?;
@@ -15,10 +14,8 @@ pub fn optional_workspace_user_dir() -> Option<PathBuf> {
 }
 
 /// Map `$XAI_USER` to a path relative to the workspace root.
-///
-/// A bare username is nested one level under `x/` so it cannot collide with an
-/// unrelated same-named directory at the workspace root. Values that already
-/// contain a path separator are used as-is (explicit relative path).
+/// A bare username is nested under `x/` so it cannot collide with an unrelated same-named directory.
+/// Values that already contain a path separator are used as-is.
 fn workspace_user_relpath(user: &str) -> String {
     if user.contains('/') || user.contains('\\') {
         user.to_string()
@@ -27,14 +24,8 @@ fn workspace_user_relpath(user: &str) -> String {
     }
 }
 
-/// Pure logic: join `root` with a relative `user` path and return it if the
-/// directory exists on disk.
-///
-/// Returns `None` if either argument is empty or the resulting path is not
-/// a directory.
-///
-/// Example: `resolve_workspace_user_dir("/workspace", "users/alice")`
-///          → `Some("/workspace/users/alice")` if that directory exists.
+/// Join `root` with a relative `user` path and return it if the directory exists.
+/// `None` if either argument is empty or the result is not a directory.
 pub fn resolve_workspace_user_dir(root: &str, user: &str) -> Option<PathBuf> {
     if root.is_empty() || user.is_empty() {
         return None;
@@ -142,8 +133,7 @@ mod tests {
 
     #[test]
     fn bare_username_does_not_resolve_to_same_named_root_dir() {
-        // Prefer the nested layout even when a same-named directory exists at
-        // the workspace root.
+        // Prefer the nested layout even when a same-named directory exists at the workspace root
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         fs::create_dir_all(root.join("alice")).unwrap();

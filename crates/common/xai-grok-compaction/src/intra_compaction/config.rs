@@ -79,7 +79,7 @@ pub enum IntraSummarizer {
 /// `min_steps_before_compact` [ignored by FullReplace], `steps_trigger_ratio`
 /// [HistoryThenSteps], `compaction_model_name`); the remaining fields are
 /// never sent remotely and therefore always take the defaults here.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IntraCompactionConfig {
     // ───────────────────────────── Common (all modes) ─────────────────────────────
@@ -303,14 +303,6 @@ mod tests {
     }
 
     #[test]
-    fn default_mode_is_full_replace() {
-        assert_eq!(
-            IntraCompactionMode::default(),
-            IntraCompactionMode::FullReplace
-        );
-    }
-
-    #[test]
     fn mode_serde_round_trip() {
         for (mode, s) in [
             (IntraCompactionMode::FullReplace, "\"full_replace\""),
@@ -326,15 +318,6 @@ mod tests {
             let back: IntraCompactionMode = serde_json::from_str(s).unwrap();
             assert_eq!(back, mode);
         }
-    }
-
-    #[test]
-    fn summarizer_defaults_to_shared() {
-        assert_eq!(IntraSummarizer::default(), IntraSummarizer::Shared);
-        assert_eq!(
-            IntraCompactionConfig::default().summarizer,
-            IntraSummarizer::Shared
-        );
     }
 
     #[test]

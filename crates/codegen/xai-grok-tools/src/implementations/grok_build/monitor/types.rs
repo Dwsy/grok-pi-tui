@@ -117,20 +117,16 @@ impl MonitorInput {
 pub struct MonitorEventNotification {
     pub task_id: String,
     pub event_text: String,
-    /// Session that owns the monitor which produced this event.
-    ///
-    /// In leader mode every session shares one [`MonitorEventBuffer`], so the
-    /// drain sites filter on this to avoid surfacing one session's monitor
-    /// events inside another session's turn. `None` for legacy / non-grok-build
-    /// backends, which any session drains for backwards compatibility.
+    /// Session that owns the monitor which produced this event. In leader mode every session shares one [`MonitorEventBuffer`], so the drain sites
+    /// filter on this to avoid surfacing one session's monitor events inside another session's turn. `None` for legacy / non-grok-build backends,
+    /// which any session drains for backwards compatibility.
     pub owner_session_id: Option<String>,
 }
 
 impl MonitorEventNotification {
-    /// Whether this buffered event should surface in the session whose owner id
-    /// is `my_owner`. Mirrors `task_owned_by_session`: an event surfaces only
-    /// when it has no recorded owner (legacy) or its owner matches the draining
-    /// session. Foreign events stay buffered for their own session to drain.
+    /// Whether this buffered event should surface in the session whose owner id is `my_owner`. Mirrors
+    /// `task_owned_by_session`: an event surfaces only when it has no recorded owner (legacy) or its owner matches the
+    /// draining session. Foreign events stay buffered for their own session to drain.
     pub fn owned_by_session(&self, my_owner: Option<&str>) -> bool {
         match (my_owner, self.owner_session_id.as_deref()) {
             (Some(me), Some(owner)) => me == owner,
@@ -139,11 +135,9 @@ impl MonitorEventNotification {
     }
 }
 
-/// Shared buffer for mid-turn monitor event notifications: an [`EventQueue`]
-/// of [`MonitorEventNotification`]. Producers `push_capped`; the turn loop
-/// drains its session's events via [`drain_owned`].
-///
-/// [`EventQueue`]: xai_interjection_core::EventQueue
+/// Shared buffer for mid-turn monitor event notifications: an [`EventQueue`] of
+/// [`MonitorEventNotification`]. Producers `push_capped`; the turn loop drains its session's events
+/// via [`drain_owned`]. [`EventQueue`]: xai_interjection_core::EventQueue
 pub type MonitorEventBuffer = xai_interjection_core::EventQueue<MonitorEventNotification>;
 
 crate::register_resource!("grok_build", "MonitorEventBuffer", MonitorEventBuffer);

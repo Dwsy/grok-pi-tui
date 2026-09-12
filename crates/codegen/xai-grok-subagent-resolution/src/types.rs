@@ -1,5 +1,3 @@
-//! Public API types for subagent resolution.
-
 use std::path::PathBuf;
 
 use crate::resume::ResumeValidationError;
@@ -9,9 +7,9 @@ use crate::resume::ResumeValidationError;
 pub enum ContextSource {
     /// Fresh session with no inherited history.
     New,
-    /// Resumed from a previously completed peer subagent. The child inherits
-    /// the source's raw transcript, tool state, and model. System prompt and
-    /// prompt context are freshly rendered.
+    /// Resumed from a previously completed peer subagent.
+    /// The child inherits the source's raw transcript, tool state, and model.
+    /// System prompt and prompt context are freshly rendered.
     Resumed,
 }
 
@@ -23,8 +21,8 @@ pub struct EffectiveRuntimeConfig {
     /// Resolved model ID override (if any).
     pub model: Option<String>,
     /// Resolved reasoning effort (e.g. "low", "medium", "high").
-    // TODO(phase2): consider a typed `ReasoningEffort` enum to prevent typos.
-    // Currently stringly-typed for compatibility with the shell's existing API.
+    // TODO: consider a typed `ReasoningEffort` enum to prevent typos
+    // It stays a plain string for compatibility with the shell's existing API
     pub reasoning_effort: Option<String>,
     /// Resolved capability mode controlling tool access.
     pub capability_mode: Option<xai_tool_types::SubagentCapabilityMode>,
@@ -45,8 +43,7 @@ pub struct EffectiveRuntimeConfig {
     pub isolation: xai_tool_types::SubagentIsolationMode,
 }
 
-/// Data about a completed source subagent, needed for resume validation
-/// and downstream spawn orchestration.
+/// Data about a completed source subagent, needed to validate a resume and to spawn the resumed child.
 #[derive(Debug, Clone)]
 pub struct ResumeSourceData {
     /// Source subagent ID.
@@ -58,28 +55,41 @@ pub struct ResumeSourceData {
     /// Used by `validate_resume_identity` to check persona match.
     pub persona: Option<String>,
     /// Effective model ID used by the source child session.
-    /// Used by the shell for resume model pinning (model overrides on
-    /// resume are soft-ignored, not identity-gated).
+    /// The shell pins this model on resume; a model override on resume is silently ignored rather than rejected.
     pub model_id: Option<String>,
-    /// Effective cwd the source child used. Consumed by the shell's
-    /// spawn orchestration to reconstruct `SessionInfo` for raw
-    /// transcript continuation and worktree reuse.
+    /// Effective cwd the source child used.
+    /// The shell uses it to reconstruct `SessionInfo` so the raw transcript continues and the worktree can be reused.
     pub child_cwd: String,
-    /// Worktree path if the source used `isolation=worktree`. Consumed
-    /// by the shell to reuse the source's isolated workspace directory
-    /// when resuming a worktree-isolated child.
+    /// Worktree path if the source used `isolation=worktree`.
+    /// The shell reuses this directory when resuming a worktree-isolated child.
     pub worktree_path: Option<PathBuf>,
-    /// Durable git ref holding a snapshot of the source worktree's working
-    /// state, set when the worktree was snapshotted at completion. Consumed
-    /// by the shell to rehydrate a deleted worktree directory on resume.
+    /// Durable git ref holding a snapshot of the source worktree's working state, set when the worktree was snapshotted at completion.
+    /// The shell uses it to recreate a deleted worktree directory on resume.
     pub snapshot_ref: Option<String>,
-    /// The child session ID of the source subagent. Consumed by the
-    /// shell to locate the source's session directory for raw transcript
-    /// copying (`copy_session_data_sync`).
+    /// The child session ID of the source subagent.
+    /// The shell uses it to locate the source's session directory and copy the raw transcript (`copy_session_data_sync`).
     pub child_session_id: String,
 }
 
-/// Errors that can occur during subagent resolution.
+impl From<xai_grok_tools::implementations::grok_build::task::types::SubagentResumeSource>
+    for ResumeSourceData
+{
+    fn from(
+        source: xai_grok_tools::implementations::grok_build::task::types::SubagentResumeSource,
+    ) -> Self {
+        ResumeSourceData {
+            subagent_id: source.subagent_id,
+            subagent_type: source.subagent_type,
+            persona: source.persona,
+            model_id: source.model_id,
+            child_cwd: source.child_cwd,
+            worktree_path: source.worktree_path.map(PathBuf::from),
+            snapshot_ref: source.snapshot_ref,
+            child_session_id: source.child_session_id,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ResolutionError {
     /// No production or session CLI definition has this name.
@@ -112,22 +122,6 @@ pub enum ResolutionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xai_tool_types::SubagentIsolationMode;
-
-    #[test]
-    fn effective_runtime_config_default_values() {
-        let config = EffectiveRuntimeConfig::default();
-        assert!(config.model.is_none());
-        assert!(config.reasoning_effort.is_none());
-        assert!(config.capability_mode.is_none());
-        assert!(config.persona.is_none());
-        assert!(config.persona_instructions.is_none());
-        assert!(config.role_prompt.is_none());
-        assert!(config.role_prompt_warning.is_none());
-        assert!(config.role_name.is_none());
-        assert!(config.persona_error.is_none());
-        assert_eq!(config.isolation, SubagentIsolationMode::None);
-    }
 
     #[test]
     fn resolution_error_persona_display() {
@@ -149,11 +143,5 @@ mod tests {
         assert!(msg.contains("resume validation failed"));
         assert!(msg.contains("explore"));
         assert!(msg.contains("general-purpose"));
-    }
-
-    #[test]
-    fn context_source_equality() {
-        assert_eq!(ContextSource::New, ContextSource::New);
-        assert_ne!(ContextSource::New, ContextSource::Resumed);
     }
 }

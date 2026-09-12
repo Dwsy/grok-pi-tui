@@ -15,16 +15,9 @@ const DEST: &str = "org.freedesktop.login1";
 const PATH: &str = "/org/freedesktop/login1";
 const IFACE: &str = "org.freedesktop.login1.Manager";
 
-/// Linux listener handle.
-///
-/// There is intentionally no clean stop: the worker thread parks on a blocking
-/// logind signal iterator, which cannot be interrupted without a signal
-/// arriving, so dropping this neither joins nor cancels it. The thread (and its
-/// D-Bus connection + sleep-delay inhibitor fd) live until process exit. That
-/// is acceptable for the only intended use — a single process-lifetime listener
-/// whose callback holds a `Weak` ref and no-ops once the owner is gone. (macOS
-/// can `CFRunLoopStop` from `Drop` and so joins; Linux cannot — hence the
-/// asymmetry, and why there is no `Drop` impl here.)
+/// There is intentionally no clean stop: the worker thread parks on a blocking logind signal iterator, which cannot be
+/// interrupted without a signal arriving, so dropping this neither joins nor cancels it. (macOS can `CFRunLoopStop` from
+/// `Drop` and so joins; Linux cannot — hence the asymmetry, and why there is no `Drop` impl here.)
 pub(crate) struct Listener;
 
 impl Listener {
@@ -68,11 +61,9 @@ fn run_thread(
             continue;
         };
         if about_to_sleep {
-            // The callback may block (bounded) waiting for an in-flight token
-            // refresh to finish; the `delay` inhibitor is still held across it,
-            // so that wait holds off the suspend (up to logind's
-            // `InhibitDelayMaxSec`, default 5 s). Release it only once the
-            // callback returns so the system can then proceed to sleep.
+            // The callback may block (bounded) waiting for an in-flight token refresh to finish; the `delay` inhibitor is still held
+            // across it, so that wait holds off the suspend (up to logind's `InhibitDelayMaxSec`, default 5 s). Release it only once
+            // the callback returns so the system can then proceed to sleep.
             callback(PowerEvent::WillSleep);
             inhibitor = None;
         } else {
@@ -92,11 +83,9 @@ pub(crate) fn current_power_state() -> crate::PowerState {
     crate::PowerState::Unknown
 }
 
-/// No power-assertion support on this platform: callers carry on unprotected,
-/// which is the same behaviour as before assertions existed.
-///
-/// Never constructed here (`hold_awake` always returns `None`); it exists so
-/// the cross-platform `SleepAssertion` has a field type on every target.
+/// No power-assertion support on this platform: callers carry on unprotected, which is the same behaviour as before
+/// assertions existed. Never constructed here (`hold_awake` always returns `None`); it exists so the cross-platform
+/// `SleepAssertion` has a field type on every target.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) struct Assertion;

@@ -6,23 +6,16 @@ use std::sync::Arc;
 
 use xai_grok_sampling_types::conversation::ConversationItem;
 
-/// Equal after trimming trailing `\n`/`\r` from both sides. Used for attach
-/// idempotency so a stored head that differs from a client override only by a
-/// trailing newline is treated as already matching (cache-friendly no-op).
+/// Equal after trimming trailing `\n`/`\r` from both sides.
+/// Attach idempotency: a stored head that differs only by a trailing newline is already matching.
 /// Interior and leading whitespace are significant.
 pub fn canonical_system_prompt_eq(a: &str, b: &str) -> bool {
     a.trim_end_matches(['\n', '\r']) == b.trim_end_matches(['\n', '\r'])
 }
 
-/// Replace the leading `System` message with `prompt`, or insert one at the head
-/// if the conversation has no leading `System`. Returns whether the conversation
-/// changed; a head already equal to `prompt` (modulo trailing newlines) is left
-/// untouched for KV-cache-friendly idempotency.
-///
-/// Single source of truth for the "align System[0] with the client override"
-/// operation, shared by the cold-load pre-apply (on a loaded history `Vec`,
-/// before spawn persists it) and the atomic `ChatStateActor` head swap that
-/// backs the resident-reconnect path.
+/// Replace the leading `System` message with `prompt`, or insert one. Returns whether it changed.
+/// A head already equal modulo trailing newlines is left untouched (KV-cache-friendly idempotency).
+/// Shared by cold-load pre-apply and the atomic actor head swap.
 #[must_use]
 pub fn replace_or_insert_system_head(
     conversation: &mut Vec<ConversationItem>,

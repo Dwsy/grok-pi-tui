@@ -105,9 +105,9 @@ mod tests {
     use super::*;
     use crate::send::contributors::{
         AnalyticsClass, CommandAction, CommandInvocation, CommandSpec, CompactionClass,
-        InputAuthority, InputPolicy, QueuePolicy, SessionIdleInput, ShutdownPolicy, TurnAbortInput,
-        TurnAbortReason, TurnBoundary, TurnDoneInput, TurnErrorInput, TurnInputContext,
-        TurnInputFragment, TurnStartInput,
+        InputAuthority, InputPolicy, QueuePolicy, SessionIdleInput, ShutdownPolicy, SlashAuthority,
+        TurnAbortInput, TurnAbortReason, TurnBoundary, TurnDoneInput, TurnErrorInput,
+        TurnInputContext, TurnInputFragment, TurnStartInput,
     };
 
     struct Counter(AtomicUsize);
@@ -190,6 +190,7 @@ mod tests {
     async fn typed_turn_start_defaults_to_legacy_and_can_be_overridden() {
         let policy = InputPolicy {
             authority: InputAuthority::ModelAuthoredUntrusted,
+            slash: SlashAuthority::ModelAuthored,
             turn_boundary: TurnBoundary::Conversational,
             analytics: AnalyticsClass::AgentMessage,
             compaction: CompactionClass::ConversationalAgentAnchor,

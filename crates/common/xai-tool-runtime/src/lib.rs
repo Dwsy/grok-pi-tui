@@ -32,8 +32,8 @@ pub use notification::{
     UserQuestionAsked,
 };
 pub use render::{
-    ModelOutputExtractor, ToolChatCompletion, ToolChatCompletionResponse, ToolCodeExecutionResult,
-    ToolOutput, ToolStreamError, extract_content_blocks, extractor_for,
+    EditFileAnchor, ModelOutputExtractor, ToolChatCompletion, ToolChatCompletionResponse,
+    ToolCodeExecutionResult, ToolOutput, ToolStreamError, extract_content_blocks, extractor_for,
 };
 pub use search::{SearchSnapshot, ServerSummary, ToolIndex, ToolSearchIndex, ToolSearchResult};
 pub use streaming::{PartialResultPayload, stream_chunk};

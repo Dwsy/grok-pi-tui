@@ -86,10 +86,9 @@ unsafe extern "system" fn power_callback(
     let ctx = unsafe { &*(context as *const Context) };
     match event_type {
         PBT_APMSUSPEND => (ctx.callback)(PowerEvent::WillSleep),
-        // A single resume can deliver both PBT_APMRESUMEAUTOMATIC and
-        // PBT_APMRESUMESUSPEND, so `DidWake` may fire twice per wake. That is
-        // fine and intentional: lowering the sleep gate is idempotent, so a
-        // duplicate wake is harmless — do not try to "dedupe" this later.
+        // A single resume can deliver both PBT_APMRESUMEAUTOMATIC and PBT_APMRESUMESUSPEND, so `DidWake` may fire twice per
+        // wake. That is fine and intentional: lowering the sleep gate is idempotent, so a duplicate wake is harmless — do not
+        // try to "dedupe" this later.
         PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND => (ctx.callback)(PowerEvent::DidWake),
         _ => {}
     }
@@ -102,11 +101,9 @@ pub(crate) fn current_power_state() -> crate::PowerState {
     crate::PowerState::Unknown
 }
 
-/// No power-assertion support on this platform: callers carry on unprotected,
-/// which is the same behaviour as before assertions existed.
-///
-/// Never constructed here (`hold_awake` always returns `None`); it exists so
-/// the cross-platform `SleepAssertion` has a field type on every target.
+/// No power-assertion support on this platform: callers carry on unprotected, which is the same behaviour as before
+/// assertions existed. Never constructed here (`hold_awake` always returns `None`); it exists so the cross-platform
+/// `SleepAssertion` has a field type on every target.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) struct Assertion;

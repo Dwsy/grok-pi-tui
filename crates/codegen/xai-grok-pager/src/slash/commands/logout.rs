@@ -1,21 +1,15 @@
-//! `/logout` -- remove auth credentials and return to the login screen.
+//! `/logout` removes the auth credentials and returns to the login screen.
 
 use crate::app::actions::Action;
-use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
+use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
 
 pub struct LogoutCommand;
 
 impl SlashCommand for LogoutCommand {
-    fn name(&self) -> &str {
-        "logout"
-    }
-
-    fn description(&self) -> &str {
-        "Log out and return to the login screen"
-    }
-
-    fn usage(&self) -> &str {
-        "/logout"
+    slash_meta! {
+        name: "logout",
+        description: "Log out and return to the login screen",
+        usage: "/logout",
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {

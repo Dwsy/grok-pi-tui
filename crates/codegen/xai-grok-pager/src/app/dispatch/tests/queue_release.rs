@@ -25,33 +25,36 @@ fn sent_texts(effects: &[Effect]) -> Vec<String> {
         .collect()
 }
 
-/// Force the local drip-feed send path so a mid-turn Enter enqueues locally
-/// instead of the server-authoritative send.
-struct LocalQueueMode {
+/// Forces the local drip-feed send path so a mid-turn Enter enqueues locally instead of handing the send to the server.
+struct LocalFollowUp {
     previous: crate::appearance::FollowUpBehavior,
 }
-impl LocalQueueMode {
-    fn enter(app: &mut AppView) -> Self {
+impl LocalFollowUp {
+    fn enter(app: &mut AppView, behavior: crate::appearance::FollowUpBehavior) -> Self {
         app.leader_mode = false;
         let previous = crate::appearance::cache::load_follow_up_behavior();
-        crate::appearance::cache::set_follow_up_behavior(
-            crate::appearance::FollowUpBehavior::Queue,
-        );
+        crate::appearance::cache::set_follow_up_behavior(behavior);
         Self { previous }
     }
+    fn queue(app: &mut AppView) -> Self {
+        Self::enter(app, crate::appearance::FollowUpBehavior::Queue)
+    }
+    fn steer(app: &mut AppView) -> Self {
+        Self::enter(app, crate::appearance::FollowUpBehavior::Steer)
+    }
 }
-impl Drop for LocalQueueMode {
+impl Drop for LocalFollowUp {
     fn drop(&mut self) {
         crate::appearance::cache::set_follow_up_behavior(self.previous);
     }
 }
 
-/// Sending while parked must go through even when the last thing the user
-/// did was `/btw` (the overlay is still open).
+/// Sending while parked must go through even when the last thing the user did was `/btw` (the overlay is still open).
 #[test]
 fn send_while_waiting_goes_through_when_btw_overlay_is_open() {
     let mut app = running_turn_app();
-    let _mode = LocalQueueMode::enter(&mut app);
+    let _mode = LocalFollowUp::steer(&mut app);
+    enqueue_local(&mut app, AgentId(0), "held");
     {
         let agent = app.agents.get_mut(&AgentId(0)).unwrap();
         simulate_task_output_wait(agent, "task-1");
@@ -66,9 +69,14 @@ fn send_while_waiting_goes_through_when_btw_overlay_is_open() {
     let effects = dispatch_send_prompt(&mut app, "keep going".into());
 
     assert_eq!(sent_texts(&effects), vec!["keep going".to_string()]);
-    assert!(
-        app.agents[&AgentId(0)].session.pending_prompts.is_empty(),
-        "an open /btw overlay must not leave the send queued",
+    assert_eq!(
+        app.agents[&AgentId(0)]
+            .session
+            .pending_prompts
+            .iter()
+            .map(|p| p.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["held"]
     );
     assert!(
         app.agents[&AgentId(0)].btw_state.is_some(),
@@ -76,9 +84,8 @@ fn send_while_waiting_goes_through_when_btw_overlay_is_open() {
     );
 }
 
-/// A prompt queued *before* `/btw` (a thinking-turn follow-up) must stay
-/// queued when the answer lands. The send path is what releases a message
-/// typed while parked; `/btw` completion must not flush the queue.
+/// A prompt queued *before* `/btw` (a follow-up typed while the model was thinking) must stay queued when the answer lands.
+/// The send path is what releases a message typed while parked; `/btw` completion must not flush the queue.
 #[test]
 fn btw_response_does_not_flush_an_unrelated_queued_prompt() {
     let mut app = running_turn_app();
@@ -121,12 +128,39 @@ fn btw_response_does_not_flush_an_unrelated_queued_prompt() {
     );
 }
 
-/// Enter during a wait must interject the message just typed, not an
-/// earlier follow-up that was queued while the model was still thinking.
+#[test]
+fn queue_mode_send_while_waiting_stays_queued() {
+    let mut app = running_turn_app();
+    let _mode = LocalFollowUp::queue(&mut app);
+    enqueue_local(&mut app, AgentId(0), "queued while thinking");
+    {
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        simulate_task_output_wait(agent, "task-1");
+        assert!(agent.is_parked_on_sendable_wait());
+    }
+
+    let effects = dispatch_send_prompt(&mut app, "just typed".into());
+
+    assert!(
+        sent_texts(&effects).is_empty(),
+        "Queue must not interject during a wait, got {effects:?}"
+    );
+    assert_eq!(
+        app.agents[&AgentId(0)]
+            .session
+            .pending_prompts
+            .iter()
+            .map(|p| p.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["queued while thinking", "just typed"]
+    );
+}
+
+/// Enter during a wait must interject the message just typed, not an earlier follow-up that was queued while the model was still thinking.
 #[test]
 fn send_while_waiting_releases_the_new_prompt_not_an_older_queued_row() {
     let mut app = running_turn_app();
-    let _mode = LocalQueueMode::enter(&mut app);
+    let _mode = LocalFollowUp::steer(&mut app);
     enqueue_local(&mut app, AgentId(0), "queued while thinking");
     {
         let agent = app.agents.get_mut(&AgentId(0)).unwrap();
@@ -148,11 +182,38 @@ fn send_while_waiting_releases_the_new_prompt_not_an_older_queued_row() {
     );
 }
 
+#[test]
+fn queue_mode_send_while_waiting_with_empty_queue_stays_queued() {
+    let mut app = running_turn_app();
+    let _mode = LocalFollowUp::queue(&mut app);
+    {
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        simulate_task_output_wait(agent, "task-1");
+        assert!(agent.is_parked_on_sendable_wait());
+    }
+
+    let effects = dispatch_send_prompt(&mut app, "just typed".into());
+
+    assert!(
+        sent_texts(&effects).is_empty(),
+        "Queue must not wait-interject even with an empty pile, got {effects:?}"
+    );
+    assert_eq!(
+        app.agents[&AgentId(0)]
+            .session
+            .pending_prompts
+            .iter()
+            .map(|p| p.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["just typed"]
+    );
+}
+
 /// A thinking turn (running, but not parked / watching) still queues.
 #[test]
 fn send_while_thinking_stays_queued() {
     let mut app = running_turn_app();
-    let _mode = LocalQueueMode::enter(&mut app);
+    let _mode = LocalFollowUp::queue(&mut app);
 
     let effects = dispatch_send_prompt(&mut app, "later".into());
 

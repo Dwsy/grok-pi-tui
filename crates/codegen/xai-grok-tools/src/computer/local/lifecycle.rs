@@ -6,11 +6,9 @@ use std::time::Instant;
 
 use super::ExitStatus;
 
-/// Proof of whether the child was waited on. The field is private:
-/// [`Collection::of`] reads the child handle, which tokio clears once a
-/// `wait` or `try_wait` has returned, so a call site cannot claim a wait
-/// that never happened. [`Collection::ABANDONED`] is always claimable,
-/// since that direction only costs more polling.
+/// Proof of whether the child was waited on. The field is private: [`Collection::of`] reads the child handle, which
+/// tokio clears once a `wait` or `try_wait` has returned, so a call site cannot claim a wait that never happened.
+/// [`Collection::ABANDONED`] is always claimable, since that direction only costs more polling.
 pub(super) struct Collection(bool);
 
 impl Collection {
@@ -178,9 +176,11 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_collection_claim_requires_the_child_to_have_been_waited_on() {
-        let mut child = tokio::process::Command::new("true")
-            .spawn()
-            .expect("spawn `true`");
+        let mut command = tokio::process::Command::new("true");
+        crate::util::detach_command(&mut command);
+        command.kill_on_drop(true);
+        #[allow(clippy::disallowed_methods)] // Test fixture; waited below.
+        let mut child = command.spawn().expect("spawn `true`");
         let mut lifecycle = exiting();
 
         lifecycle.finish_output(Collection::of(&child));

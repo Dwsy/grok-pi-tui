@@ -47,10 +47,9 @@ fn a_worktree_entered_during_the_gate_is_kept() {
     assert!(path.is_dir(), "somebody is standing in it");
 }
 
-/// Work that appears in the worktree after the first verdict but before the
-/// removal must not be lost: the pass re-judges the tree immediately before the
-/// delete, so a file written (or a commit made) during the gate window flips
-/// the verdict back to Keep. Liveness alone cannot see this — only the re-gate.
+/// Work appearing after the first verdict must not be lost: the pass re-judges
+/// immediately before delete, so a write during the gate flips Keep. Liveness
+/// alone cannot see this.
 #[test]
 fn work_appearing_during_the_gate_window_is_not_deleted() {
     let fx = crate::db::GrokHomeFixture::new();

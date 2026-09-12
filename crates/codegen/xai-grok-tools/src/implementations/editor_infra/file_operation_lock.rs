@@ -47,12 +47,8 @@ impl FileOperationLockManager {
         }
     }
 
-    /// Acquire a per-path lock. Blocks if:
-    /// - An exclusive lock is active, OR
-    /// - The same path is already locked, OR
-    /// - An exclusive waiter is ahead in the queue.
-    ///
-    /// Returns a guard that releases the lock on drop.
+    /// Acquire a per-path lock. An exclusive lock is active, OR The same path is already locked, OR
+    /// An exclusive waiter is ahead in the queue. Returns a guard that releases the lock on drop.
     pub async fn wait_for_lock(&self, path: &str) -> FileOperationLockGuard {
         let rx = {
             let mut inner = self.inner.lock().await;
@@ -84,10 +80,8 @@ impl FileOperationLockManager {
         }
     }
 
-    /// Acquire an exclusive lock. Blocks until all per-path locks are released
-    /// and no other exclusive lock is active.
-    ///
-    /// Returns a guard that releases the lock on drop.
+    /// Acquire an exclusive lock. Blocks until all per-path locks are released and no other
+    /// exclusive lock is active. Returns a guard that releases the lock on drop.
     pub async fn wait_for_exclusive_lock(&self) -> FileOperationLockGuard {
         let rx = {
             let mut inner = self.inner.lock().await;
@@ -158,11 +152,9 @@ impl LockInner {
             .any(|w| matches!(w, QueuedWaiter::Exclusive { .. }))
     }
 
-    /// Process the wait queue, granting locks to eligible waiters.
-    ///
-    /// If a waiter's receiver has been dropped (task cancelled), the send
-    /// will fail. In that case, we undo the lock grant and continue to the
-    /// next waiter. This prevents phantom locks from cancelled tool calls.
+    /// Process the wait queue, granting locks to eligible waiters. If a waiter's receiver has been
+    /// dropped (task cancelled), the send will fail. In that case, we undo the lock grant and
+    /// continue to the next waiter. This prevents phantom locks from cancelled tool calls.
     fn process_queue(&mut self) {
         while let Some(front) = self.wait_queue.front() {
             match front {

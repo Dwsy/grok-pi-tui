@@ -48,9 +48,8 @@ impl StandaloneCopyFilter {
 }
 
 /// Narrow `remote.origin.fetch`, drop a HEAD-inconsistent `.git/shallow`, and
-/// prune extra `refs/remotes/origin/*` (loose + packed).
-///
-/// No-ops when `git_dir` is missing or not a directory (linked worktree).
+/// prune extra `refs/remotes/origin/*`. No-ops if `git_dir` is not a directory
+/// (linked worktree).
 #[cfg(test)]
 pub(crate) fn sanitize_standalone_git_dir(git_dir: &Path) -> Result<()> {
     sanitize_standalone_git_dir_keeping(git_dir, &HashSet::new())
@@ -423,12 +422,9 @@ fn drop_inconsistent_shallow(git_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `Some(true)` = keep. `Some(false)` = drop. `None` = uncertain (keep).
-///
-/// Drop only when the graft is proven unused by HEAD *and* every graft and
-/// every recorded graft parent exists in the ODB. Walking HEAD to a root is
-/// not enough: an orphan HEAD (`gh-pages`) on a real shallow clone must keep
-/// the file so `origin/main` does not walk missing parents.
+/// `Some(true)` keep, `Some(false)` drop, `None` uncertain (keep). Drop only if
+/// HEAD does not use the graft and every graft parent is in the ODB. An orphan
+/// HEAD on a real shallow clone must keep the file so `origin/main` can walk.
 fn shallow_consistent_with_head(git_dir: &Path) -> Option<bool> {
     let grafts = read_shallow_oids(git_dir).ok()?;
     if grafts.is_empty() {

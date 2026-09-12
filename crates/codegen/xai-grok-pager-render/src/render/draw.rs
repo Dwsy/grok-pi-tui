@@ -2,15 +2,13 @@
 //!
 //! # Problem
 //!
-//! Ratatui's [`Terminal::draw()`] (internally `try_draw()`) unconditionally
-//! sends cursor escape sequences on every frame:
+//! Ratatui's [`Terminal::draw()`] (internally `try_draw()`) unconditionally sends cursor escape sequences on every frame:
 //!
-//! - If `frame.set_cursor_position()` was called: `Show` + `MoveTo` every frame
+//! - If `frame.set_cursor_position()` was called: `Show` and `MoveTo` every frame
 //! - If not called: `Hide` every frame
 //!
-//! Both reset the terminal's cursor blink timer (`Show` restarts the blink
-//! cycle, `MoveTo` resets the blink phase). At 30fps, the 500ms blink interval
-//! never completes, so the cursor appears solid.
+//! Both reset the terminal's cursor blink timer (`Show` restarts the blink cycle, `MoveTo` resets the blink phase).
+//! At 30fps, the 500ms blink interval never completes, so the cursor appears solid.
 //!
 //! # Solution
 //!
@@ -25,34 +23,31 @@
 //!
 //! Cursor is managed entirely by [`CursorState`] with de-duplication:
 //!
-//! - **No cell changes + same position**: zero cursor commands → blink preserved
-//! - **Cells changed + same position**: `MoveTo` to fix cursor after cell writes
-//! - **Position changed**: `MoveTo` (blink resets — expected, user just typed)
+//! - **No cell changes, same position**: zero cursor commands, so blink is preserved
+//! - **Cells changed, same position**: `MoveTo` to fix the cursor after cell writes
+//! - **Position changed**: `MoveTo` (blink resets; expected, the user just typed)
 //! - **Visibility transition**: `Show`/`Hide` (only on actual transition)
-//! - **Idle (no draw calls)**: nothing sent → blink runs undisturbed
+//! - **Idle (no draw calls)**: nothing sent, so blink runs undisturbed
 //!
-//! The "no cell changes" optimization is possible because we use
-//! [`xai_ratatui_inline::Terminal`] whose `flush()` returns `bool` indicating
-//! whether any cells were written. When animated entries are off-screen, the
-//! buffer diff is empty and we skip all cursor commands.
+//! The "no cell changes" case is detectable because [`xai_ratatui_inline::Terminal`]'s `flush()` returns whether any cells were written.
+//! When animated entries are off-screen, the buffer diff is empty and we skip all cursor commands.
 //!
 //! # Synchronized output
 //!
-//! Each frame is wrapped in `BeginSynchronizedUpdate` / `EndSynchronizedUpdate`
-//! so the terminal processes all escape sequences atomically. This prevents
-//! flicker and is critical for multiplexers like zellij and tmux.
+//! Each frame is wrapped in `BeginSynchronizedUpdate` / `EndSynchronizedUpdate` so the terminal processes all escape sequences atomically.
+//! This prevents flicker and is critical for multiplexers like zellij and tmux.
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use crossterm::{QueueableCommand, cursor};
 use ratatui::Frame;
 use ratatui::backend::CrosstermBackend;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, OnceLock, mpsc};
+use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 use xai_ratatui_inline::LinkSpan;
-/// Terminal type for the pager. Defined here (beside [`TermWriter`]) so the
-/// `render` module does not depend on `app`. Re-exported from `app` as
-/// `crate::app::PagerTerminal` for existing call sites.
+/// Defined here (beside [`TermWriter`]) so the `render` module does not depend on `app`.
+/// Re-exported from `app` as `crate::app::PagerTerminal` for existing call sites.
 pub type PagerTerminal = xai_ratatui_inline::Terminal<CrosstermBackend<TermWriter>>;
 #[derive(Debug)]
 pub enum WriterEvent {
@@ -65,18 +60,15 @@ pub enum WriterDrain {
     Drained,
     TimedOut,
 }
-/// Tracks submitted and successfully flushed presentation sequences.
-///
-/// During a child handoff, input is parked before this state is drained. Since
-/// a sequence is reserved before its payload is sent, an accepted frame blocks
-/// the drain before it is visible to the writer; no queued frame can land after
-/// the child takes the tty.
+/// Sequence is reserved before send, so an accepted frame blocks the child-handoff drain before the writer sees it. No queued frame lands after the child takes the tty.
 #[derive(Clone, Debug)]
 pub struct WriterSync {
     queued: Arc<AtomicU64>,
     written: Arc<AtomicU64>,
     failed: Arc<AtomicBool>,
     writer_active: Arc<AtomicBool>,
+    /// The one thread allowed to produce payloads, latched on first send (see [`send_payload`]).
+    producer: Arc<OnceLock<ThreadId>>,
     event_tx: Option<tokio::sync::mpsc::UnboundedSender<WriterEvent>>,
 }
 impl Default for WriterSync {
@@ -91,16 +83,14 @@ impl WriterSync {
             written: Arc::new(AtomicU64::new(0)),
             failed: Arc::new(AtomicBool::new(false)),
             writer_active: Arc::new(AtomicBool::new(false)),
+            producer: Arc::new(OnceLock::new()),
             event_tx: None,
         }
     }
     fn with_event_sender(event_tx: tokio::sync::mpsc::UnboundedSender<WriterEvent>) -> Self {
         Self {
-            queued: Arc::new(AtomicU64::new(0)),
-            written: Arc::new(AtomicU64::new(0)),
-            failed: Arc::new(AtomicBool::new(false)),
-            writer_active: Arc::new(AtomicBool::new(false)),
             event_tx: Some(event_tx),
+            ..Self::new()
         }
     }
     #[cfg(test)]
@@ -112,7 +102,7 @@ impl WriterSync {
         self.queued.fetch_add(1, Ordering::Release) + 1
     }
     fn mark_written(&self, sequence: u64) {
-        self.written.store(sequence, Ordering::Release);
+        self.written.fetch_max(sequence, Ordering::AcqRel);
         if let Some(event_tx) = &self.event_tx {
             let _ = event_tx.send(WriterEvent::Written(sequence));
         }
@@ -141,8 +131,7 @@ impl WriterSync {
     fn is_drained(&self) -> bool {
         !self.failed() && self.written() >= self.queued()
     }
-    /// Block until the writer flushes every accepted payload, output fails, or
-    /// the deadline passes.
+    /// Block until the writer flushes every accepted payload, output fails, or the deadline passes.
     pub fn wait_drained(&self, timeout: Duration) -> std::io::Result<WriterDrain> {
         let deadline = Instant::now() + timeout;
         while !self.is_drained() {
@@ -157,23 +146,42 @@ impl WriterSync {
         Ok(WriterDrain::Drained)
     }
 }
-/// A writer that buffers frame output and sends it to a background thread
-/// for non-blocking terminal I/O.
-///
-/// All escape sequences produced during a frame are collected in an internal
-/// `Vec<u8>`. When [`flush()`](Write::flush) is called, the accumulated bytes
-/// are sent through a channel to a dedicated writer thread that performs the
-/// actual (potentially blocking) `write()` to stderr / the pty fd.
-///
-/// This decouples the tokio event loop from pty back-pressure: if the
-/// terminal emulator is slow to read (e.g. Ghostty busy with another pane),
-/// only the writer thread stalls — the event loop keeps processing timers,
-/// events, and ACP messages.
+/// Buffers a frame's escape sequences and hands them to a writer thread for the blocking write to stderr / the pty fd.
+/// If the terminal emulator is slow to read, only the writer thread stalls; the event loop keeps processing timers, events, and ACP messages.
 pub struct WriterPayload {
     pub(crate) sequence: u64,
     pub(crate) data: Vec<u8>,
 }
+impl WriterPayload {
+    /// The raw bytes this payload writes to the tty.
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+}
 pub type WriterSender = mpsc::Sender<WriterPayload>;
+fn writer_exited_error() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        "terminal writer thread exited",
+    )
+}
+/// Send failure marks shared sync failed; the event loop surfaces it as fatal.
+/// One producer only: interleaved reserve+send would put byte-order-sensitive escapes on the tty out of order.
+fn send_payload(tx: &WriterSender, sync: &WriterSync, data: Vec<u8>) -> std::io::Result<()> {
+    let current = std::thread::current().id();
+    let producer = *sync.producer.get_or_init(|| current);
+    debug_assert_eq!(
+        producer, current,
+        "writer payloads must all come from the event-loop thread; a second producer thread \
+         can reorder terminal output (see EscapeWriter)"
+    );
+    let sequence = sync.reserve_sequence();
+    if tx.send(WriterPayload { sequence, data }).is_err() {
+        sync.mark_failed(writer_exited_error());
+        return Err(writer_exited_error());
+    }
+    Ok(())
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WriterAlreadyActive;
 impl std::fmt::Display for WriterAlreadyActive {
@@ -202,10 +210,14 @@ impl TermWriter {
     pub fn discard(&mut self) {
         self.buf.clear();
     }
-    /// Shared writer progress used by the suspend path to
-    /// [`WriterSync::wait_drained`] before a child takes the tty.
+    /// Shared writer progress used by the suspend path to [`WriterSync::wait_drained`] before a child takes the tty.
     pub fn writer_sync(&self) -> &WriterSync {
         &self.sync
+    }
+    /// A cloneable, non-blocking handle onto this writer's queue for
+    /// out-of-band escapes (see [`EscapeWriter`]).
+    pub fn escape_writer(&self) -> EscapeWriter {
+        EscapeWriter::new(self.tx.clone(), self.sync.clone())
     }
 }
 impl Write for TermWriter {
@@ -217,18 +229,7 @@ impl Write for TermWriter {
         if self.buf.is_empty() {
             return Ok(());
         }
-        let sequence = self.sync.reserve_sequence();
-        let data = std::mem::take(&mut self.buf);
-        if self.tx.send(WriterPayload { sequence, data }).is_err() {
-            let error = std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "terminal writer thread exited",
-            );
-            self.sync
-                .mark_failed(std::io::Error::new(error.kind(), error.to_string()));
-            return Err(error);
-        }
-        Ok(())
+        send_payload(&self.tx, &self.sync, std::mem::take(&mut self.buf))
     }
 }
 impl Drop for TermWriter {
@@ -237,29 +238,97 @@ impl Drop for TermWriter {
         self.sync.writer_active.store(false, Ordering::Release);
     }
 }
-/// Handle for the background writer thread.
-///
-/// Joining ensures all queued frames have been written to the terminal
-/// before proceeding with teardown (e.g. `LeaveAlternateScreen`).
+/// Enqueue: an inline stderr lock from the event loop deadlocks when the terminal stops reading the pty.
+/// Event-loop thread only. Drop every clone before [`WriterThread::join_within`] or the writer never sees the channel close.
+#[derive(Clone)]
+pub struct EscapeWriter {
+    tx: WriterSender,
+    sync: WriterSync,
+}
+impl EscapeWriter {
+    pub fn new(tx: WriterSender, sync: WriterSync) -> Self {
+        Self { tx, sync }
+    }
+    /// A writer with no writer thread behind it: sends fail against a private,
+    /// receiver-less channel and are dropped. For the headless leader (no tty) and tests;
+    /// any TUI view must get the live handle from [`TermWriter::escape_writer`] instead.
+    pub fn disconnected() -> Self {
+        let (tx, _rx) = mpsc::channel::<WriterPayload>();
+        Self {
+            tx,
+            sync: WriterSync::new(),
+        }
+    }
+    /// Never blocks. Covered by `wait_drained`. Send failure is recorded on the shared sync, not returned.
+    pub fn emit(&self, bytes: impl Into<Vec<u8>>) {
+        let data: Vec<u8> = bytes.into();
+        if data.is_empty() {
+            return;
+        }
+        let _ = send_payload(&self.tx, &self.sync, data);
+    }
+    /// Winapi-only commands run synchronously: a console API call, not a tty write, so they neither block on the pty nor take the stderr lock.
+    pub fn emit_command(&self, command: impl crossterm::Command) {
+        #[cfg(windows)]
+        if !command.is_ansi_code_supported() {
+            let _ = command.execute_winapi();
+            return;
+        }
+        let mut ansi = String::new();
+        if command.write_ansi(&mut ansi).is_ok() {
+            self.emit(ansi);
+        }
+    }
+}
+/// Outcome of [`WriterThread::join_within`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriterJoin {
+    /// The thread drained its queue and exited.
+    Joined,
+    /// The thread was still running at the deadline (tty blocked, or a sender still alive)
+    /// and has been detached.
+    TimedOut,
+}
+/// Joining ensures all queued frames have been written to the terminal before teardown (e.g. `LeaveAlternateScreen`).
 pub struct WriterThread {
     handle: Option<std::thread::JoinHandle<std::io::Result<()>>>,
     sync: WriterSync,
 }
 impl WriterThread {
-    /// Block until the writer thread has processed all pending frames and
-    /// exited. The [`mpsc::Sender`] must be dropped *before* calling this,
-    /// otherwise the thread will never see the channel close.
-    pub fn join(mut self) -> std::io::Result<()> {
+    /// Every sender, including [`EscapeWriter`] clones, must be dropped first or this can only time out.
+    /// A timeout also covers a terminal that stopped reading; the thread is detached and teardown proceeds.
+    pub fn join_within(mut self, grace: Duration) -> std::io::Result<WriterJoin> {
         let Some(handle) = self.handle.take() else {
-            return Ok(());
+            return Ok(WriterJoin::Joined);
         };
+        let deadline = Instant::now() + grace;
+        while !handle.is_finished() {
+            if Instant::now() >= deadline {
+                tracing::warn!(
+                    grace_ms = grace.as_millis() as u64,
+                    queued = self.sync.queued(),
+                    written = self.sync.written(),
+                    "term-writer thread still running at teardown; detaching"
+                );
+                drop(handle);
+                return Ok(WriterJoin::TimedOut);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
         match handle.join() {
-            Ok(result) => result,
+            Ok(result) => result.map(|()| WriterJoin::Joined),
             Err(_) => Err(std::io::Error::other("terminal writer thread panicked")),
         }
     }
     pub fn writer_sync(&self) -> &WriterSync {
         &self.sync
+    }
+    #[cfg(test)]
+    fn for_test(handle: std::thread::JoinHandle<std::io::Result<()>>, sync: WriterSync) -> Self {
+        Self {
+            handle: Some(handle),
+            sync,
+        }
     }
 }
 impl Drop for WriterThread {
@@ -288,16 +357,24 @@ fn write_payload(
         }
     }
 }
-/// Spawn a background OS thread that writes frame data to stderr.
-///
-/// Returns the frame sender, shared writer state, completion-event receiver,
-/// and the thread handle that must be joined during terminal teardown.
-pub fn spawn_writer_thread() -> (
+type WriterThreadBody = Box<dyn FnOnce() -> std::io::Result<()> + Send>;
+type WriterThreadSpawn = fn(
+    std::thread::Builder,
+    WriterThreadBody,
+) -> std::io::Result<std::thread::JoinHandle<std::io::Result<()>>>;
+/// Everything [`spawn_writer_thread`] hands back to the event loop.
+pub type WriterThreadParts = (
     WriterSender,
     WriterSync,
     tokio::sync::mpsc::UnboundedReceiver<WriterEvent>,
     WriterThread,
-) {
+);
+/// Errors when the OS refuses to spawn. The handle must be joined during terminal teardown.
+pub fn spawn_writer_thread() -> std::io::Result<WriterThreadParts> {
+    spawn_writer_thread_with(|builder, body| builder.spawn(body))
+}
+/// [`spawn_writer_thread`] with the OS spawn injectable, so the refused-spawn path is testable.
+fn spawn_writer_thread_with(spawn: WriterThreadSpawn) -> std::io::Result<WriterThreadParts> {
     let (tx, rx) = mpsc::channel::<WriterPayload>();
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
     let sync = WriterSync::with_event_sender(event_tx);
@@ -307,9 +384,10 @@ pub fn spawn_writer_thread() -> (
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map(Duration::from_millis);
-    let handle = std::thread::Builder::new()
-        .name("term-writer".into())
-        .spawn(move || -> std::io::Result<()> {
+    let builder = std::thread::Builder::new().name("term-writer".into());
+    let handle = spawn(
+        builder,
+        Box::new(move || -> std::io::Result<()> {
             #[cfg(not(windows))]
             let mut writer: Box<dyn std::io::Write> = {
                 let tui_out = xai_tty_utils::dup_tui_stderr().unwrap_or_else(|_| {
@@ -342,9 +420,9 @@ pub fn spawn_writer_thread() -> (
             } else {
                 Ok(())
             }
-        })
-        .expect("failed to spawn term-writer thread");
-    (
+        }),
+    )?;
+    Ok((
         tx,
         sync,
         event_rx,
@@ -352,32 +430,26 @@ pub fn spawn_writer_thread() -> (
             handle: Some(handle),
             sync: writer_thread_sync,
         },
-    )
+    ))
 }
-/// Cursor state tracker for blink-preserving cursor management.
-///
-/// Tracks the last cursor position written to the terminal. By comparing
-/// with the desired position each frame, we emit the minimum cursor escape
-/// sequences necessary — avoiding redundant `Show`/`Hide`/`MoveTo` that
-/// would reset the terminal's blink timer.
+/// Tracks the last cursor position written to the terminal, so each frame emits only the cursor escapes it needs.
+/// Redundant `Show`/`Hide`/`MoveTo` would reset the terminal's blink timer.
 #[derive(Debug, Default)]
 pub struct CursorState {
-    /// Last cursor position written to the terminal.
-    /// `None` = cursor is hidden; `Some((x, y))` = cursor visible at (x, y).
+    /// `None` means the cursor is hidden; `Some((x, y))` means it is visible at (x, y).
     last_pos: Option<(u16, u16)>,
 }
 /// What cursor commands to emit after a frame render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorAction {
-    /// No cursor commands needed — blink timer preserved.
+    /// No cursor commands needed, so the blink timer is preserved.
     None,
-    /// Cursor is visible and cells changed — reposition after cell writes
-    /// disturbed the terminal cursor. Resets blink (unavoidable when cells
-    /// change on screen).
+    /// Cursor is visible and cells changed: reposition after cell writes disturbed the terminal cursor.
+    /// Resets blink (unavoidable when cells change on screen).
     Reposition(u16, u16),
-    /// Cursor becoming visible at (x, y) — needs `MoveTo` + `Show`.
+    /// Cursor becoming visible at (x, y); needs `MoveTo` and `Show`.
     Show(u16, u16),
-    /// Cursor becoming hidden — needs `Hide`.
+    /// Cursor becoming hidden; needs `Hide`.
     Hide,
 }
 impl CursorState {
@@ -386,8 +458,7 @@ impl CursorState {
     }
     /// Determine what cursor action to take for this frame.
     ///
-    /// Pure function — computes the action from current state without
-    /// side effects. Call [`apply`] to execute it.
+    /// No side effects; call [`apply`] to execute the returned action.
     pub fn action(&self, cursor_pos: Option<(u16, u16)>, has_changes: bool) -> CursorAction {
         if cursor_pos == self.last_pos {
             if has_changes && let Some((x, y)) = cursor_pos {
@@ -403,11 +474,7 @@ impl CursorState {
             }
         }
     }
-    /// Execute a cursor action by queuing escape sequences into `w`.
-    ///
-    /// Uses `queue!` (buffered) instead of `execute!` (immediate flush) so
-    /// that cursor commands are batched with the rest of the frame data and
-    /// written to the terminal atomically by the writer thread.
+    /// `queue!` not `execute!`: cursor commands must batch with the frame and flush atomically on the writer thread.
     pub fn apply<W: Write>(&mut self, action: CursorAction, w: &mut W) {
         match action {
             CursorAction::None => {}
@@ -427,20 +494,8 @@ impl CursorState {
         }
     }
 }
-/// Render a frame to the terminal with cursor blink preservation.
-///
-/// Bypasses ratatui's `try_draw()` to avoid its unconditional cursor
-/// management. See [module docs](self) for the full rationale.
-///
-/// The `render_fn` receives a [`Frame`] and a `&mut Vec<LinkSpan>` to populate
-/// with the frame's OSC 8 hyperlink regions (absolute viewport coordinates).
-/// Those spans are handed to the terminal before the diff so hyperlinks
-/// participate in the cell diff (emitted/cleared in lockstep with content) —
-/// no out-of-band post-flush repaint. It returns a tuple of:
-/// - `Option<(u16, u16)>` — cursor position (or `None` to hide cursor)
-/// - `Option<PostFlush>` — escape sequences to write after cell flush (e.g.
-///   Kitty graphics protocol image data). Written inside the synchronized
-///   update block so the image appears atomically with the cell diff.
+/// Bypasses ratatui `try_draw()` so cursor management stays conditional. OSC 8 spans go out before the diff, in lockstep with cells.
+/// `PostFlush` stays inside the synchronized update so images appear atomically with the cell diff.
 pub fn draw_frame(
     terminal: &mut PagerTerminal,
     cursor: &mut CursorState,
@@ -478,6 +533,121 @@ pub fn draw_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Frames and escapes share one queue, so the writer sees them in exact call order
+    /// with strictly increasing sequences — a frame can never overtake an escape or vice versa.
+    #[test]
+    fn frames_and_escapes_interleave_in_call_order() {
+        let (tx, rx) = mpsc::channel::<WriterPayload>();
+        let sync = WriterSync::new();
+        let mut frames = TermWriter::new(tx, sync.clone()).expect("term writer");
+        let escapes = frames.escape_writer();
+        frames.write_all(b"frame-1").unwrap();
+        frames.flush().unwrap();
+        escapes.emit("\x1b]0;title\x07");
+        frames.write_all(b"frame-2").unwrap();
+        frames.flush().unwrap();
+        escapes.emit("\x07");
+        let payloads: Vec<WriterPayload> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let bytes: Vec<&[u8]> = payloads.iter().map(WriterPayload::data).collect();
+        assert_eq!(
+            bytes,
+            [
+                b"frame-1".as_slice(),
+                b"\x1b]0;title\x07",
+                b"frame-2",
+                b"\x07"
+            ]
+        );
+        let sequences: Vec<u64> = payloads.iter().map(|p| p.sequence).collect();
+        assert_eq!(sequences, [1, 2, 3, 4]);
+        assert_eq!(sync.queued(), 4);
+    }
+    /// A refused OS spawn must surface as the error, not a half-built writer.
+    #[test]
+    fn spawn_writer_thread_propagates_refused_spawn() {
+        let error = spawn_writer_thread_with(|_builder, _body| {
+            Err(std::io::Error::other("no threads for you"))
+        })
+        .err()
+        .expect("spawn failure must propagate");
+        assert_eq!(error.to_string(), "no threads for you");
+    }
+    /// A writer thread that never exits (parked in a blocked tty write, or a sender
+    /// kept alive) must not hang teardown: the bounded join detaches it.
+    #[test]
+    fn join_within_times_out_on_a_stuck_writer_thread() {
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || -> std::io::Result<()> {
+            let _ = release_rx.recv();
+            Ok(())
+        });
+        let thread = WriterThread::for_test(handle, WriterSync::new());
+        let started = Instant::now();
+        let outcome = thread
+            .join_within(Duration::from_millis(50))
+            .expect("timeout is not an error");
+        assert_eq!(outcome, WriterJoin::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "join_within must return promptly at the deadline"
+        );
+        let _ = release_tx.send(());
+    }
+    /// A writer thread that drains and exits is joined normally.
+    #[test]
+    fn join_within_joins_a_finished_writer_thread() {
+        let handle = std::thread::spawn(|| -> std::io::Result<()> { Ok(()) });
+        let thread = WriterThread::for_test(handle, WriterSync::new());
+        assert_eq!(
+            thread.join_within(Duration::from_secs(5)).expect("join"),
+            WriterJoin::Joined
+        );
+    }
+    /// The single-producer rule is a debug assertion: a payload sent from a second
+    /// thread trips it (release builds only rely on `fetch_max`).
+    #[cfg(debug_assertions)]
+    #[test]
+    fn send_from_a_second_thread_trips_the_producer_guard() {
+        let (tx, _rx) = mpsc::channel::<WriterPayload>();
+        let sync = WriterSync::new();
+        let writer = EscapeWriter::new(tx, sync);
+        writer.emit("first, latches this thread");
+        let other = std::thread::spawn(move || writer.emit("second thread"));
+        assert!(
+            other.join().is_err(),
+            "a second producer thread must trip the debug_assert"
+        );
+    }
+    /// Escapes ride the writer queue in order and participate in the
+    /// sequence protocol, so `wait_drained` covers them.
+    #[test]
+    fn escape_writer_enqueues_sequenced_payloads() {
+        let (tx, rx) = mpsc::channel::<WriterPayload>();
+        let sync = WriterSync::new();
+        let writer = EscapeWriter::new(tx, sync.clone());
+        writer.emit("\x1b[?1000h");
+        writer.emit(Vec::new());
+        writer.emit("\x07");
+        let first = rx.try_recv().expect("first payload");
+        let second = rx.try_recv().expect("second payload");
+        assert!(rx.try_recv().is_err(), "empty emit must not enqueue");
+        assert_eq!(first.data(), b"\x1b[?1000h");
+        assert_eq!(second.data(), b"\x07");
+        assert!(second.sequence > first.sequence);
+        assert_eq!(sync.queued(), 2);
+    }
+    /// A dead writer thread must surface as a writer failure (the event loop
+    /// exits on it), mirroring `TermWriter::flush`.
+    #[test]
+    fn escape_writer_send_failure_marks_sync_failed() {
+        let (sync, mut event_rx) = WriterSync::new_for_test();
+        let (tx, rx) = mpsc::channel::<WriterPayload>();
+        drop(rx);
+        let writer = EscapeWriter::new(tx, sync.clone());
+        writer.emit("\x07");
+        assert!(sync.failed());
+        assert!(matches!(event_rx.try_recv(), Ok(WriterEvent::Failed(_))));
+    }
     /// An unchanged frame must emit zero bytes to the PTY.
     #[test]
     fn idle_frame_emits_zero_bytes() {
@@ -590,6 +760,22 @@ mod tests {
         assert!(sync.failed());
         assert!(matches!(events.try_recv(), Ok(WriterEvent::Failed(_))));
         assert!(sync.wait_drained(Duration::from_secs(1)).is_err());
+    }
+    /// Out-of-order acks must keep the watermark monotonic: a plain store would
+    /// regress it below `queued` and wedge `wait_drained`/`acknowledge` forever.
+    #[test]
+    fn out_of_order_acks_keep_watermark_monotonic() {
+        let sync = WriterSync::new();
+        let first = sync.reserve_sequence();
+        let second = sync.reserve_sequence();
+        sync.mark_written(second);
+        sync.mark_written(first);
+        assert_eq!(sync.written(), second);
+        assert!(first < second);
+        assert_eq!(
+            sync.wait_drained(Duration::ZERO).unwrap(),
+            WriterDrain::Drained
+        );
     }
     #[test]
     fn writer_drain_timeout_is_bounded_and_retryable() {
@@ -737,9 +923,8 @@ mod tests {
         s.apply(CursorAction::None, &mut sink);
         assert_eq!(s.last_pos, Some((3, 7)));
     }
-    /// Verify the writer thread correctly round-trips multi-byte UTF-8
-    /// through the channel. This catches encoding issues where the writer
-    /// silently corrupts Braille/emoji/CJK characters.
+    /// Verify the writer thread correctly round-trips multi-byte UTF-8 through the channel.
+    /// This catches encoding issues where the writer silently corrupts Braille/emoji/CJK characters.
     #[test]
     fn writer_thread_preserves_multibyte_utf8() {
         let test_payload = "⣀⣾⠿⠛\u{e0a0}\u{1F600}";

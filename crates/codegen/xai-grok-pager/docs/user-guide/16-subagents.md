@@ -154,6 +154,13 @@ The main agent calls the `spawn_subagent` tool. Its parameters:
 
 When you run a subagent in the background, retrieve its result later with `get_command_or_subagent_output`.
 
+### Sending messages to active subagents
+
+The `send_subagent_message` tool is currently available only to the root session and can target only an active subagent owned by that session. Its optional `queue` parameter controls delivery:
+
+- Omitted or `false` uses **Steer**. If the subagent is idle, the message becomes one protected queued turn. If it is running, the message is delivered into the current turn at the next safe point.
+- `true` uses **Queue**, preserving the queued-turn behavior: the message waits as a protected turn instead of entering the active turn.
+
 ---
 
 ## Capability Modes
@@ -240,7 +247,7 @@ explore = true                       # default -- omit to keep enabled
 plan = false                         # disable the plan subagent
 
 [subagents.models]
-explore = "grok-build"               # route explore to a specific model
+explore = "grok-4.6"                 # route explore to a specific model
 ```
 
 Per-type model overrides apply for any parent. Without an override, a subagent inherits the parent's model.
@@ -253,7 +260,7 @@ Define custom roles with their own capability and model defaults:
 [subagents.roles.researcher]
 description = "Deep research agent"
 default_capability_mode = "read-only"
-model = "grok-build"
+model = "grok-4.6"
 prompt_file = ".grok/prompts/researcher.md"
 ```
 
@@ -290,7 +297,7 @@ Subagents appear in several places in the interactive TUI:
 
 When a subagent is spawned, a compact lifecycle block is added to the *parent's* scrollback:
 
-- `Subagent running: "do the thing" (Implementer · grok-3) · Thinking`
+- `Subagent running: "do the thing" (Implementer · grok-4.6) · Thinking`
 - Or for background subagents: `Subagent started: "..."`
 
 While running, the block shows a live activity suffix (e.g. "Running: cargo test", "Compacting", "Retrying (2/3)") pulled from the child's turn tracker. The bullet animates (or is colored) according to state.

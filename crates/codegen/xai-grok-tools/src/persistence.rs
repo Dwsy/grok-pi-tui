@@ -11,16 +11,9 @@ use tokio::io::AsyncWriteExt;
 
 use crate::types::resources::Resources;
 
-/// Background persistence for `Resources` state/params.
-///
-/// Same pattern as `ToolStatePersistence` — debounced background writes with
-/// atomic rename. Takes a `serde_json::Value` from `Resources::serialize()`
-/// and writes it to disk. On load, parses the JSON and feeds it to
-/// `Resources::load_from()`.
-///
-/// This replaces the old `ToolStatePersistence` pipeline for the new
-/// architecture. During migration both coexist; once all tools are migrated,
-/// `ToolStatePersistence` will be deleted.
+/// Background persistence for `Resources` state/params. Same pattern as `ToolStatePersistence` — debounced background writes with atomic
+/// rename. Takes a `serde_json::Value` from `Resources::serialize()` and writes it to disk. On load, parses the JSON and feeds it to
+/// `Resources::load_from()`. This replaces the old `ToolStatePersistence` pipeline for the new architecture.
 pub struct ResourcesPersistence {
     /// `None` means this handle reads and writes nothing.
     state_path: Option<PathBuf>,
@@ -101,12 +94,9 @@ impl ResourcesPersistence {
         }
     }
 
-    /// Load existing Resources state from disk, if the file exists.
-    ///
-    /// Reads the JSON, parses it into the nested `HashMap<String, HashMap<String, Value>>`
-    /// shape that `Resources::load_from()` expects, and applies it to the given resources.
-    ///
-    /// Returns `true` if state was loaded, `false` if there is no path, no file, or a parse error.
+    /// Load existing Resources state from disk, if the file exists. Reads the JSON, parses it into the nested
+    /// `HashMap<String, HashMap<String, Value>>` shape that `Resources::load_from()` expects, and applies it to the given
+    /// resources. Returns `true` if state was loaded, `false` if there is no path, no file, or a parse error.
     pub fn load(&self, resources: &mut Resources) -> bool {
         let Some(state_path) = self.state_path.as_ref() else {
             return false;

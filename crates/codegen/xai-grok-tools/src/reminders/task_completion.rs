@@ -15,12 +15,14 @@
 use crate::bridge::ToolBridge;
 use crate::implementations::grok_build::task::types::{
     SubagentCompletionSummary, SubagentCompletionsRequest, SubagentEvent, SubagentEventSender,
+    SubagentSnapshotStatus,
 };
+use crate::implementations::grok_build::task_output::{WaitHint, format_subagent_snapshot};
 use crate::types::TaskSnapshot;
 use crate::types::output::ToolOutput;
 use crate::types::resources::{SharedResources, State, Terminal};
 use crate::types::tool::{Reminder, ToolKind};
-use crate::util::truncate::{PREVIEW_SIZE, PartialOutput, truncate_with_preview};
+use crate::util::truncate::{PREVIEW_SIZE, PartialOutput, truncate_str, truncate_with_preview};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use xai_tool_types::KillTaskOutput;
@@ -38,10 +40,14 @@ fn user_killed_notice(task: &TaskSnapshot) -> &'static str {
     }
 }
 /// Inline preview cap applied ONLY to bash completion reminders that ship
-/// with a disk-pointer footer. Subagent completions (which have no
-/// disk-backed output file) are never truncated -- the inline branch is
-/// their only chance to see the output.
+/// with a disk-pointer footer.
 const MAX_INLINE_COMPLETION_BYTES: usize = 4_000;
+/// Byte cap for the child's final text inlined next to a polling tool; the rest is one poll away.
+pub const INLINE_SUBAGENT_OUTPUT_BYTES: usize = 16_000;
+/// Tags model-authored text could use to close the reminder wrapper; `<\/tag` matches the shell's
+/// own escape, so its later pass is a no-op.
+const NEUTRALIZED_TAGS: [&str; 2] = ["system-reminder", "system_reminder"];
+/// Refcounted bash task ids whose wake prompt is queued or in flight; subagent wakes dedupe through [`ReportedTaskCompletions`] instead.
 #[derive(Clone, Debug, Default)]
 pub struct TaskCompletionReservations(pub Arc<std::sync::Mutex<HashMap<String, usize>>>);
 impl TaskCompletionReservations {
@@ -106,19 +112,18 @@ impl ReportedTaskCompletions {
         }
         self.reported.insert(id.to_owned())
     }
+    pub fn is_reported(&self, id: &str) -> bool {
+        self.reported.contains(id)
+    }
 }
 crate::register_resource!(
     "grok_build",
     "ReportedTaskCompletions",
     ReportedTaskCompletions
 );
-/// Format a model-facing message from a [`TaskSnapshot`].
-///
-/// `task_output_name` controls the pointer-vs-inline rendering of the output
-/// section (see [`render_completion_output_delivery`]). When the inline
-/// branch fires and `read_tool_name` is set, the output is truncated and
-/// followed by a footer pointing the model at `task.output_file` so the
-/// full log is still recoverable from disk.
+/// Format a model-facing message from a [`TaskSnapshot`]. `task_output_name` controls the pointer-vs-inline rendering of the output section
+/// (see [`render_completion_output_delivery`]). When the inline branch fires and `read_tool_name` is set, the output is truncated and followed
+/// by a footer pointing the model at `task.output_file` so the full log is still recoverable from disk.
 pub fn format_bash_completion(
     task: &TaskSnapshot,
     task_output_name: Option<&str>,
@@ -168,13 +173,9 @@ pub fn format_bash_completion(
     );
     msg
 }
-/// Format a model-facing auto-wake message for a completed **monitor** task.
-///
-/// Uses the same `[monitor ended: <reason>]` wording as the monitor pipeline's
-/// terminal `MonitorEvent`, but is delivered via the immediate `TaskCompleted`
-/// synthetic-prompt path (same as bash). That path does not depend on the
-/// idle-gated `InjectNotification` drain, which was easy to miss when a monitor
-/// exited while the agent was idle and produced no further stdout.
+/// Format a model-facing auto-wake message for a completed **monitor** task. Uses the same
+/// `[monitor ended: <reason>]` wording as the monitor pipeline's terminal `MonitorEvent`, but is
+/// delivered via the immediate `TaskCompleted` synthetic-prompt path (same as bash).
 pub fn format_monitor_completion(task: &TaskSnapshot, task_output_name: Option<&str>) -> String {
     let reason = match task.signal.as_deref() {
         Some(sig) => format!("killed by signal {sig}"),
@@ -225,11 +226,9 @@ fn format_running_tasks_warning(running: &[&TaskSnapshot], kill_task_name: Optio
     );
     buf
 }
-/// Split a pre-wrapped `<monitor-event description="…" task_id="…">…</monitor-event>`
-/// into `(description, inner_text)`. `wrap_monitor_event` is the single
-/// writer with fixed attribute order; the `rfind` of `" task_id="`
-/// tolerates quotes inside the model-supplied description. `None` =>
-/// caller includes the text verbatim.
+/// Split a pre-wrapped `<monitor-event description="…" task_id="…">…</monitor-event>` into `(description, inner_text)`.
+/// `wrap_monitor_event` is the single writer with fixed attribute order; the `rfind` of `" task_id="` tolerates quotes
+/// inside the model-supplied description. `None` => caller includes the text verbatim.
 fn split_wrapped_monitor_event(event_text: &str) -> Option<(&str, &str)> {
     let rest = event_text.strip_prefix("<monitor-event description=\"")?;
     let open_end = rest.find(">\n")?;
@@ -239,34 +238,9 @@ fn split_wrapped_monitor_event(event_text: &str) -> Option<(&str, &str)> {
     let inner = rest[open_end + 2..].strip_suffix("\n</monitor-event>")?;
     Some((description, inner))
 }
-/// Format drained [`MonitorEventNotification`]s for the turn loop's hidden
-/// synthetic user message. Model-facing only — the pager renders monitor
-/// events from the structured `x.ai/monitor_event` notification, never by
-/// parsing this text.
-///
-/// One event (also the common case for slow monitors, which drain one
-/// event per loop-top pass) renders the lean form:
-///
-/// ```text
-/// <monitor-event task_id="0199…">
-/// [heartbeat] beat 1
-/// </monitor-event>
-/// ```
-///
-/// Multiple events batch under one count preamble, grouped per monitor
-/// (first-seen order, within-monitor order kept). Identity — description
-/// AND task id — is stated once on the group tag; tick lines carry only
-/// ordinals (a 100-tick monitor must not repeat its description 100×):
-///
-/// ```text
-/// <monitor description="heartbeat" task_id="0199…">
-/// [1] beat 1
-/// [2] beat 2
-/// </monitor>
-/// ```
-///
-/// Buffered `event_text` arrives pre-wrapped (`wrap_monitor_event`); it is
-/// unwrapped via [`split_wrapped_monitor_event`] with verbatim fallback.
+/// Format drained [`MonitorEventNotification`]s for the turn loop's hidden synthetic user message. Model-facing only —
+/// the pager renders monitor events from the structured `x.ai/monitor_event` notification, never by parsing this text.
+/// Multiple events batch under one count preamble, grouped per monitor (first-seen order, within-monitor order kept).
 pub fn format_monitor_events(
     events: &[crate::implementations::grok_build::monitor::types::MonitorEventNotification],
     task_output_name: Option<&str>,
@@ -337,39 +311,30 @@ pub fn format_monitor_events(
         }
     }
 }
-/// Whether a background task should be surfaced to the session whose owner id
-/// is `my_owner`.
-///
-/// Subagents share the parent's terminal backend, so `list_tasks()` returns
-/// tasks owned by other sessions (the parent, sibling subagents). A task is in
-/// scope only when it has no recorded owner (legacy / non-grok-build backends)
-/// or its owner matches the current session; cross-session tasks are filtered
-/// out so their completions surface in the owning session, not here.
+/// Whether a background task should be surfaced to the session whose owner id is `my_owner`. A task is in scope only
+/// when it has no recorded owner (legacy / non-grok-build backends) or its owner matches the current session;
+/// cross-session tasks are filtered out so their completions surface in the owning session, not here.
 pub(crate) fn task_owned_by_session(task: &TaskSnapshot, my_owner: Option<&str>) -> bool {
     match (my_owner, task.owner_session_id.as_deref()) {
         (Some(me), Some(owner)) => me == owner,
         _ => true,
     }
 }
-/// Append the completion-output delivery section for a bash task or subagent.
+/// Append the completion-output delivery section for a bash task.
 ///
-/// - `Some(name)` writes `Use {name}("{subagent_id}") to see the full output.`
+/// - `Some(name)` writes `Use {name}("{task_id}") to see the full output.`
 ///   (polling tool available; the model can pull the full output via that
 ///   tool on demand).
 /// - `None` writes `response:\n{output}`. When `disk_pointer_footer` is
 ///   `Some(line)`, the output is capped at [`MAX_INLINE_COMPLETION_BYTES`]
 ///   and the footer line is appended so the model can recover the full log
-///   from disk -- this is the bash-completion path. When
-///   `disk_pointer_footer` is `None`, the full output is inlined verbatim
-///   -- this is the subagent path (there is no disk-backed output file and
-///   this notification is the model's only chance to see the output).
+///   from disk. When `disk_pointer_footer` is `None`, the full output is
+///   inlined verbatim (no disk-backed file to point at).
 ///
-/// The pointer-vs-inline decision is centralised here so all completion
-/// notification surfaces stay in lock-step. Callers control any leading
-/// indentation or newlines around the section.
+/// Callers control any leading indentation or newlines around the section.
 pub fn render_completion_output_delivery(
     buf: &mut String,
-    subagent_id: &str,
+    task_id: &str,
     output: PartialOutput<'_>,
     task_output_name: Option<&str>,
     disk_pointer_footer: Option<&str>,
@@ -377,7 +342,7 @@ pub fn render_completion_output_delivery(
     use std::fmt::Write as _;
     match task_output_name {
         Some(name) => {
-            let _ = write!(buf, "Use {name}(\"{subagent_id}\") to see the full output.");
+            let _ = write!(buf, "Use {name}(\"{task_id}\") to see the full output.");
         }
         None => match disk_pointer_footer {
             Some(footer) => {
@@ -399,7 +364,8 @@ pub fn render_completion_output_delivery(
 /// `"get_command_or_subagent_output"`), or `None` when no such tool is registered.
 ///
 /// Centralises the structural "is a polling tool available?" check so all
-/// callers route the same answer into [`render_completion_output_delivery`].
+/// callers route the same answer into [`render_completion_output_delivery`]
+/// and [`format_subagent_completion`].
 pub async fn resolve_task_output_tool_name(bridge: &ToolBridge) -> Option<String> {
     bridge.tool_for_kind(ToolKind::BackgroundTaskAction).await
 }
@@ -408,100 +374,201 @@ pub async fn resolve_task_output_tool_name(bridge: &ToolBridge) -> Option<String
 pub async fn resolve_read_tool_name(bridge: &ToolBridge) -> Option<String> {
     bridge.tool_for_kind(ToolKind::Read).await
 }
+pub const SCHEDULER_DELETE_REGISTRY_ID: &str = "scheduler_delete";
+/// Resolve the active toolset's scheduled-task deletion tool name.
+pub async fn resolve_scheduler_delete_tool_name(bridge: &ToolBridge) -> Option<String> {
+    bridge.tool_for_registry_id(SCHEDULER_DELETE_REGISTRY_ID)
+}
+pub async fn resolve_scheduler_create_tool_name(bridge: &ToolBridge) -> Option<String> {
+    bridge.tool_for_registry_id(xai_grok_tools_api::slash_commands::SCHEDULER_CREATE_TOOL_NAME)
+}
+pub(crate) fn scheduled_wakeup_footer(
+    schedule_id: &str,
+    tools: super::ScheduledWakeupTools<'_>,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(child) = tools.child {
+        parts
+            .push(
+                format!(
+            "Check the subagent output using {}(\"{}\"). If there are issues, proactively debug and fix them, do not just report it to the user.",
+            child.name, child.id,
+        ),
+            );
+    }
+    if let Some(schedule) = tools.schedule {
+        parts
+            .push(
+                format!(
+            "If this schedule is no longer relevant, run {}(\"{schedule_id}\"). If it is outdated, you can update it with {}(new_prompt, interval, \"{schedule_id}\").",
+            schedule.delete,
+            schedule.create,
+        ),
+            );
+    }
+    parts.join("\n")
+}
+fn loop_task_id(c: &SubagentCompletionSummary) -> Option<&str> {
+    c.loop_task_id
+        .as_deref()
+        .filter(|task_id| !task_id.is_empty())
+}
+fn append_scheduled_wakeup_footer(
+    out: &mut String,
+    completion: &SubagentCompletionSummary,
+    tools: super::ScheduledWakeupTools<'_>,
+    prefix: &str,
+) {
+    let Some(task_id) = loop_task_id(completion) else {
+        return;
+    };
+    out.push_str(prefix);
+    out.push_str(&scheduled_wakeup_footer(task_id, tools));
+}
+/// Matched without the trailing `>` so attribute forms are covered too.
+fn neutralize_reminder_tags(text: &str) -> String {
+    NEUTRALIZED_TAGS.iter().fold(text.to_owned(), |acc, tag| {
+        acc.replace(&format!("</{tag}"), &format!("<\\/{tag}"))
+            .replace(&format!("<{tag}"), &format!("<\\{tag}"))
+    })
+}
+/// The one place a cut is rendered: whatever cut the text, fewer bytes than `full_output_bytes`
+/// means one marker and, with a polling tool, one pointer.
+fn inline_subagent_output(c: &SubagentCompletionSummary, poll_tool: Option<&str>) -> String {
+    use std::fmt::Write as _;
+    let mut head: &str = &c.output;
+    if poll_tool.is_some() {
+        head = truncate_str(head, INLINE_SUBAGENT_OUTPUT_BYTES);
+    }
+    let mut output = head.to_owned();
+    if head.len() < c.full_output_bytes {
+        let _ = write!(
+            output,
+            "\n[output truncated: {} of {} bytes shown]",
+            head.len(),
+            c.full_output_bytes
+        );
+        if let Some(poll_tool) = poll_tool {
+            let _ = write!(
+                output,
+                "\nUse {poll_tool}(\"{}\") to see the full output.",
+                c.subagent_id()
+            );
+        }
+    }
+    output
+}
+fn format_subagent_task_output(c: &SubagentCompletionSummary, poll_tool: Option<&str>) -> String {
+    let mut snapshot = c.snapshot.clone();
+    if let SubagentSnapshotStatus::Completed { output, .. } = &mut snapshot.status {
+        *output = inline_subagent_output(c, poll_tool);
+    }
+    let output = format_subagent_snapshot(&snapshot, WaitHint::NotRequested);
+    ToolOutput::TaskOutput(output).to_prompt_format()
+}
+fn outcome_words(c: &SubagentCompletionSummary) -> (&'static str, &'static str) {
+    match c.snapshot.status {
+        SubagentSnapshotStatus::Completed { .. } => {
+            ("completed successfully", "completed successfully")
+        }
+        SubagentSnapshotStatus::Failed { .. } => ("completed with failure", "failed"),
+        SubagentSnapshotStatus::Cancelled { .. } => ("was cancelled", "cancelled"),
+        SubagentSnapshotStatus::Initializing | SubagentSnapshotStatus::Running { .. } => {
+            ("is still running", "running")
+        }
+    }
+}
 /// Format a model-facing message from a [`SubagentCompletionSummary`] for
-/// the next-tool-call reminder surface.
+/// the auto-wake prompt and the next-tool-call reminder surface.
 ///
-/// `task_output_name`: the resolved name of the BackgroundTaskAction tool
-/// in the current agent's toolset. When `None`, the subagent's full
-/// `output` is inlined verbatim -- this notification is the only place
-/// the model will see it (no disk-backed output file exists for subagents).
+/// Neutralized as a whole, so no model-authored field can close the reminder wrapper around it.
+/// `task_output_name: None` (no polling tool) inlines the child's text uncapped.
 ///
 /// KEEP IN SYNC: the exact wording of this message is a compatibility
 /// surface — downstream mirrors reproduce it verbatim (grep for
-/// `format_subagent_completion_reminder`). Update them when changing it.
+/// `format_subagent_completion_reminder` and `=== Task`). The Python and
+/// product mirrors still emit the previous shape and follow in their own
+/// changes.
 pub fn format_subagent_completion(
     c: &SubagentCompletionSummary,
     task_output_name: Option<&str>,
+    scheduler_delete_name: Option<&str>,
+    scheduler_create_name: Option<&str>,
 ) -> String {
-    let status = if c.success {
-        "successfully"
-    } else {
-        "with failure"
-    };
+    let (outcome, _) = outcome_words(c);
     let mut out = format!(
-        "Background subagent \"{}\" ({}: \"{}\") completed {}.\n\
-         Duration: {:.1}s | Tool calls: {} | Turns: {}",
-        c.subagent_id,
-        c.subagent_type,
-        c.description,
-        status,
-        c.duration_ms as f64 / 1000.0,
-        c.tool_calls,
-        c.turns,
+        "Background subagent \"{}\" ({}: \"{}\") {outcome}.\n{}",
+        c.subagent_id(),
+        c.snapshot.subagent_type,
+        c.snapshot.description,
+        format_subagent_task_output(c, task_output_name),
     );
-    out.push_str(match task_output_name {
-        Some(_) => "\n",
-        None => "\n\n",
-    });
-    render_completion_output_delivery(
+    append_scheduled_wakeup_footer(
         &mut out,
-        &c.subagent_id,
-        PartialOutput::whole(&c.output),
-        task_output_name,
-        None,
+        c,
+        super::ScheduledWakeupTools {
+            child: super::child_poll(task_output_name, Some(c.subagent_id())),
+            schedule: super::schedule_tool_names(scheduler_delete_name, scheduler_create_name),
+        },
+        "\n\n",
     );
-    out
+    neutralize_reminder_tags(&out)
 }
 /// Format buffered between-turn subagent completions into a system-reminder
-/// string. When `task_output_name` is `None` each subagent's full output is
-/// inlined verbatim; see [`render_completion_output_delivery`].
+/// string; each entry follows [`format_subagent_completion`]'s rules, neutralization included.
 pub fn format_between_turn_completions(
     completions: &[SubagentCompletionSummary],
     task_output_name: Option<&str>,
+    scheduler_delete_name: Option<&str>,
+    scheduler_create_name: Option<&str>,
 ) -> String {
     use std::fmt::Write as _;
     let n = completions.len();
     let label = if n == 1 { "subagent" } else { "subagents" };
     let mut buf = format!("While you were idle, {n} background {label} completed:\n");
-    for c in completions {
-        let status = if c.success {
-            "completed successfully"
-        } else {
-            "failed"
-        };
-        let secs = c.duration_ms as f64 / 1000.0;
+    for (i, c) in completions.iter().enumerate() {
+        if i > 0 {
+            buf.push('\n');
+        }
+        let (_, outcome) = outcome_words(c);
+        let secs = c.snapshot.duration_ms as f64 / 1000.0;
         let _ = write!(
             buf,
-            "- [{}] {:?} \u{2014} {status} ({secs:.1}s, {} tool calls)\n  subagent_id: {}",
-            c.subagent_type, c.description, c.tool_calls, c.subagent_id,
+            "- [{}] {:?} \u{2014} {outcome} ({secs:.1}s, {} tool calls)\n{}",
+            c.snapshot.subagent_type,
+            c.snapshot.description,
+            c.tool_calls,
+            format_subagent_task_output(c, task_output_name),
         );
-        match task_output_name {
-            Some(_) => buf.push_str(". "),
-            None => buf.push_str("\n  "),
-        }
-        render_completion_output_delivery(
+        append_scheduled_wakeup_footer(
             &mut buf,
-            &c.subagent_id,
-            PartialOutput::whole(&c.output),
-            task_output_name,
-            None,
+            c,
+            super::ScheduledWakeupTools {
+                child: super::child_poll(task_output_name, Some(c.subagent_id())),
+                schedule: super::schedule_tool_names(scheduler_delete_name, scheduler_create_name),
+            },
+            "\n\n",
         );
         buf.push('\n');
     }
-    buf
+    neutralize_reminder_tags(&buf)
 }
-/// Format buffered between-turn subagent completions, resolving the
-/// `BackgroundTaskAction` tool name from the supplied bridge in one place.
-///
-/// Wraps [`resolve_task_output_tool_name`] +
-/// [`format_between_turn_completions`] so callers don't repeat the lookup
-/// at every emission site.
+/// Format buffered between-turn subagent completions, resolving the `BackgroundTaskAction` tool
+/// name from the supplied bridge in one place. Wraps [`resolve_task_output_tool_name`] +
+/// [`format_between_turn_completions`] so callers don't repeat the lookup at every emission site.
 pub async fn format_between_turn_completion_reminder(
     completions: &[SubagentCompletionSummary],
     bridge: &ToolBridge,
 ) -> String {
     let task_output_name = resolve_task_output_tool_name(bridge).await;
-    format_between_turn_completions(completions, task_output_name.as_deref())
+    let scheduler_delete_name = resolve_scheduler_delete_tool_name(bridge).await;
+    let scheduler_create_name = resolve_scheduler_create_tool_name(bridge).await;
+    format_between_turn_completions(
+        completions,
+        task_output_name.as_deref(),
+        scheduler_delete_name.as_deref(),
+        scheduler_create_name.as_deref(),
+    )
 }
 /// Format between-turn bash task completions into a system-reminder string.
 pub fn format_between_turn_bash_completions(
@@ -526,36 +593,9 @@ pub fn format_between_turn_bash_completions(
     }
     buf
 }
-/// Extract task / subagent IDs whose completion the model already
-/// learned about from this tool result. Used by:
-/// - `TaskCompletionReminder::collect_reminders` to suppress the
-///   per-tool-call `<system-reminder>` for the same ID.
-/// - `xai-grok-shell`'s `SessionActor` to sweep matching synthetic
-///   auto-wake prompts and notifications out of `pending_inputs` /
-///   `pending_notifications` (closes the TOCTOU race that produces
-///   trailing `<system-reminder>` items in `chat_history.jsonl`).
-///
-/// Centralising this here means the two consumer surfaces cannot drift:
-/// both call the same function, and the exhaustive `match` below
-/// forces every new `ToolOutput` variant to opt in or out at compile
-/// time.
-///
-/// Returns borrowed `&str` slices (no allocation) — the strings live in
-/// `output` for the duration of the call.
-/// Extract the subagent UUID from the body of a Task-tool-formatted
-/// text output. The shape is exactly:
-///
-/// ```text
-/// This is the output of the subagent:
-///
-/// response:
-/// <response>...</response>
-///
-/// Agent ID: <uuid> (can be used with the `resume` parameter to send a follow-up after it completes)
-/// ```
-///
-/// We anchor on `"Agent ID: "` and consume up to (but excluding) the next
-/// whitespace character. Returns `None` if the text doesn't match.
+/// Extract task / subagent IDs whose completion the model already learned about from this tool result. Centralising this here means the two
+/// consumer surfaces cannot drift: both call the same function, and the exhaustive `match` below forces every new `ToolOutput` variant to opt
+/// in or out at compile time. Returns borrowed `&str` slices (no allocation) — the strings live in `output` for the duration of the call.
 fn task_text_agent_id(text: &str) -> Option<&str> {
     if !text.starts_with("This is the output of the subagent:") {
         return None;
@@ -615,6 +655,7 @@ pub fn consumed_completion_ids(output: &ToolOutput) -> Vec<&str> {
         | ToolOutput::EnterPlanMode(_)
         | ToolOutput::ExitPlanMode(_)
         | ToolOutput::AskUserQuestion(_)
+        | ToolOutput::SendSubagentMessage(_)
         | ToolOutput::Monitor(_)
         | ToolOutput::SchedulerCreate(_)
         | ToolOutput::SchedulerDelete(_)
@@ -629,14 +670,9 @@ pub fn consumed_completion_ids(output: &ToolOutput) -> Vec<&str> {
     }
     ids
 }
-/// Cross-cutting reminder that queries the terminal backend for completed
-/// background tasks and the subagent coordinator for completed subagents,
-/// surfacing newly-completed ones as `<system-reminder>` text inside the
-/// next tool result.
-///
-/// Registered on `FinalizedToolset` as a cross-cutting reminder.
-/// Returns plain strings; the tool pipeline wraps
-/// each one in `<system-reminder>` tags automatically.
+/// Cross-cutting reminder that queries the terminal backend for completed background tasks and the subagent coordinator for completed
+/// subagents, surfacing newly-completed ones as `<system-reminder>` text inside the next tool result. Registered on `FinalizedToolset` as a
+/// cross-cutting reminder. Returns plain strings; the tool pipeline wraps each one in `<system-reminder>` tags automatically.
 pub struct TaskCompletionReminder;
 #[async_trait::async_trait]
 impl Reminder for TaskCompletionReminder {
@@ -662,11 +698,6 @@ impl Reminder for TaskCompletionReminder {
                 .map(TaskCompletionReservations::snapshot)
                 .unwrap_or_default()
         };
-        let suppress_ids = consumed_ids
-            .iter()
-            .chain(&reserved_ids)
-            .cloned()
-            .collect::<Vec<_>>();
         let (terminal, event_sender, parent_session_id) = {
             let res = resources.lock().await;
             (
@@ -719,7 +750,7 @@ impl Reminder for TaskCompletionReminder {
                     tasks
                         .iter()
                         .filter(|task| {
-                            task.completed
+                            task.is_completed_background()
                                 && !reserved_ids.contains(&task.task_id)
                                 && state.reported.insert(task.task_id.clone())
                         })
@@ -733,7 +764,7 @@ impl Reminder for TaskCompletionReminder {
                 );
             } else {
                 for task in &tasks {
-                    if task.completed && !reserved_ids.contains(&task.task_id) {
+                    if task.is_completed_background() && !reserved_ids.contains(&task.task_id) {
                         state.reported.insert(task.task_id.clone());
                     }
                 }
@@ -757,7 +788,7 @@ impl Reminder for TaskCompletionReminder {
                 .0
                 .send(SubagentEvent::Completions(SubagentCompletionsRequest {
                     parent_session_id,
-                    suppress_ids,
+                    suppress_ids: consumed_ids,
                     respond_to: tx,
                 }))
                 .is_err()
@@ -768,16 +799,26 @@ impl Reminder for TaskCompletionReminder {
                 let goal_loop_active = res
                     .get::<crate::implementations::grok_build::task::types::GoalLoopActive>()
                     .is_some_and(|g| g.0);
-                let task_output_name: Option<String> = res
-                    .get::<crate::types::template_renderer::TemplateRenderer>()
-                    .and_then(|r| {
-                        r.tool_for_kind(crate::types::tool::ToolKind::BackgroundTaskAction)
-                            .map(str::to_string)
-                    });
+                let renderer = res.get::<crate::types::template_renderer::TemplateRenderer>();
+                let task_output_name: Option<String> = renderer.and_then(|r| {
+                    r.tool_for_kind(crate::types::tool::ToolKind::BackgroundTaskAction)
+                        .map(str::to_string)
+                });
+                let scheduler_delete_name: Option<String> = res
+                    .get::<crate::types::resources::NativeToolClientNames>()
+                    .and_then(|names| names.0.get("scheduler_delete").cloned());
+                let scheduler_create_name: Option<String> = res
+                    .get::<crate::types::resources::NativeToolClientNames>()
+                    .and_then(|names| names.0.get("scheduler_create").cloned());
                 let state = res.get_or_default::<State<ReportedTaskCompletions>>();
                 for c in &completions {
-                    if state.reported.insert(c.subagent_id.clone()) && !goal_loop_active {
-                        reminders.push(format_subagent_completion(c, task_output_name.as_deref()));
+                    if state.reported.insert(c.subagent_id().to_owned()) && !goal_loop_active {
+                        reminders.push(format_subagent_completion(
+                            c,
+                            task_output_name.as_deref(),
+                            scheduler_delete_name.as_deref(),
+                            scheduler_create_name.as_deref(),
+                        ));
                     }
                 }
             }
@@ -788,6 +829,11 @@ impl Reminder for TaskCompletionReminder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::implementations::grok_build::task::types::{
+        SubagentOwner, SubagentRequest, SubagentResult,
+    };
+    use crate::implementations::grok_build::task::{completion_summary, terminal_snapshot};
+    use crate::implementations::grok_build::task_output::terminal_subagent_result;
     use crate::types::output::TextOutput;
     #[test]
     fn consumed_completion_ids_from_text_with_consumed_id() {
@@ -1197,10 +1243,9 @@ mod tests {
         assert!(msg.contains(r#"get_command_or_subagent_output("big-bg")"#));
         assert!(!msg.contains(&"x".repeat(100)));
     }
-    /// Without a polling tool AND without a Read-tool fallback, there is no
-    /// disk-pointer footer to anchor a truncated preview against, so the
-    /// full output text is inlined verbatim. The bash truncation cap only
-    /// fires when the caller supplies a disk-pointer footer.
+    /// Without a polling tool AND without a Read-tool fallback, there is no disk-pointer footer to
+    /// anchor a truncated preview against, so the full output text is inlined verbatim. The bash
+    /// truncation cap only fires when the caller supplies a disk-pointer footer.
     #[test]
     fn format_bash_completion_inline_form_without_footer_is_verbatim() {
         let mut task = make_completed("big-bg");
@@ -1306,7 +1351,7 @@ mod tests {
             kill_result_delivered: false,
             owner_session_id: None,
             description: None,
-            is_backgrounded: false,
+            is_backgrounded: true,
             output_total_bytes: 0,
         }
     }
@@ -1379,6 +1424,31 @@ mod tests {
         res.register_state::<ReportedTaskCompletions>();
         res.into_shared()
     }
+    #[tokio::test]
+    async fn completion_reminder_only_for_backgrounded_tasks() {
+        let foreground = TaskSnapshot {
+            is_backgrounded: false,
+            ..make_completed("fg-task")
+        };
+        let backgrounded = make_completed("bg-task");
+        let shared = shared_with(vec![foreground, backgrounded]);
+        let output = ToolOutput::Text(crate::types::output::TextOutput {
+            text: "ok".into(),
+            consumed_completion_task_id: None,
+        });
+        let joined = TaskCompletionReminder
+            .collect_reminders(shared, &output)
+            .await
+            .join("\n\n");
+        assert!(
+            !joined.contains("fg-task"),
+            "foreground completion must not surface a reminder: {joined}"
+        );
+        assert!(
+            joined.contains("bg-task"),
+            "backgrounded completion must still surface a reminder: {joined}"
+        );
+    }
     fn shared_with_gate(tasks: Vec<TaskSnapshot>, gate: TaskWakeSuppressed) -> SharedResources {
         let mut res = Resources::new();
         let backend: Arc<dyn TerminalBackend> = Arc::new(MockTerminal { tasks });
@@ -1402,11 +1472,9 @@ mod tests {
         res.insert(crate::types::resources::Params(params));
         res.into_shared()
     }
-    /// Bash completions are scoped to the session that OWNS the task. A
-    /// subagent shares the parent's terminal backend, so `list_tasks()` returns
-    /// the parent's (and sibling subagents') tasks too; only this session's
-    /// (and unowned) tasks may surface. Regression guard for the parent →
-    /// subagent background-task completion leak.
+    /// Bash completions are scoped to the session that OWNS the task. A subagent shares the parent's terminal backend, so
+    /// `list_tasks()` returns the parent's (and sibling subagents') tasks too; only this session's (and unowned) tasks may
+    /// surface. Regression guard for the parent → subagent background-task completion leak.
     #[tokio::test]
     async fn bash_completions_scoped_to_owning_session() {
         let mine = TaskSnapshot {
@@ -1555,12 +1623,9 @@ mod tests {
         let second = reminder.collect_reminders(shared, &output).await;
         assert!(second.is_empty(), "should not repeat");
     }
-    /// In a toolset that opts out of bash-completion reminders via
-    /// `BashParams.surface_bg_completion_reminders = false` (compat
-    /// namespace), the reminders are silently dropped so the model
-    /// does not see `Use get_task_output(...)` text referring to a
-    /// non-existent tool. The completed-task IDs are still marked as
-    /// reported, so a subsequent call won't surface them either.
+    /// In a toolset that opts out of bash-completion reminders via `BashParams.surface_bg_completion_reminders = false` (compat namespace), the
+    /// reminders are silently dropped so the model does not see `Use get_task_output(...)` text referring to a non-existent tool. The
+    /// completed-task IDs are still marked as reported, so a subsequent call won't surface them either.
     #[tokio::test]
     async fn bash_completion_suppressed_when_reminders_flag_disabled() {
         let shared = shared_with_reminders_disabled(vec![
@@ -1590,7 +1655,7 @@ mod tests {
                 if let SubagentEvent::Completions(req) = event {
                     let filtered: Vec<_> = completions
                         .iter()
-                        .filter(|c| !req.suppress_ids.contains(&c.subagent_id))
+                        .filter(|c| !req.suppress_ids.iter().any(|id| id == c.subagent_id()))
                         .cloned()
                         .collect();
                     let _ = req.respond_to.send(filtered);
@@ -1599,17 +1664,54 @@ mod tests {
         });
         res.into_shared()
     }
-    fn make_subagent_completion(id: &str, success: bool) -> SubagentCompletionSummary {
-        SubagentCompletionSummary {
-            subagent_id: id.into(),
-            subagent_type: "general-purpose".into(),
+    fn test_request(id: &str) -> SubagentRequest {
+        SubagentRequest {
+            id: id.into(),
+            prompt: String::new(),
             description: "test task".into(),
+            subagent_type: "general-purpose".into(),
+            parent_session_id: "parent".into(),
+            parent_prompt_id: None,
+            resume_from: None,
+            cwd: None,
+            runtime_overrides: Default::default(),
+            run_in_background: true,
+            surface_completion: true,
+            await_to_completion: false,
+            fork_context: false,
+            owner: SubagentOwner::Task,
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            spawn_root: Default::default(),
+        }
+    }
+    fn test_result(id: &str, success: bool) -> SubagentResult {
+        SubagentResult {
             success,
-            duration_ms: 5000,
+            output: Arc::from(format!("output for {id}")),
+            subagent_id: id.into(),
+            child_session_id: id.into(),
             tool_calls: 3,
             turns: 2,
-            output: std::sync::Arc::from(format!("output for {id}")),
+            duration_ms: 5000,
+            ..Default::default()
         }
+    }
+    fn summarize(request: &SubagentRequest, result: &SubagentResult) -> SubagentCompletionSummary {
+        let snapshot = terminal_snapshot(request, result, None, None, 1_700_000_000_000);
+        completion_summary(request, result, &snapshot)
+    }
+    fn make_subagent_completion(id: &str, success: bool) -> SubagentCompletionSummary {
+        summarize(&test_request(id), &test_result(id, success))
+    }
+    fn inlined_child_text(msg: &str) -> &str {
+        let open = "\n=== Output ===\n";
+        let start = msg.find(open).expect("output section") + open.len();
+        let rest = &msg[start..];
+        let end = rest
+            .find("\n[output truncated:")
+            .or_else(|| rest.find("\n\n<subagent_meta>"))
+            .expect("marker or meta");
+        &rest[..end]
     }
     #[tokio::test]
     async fn subagent_completion_surfaced() {
@@ -1618,11 +1720,28 @@ mod tests {
         let reminder = TaskCompletionReminder;
         let output = ToolOutput::Dynamic(serde_json::Value::Null.into());
         let r = reminder.collect_reminders(shared, &output).await;
-        assert_eq!(r.len(), 1);
-        assert!(r[0].contains("sub-1"));
-        assert!(r[0].contains("successfully"));
-        assert!(r[0].contains("general-purpose"));
-        assert!(r[0].contains("5.0s"));
+        assert_eq!(
+            r,
+            [
+                "Background subagent \"sub-1\" (general-purpose: \"test task\") completed successfully.\n\
+              === Task sub-1 ===\n\
+              Command: [subagent:general-purpose] test task\n\
+              Status: completed\n\
+              Duration: 5.00s\n\
+              Exit Code: 0\n\
+              \n\
+              === Output ===\n\
+              output for sub-1\n\
+              \n\
+              <subagent_meta>id=sub-1, type=general-purpose, tool_calls=3, turns=2, duration_ms=5000</subagent_meta>\n\
+              \n\
+              <subagent_result>\n\
+              subagent_id: sub-1\n\
+              subagent_type: general-purpose\n\
+              To continue this subagent's conversation, use resume_from=\"sub-1\".\n\
+              </subagent_result>"
+            ]
+        );
     }
     #[tokio::test]
     async fn subagent_completion_suppressed_by_task_output() {
@@ -1713,10 +1832,9 @@ mod tests {
             "same subagent completion should not repeat"
         );
     }
-    /// While a `/goal` loop is active the per-tool-call reminder must not
-    /// surface bash or subagent completions (they would derail a weak model
-    /// mid-goal), but the IDs must still be marked reported so they never
-    /// resurface once the goal ends.
+    /// While a `/goal` loop is active the per-tool-call reminder must not surface bash or subagent
+    /// completions (they would derail a weak model mid-goal), but the IDs must still be marked
+    /// reported so they never resurface once the goal ends.
     #[tokio::test]
     async fn completions_suppressed_when_goal_loop_active() {
         let mut res = Resources::new();
@@ -1797,39 +1915,380 @@ mod tests {
     #[test]
     fn format_subagent_completion_success_with_poll_tool() {
         let c = make_subagent_completion("sub-abc", true);
-        let msg = format_subagent_completion(&c, Some("get_task_output"));
-        assert!(msg.contains("sub-abc"));
-        assert!(msg.contains("successfully"));
-        assert!(msg.contains("general-purpose"));
-        assert!(msg.contains("test task"));
-        assert!(msg.contains("5.0s"));
-        assert!(msg.contains("Tool calls: 3"));
-        assert!(msg.contains("Turns: 2"));
-        assert!(msg.contains(r#"get_task_output("sub-abc")"#));
+        let msg = format_subagent_completion(&c, Some("get_task_output"), None, None);
+        assert_eq!(
+            msg,
+            "Background subagent \"sub-abc\" (general-purpose: \"test task\") completed successfully.\n\
+             === Task sub-abc ===\n\
+             Command: [subagent:general-purpose] test task\n\
+             Status: completed\n\
+             Duration: 5.00s\n\
+             Exit Code: 0\n\
+             \n\
+             === Output ===\n\
+             output for sub-abc\n\
+             \n\
+             <subagent_meta>id=sub-abc, type=general-purpose, tool_calls=3, turns=2, duration_ms=5000</subagent_meta>\n\
+             \n\
+             <subagent_result>\n\
+             subagent_id: sub-abc\n\
+             subagent_type: general-purpose\n\
+             To continue this subagent's conversation, use resume_from=\"sub-abc\".\n\
+             </subagent_result>"
+        );
     }
     #[test]
-    fn format_subagent_completion_failure() {
-        let c = make_subagent_completion("sub-fail", false);
-        let msg = format_subagent_completion(&c, Some("get_task_output"));
-        assert!(msg.contains("with failure"));
+    fn format_subagent_completion_matches_get_task_output_text() {
+        let outcomes: [(&str, bool, bool, Option<&str>); 5] = [
+            ("completed successfully", true, false, None),
+            ("completed with failure", false, false, None),
+            ("completed with failure", false, false, Some("boom")),
+            ("was cancelled", false, true, None),
+            ("was cancelled", false, true, Some("killed by the user")),
+        ];
+        let long = "x".repeat(INLINE_SUBAGENT_OUTPUT_BYTES);
+        let outputs = ["", "  \n", "line 1\n\nline 3\n", long.as_str()];
+        let personas = [None, Some("reviewer")];
+        let worktrees = [None, Some("/tmp/wt/sub-same")];
+        let mut cases = Vec::new();
+        for outcome in outcomes {
+            for output in outputs {
+                for persona in personas {
+                    for worktree in worktrees {
+                        cases.push((outcome, output, persona, worktree));
+                    }
+                }
+            }
+        }
+        for ((outcome, success, cancelled, error), output, persona, worktree) in cases {
+            let request = test_request("sub-same");
+            let mut result = test_result("sub-same", success);
+            result.output = Arc::from(output);
+            result.cancelled = cancelled;
+            result.error = error.map(str::to_owned);
+            result.worktree_path = worktree.map(str::to_owned);
+            let snapshot = terminal_snapshot(
+                &request,
+                &result,
+                None,
+                persona.map(str::to_owned),
+                1_700_000_000_000,
+            );
+            let tool = TaskOutputOutput::Result(terminal_subagent_result(&snapshot));
+            let tool_text = ToolOutput::TaskOutput(tool).to_prompt_format();
+            let c = completion_summary(&request, &result, &snapshot);
+            let msg = format_subagent_completion(&c, Some("get_task_output"), None, None);
+            let case = format!("{outcome} {output:?} {persona:?} {worktree:?}");
+            let (header, body) = msg.split_once('\n').expect("header line");
+            assert_eq!(
+                header,
+                format!(
+                    "Background subagent \"sub-same\" (general-purpose: \"test task\") {outcome}."
+                ),
+                "{case}"
+            );
+            assert_eq!(body, tool_text, "{case}");
+            assert!(!body.contains("to see the full output"), "{case}: {body}");
+            assert_eq!(
+                body.contains("<worktree_path>/tmp/wt/sub-same</worktree_path>"),
+                success && worktree.is_some(),
+                "{case}"
+            );
+            assert_eq!(
+                body.contains("The subagent used persona=\"reviewer\"."),
+                success && persona.is_some(),
+                "{case}"
+            );
+        }
+    }
+    #[test]
+    fn format_subagent_completion_failed_and_cancelled_bodies() {
+        let mut result = test_result("sub-fail", false);
+        let msg = format_subagent_completion(
+            &summarize(&test_request("sub-fail"), &result),
+            Some("get_task_output"),
+            None,
+            None,
+        );
+        let (header, body) = msg.split_once('\n').expect("header line");
+        assert!(header.ends_with(" completed with failure."), "{header}");
+        assert!(body.contains("\nStatus: failed\n"), "{body}");
+        assert!(body.contains("\nExit Code: 1\n"), "{body}");
+        assert!(body.ends_with("\n=== Output ===\nUnknown error"), "{body}");
+        result.cancelled = true;
+        let msg = format_subagent_completion(
+            &summarize(&test_request("sub-fail"), &result),
+            Some("get_task_output"),
+            None,
+            None,
+        );
+        let (header, body) = msg.split_once('\n').expect("header line");
+        assert_eq!(
+            header,
+            "Background subagent \"sub-fail\" (general-purpose: \"test task\") was cancelled."
+        );
+        assert!(body.contains("\nStatus: cancelled\n"), "{body}");
+        assert!(!body.contains("Exit Code:"), "{body}");
+        assert!(
+            body.ends_with("\n=== Output ===\nSubagent was cancelled"),
+            "{body}"
+        );
+    }
+    #[test]
+    fn format_scheduler_loop_completion_pre_capped_by_request() {
+        let mut request = test_request("sub-loop");
+        request.runtime_overrides.loop_task_id = Some("loop-123".into());
+        request.runtime_overrides.completion_output_cap = Some(4_000);
+        let mut result = test_result("sub-loop", true);
+        result.output = Arc::from("q".repeat(50_000));
+        let c = summarize(&request, &result);
+        assert_eq!(c.output.len(), 4_000);
+        assert_eq!(c.full_output_bytes, 50_000);
+        let msg = format_subagent_completion(
+            &c,
+            Some("get_task_output"),
+            Some("renamed_scheduler_delete"),
+            Some("renamed_scheduler_create"),
+        );
+        let head = "q".repeat(4_000);
+        assert_eq!(
+            msg,
+            format!(
+                "Background subagent \"sub-loop\" (general-purpose: \"test task\") completed successfully.\n\
+                 === Task sub-loop ===\n\
+                 Command: [subagent:general-purpose] test task\n\
+                 Status: completed\n\
+                 Duration: 5.00s\n\
+                 Exit Code: 0\n\
+                 \n\
+                 === Output ===\n\
+                 {head}\n\
+                 [output truncated: 4000 of 50000 bytes shown]\n\
+                 Use get_task_output(\"sub-loop\") to see the full output.\n\
+                 \n\
+                 <subagent_meta>id=sub-loop, type=general-purpose, tool_calls=3, turns=2, duration_ms=5000</subagent_meta>\n\
+                 \n\
+                 <subagent_result>\n\
+                 subagent_id: sub-loop\n\
+                 subagent_type: general-purpose\n\
+                 To continue this subagent's conversation, use resume_from=\"sub-loop\".\n\
+                 </subagent_result>\n\
+                 \n\
+                 Check the subagent output using get_task_output(\"sub-loop\"). If there are issues, proactively debug and fix them, do not just report it to the user.\n\
+                 If this schedule is no longer relevant, run renamed_scheduler_delete(\"loop-123\"). If it is outdated, you can update it with renamed_scheduler_create(new_prompt, interval, \"loop-123\")."
+            )
+        );
+        assert_eq!(msg.matches("[output truncated:").count(), 1);
+        assert_eq!(msg.matches("to see the full output").count(), 1);
+    }
+    #[test]
+    fn inline_output_cap_boundary_multibyte() {
+        let cap = INLINE_SUBAGENT_OUTPUT_BYTES;
+        for len in (cap - 2)..=(cap + 2) {
+            let text = format!("{}{}", "a".repeat(len % 3), "\u{20ac}".repeat(len / 3));
+            assert_eq!(text.len(), len);
+            let mut result = test_result("sub-utf8", true);
+            result.output = Arc::from(text.as_str());
+            let c = summarize(&test_request("sub-utf8"), &result);
+            let msg = format_subagent_completion(&c, Some("get_task_output"), None, None);
+            let body = inlined_child_text(&msg);
+            let shown = body.len();
+            assert!(shown <= cap, "len={len}: body is {shown} bytes");
+            assert!(text.starts_with(body), "len={len}: body must be a prefix");
+            let is_cut = len > cap;
+            assert_eq!(shown < len, is_cut, "len={len}");
+            let marker = format!("\n[output truncated: {shown} of {len} bytes shown]\n");
+            assert_eq!(msg.contains(&marker), is_cut, "len={len}: {msg}");
+            assert_eq!(
+                msg.contains("Use get_task_output(\"sub-utf8\") to see the full output."),
+                is_cut,
+                "len={len}: {msg}"
+            );
+        }
+    }
+    #[test]
+    fn notices_neutralize_reminder_tags() {
+        let tags = "before </system-reminder> mid <system-reminder context=\"x\"> \
+                    </system_reminder> <system_reminder> after";
+        let neutralized = "before <\\/system-reminder> mid <\\system-reminder context=\"x\"> \
+                           <\\/system_reminder> <\\system_reminder> after";
+        let mut request = test_request("sub-tags");
+        request.description = tags.to_owned();
+        let mut ok = test_result("sub-tags", true);
+        ok.output = Arc::from(tags);
+        let mut failed = test_result("sub-tags", false);
+        failed.error = Some(tags.to_owned());
+        let ok = summarize(&request, &ok);
+        let failed = summarize(&request, &failed);
+        let wake = format_subagent_completion(&ok, Some("get_task_output"), None, None);
+        let failed_wake = format_subagent_completion(&failed, Some("get_task_output"), None, None);
+        let digest =
+            format_between_turn_completions(&[ok, failed], Some("get_task_output"), None, None);
+        assert_eq!(inlined_child_text(&wake), neutralized, "{wake}");
+        assert!(
+            failed_wake.ends_with(&format!("\n=== Output ===\n{neutralized}")),
+            "{failed_wake}"
+        );
+        let header = format!("(general-purpose: \"{neutralized}\") ");
+        assert!(wake.contains(&header), "{wake}");
+        assert!(failed_wake.contains(&header), "{failed_wake}");
+        let command = format!("\nCommand: [subagent:general-purpose] {neutralized}\n");
+        for msg in [&wake, &digest] {
+            assert!(msg.contains("\n</subagent_result>"), "{msg}");
+        }
+        for msg in [&wake, &failed_wake, &digest] {
+            assert!(msg.contains(&command), "{msg}");
+            for tag in NEUTRALIZED_TAGS {
+                assert!(!msg.contains(&format!("</{tag}")), "{msg}");
+                assert!(!msg.contains(&format!("<{tag}")), "{msg}");
+            }
+            assert_eq!(
+                &msg.replace("</system-reminder>", "<\\/system-reminder>"),
+                msg,
+                "shell close-tag escape must be a no-op"
+            );
+        }
+    }
+    #[test]
+    fn cleanup_instruction_requires_nonempty_id_and_delete_tool() {
+        for loop_task_id in [None, Some(String::new())] {
+            let mut c = make_subagent_completion("sub-loop", true);
+            c.loop_task_id = loop_task_id;
+            let msg = format_subagent_completion(&c, Some("get_task_output"), None, None);
+            assert!(!msg.contains("no longer relevant"), "{msg}");
+            assert!(!msg.contains("Check the subagent output"), "{msg}");
+        }
+        let mut c = make_subagent_completion("sub-loop", true);
+        c.loop_task_id = Some("loop-123".into());
+        let msg = format_subagent_completion(&c, Some("get_task_output"), None, None);
+        assert!(msg.contains("Check the subagent output using get_task_output(\"sub-loop\")"));
+        assert!(!msg.contains("no longer relevant"), "{msg}");
+        let partial =
+            format_subagent_completion(&c, Some("get_task_output"), Some("scheduler_delete"), None);
+        assert!(!partial.contains("no longer relevant"), "{partial}");
+        assert!(!partial.contains("outdated"), "{partial}");
+        let both = format_subagent_completion(
+            &c,
+            Some("get_task_output"),
+            Some("scheduler_delete"),
+            Some("scheduler_create"),
+        );
+        assert!(both.contains(
+            "If this schedule is no longer relevant, run scheduler_delete(\"loop-123\"). If it is outdated, you can update it with scheduler_create(new_prompt, interval, \"loop-123\")."
+        ));
+        let no_poll = format_subagent_completion(
+            &c,
+            None,
+            Some("scheduler_delete"),
+            Some("scheduler_create"),
+        );
+        assert!(!no_poll.contains("get_task_output"), "{no_poll}");
+        assert!(no_poll.contains(
+            "If this schedule is no longer relevant, run scheduler_delete(\"loop-123\")."
+        ));
     }
     #[test]
     fn format_subagent_completion_inlines_output_when_no_poll_tool() {
-        let c = make_subagent_completion("sub-abc", true);
-        let msg = format_subagent_completion(&c, None);
-        assert!(msg.contains("sub-abc"));
-        assert!(msg.contains("successfully"));
-        assert!(
-            !msg.contains("get_task_output"),
-            "must not mention a polling tool when none is available"
+        let mut result = test_result("sub-abc", true);
+        result.output = Arc::from("y".repeat(INLINE_SUBAGENT_OUTPUT_BYTES * 5));
+        let c = summarize(&test_request("sub-abc"), &result);
+        let wake = format_subagent_completion(&c, None, None, None);
+        let digest = format_between_turn_completions(&[c], None, None, None);
+        for msg in [&wake, &digest] {
+            assert!(msg.contains(&*result.output), "{}", msg.len());
+            assert!(!msg.contains("get_task_output"), "{msg}");
+            assert!(!msg.contains("to see the full output"), "{msg}");
+            assert!(!msg.contains("[output truncated"), "{msg}");
+        }
+    }
+    #[test]
+    fn between_turn_completions_copy_task_output_per_entry() {
+        let mut request_a = test_request("a");
+        request_a.subagent_type = "explore".into();
+        request_a.description = "task 1".into();
+        let mut result_a = test_result("a", true);
+        result_a.duration_ms = 1000;
+        result_a.tool_calls = 2;
+        result_a.output = Arc::from("the answer for a");
+        let mut request_b = test_request("b");
+        request_b.description = "task 2".into();
+        let mut result_b = test_result("b", false);
+        result_b.cancelled = true;
+        result_b.tool_calls = 8;
+        result_b.error = Some("killed by the user".into());
+        let a = summarize(&request_a, &result_a);
+        let b = summarize(&request_b, &result_b);
+        let msg = format_between_turn_completions(&[a, b], Some("get_task_output"), None, None);
+        assert_eq!(
+            msg,
+            "While you were idle, 2 background subagents completed:\n\
+             - [explore] \"task 1\" \u{2014} completed successfully (1.0s, 2 tool calls)\n\
+             === Task a ===\n\
+             Command: [subagent:explore] task 1\n\
+             Status: completed\n\
+             Duration: 1.00s\n\
+             Exit Code: 0\n\
+             \n\
+             === Output ===\n\
+             the answer for a\n\
+             \n\
+             <subagent_meta>id=a, type=explore, tool_calls=2, turns=2, duration_ms=1000</subagent_meta>\n\
+             \n\
+             <subagent_result>\n\
+             subagent_id: a\n\
+             subagent_type: explore\n\
+             To continue this subagent's conversation, use resume_from=\"a\".\n\
+             </subagent_result>\n\
+             \n\
+             - [general-purpose] \"task 2\" \u{2014} cancelled (5.0s, 8 tool calls)\n\
+             === Task b ===\n\
+             Command: [subagent:general-purpose] task 2\n\
+             Status: cancelled\n\
+             Duration: 5.00s\n\
+             \n\
+             === Output ===\n\
+             killed by the user\n"
         );
-        assert!(
-            !msg.contains("to see the full output"),
-            "must omit the polling hint line entirely"
+    }
+    #[test]
+    fn between_turn_completions_loop_child_hints() {
+        let mut request = test_request("sub-loop");
+        request.runtime_overrides.loop_task_id = Some("loop-123".into());
+        let c = summarize(&request, &test_result("sub-loop", true));
+        let msg = format_between_turn_completions(
+            &[c],
+            Some("get_task_output"),
+            Some("renamed_scheduler_delete"),
+            Some("renamed_scheduler_create"),
         );
+        assert_eq!(
+            msg,
+            "While you were idle, 1 background subagent completed:\n\
+             - [general-purpose] \"test task\" \u{2014} completed successfully (5.0s, 3 tool calls)\n\
+             === Task sub-loop ===\n\
+             Command: [subagent:general-purpose] test task\n\
+             Status: completed\n\
+             Duration: 5.00s\n\
+             Exit Code: 0\n\
+             \n\
+             === Output ===\n\
+             output for sub-loop\n\
+             \n\
+             <subagent_meta>id=sub-loop, type=general-purpose, tool_calls=3, turns=2, duration_ms=5000</subagent_meta>\n\
+             \n\
+             <subagent_result>\n\
+             subagent_id: sub-loop\n\
+             subagent_type: general-purpose\n\
+             To continue this subagent's conversation, use resume_from=\"sub-loop\".\n\
+             </subagent_result>\n\
+             \n\
+             Check the subagent output using get_task_output(\"sub-loop\"). If there are issues, proactively debug and fix them, do not just report it to the user.\n\
+             If this schedule is no longer relevant, run renamed_scheduler_delete(\"loop-123\"). If it is outdated, you can update it with renamed_scheduler_create(new_prompt, interval, \"loop-123\").\n"
+        );
+        assert!(!msg.contains("get_task_output(\"loop-123\")"), "{msg}");
         assert!(
-            msg.contains("response:\noutput for sub-abc"),
-            "must inline the subagent's output text: {msg}"
+            !msg.contains("renamed_scheduler_delete(\"sub-loop\")"),
+            "{msg}"
         );
     }
     #[test]
@@ -1927,39 +2386,31 @@ mod tests {
                 .contains("reserved")
         );
     }
-    /// Regression: subagent inline output larger than the bash-completion
-    /// inline cap MUST be preserved verbatim. The inline branch is the
-    /// model's only chance to see subagent output (no disk file exists),
-    /// so the bash-only [`MAX_INLINE_COMPLETION_BYTES`] cap must not leak
-    /// into the subagent path.
-    #[test]
-    fn format_subagent_completion_no_poll_tool_preserves_large_output_verbatim() {
-        let mut c = make_subagent_completion("sub-large", true);
-        let large_output = "y".repeat(MAX_INLINE_COMPLETION_BYTES * 5);
-        c.output = std::sync::Arc::from(large_output.as_str());
-        let msg = format_subagent_completion(&c, None);
-        assert!(
-            msg.contains(&large_output),
-            "subagent inline output must be preserved verbatim, got len={}",
-            msg.len()
+    #[tokio::test]
+    async fn reserved_ids_do_not_suppress_subagent_reminders() {
+        let shared = shared_with_subagent_completions(
+            vec![make_completed("bash-reserved")],
+            vec![make_subagent_completion("sub-reserved", true)],
         );
-        assert!(
-            !msg.contains("[Output truncated"),
-            "subagent inline output must not be truncated: {msg}"
+        let reservations = TaskCompletionReservations::default();
+        reservations.reserve("bash-reserved".into());
+        reservations.reserve("sub-reserved".into());
+        shared.lock().await.insert(reservations);
+        let reminder = TaskCompletionReminder;
+        let output = ToolOutput::Dynamic(serde_json::Value::Null.into());
+        let reminders = reminder.collect_reminders(shared.clone(), &output).await;
+        assert_eq!(
+            reminders.len(),
+            1,
+            "only the subagent completion may surface: {reminders:?}"
         );
-    }
-    /// Same invariant for the between-turn batched reminder surface.
-    #[test]
-    fn format_between_turn_completions_no_poll_tool_preserves_large_output_verbatim() {
-        let mut c = make_subagent_completion("sub-batch", true);
-        let large_output = "z".repeat(MAX_INLINE_COMPLETION_BYTES * 3);
-        c.output = std::sync::Arc::from(large_output.as_str());
-        let msg = format_between_turn_completions(&[c], None);
-        assert!(
-            msg.contains(&large_output),
-            "between-turn subagent inline output must be preserved verbatim"
-        );
-        assert!(!msg.contains("[Output truncated"));
+        assert!(reminders[0].contains("sub-reserved"));
+        let res = shared.lock().await;
+        let reported = res
+            .get::<State<ReportedTaskCompletions>>()
+            .expect("reported state");
+        assert!(reported.is_reported("sub-reserved"));
+        assert!(!reported.is_reported("bash-reserved"));
     }
     /// The reminder pipeline ignores `MonitorEventBuffer` — the turn loop
     /// owns the drain. Guards against the tool-result append path being
@@ -2124,10 +2575,9 @@ mod tests {
         assert_eq!(desc, "日本語ログ 监视 🚨");
         assert_eq!(inner, "警告: ライン①\n二行目 — ürgent 🚨");
     }
-    /// Writer↔parser round-trip through the REAL `wrap_monitor_event`,
-    /// including a hostile description (quotes + newline + `">\n` sequence).
-    /// The writer sanitizes, so the parser always recovers cleanly — if the
-    /// writer's shape ever drifts from the parser, this fails loudly.
+    /// Writer↔parser round-trip through the REAL `wrap_monitor_event`, including a hostile
+    /// description (quotes + newline + `">\n` sequence). The writer sanitizes, so the parser always
+    /// recovers cleanly — if the writer's shape ever drifts from the parser, this fails loudly.
     #[test]
     fn wrap_monitor_event_round_trips_through_split() {
         use crate::implementations::grok_build::monitor::event::wrap_monitor_event;

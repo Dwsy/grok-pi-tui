@@ -58,6 +58,15 @@ pub enum ChatStateCommand {
     /// Push a user message into the conversation.
     PushUserMessage { item: ConversationItem },
 
+    /// Push an ordered batch of user messages into the conversation.
+    PushUserMessagesBatch { items: Vec<ConversationItem> },
+
+    /// Push an ordered batch and acknowledge once every message is processed.
+    PushUserMessagesBatchAndAck {
+        items: Vec<ConversationItem>,
+        reply: oneshot::Sender<()>,
+    },
+
     /// Push a user message and acknowledge once the chat-state actor has
     /// accepted and processed it.
     PushUserMessageAndAck {
@@ -125,7 +134,7 @@ pub enum ChatStateCommand {
     IncrementPromptIndex,
 
     /// Update the sampling config (e.g., model switch).
-    UpdateSamplingConfig { config: SamplingConfig },
+    UpdateSamplingConfig { config: Box<SamplingConfig> },
 
     /// Track that the agent edited a file path.
     RecordAgentEditedPath { path: String },
@@ -142,15 +151,9 @@ pub enum ChatStateCommand {
         is_compaction: bool,
     },
 
-    /// Out-of-band history repair (`x.ai/session/repair`): run
-    /// [`crate::compaction_utils::repair_history`] and persist when changed;
-    /// `dry_run` only reports.
-    ///
-    /// `turn_active` (the session's shared flag, set at turn start BEFORE the
-    /// turn pushes anything here) is re-checked inside the command handler:
-    /// a caller-side check alone races turn start, whereas at processing time
-    /// the command is either refused or runs on pre-turn state with the
-    /// turn's pushes serialized after it.
+    /// Out-of-band history repair; `dry_run` only reports.
+    /// `turn_active` is re-checked inside the handler: a caller-side check races turn start.
+    /// At processing time the command is refused or runs on pre-turn state.
     RepairHistory {
         dry_run: bool,
         turn_active: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -160,24 +163,15 @@ pub enum ChatStateCommand {
     },
 
     /// Persist a URL-scoped strip. In-actor so it serializes with turn pushes.
-    /// Replies with the typed [`crate::StripOutcome`] once the DISK write is
-    /// acknowledged: `Applied` means the backup and rewrite both landed, so
-    /// the caller can honestly claim durable removal.
+    /// Replies with [`crate::StripOutcome`] after the disk ack: `Applied` means backup and rewrite both landed.
     StripConversationImages {
         urls: Vec<std::sync::Arc<str>>,
         reply: tokio::sync::oneshot::Sender<crate::StripOutcome>,
     },
 
-    /// Atomically align the leading `System` message with `prompt` (inserting
-    /// one if absent), persisting the conversation. Executed inside the actor so
-    /// it serializes with concurrent turn pushes (`PushAssistantResponse` /
-    /// `PushToolResult`) — a mid-turn reconnect cannot lose those updates the
-    /// way a read-modify-write via `GetConversation` + `ReplaceConversation`
-    /// would. Replies `true` iff the conversation changed (no-op when the head
-    /// already matches modulo trailing newlines). A changed head goes through
-    /// `replace_conversation`, which re-bases `total_tokens` to a fresh static
-    /// estimate — acceptable because a changed head invalidates the KV prefix
-    /// anyway.
+    /// Atomically align the leading `System` message with `prompt`, persisting inside the actor.
+    /// Serializes with turn pushes so a mid-turn reconnect cannot lose updates the way RMW would.
+    /// A changed head re-bases `total_tokens`; acceptable because it invalidates the KV prefix anyway.
     ReplaceSystemHead {
         prompt: String,
         reply: oneshot::Sender<bool>,
@@ -201,11 +195,8 @@ pub enum ChatStateCommand {
     /// Start capturing turn messages. Clears any previous buffer.
     BeginTurnCapture,
 
-    /// Append synthetic `task` pairs for a harness-spawned subagent (goal
-    /// planner / verifier skeptic) to the in-progress harness trace phase.
-    /// Accumulated independently of the live `conversation` and of
-    /// `turn_capture`; sealed into a standalone trace turn by
-    /// `FlushHarnessTraceTurn`.
+    /// Append synthetic `task` pairs for a harness-spawned subagent to the in-progress trace phase.
+    /// Accumulated independently of the live `conversation` and of `turn_capture`.
     AppendHarnessTraceItems { items: Vec<ConversationItem> },
 
     /// Seal the harness items accumulated since the last flush into one
@@ -216,10 +207,13 @@ pub enum ChatStateCommand {
     /// Repair dangling tool calls after a harness-initiated halt.
     RepairDanglingAfterHarnessHalt { class: &'static str },
 
-    // ═══ Queries (request/response via oneshot) ═══
+    /// Drop a trailing continue reminder whose continuation will never
+    /// sample (the turn is completing truncated after a failed
+    /// continuation), so the dead cue does not persist into later turns.
+    PopStrandedContinueReminder,
+
     /// Build a ConversationRequest ready to send to the API.
-    /// Clones the conversation, prunes old tool results, repairs dangling
-    /// tool calls, injects memory reminder, and assembles the request.
+    /// Clones, prunes old tool results, repairs dangling calls, injects the memory reminder.
     BuildConversationRequest {
         tool_definitions: Vec<ToolSpec>,
         memory_reminder: Option<String>,
@@ -313,9 +307,7 @@ pub enum ChatStateCommand {
     },
 
     /// Drain the sealed harness trace turns (goal planner + verifier panels).
-    /// Each `Vec` is one turn's synthetic `task` pairs, uploaded by the agent
-    /// as its own sibling `turn_{N}` artifact. Seals a trailing un-flushed
-    /// accumulator before draining.
+    /// Each `Vec` is one turn's synthetic `task` pairs. Seals a trailing un-flushed accumulator first.
     TakeHarnessTraceTurns {
         reply: oneshot::Sender<Vec<Vec<ConversationItem>>>,
     },
@@ -337,6 +329,13 @@ pub enum ChatStateCommand {
         reply: oneshot::Sender<Option<String>>,
     },
 
+    /// Like `GetLastAssistantText`, but joins trailing assistant segments
+    /// separated only by `SyntheticReason::LengthContinue` user items (any
+    /// other user item is a hard boundary). `None` when no trailing text.
+    GetTrailingAssistantReport {
+        reply: oneshot::Sender<Option<String>>,
+    },
+
     /// Like `GetLastAssistantText`, but bounded to the current prompt turn:
     /// returns `None` when the turn produced no assistant text (the walk stops
     /// at the first turn-starting user item).
@@ -344,10 +343,15 @@ pub enum ChatStateCommand {
         reply: oneshot::Sender<Option<String>>,
     },
 
-    /// Get the text of the first `Text` content part in the first `User` message.
-    /// Returns `None` if the conversation has no user messages or the first user
-    /// message has no text content part.
-    /// Cheaper than `GetConversation` when only the initial user query is needed.
+    /// Concatenate every non-empty assistant message in the current prompt
+    /// turn (`"\n"`-joined). Same turn boundary as `GetLastAssistantTextInTurn`.
+    GetAssistantTextInTurn {
+        reply: oneshot::Sender<Option<String>>,
+    },
+
+    /// Get the text of the first `Text` part in the first `User` message.
+    /// `None` if there is no user message or that message has no text part.
+    /// Cheaper than `GetConversation` when only the initial query is needed.
     GetFirstUserText {
         reply: oneshot::Sender<Option<String>>,
     },
@@ -361,25 +365,19 @@ pub enum ChatStateCommand {
     },
 
     /// Get the processed text of the last user query (metadata tags stripped).
-    ///
-    /// Equivalent to `extract_last_user_query(&conversation)` but without
-    /// cloning the full conversation on the caller side.
+    /// Equivalent to `extract_last_user_query` without cloning the full conversation.
     GetLastUserQueryText {
         reply: oneshot::Sender<Option<String>>,
     },
 
     /// Get item counts for the conversation by role.
-    ///
-    /// Returns a `ConversationCounts` struct without cloning any items.
-    /// Suitable for telemetry / logging that only needs totals.
+    /// Returns `ConversationCounts` without cloning any items.
     GetConversationCounts {
         reply: oneshot::Sender<ConversationCounts>,
     },
 
     /// Get the first `System` message in the conversation, if any.
-    ///
-    /// Cheaper than `GetConversation` when only the system prompt is needed
-    /// (e.g. for compaction setup or error guards).
+    /// Cheaper than `GetConversation` when only the system prompt is needed.
     GetSystemMessage {
         reply: oneshot::Sender<Option<ConversationItem>>,
     },
@@ -395,6 +393,14 @@ mod tests {
         // Mutations
         let _ = ChatStateCommand::PushUserMessage {
             item: ConversationItem::user("hello"),
+        };
+        let _ = ChatStateCommand::PushUserMessagesBatch {
+            items: vec![ConversationItem::user("hello")],
+        };
+        let (tx, _rx) = oneshot::channel();
+        let _ = ChatStateCommand::PushUserMessagesBatchAndAck {
+            items: vec![ConversationItem::user("hello")],
+            reply: tx,
         };
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::PushUserMessageAndAck {
@@ -422,20 +428,24 @@ mod tests {
         let _ = ChatStateCommand::RecordTokenUsage { total_tokens: 100 };
         let _ = ChatStateCommand::IncrementPromptIndex;
         let _ = ChatStateCommand::UpdateSamplingConfig {
-            config: SamplingConfig {
+            config: Box::new(SamplingConfig {
                 base_url: String::new(),
+                mtls_cert_dir: None,
                 model: String::new(),
                 max_completion_tokens: None,
                 temperature: None,
                 top_p: None,
+                max_retries: None,
+                rate_limit_retry_threshold: None,
                 api_backend: Default::default(),
                 extra_headers: Default::default(),
+                conversation_group_id: None,
                 query_params: Default::default(),
                 env_http_headers: Default::default(),
                 context_window: std::num::NonZeroU64::new(128_000).unwrap(),
                 reasoning_effort: None,
                 stream_tool_calls: None,
-            },
+            }),
         };
         let _ = ChatStateCommand::RecordAgentEditedPath {
             path: "src/main.rs".to_string(),
@@ -523,7 +533,13 @@ mod tests {
         let _ = ChatStateCommand::GetLastAssistantText { reply: tx };
 
         let (tx, _rx) = oneshot::channel();
+        let _ = ChatStateCommand::GetTrailingAssistantReport { reply: tx };
+
+        let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetLastAssistantTextInTurn { reply: tx };
+
+        let (tx, _rx) = oneshot::channel();
+        let _ = ChatStateCommand::GetAssistantTextInTurn { reply: tx };
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetFirstUserText { reply: tx };

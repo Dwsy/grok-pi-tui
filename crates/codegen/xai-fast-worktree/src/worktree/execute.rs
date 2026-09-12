@@ -10,13 +10,12 @@ use crate::copy::{self, ParallelCopyConfig};
 use crate::git;
 use crate::worktree::CreateWorktreeResult;
 use crate::worktree::plan::WorktreePlan;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::worktree::{ArmSkip, WorktreeArm};
 use crate::{IgnoredFilesMode, WorkingTreeMode};
 
-/// Best-effort teardown of a partially built worktree at `dest`: removes the
-/// directory and, for a linked worktree, its `.git/worktrees/<name>`
-/// registration (`remove_worktree` reads the `gitdir:` pointer before deleting).
-/// Used on cancel/error paths so a later pinned-dest fast path can't adopt a
-/// half-built tree and git keeps no dangling worktree registration.
+/// Tear down a partial worktree and its linked registration. Cancel/error
+/// paths must do this or a later pinned-dest fast path adopts a half-built tree.
 fn reclaim_partial_worktree(dest: &Path) {
     let _ = crate::remove_worktree(dest);
 }
@@ -67,15 +66,9 @@ fn join_git_copy(
         .context("failed to copy .git/ directory")
 }
 
-/// Lock files (`*.lock`) and transient git state to remove from snapshots.
-///
-/// BTRFS and overlay snapshots capture the source tree atomically, including
-/// stale lock files and in-progress operation state that would be poisonous
-/// in the new worktree (e.g., a stale `index.lock` blocks every git operation).
-///
-/// This mirrors the skip list in `copy::gitdir::SKIP_TOP_LEVEL` +
-/// `copy::gitdir::should_skip()` so that snapshot-based worktrees get the
-/// same sanitized `.git/` state as standalone copy-based worktrees.
+/// Locks and transient git state to strip from snapshots. A stale `index.lock`
+/// blocks every git operation. Mirrors `copy::gitdir` skip lists so snapshot
+/// worktrees get the same sanitized `.git/` as copy-based ones.
 #[cfg(any(target_os = "linux", test))]
 const SNAPSHOT_GIT_CLEANUP_TOP_LEVEL: &[&str] = &[
     // Linked worktree registrations — stale in a snapshot (point to source paths)
@@ -97,18 +90,8 @@ const SNAPSHOT_GIT_CLEANUP_TOP_LEVEL: &[&str] = &[
     "gc.log",
 ];
 
-/// Remove lock files and transient git state from a snapshot worktree.
-///
-/// Called immediately after `btrfs subvolume snapshot` or overlay snapshot
-/// creation, **before** any git operations (`git reset`, `git clean`, etc.)
-/// because even `git reset --hard` will fail if `index.lock` exists.
-///
-/// Removes:
-/// - All `*.lock` files in the `.git/` directory tree (at any depth)
-/// - Transient state files (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, etc.)
-/// - In-progress operation directories (`sequencer/`, `rebase-merge/`, `rebase-apply/`)
-///
-/// Returns the count of entries removed (for logging).
+/// Strip locks and in-progress git state before any git op. Even
+/// `git reset --hard` fails if `index.lock` exists.
 #[cfg(any(target_os = "linux", test))]
 pub fn cleanup_snapshot_git_state(worktree_path: &Path) -> u32 {
     let git_dir = worktree_path.join(".git");
@@ -213,24 +196,37 @@ fn walkdir_recurse(
 }
 
 /// Execute worktree creation. This is a blocking operation.
+#[tracing::instrument(
+    name = "worktree.create",
+    skip_all,
+    fields(
+        strategy = tracing::field::Empty,
+        files_copied = tracing::field::Empty,
+        size_class = tracing::field::Empty,
+    )
+)]
 pub(crate) fn execute_create_worktree(plan: WorktreePlan) -> Result<CreateWorktreeResult> {
     let source = plan.source.clone();
     let start = std::time::Instant::now();
     let result = execute_create_worktree_dispatch(plan)?;
+    // O(1) strategies (btrfs/overlay/grove) copy nothing, so a zero count is real.
+    let span = tracing::Span::current();
+    span.record("strategy", result.resolved_strategy);
+    span.record("files_copied", result.copy_stats.files_copied as i64);
+    let size_class = if result.resolved_strategy == crate::worktree::STRATEGY_GIT {
+        "git"
+    } else {
+        crate::metrics::size_class_from_entries(result.copy_stats.files_copied)
+    };
+    span.record("size_class", size_class);
     crate::metrics::record_grove_wt_create(result.resolved_strategy, start.elapsed());
     record_main_repo_marker(&source, &result.worktree_path);
     Ok(result)
 }
 
-/// Record the source repo root in `<worktree>/.git/grok-worktree-source`.
-///
-/// A standalone worktree is an independent repo whose `.git` is a directory:
-/// nothing inside it points back to the source, so consumers like `.envrc`
-/// cannot recover the shared repo (e.g. to set a shared `CARGO_TARGET_DIR`).
-/// Linked worktrees (`.git` is a file) resolve it via
-/// `git rev-parse --git-common-dir` and are skipped. An existing marker is
-/// left intact: it was inherited from a worktree source and already points
-/// at the ultimate main repo.
+/// Record the source root for standalone copies (`.git` is a directory and
+/// points nowhere). Linked worktrees resolve via `--git-common-dir`. Leave an
+/// existing marker: it already names the ultimate main repo.
 fn record_main_repo_marker(source: &Path, worktree: &Path) {
     let git_dir = worktree.join(".git");
     if !git_dir.is_dir() {
@@ -252,6 +248,20 @@ fn record_main_repo_marker(source: &Path, worktree: &Path) {
     }
 }
 
+/// Skip details are surfaced verbatim in a one-line strategy notice, so an
+/// anyhow chain carrying subprocess output must be flattened and capped here.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn arm_failed(arm: crate::worktree::WorktreeArm, err: &anyhow::Error) -> crate::worktree::ArmSkip {
+    const MAX_SKIP_REASON_CHARS: usize = 200;
+    let chain = format!("{err:#}");
+    let mut text: String = chain.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() > MAX_SKIP_REASON_CHARS {
+        text = text.chars().take(MAX_SKIP_REASON_CHARS).collect();
+        text.push('…');
+    }
+    crate::worktree::ArmSkip::new(arm, text)
+}
+
 /// Dispatch worktree creation to the strategy implied by the creation mode.
 fn execute_create_worktree_dispatch(plan: WorktreePlan) -> Result<CreateWorktreeResult> {
     use crate::CreationMode;
@@ -261,18 +271,28 @@ fn execute_create_worktree_dispatch(plan: WorktreePlan) -> Result<CreateWorktree
             // Track why fast paths were skipped so the copy fallback error
             // (if any) includes context about what was tried first.
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            let mut skipped_reasons: Vec<String> = Vec::new();
+            let mut skipped: Vec<crate::worktree::ArmSkip> = Vec::new();
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let mut grove_lost_to_daemon = false;
 
             // macOS: grove-nfs first. Linux: overlay → btrfs → grove-fuse.
             #[cfg(target_os = "macos")]
             {
                 match crate::nfs::try_grove_worktree(&plan) {
-                    Ok(Some(result)) => return Ok(result),
+                    Ok(Some(crate::nfs::GroveTry::Adopted(mut result))) => {
+                        result.skipped = skipped;
+                        return Ok(*result);
+                    }
+                    Ok(Some(crate::nfs::GroveTry::Skipped(skip))) => {
+                        grove_lost_to_daemon |= skip.is_daemon_refusal();
+                        skipped.push(ArmSkip::from_grove(WorktreeArm::GroveNfs, skip));
+                    }
                     Ok(None) => {}
                     Err(e) if crate::nfs::nfs_error_blocks_fallback(&e) => return Err(e),
                     Err(e) => {
                         tracing::warn!(error = %e, "grove-nfs worktree failed, falling back to copy");
-                        skipped_reasons.push(format!("grove-nfs: {e:#}"));
+                        grove_lost_to_daemon = true;
+                        skipped.push(arm_failed(WorktreeArm::GroveNfs, &e));
                     }
                 }
             }
@@ -281,14 +301,17 @@ fn execute_create_worktree_dispatch(plan: WorktreePlan) -> Result<CreateWorktree
             #[cfg(target_os = "linux")]
             {
                 match try_overlay_worktree(&plan) {
-                    Ok(Some(result)) => return Ok(result),
+                    Ok(Some(mut result)) => {
+                        result.skipped = skipped;
+                        return Ok(result);
+                    }
                     Ok(None) => {}
                     Err(e) => {
                         tracing::warn!(
                             error = %e,
                             "overlay snapshot failed, falling back to next strategy"
                         );
-                        skipped_reasons.push(format!("overlay: {e:#}"));
+                        skipped.push(arm_failed(WorktreeArm::Overlay, &e));
                     }
                 }
             }
@@ -297,14 +320,17 @@ fn execute_create_worktree_dispatch(plan: WorktreePlan) -> Result<CreateWorktree
             #[cfg(target_os = "linux")]
             {
                 match try_btrfs_worktree(&plan) {
-                    Ok(Some(result)) => return Ok(result),
+                    Ok(Some(mut result)) => {
+                        result.skipped = skipped;
+                        return Ok(result);
+                    }
                     Ok(None) => {}
                     Err(e) => {
                         tracing::warn!(
                             error = %e,
                             "btrfs snapshot failed, falling back to file copy"
                         );
-                        skipped_reasons.push(format!("btrfs: {e:#}"));
+                        skipped.push(arm_failed(WorktreeArm::Btrfs, &e));
                     }
                 }
             }
@@ -312,7 +338,14 @@ fn execute_create_worktree_dispatch(plan: WorktreePlan) -> Result<CreateWorktree
             #[cfg(target_os = "linux")]
             {
                 match crate::nfs::try_grove_worktree(&plan) {
-                    Ok(Some(result)) => return Ok(result),
+                    Ok(Some(crate::nfs::GroveTry::Adopted(mut result))) => {
+                        result.skipped = skipped;
+                        return Ok(*result);
+                    }
+                    Ok(Some(crate::nfs::GroveTry::Skipped(skip))) => {
+                        grove_lost_to_daemon |= skip.is_daemon_refusal();
+                        skipped.push(ArmSkip::from_grove(WorktreeArm::GroveFuse, skip));
+                    }
                     Ok(None) => {}
                     Err(e) if crate::nfs::nfs_error_blocks_fallback(&e) => return Err(e),
                     Err(e) => {
@@ -320,49 +353,81 @@ fn execute_create_worktree_dispatch(plan: WorktreePlan) -> Result<CreateWorktree
                             error = %e,
                             "grove-fuse worktree failed, falling back to copy"
                         );
-                        skipped_reasons.push(format!("grove-fuse: {e:#}"));
+                        grove_lost_to_daemon = true;
+                        skipped.push(arm_failed(WorktreeArm::GroveFuse, &e));
                     }
                 }
             }
 
             // 3. Fall back to file-by-file copy
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            if !skipped_reasons.is_empty() {
+            if !skipped.is_empty() {
                 tracing::info!(
-                    reasons = skipped_reasons.join("; "),
+                    reasons = crate::worktree::render_arm_skips(&skipped),
                     "using file copy fallback (fast paths failed)"
                 );
             }
 
-            match &plan.creation_mode {
-                CreationMode::Linked => execute_copy_worktree(plan),
+            // Graded only when the daemon is what turned grove away: the probe is
+            // a Status round-trip, and no other outcome (an overlay/btrfs win, or
+            // a local skip like a missing /dev/fuse) is explained by its age.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let daemon_class = grove_lost_to_daemon
+                .then(|| crate::nfs::probe_daemon_capability_class(plan.nfs.as_ref()))
+                .flatten();
+
+            let mut result = match &plan.creation_mode {
+                CreationMode::Linked => {
+                    // Status-confirmed linked Grove views must not copy the
+                    // projection (hang / projected state) when CreateWorktree
+                    // declines. Preserve fails; projected+clean may git-checkout.
+                    let linked_view = plan.nfs.as_ref().is_some_and(|opts| {
+                        crate::nfs::source_is_linked_local_view(opts, &plan.source)
+                    });
+                    if crate::nfs::dest_is_projected_mount(&plan.source) {
+                        if matches!(
+                            plan.working_tree,
+                            crate::WorkingTreeMode::PreserveWorkingTree
+                        ) {
+                            anyhow::bail!("preserve on a projected Grove source is not supported");
+                        }
+                        tracing::info!(
+                            source = %plan.source.display(),
+                            "projected source: skipping copy fallback, using git checkout"
+                        );
+                        execute_git_checkout_worktree(plan)
+                    } else if linked_view {
+                        anyhow::bail!(
+                            "linked Grove source: CreateWorktree declined; refusing copy fallback"
+                        );
+                    } else {
+                        execute_copy_worktree(plan)
+                    }
+                }
                 CreationMode::Standalone => execute_standalone_worktree(plan),
                 _ => unreachable!(),
+            }?;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                result.skipped = skipped;
+                result.daemon_capability_class = daemon_class;
             }
+            Ok(result)
         }
         CreationMode::GitCheckout => execute_git_checkout_worktree(plan),
     }
 }
 
-/// Whether the overlay strategy must be skipped, given the mount-namespace
-/// classification.
-///
-/// An overlayfs mount is namespace-local and (unlike a btrfs snapshot) cannot be
-/// exposed via a symlink, so it must not be used inside a private mount
-/// namespace. Skip only for a positively-determined `Private` namespace;
-/// `Host` and `Unknown` keep overlay enabled (see
-/// `mount_info::current_mount_ns_status` for the `Unknown→false` rationale).
-/// Pure function so the call-site polarity is pinned in one unit-tested place.
+/// Skip overlay only for a positively `Private` namespace. Overlay mounts are
+/// namespace-local and cannot be exposed via a symlink. `Unknown` stays enabled
+/// so a non-root host caller is not forced onto the slow copy path.
 #[cfg(target_os = "linux")]
 fn should_skip_overlay(status: crate::mount_info::MountNsStatus) -> bool {
     matches!(status, crate::mount_info::MountNsStatus::Private)
 }
 
-/// Whether an overlay snapshot's `upper` holds any working-tree change.
-///
-/// overlayfs copy-up is path-based, so a top-level `readdir` showing only `.git`
-/// proves nothing is modified or untracked — a ~instant local check vs the ~4s
-/// FUSE walk `git clean` would do. Returns `true` on read error (run clean).
+/// Overlay upper dirty? A top-level `readdir` of only `.git` proves no copy-up
+/// or untracked file, avoiding a FUSE `git clean` walk. Read error means dirty.
 #[cfg(target_os = "linux")]
 fn overlay_upper_has_worktree_changes(upper: &Path) -> bool {
     match std::fs::read_dir(upper) {
@@ -373,13 +438,9 @@ fn overlay_upper_has_worktree_changes(upper: &Path) -> bool {
     }
 }
 
-/// Apply the working-tree mode + checkout on a freshly snapshotted worktree,
-/// skipping git steps already satisfied. Shared by the overlay/btrfs/delegate
-/// paths. On repo-fuse each git step stats through FUSE (~5s cold per full-tree
-/// walk), so we skip aggressively: `rev-parse` skips `checkout` when HEAD is
-/// already at the ref, and a clean `overlay_upper` lets us skip `reset`/`clean`
-/// and their walk guards. Non-overlay paths pass `None` (local btrfs — cheap).
-/// Returns the worktree HEAD commit.
+/// Apply working-tree mode, skipping git steps already satisfied. On repo-fuse
+/// each full-tree walk is a cold FUSE stat storm; a clean overlay upper skips
+/// `reset`/`clean`. Non-overlay paths pass `None`.
 #[cfg(target_os = "linux")]
 fn finalize_clean_and_ref(
     worktree_path: &Path,
@@ -387,10 +448,8 @@ fn finalize_clean_and_ref(
     git_ref: &str,
     overlay_upper: Option<&Path>,
 ) -> Result<String> {
-    // Fast path: an overlay snapshot is provably clean iff its upper has no
-    // copy-ups/untracked files (readdir shows only `.git`) AND the index has no
-    // staged changes (`diff-index --cached`). Both checks are cheap and avoid the
-    // ~5s cold FUSE walk that `reset`/`clean` and their `diff-index` guard do.
+    // Provably clean iff upper has no copy-ups and the index has no staged
+    // changes. Both are cheap and avoid the cold FUSE walk of reset/clean.
     let overlay_pristine = match (working_tree, overlay_upper) {
         (WorkingTreeMode::CleanTracked | WorkingTreeMode::CleanAll, Some(upper)) => {
             !overlay_upper_has_worktree_changes(upper) && !git::has_staged_changes(worktree_path)?
@@ -462,6 +521,8 @@ fn dummy_injected_result(plan: &WorktreePlan, strategy: &'static str) -> CreateW
         dirty_files_report: None,
         resolved_strategy: strategy,
         strategy_metadata: None,
+        skipped: Vec::new(),
+        daemon_capability_class: None,
     }
 }
 
@@ -582,6 +643,8 @@ fn execute_overlay_worktree(
         strategy_metadata: Some(serde_json::json!({
             "overlay": { "snapshot_root": result.snapshot_root }
         })),
+        skipped: Vec::new(),
+        daemon_capability_class: None,
     })
 }
 
@@ -655,11 +718,9 @@ fn try_btrfs_worktree(plan: &WorktreePlan) -> Result<Option<CreateWorktreeResult
     }
 }
 
-/// Run the post-snapshot git ops; on failure, run `reclaim` and propagate the
-/// original error. Snapshot creation succeeds before the working-tree
-/// reset/clean/checkout, so a later git failure must not leave the snapshot
-/// behind. Pure combinator so the failure→cleanup branch is unit-testable
-/// without root+btrfs (mirrors `btrfs::snapshot::expose_or_reclaim_snapshot`).
+/// On post-snapshot git failure, reclaim and return the original error. The
+/// snapshot already exists, so a later failure must not leave it behind.
+/// Injected so cleanup is testable without root+btrfs.
 #[cfg(target_os = "linux")]
 fn finalize_or_reclaim_snapshot(
     post: impl FnOnce() -> Result<String>,
@@ -675,10 +736,8 @@ fn finalize_or_reclaim_snapshot(
     }
 }
 
-/// Reclaim a just-created btrfs snapshot whose post-snapshot git ops failed:
-/// delete the subvolume, drop its recovery metadata, and remove the exposing
-/// symlink. Without this the symlink keeps the snapshot "active" so the orphan
-/// scanner never reclaims it. Best-effort: a failed delete is logged, not fatal.
+/// Delete the subvolume, metadata, and exposing symlink. The symlink would
+/// otherwise keep the snapshot "active" so the orphan scanner never reclaims it.
 #[cfg(target_os = "linux")]
 fn reclaim_btrfs_snapshot(snapshot: &crate::btrfs::snapshot::SnapshotResult) {
     use crate::btrfs;
@@ -695,10 +754,8 @@ fn reclaim_btrfs_snapshot(snapshot: &crate::btrfs::snapshot::SnapshotResult) {
     }
 }
 
-/// Try to create a BTRFS worktree via the delegate (privileged helper).
-///
-/// Returns `Ok(Some(result))` if the delegate succeeded, `Ok(None)` if no
-/// delegate is configured (fall through to copy), or `Err` on hard failures.
+/// Delegate btrfs create. `Ok(None)` if no delegate (fall through to copy);
+/// `Err` is a hard failure, not a fallthrough.
 #[cfg(target_os = "linux")]
 fn try_btrfs_delegate(plan: &WorktreePlan) -> Result<Option<CreateWorktreeResult>> {
     let delegate = match &plan.btrfs_delegate {
@@ -766,6 +823,8 @@ fn try_btrfs_delegate(plan: &WorktreePlan) -> Result<Option<CreateWorktreeResult
         strategy_metadata: Some(serde_json::json!({
             "btrfs": { "worktree_path": plan.dest }
         })),
+        skipped: Vec::new(),
+        daemon_capability_class: None,
     }))
 }
 
@@ -812,19 +871,15 @@ fn execute_btrfs_worktree(
         "BTRFS snapshot created"
     );
 
-    // `dest` is the direct snapshot, or (bind-mounted source) a symlink to the
-    // on-disk snapshot. Consumers that canonicalize the worktree cwd resolve
-    // through the symlink; prefix checks stay consistent because they canonicalize
-    // both sides. Matches the long-standing delegate (rootless host) behavior.
+    // Bind-mounted source: `dest` is a symlink to the on-disk snapshot.
+    // Prefix checks canonicalize both sides so they stay consistent.
     let worktree_path = snapshot_result
         .symlink_path
         .as_ref()
         .unwrap_or(&snapshot_result.snapshot_path);
 
-    // Post-snapshot git operations. If any fail, reclaim the snapshot
-    // (subvolume + metadata + symlink) — the symlink would otherwise keep an
-    // unusable worktree "active" forever (the orphan scanner skips active
-    // symlinks). Mirrors the overlay path's post-mount cleanup.
+    // On git failure reclaim subvolume + metadata + symlink. The symlink would
+    // otherwise keep an unusable worktree "active" forever.
     let post_snapshot = || -> Result<String> {
         // Clean up stale lock files and transient git state from the snapshot.
         // This MUST happen before any git operations because even `git reset --hard`
@@ -853,6 +908,8 @@ fn execute_btrfs_worktree(
         dirty_files_report: None,         // Not tracked for BTRFS snapshots
         resolved_strategy: crate::worktree::STRATEGY_BTRFS,
         strategy_metadata: None,
+        skipped: Vec::new(),
+        daemon_capability_class: None,
     })
 }
 
@@ -915,11 +972,9 @@ fn execute_copy_worktree(plan: WorktreePlan) -> Result<CreateWorktreeResult> {
     git::worktree_add_no_checkout(&source, &dest_str, &git_ref)?;
     tracing::debug!(elapsed = ?start.elapsed(), "git worktree add --no-checkout complete");
 
-    // `git worktree add` created dest + its `.git/worktrees/<name>` registration.
-    // From here, any early return (cancel or a hard error in copy/finalize/
-    // bad-ref) must reclaim both so a later pinned-dest fast path can't adopt a
-    // partial tree. No background threads touch dest in this path, so a drop
-    // guard is sufficient.
+    // From here any early return must reclaim dest and its registration, or a
+    // later pinned-dest fast path adopts a partial tree. No background thread
+    // touches dest, so a drop guard is enough.
     let guard = PartialWorktreeGuard::new(&dest);
 
     // Check cancellation after git worktree add (before the expensive copy).
@@ -1027,6 +1082,8 @@ fn execute_copy_worktree(plan: WorktreePlan) -> Result<CreateWorktreeResult> {
         dirty_files_report,
         resolved_strategy: crate::worktree::STRATEGY_COPY,
         strategy_metadata: None,
+        skipped: Vec::new(),
+        daemon_capability_class: None,
     })
 }
 
@@ -1039,11 +1096,9 @@ fn finalize_worktree(
 ) -> Result<()> {
     match working_tree {
         WorkingTreeMode::PreserveWorkingTree => {
-            // For PreserveWorkingTree we need the source's index (which
-            // reflects staged changes) and then update stat caches to
-            // match the newly copied files. This is the only mode where
-            // copying the index is correct — the files were CoW'd from
-            // the source so we want the source's staging state.
+            // Only PreserveWorkingTree may copy the index: files were CoW'd from
+            // the source, so the source staging state is the one we want. Then
+            // refresh stat caches for the copied files.
             git::copy_git_index(source, dest)?;
             let clean = collect_clean_metadata(file_metadata, modified_files_in_source);
             git::update_index_stats(dest, &clean)?;
@@ -1078,15 +1133,8 @@ fn collect_clean_metadata(
     clean
 }
 
-/// Execute worktree creation as a standalone repository copy.
-///
-/// Instead of using `git worktree add` (which creates a linked worktree sharing
-/// the source's object store), this CoW's the `.git/` directory to create a
-/// fully independent repository. The result can be promoted to replace the
-/// source via a simple `rename()`.
-///
-/// For `PreserveWorkingTree` mode, the index stat update is fire-and-forget
-/// (runs in a background thread) so the caller gets the result immediately.
+/// Standalone repo via CoW of `.git/`, not a linked worktree. Can replace the
+/// source with `rename()`. PreserveWorkingTree stat update is fire-and-forget.
 fn execute_standalone_worktree(plan: WorktreePlan) -> Result<CreateWorktreeResult> {
     let effective_parallelism = plan.effective_parallelism();
     let effective_ignored_parallelism = plan.effective_ignored_parallelism();
@@ -1135,18 +1183,9 @@ fn execute_standalone_worktree(plan: WorktreePlan) -> Result<CreateWorktreeResul
     std::fs::create_dir_all(&dest)
         .with_context(|| format!("failed to create dest directory: {}", dest.display()))?;
 
-    // Run .git/ copy, modified-files scan, and working tree copy with maximum
-    // parallelism. The three operations are independent:
-    //   - .git/ copy:          reads source/.git/,  writes dest/.git/
-    //   - modified files scan: reads source repo index + worktree (read-only)
-    //   - working tree copy:   reads source/*,      writes dest/* (skips .git/)
-    //
-    // For PreserveWorkingTree mode, the modified-files scan is only needed for
-    // the fire-and-forget index stat update, NOT for the file copy itself. So we
-    // run the scan in a background thread and start the copy immediately.
-    //
-    // For CleanTracked/CleanAll, we need the modified files list to skip dirty
-    // files during the copy, so the scan must complete before the copy begins.
+    // `.git/` copy, dirty scan, and worktree copy are independent. Preserve
+    // can start the copy immediately (scan is only for the stat update).
+    // Clean modes must finish the scan first so dirty files are skipped.
 
     let source_git = source_root.join(".git");
     let dest_git = dest.join(".git");
@@ -1183,10 +1222,8 @@ fn execute_standalone_worktree(plan: WorktreePlan) -> Result<CreateWorktreeResul
 
     match &working_tree {
         WorkingTreeMode::PreserveWorkingTree => {
-            // Modified files are only needed for the background index stat update,
-            // not the copy itself — start the scan in a background thread. On an
-            // early return its handle is dropped (detached); harmless, as the
-            // scan only reads the source repo and never touches `dest`.
+            // Scan is only for the background stat update. Dropping the handle
+            // detaches it; harmless — it only reads the source, never `dest`.
             modified_files_for_skip = None;
             let source_root_bg = source_root.clone();
             modified_scan_handle = Some(
@@ -1372,15 +1409,13 @@ fn execute_standalone_worktree(plan: WorktreePlan) -> Result<CreateWorktreeResul
         dirty_files_report,
         resolved_strategy: crate::worktree::STRATEGY_STANDALONE,
         strategy_metadata: None,
+        skipped: Vec::new(),
+        daemon_capability_class: None,
     })
 }
 
-/// Execute worktree creation using plain `git worktree add` with checkout.
-///
-/// Lets git handle the entire worktree creation: creates a linked worktree,
-/// checks out files, and builds the index. Uses `-c checkout.workers=N` to
-/// enable parallel checkout. This is simpler than the fast-copy path and
-/// avoids split-index / index-copy edge cases.
+/// Plain `git worktree add` with parallel checkout. Avoids split-index and
+/// index-copy edge cases of the fast-copy path.
 fn execute_git_checkout_worktree(plan: WorktreePlan) -> Result<CreateWorktreeResult> {
     let source = &plan.source;
     let dest = &plan.dest;
@@ -1457,6 +1492,8 @@ fn execute_git_checkout_worktree(plan: WorktreePlan) -> Result<CreateWorktreeRes
         dirty_files_report: None,
         resolved_strategy: crate::worktree::STRATEGY_GIT,
         strategy_metadata: None,
+        skipped: Vec::new(),
+        daemon_capability_class: None,
     })
 }
 
@@ -1464,6 +1501,24 @@ fn execute_git_checkout_worktree(plan: WorktreePlan) -> Result<CreateWorktreeRes
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn skip_line_stays_one_line() {
+        let err = anyhow::anyhow!("mount failed:\n  stderr: permission denied\n")
+            .context("overlay snapshot");
+        let skip = arm_failed(WorktreeArm::Overlay, &err);
+        assert_eq!(skip.arm, WorktreeArm::Overlay);
+        assert_eq!(
+            skip.to_string(),
+            "overlay: overlay snapshot: mount failed: stderr: permission denied"
+        );
+
+        let long = anyhow::anyhow!("{}", "x ".repeat(400));
+        let line = arm_failed(WorktreeArm::Btrfs, &long).to_string();
+        assert!(!line.contains('\n'));
+        assert!(line.chars().count() < 260, "{}", line.chars().count());
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

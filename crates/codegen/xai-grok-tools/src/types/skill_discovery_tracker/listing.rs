@@ -48,7 +48,7 @@ fn listing_header(_tool_name: &str) -> String {
 /// Whether a skill belongs in the model-facing listing. Native, bundled, and
 /// repo/user skills always qualify (they carry a body-derived description);
 /// plugin skills must have an authored `description` or `when_to_use`.
-fn is_listable(s: &SkillInfo) -> bool {
+pub(super) fn is_listable(s: &SkillInfo) -> bool {
     let is_plugin = s.plugin_name.is_some() || s.scope == SkillScope::Plugin;
     !is_plugin || s.has_user_specified_description || s.when_to_use.is_some()
 }
@@ -62,12 +62,9 @@ struct SkillEntry<'a> {
 }
 
 impl<'a> SkillEntry<'a> {
-    /// Return the functional description (trigger suffix stripped when `when_to_use` is set).
-    ///
-    /// When `when_to_use` is present and the description contains a recognized trigger
-    /// prefix, returns the portion before the prefix. Otherwise returns the full description.
-    /// Call once and pass the result to `format()` and `proportional_budgets()` to avoid
-    /// redundant `extract_trigger_suffix` allocations.
+    /// Return the functional description (trigger suffix stripped when `when_to_use` is set). When `when_to_use` is present and the description
+    /// contains a recognized trigger prefix, returns the portion before the prefix. Otherwise returns the full description. Call once and pass the
+    /// result to `format()` and `proportional_budgets()` to avoid redundant `extract_trigger_suffix` allocations.
     fn func_desc(&self) -> &str {
         if self.when_to_use.is_some() {
             extract_trigger_suffix(self.description).map_or(self.description, |(before, _)| before)
@@ -182,12 +179,9 @@ impl<'a> SkillEntry<'a> {
 
     // ── XML rendering ────────────────────────────────────────────
 
-    /// Render as an XML `<agent_skill>` row with the full description.
-    ///
-    /// Rendering behavior:
-    /// - Attribute values: only `"` is escaped to `&quot;`
-    /// - Body content: no XML escaping (passed through verbatim)
-    /// - Empty/whitespace-only description: self-closing `<agent_skill fullPath="..." />`
+    /// Render as an XML `<agent_skill>` row with the full description. Attribute values: only `"`
+    /// is escaped to `&quot;` Body content: no XML escaping (passed through verbatim)
+    /// Empty/whitespace-only description: self-closing `<agent_skill fullPath="..." />`
     fn format_xml_verbatim(&self) -> String {
         if self.description.trim().is_empty() {
             format!(
@@ -215,12 +209,9 @@ impl<'a> SkillEntry<'a> {
 struct SkillListing<'a>(Vec<SkillEntry<'a>>);
 
 impl<'a> SkillListing<'a> {
-    /// Render the listing within `budget` bytes, returning `None` if empty.
-    ///
-    /// Three tiers:
-    /// 1. Full descriptions (each capped at `MAX_LISTING_COMBINED_BYTES`) -- if within budget.
-    /// 2. Proportionally shortened descriptions -- if descriptions are the bottleneck.
-    /// 3. Names-only with overflow indicator -- when even short descriptions don't fit.
+    /// Render the listing within `budget` bytes, returning `None` if empty. Full descriptions (each capped at
+    /// `MAX_LISTING_COMBINED_BYTES`) -- if within budget. Proportionally shortened descriptions -- if descriptions are the
+    /// bottleneck. Names-only with overflow indicator -- when even short descriptions don't fit.
     fn render(self, budget: usize, skill_tool_name: &str) -> Option<String> {
         if self.0.is_empty() {
             return None;
@@ -271,10 +262,8 @@ impl<'a> SkillListing<'a> {
 
     // ── Budgeted XML rendering (grok build harness) ─────────────
 
-    /// Render as XML within `budget` bytes using the three-tier strategy:
-    /// 1. Full descriptions (each capped at `MAX_LISTING_COMBINED_BYTES`).
-    /// 2. Proportionally shortened descriptions.
-    /// 3. Names-only with overflow indicator.
+    /// Full descriptions (each capped at `MAX_LISTING_COMBINED_BYTES`). Proportionally shortened
+    /// descriptions. Names-only with overflow indicator.
     fn render_xml_budgeted(self, budget: usize, overflow_indicator: bool) -> Option<String> {
         if self.0.is_empty() {
             return None;
@@ -352,10 +341,8 @@ impl<'a> SkillListing<'a> {
 
     // ── Vendor-compat XML rendering ──────────────────────────────
 
-    /// Render as verbatim XML, returning `None` if empty.
-    ///
-    /// All skills are rendered with full descriptions, no budget-based
-    /// truncation, no XML entity escaping of body content.
+    /// Render as verbatim XML, returning `None` if empty. All skills are rendered with full
+    /// descriptions, no budget-based truncation, no XML entity escaping of body content.
     fn render_xml_verbatim(self) -> Option<String> {
         if self.0.is_empty() {
             return None;
@@ -424,10 +411,8 @@ fn collect_source_dirs<'a>(entries: &'a [SkillEntry<'a>]) -> Vec<&'a str> {
     dirs
 }
 
-/// Split a description at the first recognized trigger prefix.
-///
-/// Returns `(functional_desc, trigger_phrases)` or `None` if no prefix found
-/// or if either part would be empty.
+/// Split a description at the first recognized trigger prefix. Returns `(functional_desc,
+/// trigger_phrases)` or `None` if no prefix found or if either part would be empty.
 fn extract_trigger_suffix(description: &str) -> Option<(&str, &str)> {
     let desc_lower = description.to_ascii_lowercase();
     let mut best_pos: Option<usize> = None;
@@ -452,19 +437,9 @@ fn extract_trigger_suffix(description: &str) -> Option<(&str, &str)> {
     Some((before, triggers))
 }
 
-/// Strip a leading trigger connective (e.g. "Use when", "Triggers on") from a
-/// when-to-use string so the rendered `Use when: {wtu}` label is not duplicated.
-///
-/// Many internal skills embed their triggers in the `description` as
-/// "… Use when asked to X"; [`extract_trigger_suffix`] keeps that connective and
-/// the renderer prepends its own `Use when:` label, producing
-/// "Use when: Use when asked to X". Stripping the connective yields the clean
-/// "Use when: asked to X". Returns a sub-slice of `wtu`, or the trimmed input
-/// when no known connective leads.
-///
-/// A prefix only matches at a word boundary: the connective must be followed by
-/// end-of-string or a non-alphanumeric char, so "Use whenever …" is left intact
-/// rather than mangled into "ever …".
+/// Strip a leading trigger connective (e.g. "Use when", "Triggers on") from a when-to-use string so the rendered `Use when: {wtu}` label is not
+/// duplicated. Stripping the connective yields the clean "Use when: asked to X". A prefix only matches at a word boundary: the connective must
+/// be followed by end-of-string or a non-alphanumeric char, so "Use whenever …" is left intact rather than mangled into "ever …".
 fn strip_leading_trigger_prefix(wtu: &str) -> &str {
     let trimmed = wtu.trim_start();
     let lower = trimmed.to_ascii_lowercase();
@@ -507,21 +482,16 @@ fn xml_text_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// Escape a string for use in XML attribute values, matching the behavior
-/// of the alternate XML format: only `"` is replaced with `&quot;`.
-///
-/// This intentionally does NOT escape `<`, `>`, `&`, or `'` to maintain
-/// compatibility with the alternate rendering path.
-/// Used by the vendor-compat XML rendering path.
+/// Escape a string for use in XML attribute values, matching the behavior of the alternate XML format: only `"` is
+/// replaced with `&quot;`. This intentionally does NOT escape `<`, `>`, `&`, or `'` to maintain compatibility with the
+/// alternate rendering path. Used by the vendor-compat XML rendering path.
 fn jsx_attr_escape(s: &str) -> String {
     s.replace('"', "&quot;")
 }
 
-/// Build a `SkillEntry` from a `SkillInfo`, optionally extracting trigger
-/// phrases from the description when no explicit `when_to_use` is set.
-///
-/// The full `description` is always preserved on `SkillEntry`; extraction only
-/// populates `when_to_use` without modifying the description text.
+/// Build a `SkillEntry` from a `SkillInfo`, optionally extracting trigger phrases from the
+/// description when no explicit `when_to_use` is set. The full `description` is always preserved on
+/// `SkillEntry`; extraction only populates `when_to_use` without modifying the description text.
 fn build_skill_entry<'a>(
     s: &'a SkillInfo,
     real_prefix: Option<&str>,
@@ -563,15 +533,9 @@ pub enum XmlRenderMode {
     },
 }
 
-/// Render a skill listing as `<agent_skill>` XML rows.
-///
-/// Output is a sequence of `<agent_skill fullPath="...">description</agent_skill>`
-/// rows separated by blank lines (no enclosing `<agent_skills>` envelope --
-/// the caller wraps it). The skill name is implicit in the parent directory
-/// of `fullPath`.
-///
-/// Filters out skills with `disable_model_invocation` and those already in
-/// `announced` (dedup). Returns `None` if no new skills remain.
+/// Render a skill listing as `<agent_skill>` XML rows. Output is a sequence of `<agent_skill fullPath="...">description</agent_skill>` rows
+/// separated by blank lines (no enclosing `<agent_skills>` envelope --the caller wraps it). The skill name is implicit in the parent directory
+/// of `fullPath`. Filters out skills with `disable_model_invocation` and those already in `announced` (dedup).
 pub fn format_announcement_xml(
     skills: &[SkillInfo],
     announced: &mut HashSet<String>,
@@ -606,10 +570,9 @@ pub fn format_announcement_xml(
     }
 }
 
-/// Build and render a skill listing announcement within the given budget.
-///
-/// Filters out skills with `disable_model_invocation` and those already
-/// in `announced` (dedup). Returns `None` if no new skills remain.
+/// Build and render a skill listing announcement within the given budget. Filters out skills with
+/// `disable_model_invocation` and those already in `announced` (dedup). Returns `None` if no new
+/// skills remain.
 pub(super) fn format_announcement(
     skills: &[SkillInfo],
     announced: &mut HashSet<String>,
@@ -634,12 +597,9 @@ pub(super) fn format_announcement(
     listing.render(budget, skill_tool_name)
 }
 
-/// Render the standard skill listing for the post-compaction system-reminder.
-///
-/// Reuses [`format_announcement`] so the post-compaction listing matches the
-/// startup `<system-reminder>` byte-for-byte (standard header, `Use when:`
-/// triggers, `Absolute path:`) instead of a hand-rolled divergent format.
-/// Lists every enabled, model-invocable skill with no carried-over dedup state.
+/// Render the standard skill listing for the post-compaction system-reminder. Reuses [`format_announcement`] so the post-compaction listing
+/// matches the startup `<system-reminder>` byte-for-byte (standard header, `Use when:` triggers, `Absolute path:`) instead of a hand-rolled
+/// divergent format. Lists every enabled, model-invocable skill with no carried-over dedup state.
 pub fn format_compaction_skill_listing(skills: &[SkillInfo]) -> Option<String> {
     let mut announced = HashSet::new();
     format_announcement(

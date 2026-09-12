@@ -1,5 +1,3 @@
-//! Tests for the Chat Completions conversion.
-
 use super::test_support::*;
 use super::*;
 use assert_matches::assert_matches;
@@ -24,10 +22,8 @@ fn test_conversation_item_roundtrip() {
     let back: ConversationItem = chat_msg.into();
     assert_eq!(back.text_content(), "Hello!");
 
-    // Assistant message (reasoning is now a sibling, not a field;
-    // single-item conversion produces None for reasoning_content. The
-    // `conversation_to_chat_messages` helper is what carries reasoning
-    // through; tested separately).
+    // Reasoning is a sibling item, so the single-item conversion leaves reasoning_content None
+    // The `conversation_to_chat_messages` helper carries reasoning through and is tested separately
     let assistant = ConversationItem::assistant_with_model("Hi there!", "grok-3");
     let chat_msg = conversation_item_to_chat_message(assistant);
     assert_eq!(chat_msg.reasoning_content, None);
@@ -111,10 +107,7 @@ fn test_chat_response_message_to_conversation_item() {
         panic!("Expected Assistant item");
     };
     assert_eq!(a.content.as_ref(), "The answer is 42.");
-    // Reasoning content from a chat-completions ChatResponseMessage is
-    // dropped on the single-item `From` path; the streaming consumer
-    // produces a sibling `ConversationItem::Reasoning` instead. See
-    // the doc comment on `From<ChatResponseMessage>`.
+    // Reasoning content is dropped on the single-item `From` path; see the doc comment on `From<ChatResponseMessage>`
 
     // Response with tool calls
     let response_with_tools = ChatResponseMessage {
@@ -346,8 +339,7 @@ fn test_user_with_multiple_images() {
 
 #[test]
 fn test_malformed_tool_arguments_sanitized_to_empty_object_in_chat_request() {
-    // Exactly the broken string from the real incident:
-    // missing `"` before `new_string` → JSON parse fails at char 80.
+    // Exactly the broken string from the real incident: the missing `"` before `new_string` makes the JSON parse fail at char 80
     let bad_args = r#"{"file_path": "/testbed/cxx_polynomial/include/emsr/remez.h", "old_string": "", new_string": "x"}"#;
     assert!(
         serde_json::from_str::<serde_json::Value>(bad_args).is_err(),
@@ -363,7 +355,6 @@ fn test_malformed_tool_arguments_sanitized_to_empty_object_in_chat_request() {
     let item = ConversationItem::assistant_tool_calls(vec![tool_call]);
     let chat_msg = conversation_item_to_chat_message(item);
 
-    // Arguments must be replaced with valid JSON.
     let sanitized = &chat_msg.tool_calls[0].function.arguments;
     assert_eq!(
         sanitized, "{}",
@@ -450,7 +441,6 @@ fn test_btw_cross_api_chat_completions_no_regressions() {
         .get("tool_calls")
         .and_then(|tc| tc.as_array())
         .is_some_and(|a| !a.is_empty());
-    // If the last assistant has tool_calls, there must be a tool message after it.
     if has_tool_calls {
         let last_asst_idx = messages
             .iter()
@@ -465,7 +455,6 @@ fn test_btw_cross_api_chat_completions_no_regressions() {
         );
     }
 
-    // Temperature must be absent.
     assert!(
         json.get("temperature").is_none()
             || json.pointer("/temperature").is_some_and(|v| v.is_null()),
@@ -497,11 +486,10 @@ fn test_btw_cross_api_chat_completions_no_regressions() {
 #[test]
 fn test_sanitize_non_ascii_args_preview_does_not_panic() {
     // Build a string where the 200-byte boundary lands inside a CJK char.
-    // Each '文' is 3 bytes → 67 × 3 = 201 bytes; byte 200 is inside the 67th char.
-    let filler = "文".repeat(70); // > 200 bytes
+    // Each '文' is 3 bytes, so 67 × 3 = 201 bytes; byte 200 is inside the 67th char
+    let filler = "文".repeat(70);
     let bad_args = format!("{{\"old_string\": \"{filler}\"}}");
-    // The outer JSON is valid but contains non-ASCII; force the warning path
-    // by making the JSON invalid.
+    // The outer JSON is valid but contains non-ASCII; force the warning path by making the JSON invalid
     let malformed = format!("{{\"old_string\": \"{filler}\" missing_key}}");
 
     let tool_call = ToolCall {
@@ -544,7 +532,6 @@ fn test_tool_result_with_images_to_chat_completions() {
     assert_eq!(msg.role, Role::Tool);
     assert_eq!(msg.tool_call_id, Some("call_1".to_string()));
 
-    // Should be Blocks, not Text
     let MessageContent::Blocks(blocks) = &msg.content else {
         panic!(
             "Expected Blocks content for image tool result, got {:?}",
@@ -562,11 +549,9 @@ fn test_tool_result_with_images_to_chat_completions() {
 
 #[test]
 fn conversation_to_chat_messages_drops_reasoning_when_user_intervenes() {
-    // Reasoning only folds onto the *immediately* following assistant. A
-    // non-assistant item in between (here a User) clears pending reasoning,
-    // matching the "reasoning lived on the immediately-following assistant
-    // turn only" semantic. This is the non-trailing sibling of
-    // `conversation_to_chat_messages_drops_trailing_reasoning`.
+    // Reasoning only folds onto the *immediately* following assistant
+    // A non-assistant item in between (here a User) clears pending reasoning
+    // `conversation_to_chat_messages_drops_trailing_reasoning` covers the trailing case
     let items = vec![
         reasoning_sibling("r1", "stale thinking", None),
         ConversationItem::user("actually, new question"),
@@ -592,10 +577,8 @@ fn conversation_to_chat_messages_drops_reasoning_when_user_intervenes() {
 
 #[test]
 fn upgrade_then_fold_through_conversation_to_chat_messages() {
-    // End-to-end: lift legacy `reasoning` to a sibling, then run the
-    // chat-completions wire path. Reasoning must land on the next
-    // assistant's `reasoning_content`. This mirrors what the real
-    // load-then-replay flow does for a legacy session.
+    // End-to-end: lift legacy `reasoning` to a sibling, then run the chat-completions wire path
+    // This mirrors what the real load-then-replay flow does for a legacy session
     let raw = serde_json::json!({
         "type": "assistant",
         "content": "the answer",
@@ -603,9 +586,7 @@ fn upgrade_then_fold_through_conversation_to_chat_messages() {
     });
     let mut seen = std::collections::HashSet::new();
     let mut siblings = upgrade_legacy_reasoning(&raw, &mut seen);
-    // Append the assistant (post-strip) by re-deserializing the same
-    // raw value as the new AssistantItem (which silently ignores
-    // `reasoning`).
+    // Append the assistant by re-deserializing the same raw value; AssistantItem silently ignores `reasoning`
     let assistant: ConversationItem = serde_json::from_value(raw).unwrap();
     siblings.push(assistant);
 

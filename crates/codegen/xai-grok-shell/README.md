@@ -327,7 +327,7 @@ export GROK_AUTH_EARLY_INVALIDATION_SECS=300
 ```
 
 **Keep in mind:**
-- When using `auth_provider_command`, you don't need to run `grok login` before starting — Grok runs your binary automatically on first launch. You _can_ run `grok login` to explicitly hydrate `auth.json` ahead of time if you prefer.
+- When using `auth_provider_command`, you don't need to run `grok login` before starting — on first launch Grok runs your binary on the real terminal (URL and progress on stderr), then opens the UI already signed in. You _can_ run `grok login` to explicitly hydrate `auth.json` ahead of time if you prefer. Mid-session `/login` still uses the in-TUI copy-link overlay.
 - If both OIDC and `auth_provider_command` are configured: at **login** time, Grok tries OIDC silent refresh first (if a `refresh_token` exists), then the external binary, then browser-based login. During a **session**, whichever method is configured is used exclusively — if `auth_provider_command` is set it handles all mid-session refreshes; otherwise OIDC silent refresh is used.
 - Your binary's stderr output is displayed to the user but interactive stdin is not supported. This works well for browser-based SSO flows where the binary displays a URL and you complete authentication in the browser.
 
@@ -1793,9 +1793,15 @@ never removes or replaces another layer's block. Each hook's `/hooks-list` name 
 prefixed with the layer it came from (for example `managed:` or
 `requirements/user:`).
 
-Config-layer hooks are convenience distribution, not an enforcement boundary: on
-an unmanaged device a user can still edit these files. Tamper-resistant,
-admin-enforced hooks are tracked separately.
+Hooks from the **root-owned** layers (a system-dir `requirements.toml` such as
+`/etc/grok/requirements.toml`, or `/etc/grok/managed_config.toml`) are enforced:
+they cannot be disabled from the hooks modal, the enable/disable APIs, or the
+`disabled-hooks` file, and a byte-identical copy in a lower layer cannot take
+over their provenance. Enforcement relies on OS file ownership — deploy these
+files root-owned (or via MDM); there is no signature verification. Hooks in
+`$GROK_HOME` layers (`requirements.toml`, `managed_config.toml`, `config.toml`)
+remain convenience distribution, not an enforcement boundary: the user owns
+that directory and can edit or repoint it.
 
 ---
 
@@ -2607,7 +2613,7 @@ The `--debug` firehose uses a fixed filter (first-party crates at `debug`) and i
 
 ```bash
 # Debug auth, info for everything else
-GROK_LOG_FILE=/tmp/grok-debug.log RUST_LOG="info,xai_grok_shell::auth=debug" grok
+GROK_LOG_FILE=/tmp/grok-debug.log RUST_LOG="info,xai_grok_login=debug" grok
 ```
 
 ### Authentication fails

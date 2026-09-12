@@ -170,7 +170,7 @@ fn facts(
 ) -> (DiagnosticFacts, ClipboardRecovery) {
     let ctx = snapshot.common.terminal;
     let available_themes = match snapshot.color_level {
-        RuntimeEvidence::Available(color_level) => crate::theme::ThemeKind::ALL
+        RuntimeEvidence::Available(color_level) => crate::theme::ThemeKind::selectable()
             .iter()
             .copied()
             .filter(|kind| color_level.has_truecolor() || !kind.requires_truecolor())
@@ -242,7 +242,7 @@ fn facts(
                     RuntimeEvidence::Unavailable => RuntimeFact::Unavailable,
                 },
                 available_themes,
-                total_themes: crate::theme::ThemeKind::ALL.len(),
+                total_themes: crate::theme::ThemeKind::selectable().len(),
             },
             keyboard,
             newline,
@@ -619,9 +619,8 @@ fn tmux_option_fact(result: &TmuxProbeResult<String>) -> TmuxOptionFact {
     }
 }
 
-/// tmux marks a client `RGB` when the outer terminfo declares `RGB`/`Tc` or
-/// `terminal-features` adds it; either way the feature list is the single
-/// authoritative signal, and a missing answer is not evidence of clamping.
+/// tmux marks a client `RGB` when the outer terminfo declares `RGB`/`Tc` or `terminal-features` adds it.
+/// Either way the feature list is the single authoritative signal, and a missing answer means `Unknown`, not `Reduced`.
 fn tmux_color_passthrough(result: &TmuxProbeResult<String>) -> TmuxColorPassthrough {
     let TmuxProbeResult::Available(features) = result else {
         return TmuxColorPassthrough::Unknown;

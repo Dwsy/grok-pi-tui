@@ -165,10 +165,7 @@ fn bench_streaming_full_rerender(c: &mut Criterion) {
 }
 
 /// Generate a hyperlink-heavy markdown document.
-///
-/// Each block contains 4 inline links and 1 autolink so the renderer's
-/// link-translation path is exercised on most rendered lines.  Designed
-/// to surface O(lines * link_targets) costs in `translate_link_targets`.
+/// Each block contains 4 inline links and 1 autolink so the renderer's link-translation path is exercised on most rendered lines. Designed to surface O(lines * link_targets) costs in `translate_link_targets`.
 fn generate_hyperlink_content(num_blocks: usize) -> String {
     let mut content = String::new();
     for i in 0..num_blocks {
@@ -190,10 +187,7 @@ fn generate_hyperlink_content(num_blocks: usize) -> String {
 }
 
 /// Benchmark a single full render of a hyperlink-heavy document.
-///
-/// Surfaces the cost of the parse-time `link_targets` collection plus the
-/// post-render translation step.  Pair with `bench_render_markdown` to see
-/// the link-translation overhead in isolation.
+/// Surfaces the cost of the parse-time `link_targets` collection plus the post-render translation step. Pair with `bench_render_markdown` to see the link-translation overhead in isolation.
 fn bench_render_markdown_hyperlinks(c: &mut Criterion) {
     let syntect = create_syntect();
     let mut group = c.benchmark_group("render_markdown_hyperlinks");
@@ -220,7 +214,6 @@ fn bench_render_markdown_hyperlinks(c: &mut Criterion) {
 }
 
 /// Benchmark incremental streaming of a hyperlink-heavy document.
-///
 /// Exercises `rerender_tail` repeatedly, which calls the link-translation
 /// path on the unfrozen tail every push.
 fn bench_streaming_hyperlinks_incremental(c: &mut Criterion) {
@@ -281,10 +274,6 @@ fn bench_streaming_incremental(c: &mut Criterion) {
 }
 
 /// Generate a math-heavy markdown document.
-///
-/// Each block exercises all four delimiter forms (`$...$`, `$$...$$`,
-/// `\(...\)`, `\[...\]`) plus the expensive converter paths: scripts,
-/// fractions, roots, symbol lookups, alphabets, and multi-row environments
 /// (aligned / pmatrix / cases) that go through the MathBox 2D layout.
 fn generate_math_content(num_blocks: usize) -> String {
     let mut content = String::new();
@@ -312,8 +301,6 @@ fn generate_math_content(num_blocks: usize) -> String {
 }
 
 /// Benchmark a single full render of a math-heavy document.
-///
-/// Surfaces the cost of the LaTeX → Unicode converter plus the parse-time
 /// `\(...\)` / `\[...\]` source scans and block replacements.
 fn bench_render_markdown_math(c: &mut Criterion) {
     let syntect = create_syntect();
@@ -341,10 +328,7 @@ fn bench_render_markdown_math(c: &mut Criterion) {
 }
 
 /// Benchmark incremental streaming of a math-heavy document.
-///
-/// Exercises the streaming hot path the `MAX_MATH_SOURCE_LEN` guard
-/// protects: every push re-renders the unfrozen tail, re-running the math
-/// scans and conversions on it.
+/// Exercises the streaming hot path the `MAX_MATH_SOURCE_LEN` guard protects: every push re-renders the unfrozen tail, re-running the math scans and conversions on it.
 fn bench_streaming_math_incremental(c: &mut Criterion) {
     let mut group = c.benchmark_group("streaming_math");
     let syntect = create_syntect();
@@ -385,11 +369,7 @@ fn generate_plain_url_content(num_blocks: usize) -> String {
 }
 
 /// Benchmark streaming + finish() of a plain-URL-heavy document.
-///
-/// Exercises the `detect_plain_urls` scan, which after the multi-line-URL
-/// fix runs inside both `rerender_tail` (every `push_and_render`) and
-/// `finish()`.  Bench numbers from this point forward are not comparable
-/// to historical runs that measured the prior `finish()`-only path.
+/// Exercises the `detect_plain_urls` scan, which after the multi-line-URL fix runs inside both `rerender_tail` (every `push_and_render`) and `finish()`. Bench numbers from this point forward are not comparable to historical runs that measured the prior `finish()`-only path.
 fn bench_streaming_plain_urls_incremental(c: &mut Criterion) {
     let mut group = c.benchmark_group("streaming_plain_urls");
     let syntect = create_syntect();
@@ -417,10 +397,7 @@ fn bench_streaming_plain_urls_incremental(c: &mut Criterion) {
 }
 
 /// Generate a realistic nested YAML document of roughly `num_lines` lines.
-///
-/// Produces nested keys, lists, and scalars (the kind of config an LLM streams
-/// into a single fenced block) so the syntect highlighter does real work per
-/// line rather than trivial whitespace.
+/// Produces nested keys, lists, and scalars (the kind of config an LLM streams into a single fenced block) so the syntect highlighter does real work per line rather than trivial whitespace.
 fn generate_yaml_lines(num_lines: usize) -> Vec<String> {
     let mut lines = Vec::with_capacity(num_lines);
     let mut i = 0usize;
@@ -450,13 +427,9 @@ fn generate_yaml_lines(num_lines: usize) -> Vec<String> {
     lines
 }
 
-/// Benchmark streaming a SINGLE open ```yaml fenced block line-by-line WITHOUT
-/// ever closing the fence.
-///
-/// This reproduces the UI-freeze pathology: while the fence is open the block
-/// never checkpoints, so every `push_and_render` re-highlights the whole tail.
-/// With the incremental open-code cache, per-line cost should stay roughly flat
-/// in block size instead of growing linearly (overall O(N) instead of O(N²)).
+/// Benchmark streaming a SINGLE open ```yaml fenced block line-by-line WITHOUT ever closing the fence.
+/// This reproduces the UI-freeze pathology: while the fence is open the block never checkpoints, so every `push_and_render` re-highlights the whole tail.
+/// With the incremental open-code cache, per-line cost should stay roughly flat in block size instead of growing linearly (overall O(N) instead of O(N²)).
 fn bench_streaming_open_yaml_incremental(c: &mut Criterion) {
     let mut group = c.benchmark_group("streaming_open_yaml");
     let syntect = create_syntect();
@@ -490,9 +463,7 @@ fn bench_streaming_open_yaml_incremental(c: &mut Criterion) {
     group.finish();
 }
 
-/// Closed scala fences inside bullet list items, then `trailing_words` more
-/// streamed content in the same never-closing list. Lists can't checkpoint,
-/// so the fences stay in the re-rendered tail for the whole stream
+/// Closed scala fences inside bullet list items, then `trailing_words` more streamed content in the same never-closing list. Lists can't checkpoint, so the fences stay in the re-rendered tail for the whole stream
 /// (~108 ms/token, ~4.5 s UI stall).
 fn generate_fence_in_list_content(trailing_words: usize) -> String {
     let mut s = String::new();
@@ -548,10 +519,7 @@ fn generate_fence_top_level_content(trailing_words: usize) -> String {
     s
 }
 
-/// Stream closed-fences-in-open-list token-by-token (`in_list`) against the
-/// checkpoint-friendly `top_level` control. `in_list` must stay within a
-/// small constant of `top_level`; unbounded growth in `trailing_words` is
-/// the regression.
+/// Stream closed-fences-in-open-list token-by-token (`in_list`) against the checkpoint-friendly `top_level` control. `in_list` must stay within a small constant of `top_level`; unbounded growth in `trailing_words` is the regression.
 fn bench_streaming_fence_in_list(c: &mut Criterion) {
     let mut group = c.benchmark_group("streaming_fence_in_list");
     group.sample_size(10);

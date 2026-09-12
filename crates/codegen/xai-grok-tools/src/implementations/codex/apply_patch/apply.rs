@@ -10,11 +10,9 @@ use super::errors::ApplyPatchError;
 use super::parser::UpdateFileChunk;
 use super::seek_sequence::seek_sequence;
 
-/// Given the original file content as a `&str` and the list of update chunks,
-/// compute and return the new file contents as a `String`.
-///
-/// This is the main entry point for the apply logic. It does NOT read from or
-/// write to the filesystem.
+/// Given the original file content as a `&str` and the list of update chunks, compute and return
+/// the new file contents as a `String`. This is the main entry point for the apply logic. It does
+/// NOT read from or write to the filesystem.
 pub fn derive_new_contents(
     original_content: &str,
     path: &Path,
@@ -115,11 +113,9 @@ pub fn compute_replacements(
     Ok(replacements)
 }
 
-/// Apply the `(start_index, old_len, new_lines)` replacements to
-/// `original_lines`, returning the modified file contents as a vector of lines.
-///
-/// Replacements are applied in **reverse order** so that earlier replacements
-/// don't shift the positions of later ones.
+/// Apply the `(start_index, old_len, new_lines)` replacements to `original_lines`, returning the
+/// modified file contents as a vector of lines. Replacements are applied in **reverse order** so
+/// that earlier replacements don't shift the positions of later ones.
 pub fn apply_replacements(
     mut lines: Vec<String>,
     replacements: &[(usize, usize, Vec<String>)],

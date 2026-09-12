@@ -1,8 +1,10 @@
 use super::{
     EnvironmentVariablePattern, ShellEnvironmentPolicy, ShellEnvironmentPolicyInherit,
-    apply_shell_environment_policy, create_env_from_vars,
+    apply_shell_environment_policy, create_env_from_vars, install_policy_base_env,
 };
 use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::path::Path;
 
 fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs
@@ -163,4 +165,51 @@ fn allows_with_inherit_honors_inherit() {
     };
     assert!(all.allows_with_inherit("RANDOM_VAR"));
     assert!(!all.allows_with_inherit("AWS_SECRET"));
+}
+
+fn child_path(cmd: &tokio::process::Command) -> Option<Option<&OsStr>> {
+    cmd.as_std()
+        .get_envs()
+        .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
+        .map(|(_, v)| v)
+}
+
+/// The Windows agent-shell spawn prepends the bundled git with
+/// `PathBase::ExplicitOnly` whenever a policy is active: a base env without
+/// PATH stays without PATH, a base env that carries one gets the dir first.
+#[test]
+fn bundled_git_prepend_respects_the_policy_base_env() {
+    let dir = Path::new("/mingit/cmd");
+    let sep = if cfg!(windows) { ";" } else { ":" };
+
+    let inherit_none = ShellEnvironmentPolicy {
+        inherit: ShellEnvironmentPolicyInherit::None,
+        ..Default::default()
+    };
+    let mut cmd = tokio::process::Command::new("true");
+    install_policy_base_env(&mut cmd, Some(&inherit_none));
+    xai_tty_utils::prepend_child_path(cmd.as_std_mut(), dir, xai_tty_utils::PathBase::ExplicitOnly);
+    assert_eq!(child_path(&cmd), None, "inherit=none must not grow a PATH");
+
+    let mut set = HashMap::new();
+    set.insert("PATH".to_string(), "/policy/bin".to_string());
+    let with_path = ShellEnvironmentPolicy {
+        inherit: ShellEnvironmentPolicyInherit::None,
+        set,
+        ..Default::default()
+    };
+    let mut cmd = tokio::process::Command::new("true");
+    install_policy_base_env(&mut cmd, Some(&with_path));
+    xai_tty_utils::prepend_child_path(cmd.as_std_mut(), dir, xai_tty_utils::PathBase::ExplicitOnly);
+    assert_eq!(
+        child_path(&cmd).flatten().unwrap(),
+        OsStr::new(&format!("/mingit/cmd{sep}/policy/bin"))
+    );
+
+    // No policy: the inherited environment, so the process PATH is the tail.
+    let mut cmd = tokio::process::Command::new("true");
+    install_policy_base_env(&mut cmd, None);
+    xai_tty_utils::prepend_child_path(cmd.as_std_mut(), dir, xai_tty_utils::PathBase::Process);
+    let value = child_path(&cmd).flatten().unwrap().to_owned();
+    assert_eq!(std::env::split_paths(&value).next().unwrap(), dir);
 }

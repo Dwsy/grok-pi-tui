@@ -10,23 +10,23 @@ mod conditional;
 mod listing;
 mod skill_path_suggestion;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 use crate::implementations::skills::types::SkillInfo;
 use crate::types::compat::CompatConfig;
 
 use conditional::ConditionalSkills;
-use listing::{DEFAULT_SKILL_TOOL_NAME, SKILL_BUDGET_CONTEXT_PERCENT, format_announcement};
+use listing::{
+    DEFAULT_SKILL_TOOL_NAME, SKILL_BUDGET_CONTEXT_PERCENT, format_announcement, is_listable,
+};
 
 pub use listing::{XmlRenderMode, format_announcement_xml, format_compaction_skill_listing};
 
-/// Why a `SkillUpdateEffects` was produced.
-///
-/// Lets the session distinguish dynamic discoveries (the model navigated
-/// into a directory containing a new `SKILL.md`) from baseline changes
-/// (session start, plugin reload, `/clear`). Some templates suppress one
-/// but not the other.
+/// Why a `SkillUpdateEffects` was produced. Lets the session distinguish dynamic discoveries (the
+/// model navigated into a directory containing a new `SKILL.md`) from baseline changes (session
+/// start, plugin reload, `/clear`). Some templates suppress one but not the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkillUpdateKind {
     /// New skills discovered dynamically while the session is running
@@ -51,13 +51,9 @@ pub struct SkillListingSnapshot {
     pub skill_count: usize,
 }
 
-/// Conversation/UI side-effects the session must perform after a skill update.
-///
-/// The tools layer handles all skill-domain logic (projections, dedup,
-/// writing `AvailableSkills`). This struct carries only the effects that
-/// require session capabilities: injecting a `<system-reminder>` message
-/// and refreshing slash command advertisement. Slash command data is read
-/// from `bridge.slash_skills()`, not from this struct.
+/// Conversation/UI side-effects the session must perform after a skill update. The tools layer handles all skill-domain logic (projections,
+/// dedup, writing `AvailableSkills`). This struct carries only the effects that require session capabilities: injecting a `<system-reminder>`
+/// message and refreshing slash command advertisement. Slash command data is read from `bridge.slash_skills()`, not from this struct.
 #[derive(Debug, Clone, Default)]
 pub struct SkillUpdateEffects {
     /// If `Some`, inject this text as a `<system-reminder>` user message.
@@ -72,15 +68,9 @@ pub struct SkillUpdateEffects {
     pub kind: SkillUpdateKind,
 }
 
-/// Authoritative state for the full skill lifecycle.
-///
-/// Owns both the startup baseline and dynamic discoveries. The session
-/// never stores skill state; it triggers state transitions here and
-/// executes the resulting `SkillUpdateEffects`.
-///
-/// Named `SkillManager` (not `SkillDiscoveryTracker`) because it manages
-/// the full lifecycle: startup baseline, dynamic discovery, projections,
-/// announcements, compaction, and /clear.
+/// Authoritative state for the full skill lifecycle. The session never stores skill state; it triggers state transitions here and executes the
+/// resulting `SkillUpdateEffects`. Named `SkillManager` (not `SkillDiscoveryTracker`) because it manages the full lifecycle: startup baseline,
+/// dynamic discovery, projections, announcements, compaction, and /clear.
 #[derive(Debug, Clone, Default)]
 pub struct SkillManager {
     /// Skills loaded at session start (or refreshed on plugin reload).
@@ -113,9 +103,9 @@ pub struct SkillManager {
     /// Current working directory (canonicalized).
     pub cwd: Option<PathBuf>,
 
-    /// Pending reconciliation. Set by `add_discovered()` or baseline
-    /// changes. Drained by `take_pending_reconciliation()`.
     pending: Option<PendingKind>,
+
+    has_pending_discovery: bool,
 
     /// Chat budget for skill listing system-reminders.
     /// Falls back to `DEFAULT_CHAR_BUDGET` when `None`.
@@ -143,11 +133,13 @@ pub struct SkillManager {
     /// is touched, plus their activation state. See [`ConditionalSkills`].
     conditional: ConditionalSkills,
 
-    /// Every skill name from session-start discovery, set once by
-    /// `ToolRegistryBuilder::finalize` from the unfiltered
-    /// `SessionContext.skills` and never rewritten by later seeds or
-    /// baseline reloads. The `paths:` gate never applies here.
+    /// Every skill name from session-start discovery, set once by `ToolRegistryBuilder::finalize`
+    /// from the unfiltered `SessionContext.skills` and never rewritten by later seeds or baseline
+    /// reloads. The `paths:` gate never applies here.
     discovery_snapshot_names: Vec<String>,
+
+    /// Last listing hash, so a lost `announced_names` set cannot re-inject the same block.
+    last_emitted_listing_hash: Option<u64>,
 }
 
 /// Canonicalize a skill path, falling back to the raw path for not-yet-created
@@ -156,13 +148,20 @@ fn canonical_path(path: &str) -> PathBuf {
     dunce::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
 }
 
+fn listing_content_hash(text: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Why a reconciliation is pending.
 #[derive(Debug, Clone)]
 enum PendingKind {
-    /// New skills discovered (dynamic). Announcement needed.
-    Discovery,
-    /// Baseline changed (plugin reload / /clear). Prompt re-render needed.
+    /// Nothing announced yet (session start / `/clear`). Full listing needed.
     BaselineChange,
+    /// Baseline rescanned while the previous listing is still in context;
+    /// only these skills need announcing.
+    BaselineAdded(Vec<SkillInfo>),
 }
 
 /// Dedup helpers -- defined here so the tracker can compute projections
@@ -178,6 +177,20 @@ fn dedup_by_canonical_path(primary: &[SkillInfo], secondary: &[SkillInfo]) -> Ve
         }
     }
     result
+}
+
+fn reconcile_queued(queued: &mut Vec<SkillInfo>, current: &[SkillInfo]) {
+    let identities: HashSet<_> = queued
+        .iter()
+        .map(|s| (canonical_path(&s.path), s.dedup_key()))
+        .collect();
+    *queued = current
+        .iter()
+        .filter(|skill| {
+            skill.enabled && identities.contains(&(canonical_path(&skill.path), skill.dedup_key()))
+        })
+        .cloned()
+        .collect()
 }
 
 fn dedupe_by_canonical_path_and_name(
@@ -211,13 +224,9 @@ struct ListingRenderParams<'a> {
     skill_tool_name: &'a str,
 }
 
-/// Render the model-facing listing for `skills`, deduplicating against
-/// `announced`. Keys are inserted before budget truncation, so `announced`
-/// tracks skills that qualified, not skills whose text survived.
-///
-/// Both [`SkillManager::take_pending`] and
-/// [`SkillManager::listing_snapshot`] render through this path, so the
-/// injected reminders and the `/context` estimate cannot drift apart.
+/// Render the model-facing listing for `skills`, deduplicating against `announced`. Keys are inserted before budget truncation, so `announced`
+/// tracks skills that qualified, not skills whose text survived. Both [`SkillManager::take_pending`] and [`SkillManager::listing_snapshot`]
+/// render through this path, so the injected reminders and the `/context` estimate cannot drift apart.
 fn render_listing(
     skills: &[SkillInfo],
     announced: &mut HashSet<String>,
@@ -282,11 +291,9 @@ impl SkillManager {
         self.compat = compat;
     }
 
-    /// Pre-populate `announced_names` from persisted state.
-    ///
-    /// Must be called BEFORE `seed()`.  When `announced_names` is non-empty,
-    /// `seed()` skips setting `pending = BaselineChange`, preventing
-    /// duplicate skill listing injection on session resume.
+    /// Pre-populate `announced_names` from persisted state. Must be called BEFORE `seed()`. When
+    /// `announced_names` is non-empty, `seed()` skips setting `pending = BaselineChange`,
+    /// preventing duplicate skill listing injection on session resume.
     pub fn restore_announced_names(&mut self, names: HashSet<String>) {
         self.announced_names = names;
     }
@@ -296,20 +303,9 @@ impl SkillManager {
         &self.announced_names
     }
 
-    /// Seed the tracker with session context and startup skills.
-    ///
-    /// Called once at session start. Sets the git root, cwd, and the
-    /// initial startup baseline. Marks a pending baseline change so
-    /// the first `apply_pending_skill_update()` delivers the startup
-    /// skill listing as a `<system-reminder>`.
-    ///
-    /// When `announced_names` is already non-empty (restored from persisted
-    /// state), the pending is NOT set — the conversation history already
-    /// contains the skill listing from the previous session.
-    ///
-    /// `display_cwd`: If set (forked sessions), the real cwd prefix in
-    /// skill paths is replaced with this value in model-visible announcements.
-    /// Runtime invocation always uses the real path.
+    /// Seed the tracker with session context and startup skills. Called once at session start. Sets the git root, cwd, and
+    /// the initial startup baseline. Marks a pending baseline change so the first `apply_pending_skill_update()` delivers
+    /// the startup skill listing as a `<system-reminder>`.
     pub fn seed(
         &mut self,
         cwd: Option<PathBuf>,
@@ -334,40 +330,152 @@ impl SkillManager {
         let unconditional = self.conditional.take_unconditional(startup_skills);
         let has_skills = !unconditional.is_empty();
         self.startup_skills = unconditional;
-        // Only set pending if announced_names is empty (fresh session).
-        // When announced_names is non-empty (restored from persistence),
-        // the model's conversation history already contains the skill
-        // listing from the previous session — no re-announcement needed.
+        // Only set pending if announced_names is empty (fresh session). When announced_names is
+        // non-empty (restored from persistence), the model's conversation history already contains
+        // the skill listing from the previous session — no re-announcement needed.
         if has_skills && self.announced_names.is_empty() {
             self.pending = Some(PendingKind::BaselineChange);
         }
     }
 
-    /// Replace the startup baseline (plugin reload / bundle sync).
-    ///
-    /// Marks a pending baseline-change reconciliation only if the skill set
-    /// actually changed (by canonical path). This prevents duplicate
-    /// `<system-reminder>` injections when a bundle sync completes with the
-    /// same skills that were already seeded at startup.
-    ///
-    /// Dynamic discoveries are preserved.
+    pub fn update_plugin_skills(&mut self, plugin_skills: Vec<SkillInfo>) {
+        let old_plugin: HashMap<PathBuf, &SkillInfo> = self
+            .startup_skills
+            .iter()
+            .chain(self.discovered_skills.iter())
+            .chain(self.conditional.held())
+            .filter(|skill| skill.plugin_name.is_some())
+            .map(|skill| (canonical_path(&skill.path), skill))
+            .collect();
+        let new_plugin: HashMap<PathBuf, &SkillInfo> = plugin_skills
+            .iter()
+            .map(|skill| (canonical_path(&skill.path), skill))
+            .collect();
+        if old_plugin == new_plugin {
+            return;
+        }
+        let removed: Vec<(String, PathBuf)> = old_plugin
+            .iter()
+            .filter(|(path, old)| new_plugin.get(*path).copied() != Some(*old))
+            .map(|(path, skill)| (skill.dedup_key(), path.clone()))
+            .collect();
+        let added: Vec<SkillInfo> = plugin_skills
+            .iter()
+            .filter(|skill| {
+                skill.enabled
+                    && !skill.disable_model_invocation
+                    && is_listable(skill)
+                    && !old_plugin
+                        .get(&canonical_path(&skill.path))
+                        .is_some_and(|old| old.enabled && old.dedup_key() == skill.dedup_key())
+            })
+            .cloned()
+            .collect();
+
+        let mut baseline: Vec<SkillInfo> = self
+            .startup_skills
+            .iter()
+            .filter(|skill| skill.plugin_name.is_none())
+            .cloned()
+            .collect();
+        baseline.extend(self.conditional.purge_plugin_state(&removed));
+        self.discovered_skills.retain(|skill| {
+            skill.plugin_name.is_none()
+                || new_plugin.get(&canonical_path(&skill.path)).copied() == Some(skill)
+        });
+        self.discovered_canonical_paths = self
+            .discovered_skills
+            .iter()
+            .map(|skill| canonical_path(&skill.path))
+            .collect();
+        baseline.extend(plugin_skills);
+        self.startup_skills = self.conditional.take_unconditional(baseline);
+        let current_keys: HashSet<String> = self
+            .slash_skills()
+            .iter()
+            .filter(|s| s.enabled && !s.disable_model_invocation && is_listable(s))
+            .map(SkillInfo::dedup_key)
+            .collect();
+        self.announced_names.retain(|k| current_keys.contains(k));
+
+        let mut queued = match &mut self.pending {
+            Some(PendingKind::BaselineAdded(queued)) => std::mem::take(queued),
+            Some(PendingKind::BaselineChange) => return,
+            None => Vec::new(),
+        };
+        reconcile_queued(&mut queued, &self.startup_skills);
+        let added: Vec<_> = added
+            .into_iter()
+            .filter(|skill| {
+                self.startup_skills.iter().any(|current| current == skill)
+                    && !self.announced_names.contains(&skill.dedup_key())
+                    && !queued.iter().any(|queued| queued == skill)
+            })
+            .collect();
+        queued.extend(added);
+        self.pending = Some(PendingKind::BaselineAdded(queued));
+    }
+
+    /// Replace the startup baseline after a rescan (bundle sync, `/skills`).
+    /// Only unannounced names are queued. Removals forget the name so a later re-add can list it
+    /// again, and refresh slash commands without a reminder.
     pub fn update_startup_baseline(&mut self, new_skills: Vec<SkillInfo>) {
         let old_paths: HashSet<String> =
             self.startup_skills.iter().map(|s| s.path.clone()).collect();
+        let old_enabled: HashMap<String, bool> = self
+            .startup_skills
+            .iter()
+            .map(|s| (s.path.clone(), s.enabled))
+            .collect();
         let unconditional = self.conditional.take_unconditional(new_skills);
-        let new_paths: HashSet<String> = unconditional.iter().map(|s| s.path.clone()).collect();
-        let changed = old_paths != new_paths;
         self.startup_skills = unconditional;
-        if changed {
-            self.pending = Some(PendingKind::BaselineChange);
-        }
+        let current_keys: HashSet<String> = self
+            .slash_skills()
+            .iter()
+            .filter(|s| s.enabled && !s.disable_model_invocation && is_listable(s))
+            .map(SkillInfo::dedup_key)
+            .collect();
+        self.announced_names.retain(|k| current_keys.contains(k));
+        let added: Vec<SkillInfo> = self
+            .startup_skills
+            .iter()
+            .filter(|s| {
+                s.enabled
+                    && !s.disable_model_invocation
+                    && is_listable(s)
+                    && !self.announced_names.contains(&s.dedup_key())
+                    && !old_enabled.get(&s.path).copied().unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        let removed = old_paths
+            .iter()
+            .any(|path| !self.startup_skills.iter().any(|s| s.path == *path))
+            || old_enabled.iter().any(|(path, enabled)| {
+                *enabled
+                    && self
+                        .startup_skills
+                        .iter()
+                        .any(|s| s.path == *path && !s.enabled)
+            });
+        let catalog_added = self
+            .startup_skills
+            .iter()
+            .any(|s| s.enabled && !old_enabled.get(&s.path).copied().unwrap_or(false));
+        let mut queued = match &mut self.pending {
+            Some(PendingKind::BaselineAdded(queued)) => std::mem::take(queued),
+            Some(PendingKind::BaselineChange) => return,
+            None => Vec::new(),
+        };
+        reconcile_queued(&mut queued, &self.startup_skills);
+        queued.extend(added);
+        self.pending = (!queued.is_empty() || removed || catalog_added)
+            .then_some(PendingKind::BaselineAdded(queued));
     }
 
-    /// Add newly discovered skills. Returns true if any entered the listing.
-    ///
-    /// Deduplication is by canonical filesystem path. `paths:`-gated skills are
-    /// held back (same gate as `seed`) so dynamic discovery can't leak them into
-    /// the listing before a matching file is touched.
+    /// Add newly discovered skills. Returns true if any entered the listing. Deduplication is by
+    /// canonical filesystem path. `paths:`-gated skills are held back (same gate as `seed`) so
+    /// dynamic discovery can't leak them into the listing before a matching file is touched.
     pub fn add_discovered(&mut self, skills: Vec<SkillInfo>) -> bool {
         let mut any_new = false;
         for skill in skills {
@@ -384,7 +492,7 @@ impl SkillManager {
             any_new = true;
         }
         if any_new {
-            self.pending = Some(PendingKind::Discovery);
+            self.has_pending_discovery = true;
         }
         any_new
     }
@@ -405,48 +513,59 @@ impl SkillManager {
         self.add_discovered(newly)
     }
 
-    /// Drain the pending reconciliation, computing projections internally
-    /// and returning only the runtime skills and session side-effects.
-    ///
-    /// Returns `(runtime_skills, effects)` if there is a pending change,
-    /// or `None` if nothing changed.
-    ///
-    /// `runtime_skills` must be written into `AvailableSkills` by the
-    /// caller (the bridge's `apply_pending_skill_update` method).
-    ///
-    /// `effects` contains only conversation/UI side-effects the session
-    /// must perform.
+    /// Drain the pending reconciliation, computing projections internally and returning only the runtime skills and session
+    /// side-effects. `runtime_skills` must be written into `AvailableSkills` by the caller (the bridge's
+    /// `apply_pending_skill_update` method). `effects` contains only conversation/UI side-effects the session must perform.
     pub fn take_pending(&mut self) -> Option<(Vec<SkillInfo>, SkillUpdateEffects)> {
-        let pending = self.pending.take()?;
+        let pending = self.pending.take();
+        if pending.is_none() && !self.has_pending_discovery {
+            return None;
+        }
 
         let runtime_skills = dedup_by_canonical_path(&self.discovered_skills, &self.startup_skills);
-
-        let kind = match pending {
-            PendingKind::Discovery => SkillUpdateKind::Discovery,
-            PendingKind::BaselineChange => SkillUpdateKind::BaselineChange,
+        let kind = if std::mem::take(&mut self.has_pending_discovery) {
+            SkillUpdateKind::Discovery
+        } else {
+            SkillUpdateKind::BaselineChange
         };
         // Take the announced set out of `self` so `render_listing` can
         // borrow `self` immutably alongside it; restored below.
         let mut announced = std::mem::take(&mut self.announced_names);
-        let skills_owned = match pending {
-            PendingKind::Discovery => None,
-            PendingKind::BaselineChange => {
+        let skills_owned = match &pending {
+            None => None,
+            Some(PendingKind::BaselineChange) => {
                 announced.clear();
                 Some(dedupe_by_canonical_path_and_name(
                     &self.discovered_skills,
                     &self.startup_skills,
                 ))
             }
+            Some(PendingKind::BaselineAdded(added)) => {
+                for skill in added {
+                    announced.remove(&skill.dedup_key());
+                }
+                Some(dedup_by_canonical_path(&self.discovered_skills, added))
+            }
         };
         let skills = skills_owned.as_deref().unwrap_or(&self.discovered_skills);
 
-        let system_reminder = render_listing(skills, &mut announced, &self.render_params());
+        let mut system_reminder = render_listing(skills, &mut announced, &self.render_params());
+        if let Some(text) = system_reminder.as_ref() {
+            let hash = listing_content_hash(text);
+            // Re-adding a removed skill must announce even if the text matches the last listing.
+            let skip_identical = !matches!(pending, Some(PendingKind::BaselineAdded(_)));
+            if skip_identical && self.last_emitted_listing_hash == Some(hash) {
+                tracing::debug!(hash, "skipping identical skill listing re-emit");
+                system_reminder = None;
+            } else {
+                self.last_emitted_listing_hash = Some(hash);
+            }
+        }
         self.announced_names = announced;
 
-        // Disabled skills are omitted from the listing via `s.enabled` in
-        // `format_announcement` / `format_announcement_xml`. Do not append a
-        // separate "must not be used" name footer — it wastes tokens and
-        // looks like skills with no description.
+        // Disabled skills are omitted from the listing via `s.enabled` in `format_announcement` /
+        // `format_announcement_xml`. Do not append a separate "must not be used" name footer — it
+        // wastes tokens and looks like skills with no description.
 
         let effects = SkillUpdateEffects {
             system_reminder,
@@ -467,10 +586,8 @@ impl SkillManager {
         })
     }
 
-    /// Get the display-deduped skill list for slash commands.
-    ///
-    /// Combines startup + discovered, deduplicates by canonical path
-    /// and name (discovered wins). This is the authoritative source
+    /// Get the display-deduped skill list for slash commands. Combines startup + discovered,
+    /// deduplicates by canonical path and name (discovered wins). This is the authoritative source
     /// for slash command advertisement.
     pub fn slash_skills(&self) -> Vec<SkillInfo> {
         dedupe_by_canonical_path_and_name(&self.discovered_skills, &self.startup_skills)
@@ -489,12 +606,9 @@ impl SkillManager {
         &self.discovery_snapshot_names
     }
 
-    /// Render the canonical listing for the entire current skill set, for
-    /// `/context` accounting. Leaves announce state untouched.
-    ///
-    /// The result estimates what the listing costs in context; it is not a
-    /// replay of the injected reminders, which accumulate incrementally.
-    /// Returns `None` when no skill qualifies.
+    /// Render the canonical listing for the entire current skill set, for `/context` accounting. Leaves announce state
+    /// untouched. The result estimates what the listing costs in context; it is not a replay of the injected reminders,
+    /// which accumulate incrementally. Returns `None` when no skill qualifies.
     pub fn listing_snapshot(&self) -> Option<SkillListingSnapshot> {
         let skills =
             dedupe_by_canonical_path_and_name(&self.discovered_skills, &self.startup_skills);
@@ -533,34 +647,27 @@ impl SkillManager {
         &self.startup_skills
     }
 
-    /// Reset discovery state for compaction.
-    ///
-    /// Clears `announced_names` so the reminder will re-announce on
-    /// the next file access after compaction, and clears `checked_dirs`
-    /// so dynamically discovered skills can be re-discovered if the
-    /// model navigates back into the same directories.
-    ///
-    /// Does NOT clear `discovered_skills` (those are preserved for the
-    /// compaction context and slash commands).
+    /// Reset discovery state for compaction. Clears `announced_names` so the reminder will re-announce on the next file access after compaction,
+    /// and clears `checked_dirs` so dynamically discovered skills can be re-discovered if the model navigates back into the same directories. Does
+    /// NOT clear `discovered_skills` (those are preserved for the compaction context and slash commands).
     pub fn on_compaction(&mut self) {
         self.announced_names.clear();
         self.checked_dirs.clear();
     }
 
-    /// Full reset for `/clear`.
-    ///
-    /// Clears all discovery state. Startup baseline is preserved.
-    /// Marks a pending baseline-change reconciliation so surfaces
-    /// get rebuilt from baseline only.
+    /// Full reset for `/clear`. Clears all discovery state. Startup baseline is preserved. Marks a
+    /// pending baseline-change reconciliation so surfaces get rebuilt from baseline only.
     pub fn on_clear(&mut self) {
         self.discovered_skills.clear();
         self.discovered_canonical_paths.clear();
         self.checked_dirs.clear();
         self.announced_names.clear();
+        self.last_emitted_listing_hash = None;
         // Re-hide every conditional skill on /clear.
         let startup = std::mem::take(&mut self.startup_skills);
         self.startup_skills = self.conditional.rehide(startup);
         self.pending = Some(PendingKind::BaselineChange);
+        self.has_pending_discovery = false;
     }
 }
 
@@ -716,6 +823,73 @@ mod tests {
         );
         let slash = mgr.slash_skills();
         assert!(slash.iter().any(|s| s.name == "gated"));
+    }
+
+    fn plugin_skill(name: &str, conditional: bool) -> SkillInfo {
+        SkillInfo {
+            plugin_name: Some("demo".to_owned()),
+            has_user_specified_description: true,
+            paths: conditional.then(|| vec!["src/**".to_owned()]),
+            ..make_skill(name, &format!("/plugins/demo/{name}/SKILL.md"))
+        }
+    }
+
+    #[test]
+    fn plugin_update_purges_promoted_dynamic_state() {
+        let cwd = tempfile::tempdir().unwrap();
+        let plugin = plugin_skill("plugin", true);
+        let mut manager = SkillManager::new();
+        manager.cwd = Some(cwd.path().into());
+        manager.add_discovered(vec![plugin.clone()]);
+        assert!(manager.activate_conditional_skills_for_paths(&[&cwd.path().join("src/a")]));
+        manager.update_startup_baseline(vec![plugin.clone()]);
+        let mut updated = plugin;
+        updated.description = "updated".to_owned();
+        manager.update_plugin_skills(vec![updated]);
+        manager.update_startup_baseline(vec![]);
+        let _ = manager.take_pending().unwrap();
+        manager.update_startup_baseline(vec![make_skill("other", "/other")]);
+        let runtime = manager.take_pending().unwrap().0;
+        assert!(runtime.iter().all(|skill| skill.name != "plugin"));
+        assert!(manager.conditional.held().is_empty());
+        assert_eq!("other", manager.slash_skills()[0].name);
+    }
+
+    #[test]
+    fn plugin_refresh_preserves_independent_pending_state() {
+        let cwd = tempfile::tempdir().unwrap();
+        let plugin_a = plugin_skill("a", true);
+        let plugin_b = plugin_skill("b", false);
+        let mut manager = SkillManager::new();
+        manager.cwd = Some(cwd.path().into());
+        manager.update_plugin_skills(vec![plugin_a.clone()]);
+        assert!(manager.activate_conditional_skills_for_paths(&[&cwd.path().join("src/a")]));
+        let _ = manager.take_pending();
+        manager.update_startup_baseline(vec![plugin_a.clone(), make_skill("queued", "/queued")]);
+        manager.add_discovered(vec![make_skill("native", "/dynamic")]);
+        let mut disabled_b = plugin_b.clone();
+        disabled_b.enabled = false;
+        for incoming in [vec![plugin_a.clone(), disabled_b], vec![plugin_a.clone()]] {
+            let mut refreshed = manager.clone();
+            refreshed.update_plugin_skills(vec![plugin_a.clone(), plugin_b.clone()]);
+            refreshed.update_plugin_skills(incoming);
+            let (runtime, effects) = refreshed.take_pending().unwrap();
+            let text = effects.system_reminder.unwrap();
+            assert!(effects.send_available_commands && effects.kind == SkillUpdateKind::Discovery);
+            assert!(text.contains("native") && text.contains("queued") && !text.contains("- b:"));
+            assert!(runtime.iter().any(|s| s.name == "a"));
+            assert!(runtime.iter().all(|s| s.name != "b" || !s.enabled));
+        }
+        manager.update_plugin_skills(vec![plugin_a.clone(), plugin_b.clone()]);
+        let mut updated_b = plugin_b;
+        updated_b.description = "current metadata".to_owned();
+        manager.update_plugin_skills(vec![plugin_a, updated_b]);
+        let update = manager.take_pending().unwrap().1;
+        assert_eq!(update.kind, SkillUpdateKind::Discovery);
+        let text = update.system_reminder.unwrap();
+        assert!(text.contains("current metadata") && text.contains("native"));
+        assert!(text.contains("queued") && !text.contains("desc for b"));
+        assert_eq!(1, text.matches("- b:").count());
     }
 
     #[test]
@@ -929,10 +1103,9 @@ mod tests {
         );
     }
 
-    /// Re-discovery of the same skill after compaction must not produce
-    /// duplicates. `checked_dirs` is cleared (so the dir is re-scanned),
-    /// but `discovered_canonical_paths` is preserved (so `add_discovered`
-    /// deduplicates and returns `false`).
+    /// Re-discovery of the same skill after compaction must not produce duplicates. `checked_dirs`
+    /// is cleared (so the dir is re-scanned), but `discovered_canonical_paths` is preserved (so
+    /// `add_discovered` deduplicates and returns `false`).
     #[test]
     fn rediscovery_after_compaction_does_not_duplicate() {
         let mut tracker = SkillManager::new();
@@ -951,6 +1124,40 @@ mod tests {
             1,
             "must not duplicate discovered skills"
         );
+    }
+
+    #[test]
+    fn take_pending_skips_byte_identical_listing() {
+        let mut mgr = SkillManager::new();
+        mgr.seed(
+            None,
+            None,
+            vec![make_skill("startup", "/s/SKILL.md")],
+            None,
+            None,
+            None,
+        );
+        let first = mgr
+            .take_pending_reconciliation()
+            .unwrap()
+            .effects
+            .system_reminder
+            .unwrap();
+        assert!(first.contains("- startup:"));
+
+        // Announced set lost, listing text unchanged: do not inject it again.
+        mgr.restore_announced_names(HashSet::new());
+        mgr.seed(
+            None,
+            None,
+            vec![make_skill("startup", "/s/SKILL.md")],
+            None,
+            None,
+            None,
+        );
+        let r = mgr.take_pending_reconciliation().unwrap();
+        assert!(r.effects.system_reminder.is_none());
+        assert!(r.effects.send_available_commands);
     }
 
     #[test]
@@ -978,10 +1185,188 @@ mod tests {
         assert_eq!(slash[0].name, "new");
     }
 
+    fn drained(skills: Vec<SkillInfo>) -> SkillManager {
+        let mut mgr = SkillManager::new();
+        mgr.seed(None, None, skills, None, None, None);
+        let _ = mgr.take_pending_reconciliation();
+        mgr
+    }
+
+    /// Names announced by the next drain, or `None` when it carries no reminder.
+    fn announced(mgr: &mut SkillManager) -> Option<Vec<String>> {
+        let text = mgr.take_pending_reconciliation()?.effects.system_reminder?;
+        Some(
+            text.lines()
+                .filter_map(|l| l.strip_prefix("- ")?.split_once(':'))
+                .map(|(name, _)| name.to_owned())
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn update_startup_baseline_announces_only_added_skills() {
+        let mut mgr = drained(vec![make_skill("kept", "/kept/SKILL.md")]);
+        mgr.update_startup_baseline(vec![
+            make_skill("kept", "/kept/SKILL.md"),
+            make_skill("added", "/added/SKILL.md"),
+        ]);
+        assert_eq!(announced(&mut mgr), Some(vec!["added".to_owned()]));
+        assert_eq!(mgr.slash_skills().len(), 2);
+    }
+
+    #[test]
+    fn update_startup_baseline_removal_refreshes_commands_without_reminder() {
+        let mut mgr = drained(vec![
+            make_skill("kept", "/kept/SKILL.md"),
+            make_skill("gone", "/gone/SKILL.md"),
+        ]);
+        mgr.update_startup_baseline(vec![make_skill("kept", "/kept/SKILL.md")]);
+        let r = mgr.take_pending_reconciliation().unwrap();
+        assert!(r.effects.system_reminder.is_none());
+        assert!(r.effects.send_available_commands);
+        assert_eq!(mgr.slash_skills().len(), 1);
+    }
+
+    #[test]
+    fn update_startup_baseline_reenabled_skill_is_announced() {
+        let mut disabled = make_skill("toggled", "/t/SKILL.md");
+        disabled.enabled = false;
+        let mut mgr = drained(vec![disabled]);
+        mgr.update_startup_baseline(vec![make_skill("toggled", "/t/SKILL.md")]);
+        assert_eq!(announced(&mut mgr), Some(vec!["toggled".to_owned()]));
+    }
+
+    #[test]
+    fn update_startup_baseline_merges_queued_additions_across_rescans() {
+        let mut mgr = drained(vec![make_skill("kept", "/kept/SKILL.md")]);
+        mgr.update_startup_baseline(vec![
+            make_skill("kept", "/kept/SKILL.md"),
+            make_skill("first", "/first/SKILL.md"),
+        ]);
+        mgr.update_startup_baseline(vec![
+            make_skill("kept", "/kept/SKILL.md"),
+            make_skill("first", "/first/SKILL.md"),
+            make_skill("second", "/second/SKILL.md"),
+        ]);
+        assert_eq!(
+            announced(&mut mgr),
+            Some(vec!["first".to_owned(), "second".to_owned()])
+        );
+    }
+
+    #[test]
+    fn update_startup_baseline_drops_queued_addition_removed_before_drain() {
+        let mut mgr = drained(vec![make_skill("kept", "/kept/SKILL.md")]);
+        mgr.update_startup_baseline(vec![
+            make_skill("kept", "/kept/SKILL.md"),
+            make_skill("brief", "/brief/SKILL.md"),
+        ]);
+        mgr.update_startup_baseline(vec![make_skill("kept", "/kept/SKILL.md")]);
+        let r = mgr.take_pending_reconciliation().unwrap();
+        assert!(r.effects.system_reminder.is_none());
+        assert!(r.effects.send_available_commands);
+    }
+
+    #[test]
+    fn update_startup_baseline_noop_keeps_pending_discovery() {
+        let mut mgr = drained(vec![make_skill("kept", "/kept/SKILL.md")]);
+        mgr.add_discovered(vec![make_skill("dyn", "/d/SKILL.md")]);
+        mgr.update_startup_baseline(vec![make_skill("kept", "/kept/SKILL.md")]);
+        assert_eq!(announced(&mut mgr), Some(vec!["dyn".to_owned()]));
+    }
+
+    #[test]
+    fn update_startup_baseline_addition_carries_pending_discovery() {
+        let mut mgr = drained(vec![make_skill("kept", "/kept/SKILL.md")]);
+        mgr.add_discovered(vec![make_skill("dyn", "/d/SKILL.md")]);
+        mgr.update_startup_baseline(vec![
+            make_skill("kept", "/kept/SKILL.md"),
+            make_skill("added", "/added/SKILL.md"),
+        ]);
+        assert_eq!(
+            announced(&mut mgr),
+            Some(vec!["dyn".to_owned(), "added".to_owned()])
+        );
+    }
+
+    /// `announced_names` keys plugin skills as `plugin:name`.
+    #[test]
+    fn update_startup_baseline_reannounces_readded_plugin_skill() {
+        let plugin_skill = || SkillInfo {
+            plugin_name: Some("acme".to_owned()),
+            // Plugin skills are listable only with a frontmatter description.
+            has_user_specified_description: true,
+            ..make_skill("deploy", "/plugins/acme/skills/deploy/SKILL.md")
+        };
+        let mut mgr = drained(vec![plugin_skill()]);
+        mgr.update_startup_baseline(vec![]);
+        let _ = mgr.take_pending_reconciliation();
+        mgr.update_startup_baseline(vec![plugin_skill()]);
+        assert_eq!(announced(&mut mgr), Some(vec!["deploy".to_owned()]));
+    }
+
+    #[test]
+    fn update_startup_baseline_path_flicker_does_not_reannounce() {
+        let mut mgr = drained(vec![make_skill("build-pager", "/old/build-pager/SKILL.md")]);
+        mgr.update_startup_baseline(vec![make_skill("build-pager", "/new/build-pager/SKILL.md")]);
+        let r = mgr.take_pending_reconciliation().unwrap();
+        assert!(r.effects.system_reminder.is_none());
+        assert!(r.effects.send_available_commands);
+    }
+
+    #[test]
+    fn update_startup_baseline_does_not_reannounce_already_discovered_name() {
+        let mut mgr = drained(vec![make_skill("kept", "/kept/SKILL.md")]);
+        mgr.add_discovered(vec![make_skill("dyn", "/d/SKILL.md")]);
+        let _ = mgr.take_pending_reconciliation();
+        mgr.update_startup_baseline(vec![
+            make_skill("kept", "/kept/SKILL.md"),
+            make_skill("dyn", "/startup/dyn/SKILL.md"),
+        ]);
+        let r = mgr.take_pending_reconciliation().unwrap();
+        assert!(r.effects.system_reminder.is_none());
+        assert!(r.effects.send_available_commands);
+    }
+
+    #[test]
+    fn update_startup_baseline_already_enabled_path_is_not_added() {
+        let mut mgr = drained(vec![make_skill("kept", "/kept/SKILL.md")]);
+        mgr.restore_announced_names(HashSet::new());
+        mgr.update_startup_baseline(vec![make_skill("kept", "/kept/SKILL.md")]);
+        assert!(mgr.take_pending_reconciliation().is_none());
+    }
+
+    #[test]
+    fn update_startup_baseline_slash_only_add_refreshes_commands() {
+        let mut hidden = make_skill("slash-only", "/slash/SKILL.md");
+        hidden.disable_model_invocation = true;
+        let mut mgr = drained(vec![make_skill("kept", "/kept/SKILL.md")]);
+        mgr.update_startup_baseline(vec![make_skill("kept", "/kept/SKILL.md"), hidden]);
+        let r = mgr.take_pending_reconciliation().unwrap();
+        assert!(r.effects.system_reminder.is_none());
+        assert!(r.effects.send_available_commands);
+    }
+
+    #[test]
+    fn update_startup_baseline_keeps_pending_full_listing() {
+        let mut mgr = SkillManager::new();
+        mgr.seed(
+            None,
+            None,
+            vec![make_skill("first", "/first/SKILL.md")],
+            None,
+            None,
+            None,
+        );
+        mgr.update_startup_baseline(vec![make_skill("second", "/second/SKILL.md")]);
+        let r = mgr.take_pending_reconciliation().unwrap();
+        assert_eq!(r.effects.kind, SkillUpdateKind::BaselineChange);
+        assert!(r.effects.system_reminder.unwrap().contains("- second:"));
+    }
+
     /// When the startup baseline is replaced with the same set of skill
     /// paths, no pending reconciliation should be queued.  This prevents
     /// duplicate `<system-reminder>` injections when a bundle sync completes
-    /// with an unchanged skill set.
     #[test]
     fn update_startup_baseline_same_paths_skips_pending() {
         let mut tracker = SkillManager::new();
@@ -1165,10 +1550,9 @@ mod tests {
 
     #[test]
     fn effects_never_contains_skill_data() {
-        // SkillUpdateEffects must not carry skill-domain payloads. The
-        // only fields are session-side knobs: a rendered reminder text,
-        // a bool for slash command refresh, and a kind discriminator
-        // so harnesses can suppress one update kind without the other.
+        // SkillUpdateEffects must not carry skill-domain payloads. The only fields are session-side
+        // knobs: a rendered reminder text, a bool for slash command refresh, and a kind
+        // discriminator so harnesses can suppress one update kind without the other.
         let mut mgr = SkillManager::new();
         mgr.seed(
             None,
@@ -1187,10 +1571,9 @@ mod tests {
         // leaking skill-domain data into the shell.
     }
 
-    /// Pin the kind discriminator so harnesses that suppress one
-    /// reminder kind (e.g. a harness suppressing `BaselineChange` because
-    /// the preamble already snapshots the baseline) do not accidentally
-    /// suppress the other.
+    /// Pin the kind discriminator so harnesses that suppress one reminder kind (e.g. a harness
+    /// suppressing `BaselineChange` because the preamble already snapshots the baseline) do not
+    /// accidentally suppress the other.
     #[test]
     fn effects_kind_distinguishes_baseline_from_discovery() {
         let mut mgr = SkillManager::new();

@@ -17,20 +17,14 @@ Set `background: true` on the `run_terminal_command` tool to run a command in th
 
 ### Getting Output
 
-Use the `get_command_or_subagent_output` tool to check on a background command or subagent:
+Use `get_command_or_subagent_output` to check a background command or subagent. Pass `task_ids` as a list (one id is a one-element array; maximum 20):
 
-- `get_command_or_subagent_output(task_id)` — current output and status without waiting
-- `get_command_or_subagent_output(task_id, timeout_ms=30000)` — wait up to the given milliseconds for completion
+- Omit `timeout_ms`, or pass `0`, for a non-blocking snapshot.
+- A positive `timeout_ms` waits for completion. Several ids wait until **all** complete.
 
-### Waiting for Multiple Tasks
+A positive `timeout_ms` is clamped to **1 hour** (`3600000` ms). Hosts with a shorter transport deadline set `GROK_MAX_WAIT_BLOCK_MS` (plain milliseconds; unparseable values keep the default).
 
-Use `wait_commands_or_subagents` to block on several tasks at once:
-
-- `task_ids` — the list of task IDs to wait for (maximum 20)
-- `mode` — `wait_any` returns when the first task completes; `wait_all` waits for every task
-- `timeout_ms` — the maximum time to wait, in milliseconds (default: 30 seconds)
-
-The tool returns the status and output for every task you list.
+If the wait returns while the child is still running, leave it alone: do not kill it or tell it to stop. Completion wakes the parent automatically. Poll again only if you need another snapshot.
 
 ### Killing Background Tasks
 
@@ -47,7 +41,7 @@ Use `kill_command_or_subagent(task_id)` to terminate a running background task o
 
 ## Send a Running Task to the Background
 
-In the interactive TUI, press `Ctrl+B` to send the running foreground command to the background. This is the only backgrounding shortcut. Do this when:
+In the interactive TUI, press `Ctrl+B` to send the running foreground command to the background. It is the only backgrounding shortcut, though sending a new message mid-command also backgrounds that command instead of killing it. Do this when:
 
 - A command takes longer than expected.
 - You want to ask the agent something else while a command runs.
@@ -87,7 +81,7 @@ The interval format supports:
 ### Behavior
 
 - The prompt fires immediately on creation, then repeats at the specified interval
-- Each firing creates a new agent turn
+- Each firing runs in a detached background subagent, not as a turn in your conversation. The fire cannot see the conversation, so the stored prompt must stand on its own; only its result comes back
 - Recurring tasks auto-expire after 7 days
 - Maximum 50 scheduled tasks can be active at once
 
@@ -163,6 +157,8 @@ Create a scheduled task:
 | `recurring`      | Repeat (default: `true`) or fire once (`false`)          |
 | `durable`        | Persist across sessions (default: `false`)               |
 
+Every fire runs in a detached background subagent; there is no option to run one as a turn in the conversation.
+
 ### scheduler_list
 
 List all active scheduled tasks with their IDs, prompts, intervals, and next fire times.
@@ -196,7 +192,7 @@ Whenever background work is still running while the agent looks idle — between
 
 It counts running background commands, monitors, scheduled `/loop` tasks, and background subagents, and updates live as each finishes. Any of them can wake the agent for a new turn (commands and subagents on completion, monitors on events, loops on their timer), so the cue stays up until nothing is left. The running counts live only on this status line: completions land in the transcript as a single "Task completed" chip, and "Worked for" markers stay plain — the transcript never repeats or restates the running counts.
 
-While a turn is waiting on background work (blocked in a `get_task_output` or `wait_tasks` call), the status line adds a hint that typing takes over immediately:
+While a turn is waiting on background work (blocked in `get_command_or_subagent_output`), the status line adds a hint that typing takes over immediately:
 
 ```
 ◎ 1 command still running · send a message to interrupt

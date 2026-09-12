@@ -151,29 +151,15 @@ pub(crate) enum NormalizedMatchResult {
     NoMatch,
     /// One or more valid, non-overlapping matches were found.
     Matches(Vec<NormalizedMatch>),
-    /// Normalized matching found candidates but they are ambiguous or unsafe
-    /// (overlapping remapped spans, or partial-expansion matches that don't
-    /// roundtrip correctly).  The caller should treat this as an explicit
-    /// ambiguity error, NOT as "string not found."
+    /// Normalized matching found candidates but they are ambiguous or unsafe (overlapping remapped
+    /// spans, or partial-expansion matches that don't roundtrip correctly). The caller should treat
+    /// this as an explicit ambiguity error, NOT as "string not found."
     Ambiguous,
 }
 
-/// Find match positions using confusable-normalized comparison and remap
-/// them back to the original text's byte coordinates.
-///
-/// Algorithm:
-/// 1. Build `(normalized_text, offset_map)` via [`build_offset_map`].
-/// 2. Normalize the search pattern the same way.
-/// 3. Find all non-overlapping matches in `normalized_text`.
-/// 4. Remap each normalized `[start..end]` span back to original bytes
-///    via `offset_map`.
-/// 5. **Roundtrip validation:** For each candidate, verify that
-///    `normalize_confusables(&text[orig_start..orig_end]) == norm_pattern`.
-///    This rejects partial-expansion matches (e.g., pattern `-` matching
-///    inside em-dash `—` which normalizes to `--`).
-/// 6. Reject overlapping validated spans (fail closed → `Ambiguous`).
-///
-/// Returns [`NormalizedMatchResult`] to distinguish no-match from ambiguity.
+/// Find match positions using confusable-normalized comparison and remap them back to the original text's byte coordinates. Build
+/// `(normalized_text, offset_map)` via [`build_offset_map`]. Normalize the search pattern the same way. Find all non-overlapping matches in
+/// `normalized_text`. Remap each normalized `[start..end]` span back to original bytes via `offset_map`.
 pub(crate) fn find_normalized_match_positions(text: &str, pattern: &str) -> NormalizedMatchResult {
     use crate::util::unicode_confusables::{build_offset_map, normalize_confusables};
 
@@ -237,11 +223,9 @@ pub(crate) fn find_normalized_match_positions(text: &str, pattern: &str) -> Norm
     NormalizedMatchResult::Matches(validated)
 }
 
-/// Replace text at normalized-match positions and return the new text with
-/// new byte offsets of each replacement.
-///
-/// Each `NormalizedMatch` specifies a region in the original text (which may
-/// contain Unicode confusables) to be replaced with `new_string`.
+/// Replace text at normalized-match positions and return the new text with new byte offsets of each
+/// replacement. Each `NormalizedMatch` specifies a region in the original text (which may contain
+/// Unicode confusables) to be replaced with `new_string`.
 pub(crate) fn replace_normalized_matches(
     text: &str,
     matches: &[NormalizedMatch],

@@ -1,39 +1,30 @@
 //! Terminal-native palette for minimal mode.
 //!
-//! Any RGB theme is designed for one background polarity, so composited on
-//! the terminal's own canvas it can land dark-on-dark or light-on-light
-//! (e.g. macOS in Light Mode + a dark terminal profile). Polarity detection
-//! is not reliable either: OS appearance and OSC 11 both disagree with the
-//! actual canvas in edge cases and can change mid-session. Terminal
-//! profiles, however, tune their **default** fg/bg to be legible against
-//! their own background — this is how `git` and `ls` stay readable on any
-//! terminal — so a palette built from `Reset` (body) + sparse named ANSI-16
-//! accents is polarity-safe without detection.
+//! Any RGB theme is designed for one background polarity.
+//! Composited on the terminal's own canvas it can land dark-on-dark or light-on-light (e.g. macOS in Light Mode with a dark terminal profile).
+//! Polarity detection is not reliable either.
+//! OS appearance and OSC 11 both disagree with the actual canvas in edge cases and can change mid-session.
+//! Terminal profiles, however, tune their **default** fg/bg to be legible against their own background; `git` and `ls` stay readable this way.
+//! So a palette built from `Reset` (body) and sparse named ANSI-16 accents is polarity-safe without detection.
 //!
 //! ## Grays / secondary text
 //!
 //! Do **not** paint body or status text as `DarkGray` (ANSI bright black).
-//! Many dark profiles deliberately set that slot very dark for subtle
-//! chrome, which washes out tool stdout and the prompt info bar. Instead:
+//! Many dark profiles deliberately set that slot very dark for subtle chrome, which washes out tool stdout and the prompt info bar. Instead:
 //!
-//! - **Primary content** (`text_primary`, `gray_bright`, …) → `Color::Reset`
-//!   (terminal default foreground).
-//! - **Secondary chrome** (`gray`, `gray_dim`, `text_secondary`) → also
-//!   `Color::Reset`; [`Theme::muted`] / [`Theme::dim`] apply `Modifier::DIM`
-//!   so de-emphasis tracks the terminal's own fg (polarity-safe), unlike
-//!   hard-coding bright black.
-//! - **Syntax highlighting** is not themed day/night. Under the native lock,
-//!   syntect tokens are remapped via
-//!   [`crate::syntax::polarity_safe_syntax_fg`] (default-fg grays + base ANSI
-//!   accents). Do not load a light tmTheme based on OS/terminal detection.
+//! - **Primary content** (`text_primary`, `gray_bright`, …) uses `Color::Reset` (the terminal default foreground).
+//! - **Secondary chrome** (`gray`, `gray_dim`, `text_secondary`) also uses `Color::Reset`.
+//!   [`Theme::muted`] / [`Theme::dim`] apply `Modifier::DIM`, so de-emphasis tracks the terminal's own fg rather than hard-coded bright black.
+//! - **Syntax highlighting** is not themed day/night.
+//!   Under the terminal-native lock, [`crate::syntax::polarity_safe_syntax_fg`] remaps syntect tokens to default-fg grays and base ANSI accents.
+//!   Do not load a light tmTheme based on OS/terminal detection.
 
 use ratatui::style::{Color, Modifier};
 
 use super::Theme;
 
 impl Theme {
-    /// The fixed terminal-native palette used by minimal mode: every field
-    /// is `Color::Reset` or a named ANSI-16 color (see the module docs).
+    /// The fixed terminal-native palette used by minimal mode: every field is `Color::Reset` or a named ANSI-16 color (see the module docs).
     pub const fn terminal_default() -> Self {
         // Secondary roles store Reset; Theme::muted / Theme::dim apply SGR dim.
         const MUTED: Color = Color::Reset;
@@ -117,6 +108,21 @@ impl Theme {
             md_text: Color::Reset,
             link_fg: Color::Blue,
         }
+    }
+
+    /// Zero opaque cells: every bg stays `Reset` so the terminal canvas shows through (a bright-black band is unreadable on some palettes).
+    /// Emphasis is reverse/bold. Decoration uses bright black as foreground; only `prompt_border_active` keeps full default fg.
+    pub const fn terminal() -> Self {
+        let mut theme = Self::terminal_default();
+        theme.selection_border = Color::DarkGray;
+        theme.hover_border = Color::DarkGray;
+        theme.prompt_border = Color::DarkGray;
+        theme.scrollbar_fg = Color::DarkGray;
+        // Decoration only (borders, dividers, gutters) via direct
+        // `fg(gray_dim)` reads; readable content goes through
+        // `Theme::dim()`/`muted()`, which stay on Reset + DIM here.
+        theme.gray_dim = Color::DarkGray;
+        theme
     }
 }
 
@@ -215,6 +221,77 @@ mod tests {
         }
     }
 
+    /// The transparent theme keeps every surface on the canvas and paints
+    /// interaction accents only in ANSI bright black — the one slot that
+    /// stays legible on both polarities and at every color depth.
+    #[test]
+    fn terminal_palette_is_bandless_with_bright_black_decoration() {
+        let theme = Theme::terminal();
+        for (name, color) in [
+            ("bg_base", theme.bg_base),
+            ("bg_dark", theme.bg_dark),
+            ("bg_terminal", theme.bg_terminal),
+            // Menus float over the composer; unlike the message band they
+            // stay on the canvas rather than taking the bright-black fill.
+            ("md_code_bg", theme.md_code_bg),
+            ("scrollbar_bg", theme.scrollbar_bg),
+            ("text_primary", theme.text_primary),
+        ] {
+            assert_eq!(color, Color::Reset, "{name} must defer to the canvas");
+        }
+        // Zero opaque cells: every band slot defers to the canvas too.
+        for (name, color) in [
+            ("bg_light", theme.bg_light),
+            ("bg_highlight", theme.bg_highlight),
+            ("bg_hover", theme.bg_hover),
+            ("bg_visual", theme.bg_visual),
+        ] {
+            assert_eq!(color, Color::Reset, "{name} must stay bandless");
+        }
+        // Decoration keeps bright black as a foreground.
+        for (name, color) in [
+            ("prompt_border", theme.prompt_border),
+            ("scrollbar_fg", theme.scrollbar_fg),
+            ("gray_dim", theme.gray_dim),
+        ] {
+            assert_eq!(color, Color::DarkGray, "{name} is the bright-black accent");
+        }
+        // Focused chrome keeps the full default fg so focus still pops.
+        assert_eq!(theme.prompt_border_active, Color::Reset);
+    }
+
+    /// Reset band slots (terminal theme, minimal) carry the selection cue
+    /// with reverse video; RGB palettes paint their band colors.
+    #[test]
+    fn selection_overlay_reverses_only_on_reset_bands() {
+        use ratatui::style::Modifier;
+
+        for theme in [Theme::terminal(), Theme::terminal_default()] {
+            assert!(
+                theme
+                    .selection_overlay()
+                    .add_modifier
+                    .contains(Modifier::REVERSED)
+            );
+            assert_eq!(theme.selection_overlay().bg, None);
+            assert!(
+                theme
+                    .hover_overlay()
+                    .add_modifier
+                    .contains(Modifier::REVERSED)
+            );
+        }
+
+        let rgb = Theme::groknight();
+        assert_eq!(rgb.selection_overlay().bg, Some(rgb.bg_visual));
+        assert_eq!(rgb.hover_overlay().bg, Some(rgb.bg_hover));
+        assert!(
+            !rgb.selection_overlay()
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
+    }
+
     #[test]
     fn terminal_default_leaves_cursor_color_alone() {
         let theme = Theme::terminal_default();
@@ -273,7 +350,7 @@ mod tests {
             dim.add_modifier.contains(Modifier::DIM),
             "dim should DIM the terminal default fg: {dim:?}"
         );
-        // No explicit DarkGray paint — dim tracks the host palette.
+        // No explicit DarkGray paint; dim tracks the host palette
         assert!(
             muted.fg.is_none() || muted.fg == Some(Color::Reset),
             "muted must not set a hard gray: {muted:?}"
@@ -295,6 +372,43 @@ mod tests {
         assert!(
             !muted.add_modifier.contains(Modifier::DIM),
             "RGB muted should not force SGR dim: {muted:?}"
+        );
+        let dim = theme.dim();
+        assert_eq!(dim.fg, Some(theme.gray_dim));
+        assert!(
+            !dim.add_modifier.contains(Modifier::DIM),
+            "RGB dim should not force SGR dim: {dim:?}"
+        );
+        let ghost = theme.ghost_text_style();
+        assert_eq!(ghost.fg, Some(theme.gray_dim));
+        assert!(ghost.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    /// The selectable `terminal` theme retargets `gray_dim` to bright black
+    /// for decoration, but content helpers must keep the polarity-safe DIM
+    /// path — tool prefixes, hints, and ghost text must not paint DarkGray.
+    #[test]
+    fn terminal_theme_dim_and_ghost_text_stay_polarity_safe() {
+        use ratatui::style::Modifier;
+        let theme = Theme::terminal();
+        assert_eq!(theme.gray_dim, Color::DarkGray, "decoration slot");
+
+        let dim = theme.dim();
+        assert!(
+            dim.add_modifier.contains(Modifier::DIM),
+            "content dim must scale the terminal default fg: {dim:?}"
+        );
+        assert!(
+            dim.fg.is_none() || dim.fg == Some(Color::Reset),
+            "content dim must not paint bright black: {dim:?}"
+        );
+
+        let ghost = theme.ghost_text_style();
+        assert!(ghost.add_modifier.contains(Modifier::DIM));
+        assert!(ghost.add_modifier.contains(Modifier::ITALIC));
+        assert!(
+            ghost.fg.is_none() || ghost.fg == Some(Color::Reset),
+            "ghost text must not paint bright black: {ghost:?}"
         );
     }
 }

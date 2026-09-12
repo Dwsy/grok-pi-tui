@@ -12,10 +12,9 @@ pub struct ExampleAnchors {
     pub grep_context: String,
 }
 
-/// Configurable parameters for the hashline anchor scheme.
-///
-/// Stored as a resource (`Params<HashlineSchemeParams>`) so all three
-/// hashline tools use the same scheme within a session.
+/// Configurable parameters for the hashline anchor scheme. Stored as a resource
+/// (`Params<HashlineSchemeParams>`) so all three hashline tools use the same scheme within a
+/// session.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct HashlineSchemeParams {

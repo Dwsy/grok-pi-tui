@@ -5,6 +5,7 @@ pub(crate) mod listing;
 pub(crate) mod manager;
 pub(crate) mod notify;
 pub(crate) mod registry;
+pub(crate) mod request_service;
 pub(crate) mod schema_contract;
 pub(crate) mod store;
 pub(crate) mod tracker;

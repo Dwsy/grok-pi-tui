@@ -199,10 +199,9 @@ impl ShellKind {
         }
     }
 
-    /// Resolved absolute path to the shell binary. Falls back from `$SHELL` →
-    /// `which` → common dirs → `/bin/<name>`. Result is cached process-wide
-    /// in `xai_grok_config::shell::unix_shell_path`. See that function for
-    /// the full cascade. Returns `&'static str`.
+    /// Resolved absolute path to the shell binary. Falls back from `$SHELL` → `which` → common dirs
+    /// → `/bin/<name>`. Result is cached process-wide in `xai_grok_config::shell::unix_shell_path`.
+    /// See that function for the full cascade. Returns `&'static str`.
     pub fn binary_path(&self) -> &'static str {
         let kind = match self {
             Self::Bash => xai_grok_config::shell::UnixShellKind::Bash,
@@ -265,10 +264,9 @@ pub struct ShellState {
 }
 
 impl ShellState {
-    /// Initialize shell state by running an interactive login shell that loads
-    /// the user's rc files, then capturing the resulting environment.
-    ///
-    /// This is the expensive path — only called once (lazily on first command).
+    /// Initialize shell state by running an interactive login shell that loads the user's rc files,
+    /// then capturing the resulting environment. This is the expensive path — only called once
+    /// (lazily on first command).
     pub async fn init(
         shell: ShellKind,
         cwd: &Path,
@@ -286,10 +284,9 @@ impl ShellState {
             ShellKind::Zsh => vec!["-o", "extendedglob", "-ilc", &script],
         };
 
-        // stderr is intentionally discarded (Stdio::null) — we never read it,
-        // and piping it would risk a deadlock if the user's rc files write >64KB
-        // to stderr (fills the pipe buffer, child blocks on write, parent blocks
-        // on stdout read).
+        // stderr is intentionally discarded (Stdio::null) — we never read it, and piping it would
+        // risk a deadlock if the user's rc files write >64KB to stderr (fills the pipe buffer,
+        // child blocks on write, parent blocks on stdout read).
         let mut cmd = tokio::process::Command::new(shell.binary_path());
         cmd.args(&args)
             .current_dir(cwd)
@@ -298,14 +295,10 @@ impl ShellState {
             .stderr(xai_tty_utils::null_stdio())
             .kill_on_drop(true);
         crate::util::detach_command(&mut cmd);
-        // Apply the policy before the `export -p` snapshot so the replayed state
-        // is already filtered; otherwise the restore would undo it. No-op unless set.
-        //
-        // SECURITY: this filters the base env only. Variables an rc file exports
-        // during login are captured in the replay snapshot and are not
-        // re-filtered by `exclude`/`include_only` on the persistent backend, so
-        // warn when a policy is active. The non-persistent backend has no such
-        // gap (it filters login capture directly).
+        xai_grok_sandbox::child_net::restrict_child_network(&mut cmd);
+        // Apply the policy before the `export -p` snapshot so the replayed state is already filtered; otherwise the restore would undo it. No-op
+        // unless set. SECURITY: this filters the base env only. Variables an rc file exports during login are captured in the replay snapshot and are
+        // not re-filtered by `exclude`/`include_only` on the persistent backend, so warn when a policy is active.
         if shell_env_policy.is_some_and(|p| !p.is_noop()) {
             tracing::warn!(
                 "shell_environment_policy filters the persistent shell's base env only; \
@@ -363,21 +356,9 @@ impl ShellState {
         }
     }
 
-    /// Build the wrapper command and fd pipe pair for a persistent shell invocation.
-    ///
-    /// Returns `(shell_binary, args, state_in_fd, state_out_fd)` where:
-    /// - `state_in_fd` is a pipe the caller writes the prior snapshot to (fd 3 in the child)
-    /// - `state_out_fd` is a pipe the caller reads the new dump from (fd 4 in the child)
-    ///
-    /// The caller must:
-    /// 1. Write `self.snapshot` to `state_in_fd` then close it
-    /// 2. Spawn the child with the returned args + fd_mappings
-    /// 3. Read `state_out_fd` after the child exits
-    /// 4. Call `parse_dump()` on the result to update state
-    ///
-    /// `cwd_override`: if provided, the child uses this cwd instead of the
-    ///    persistent shell's tracked cwd. Used for per-call `working_directory`
-    ///    overrides from `TerminalRunRequest`.
+    /// Build the wrapper command and fd pipe pair for a persistent shell invocation. `state_in_fd` is a pipe the caller writes the prior snapshot
+    /// to (fd 3 in the child) `state_out_fd` is a pipe the caller reads the new dump from (fd 4 in the child) Write `self.snapshot` to
+    /// `state_in_fd` then close it Spawn the child with the returned args + fd_mappings Read `state_out_fd` after the child exits
     pub fn prepare_command(
         &self,
         user_command: &str,
@@ -401,46 +382,17 @@ impl ShellState {
         // where pipe+fcntl has a small race window).
         set_cloexec(&state_in_write)?;
         set_cloexec(&state_out_read)?;
-        // The child-bound ends (state_in_read, state_out_write) also have
-        // CLOEXEC from os_pipe(). This is fine: fd_mappings uses dup2()
-        // which clears CLOEXEC on the target fd (3/4), so the child keeps
-        // them across exec. The originals are closed on exec by CLOEXEC.
+        // The child-bound ends (state_in_read, state_out_write) also have CLOEXEC from os_pipe().
+        // This is fine: fd_mappings uses dup2() which clears CLOEXEC on the target fd (3/4), so the
+        // child keeps them across exec. The originals are closed on exec by CLOEXEC.
 
-        // The wrapper command:
-        // 1. Read prior snapshot from fd 3, eval it (restores env/funcs/aliases/opts)
-        // 2. Run the user's command (passed as $1)
-        // 3. Dump new state to fd 4
-        // 4. Exit with the user command's exit code
+        // Read prior snapshot from fd 3, eval it (restores env/funcs/aliases/opts) Run the user's
+        // command (passed as $1) Dump new state to fd 4 Exit with the user command's exit code
         let wrapper = match self.shell {
             ShellKind::Bash => format!(
-                // Merge the user command's stderr into its
-                // stdout via `2>&1` so the captured byte stream preserves
-                // chronological write order. Without this, the bash tool's
-                // separate stdout/stderr pipes (each read in lockstep)
-                // emit all-of-stdout-then-all-of-stderr in a single poll
-                // tick, so a command like `echo X 1>&2 && echo Y` shows
-                // up as `Y\nX\n` instead of the chronological `X\nY\n`.
-                // Shell-level diagnostics (eval syntax errors, etc.) still
-                // land on the outer shell's stderr — those are unaffected.
-                // Re-export GROK_AGENT=1 after snapshot eval so agent-definition
-                // selectors (or other values) from prior shells cannot clear the
-                // agent sentinel (process env alone is insufficient).
-                //
-                // Copy $1/$2 into plain variables and clear the positional
-                // parameters (`builtin set --`) BEFORE eval'ing the user
-                // command: `source <script>` with no arguments makes the
-                // sourced script inherit the caller's positional parameters,
-                // so e.g. conda's `bin/activate` (which forwards "$@" to
-                // `conda activate`) would receive the entire wrapped command
-                // string as an environment name. Clearing them matches the
-                // plain `bash -c "<command>"` execution path, where $# is 0.
-                //
-                // The snapshot can restore `allexport` (set -a), which would
-                // auto-export the temp variable — so strip the export
-                // attribute post-assignment (`declare +x`; inline `declare +x
-                // var=value` does NOT beat allexport) and unset it after the
-                // eval so it can never reach child processes or the state
-                // dump (`export -p`).
+                // Merge the user command's stderr into its stdout via `2>&1` so the captured byte stream preserves chronological write order. Shell-level
+                // diagnostics (eval syntax errors, etc.) still land on the outer shell's stderr — those are unaffected. Re-export GROK_AGENT=1 after snapshot
+                // eval so agent-definition selectors (or other values) from prior shells cannot clear the agent sentinel (process env alone is insufficient).
                 "{dump_script} \
                  snap=$(command cat <&3) && builtin shopt -s extglob && builtin eval -- \"$snap\" && \
                  {{ builtin set +u 2>/dev/null || true; \
@@ -452,10 +404,9 @@ impl ShellState {
                  builtin eval \"$__grok_user_cmd\" 2>&1; }}; \
                  COMMAND_EXIT_CODE=$?; builtin unset __grok_user_cmd 2>/dev/null; {dump_fn} >&4; builtin exit $COMMAND_EXIT_CODE"
             ),
-            // After snapshot restore: force nonomatch so login dumps cannot re-arm NOMATCH for model globs.
-            // See the bash wrapper comment for why positional parameters are
-            // cleared before the user-command eval (zsh's `source`/`.` inherits
-            // them identically).
+            // After snapshot restore: force nonomatch so login dumps cannot re-arm NOMATCH for
+            // model globs. See the bash wrapper comment for why positional parameters are cleared
+            // before the user-command eval (zsh's `source`/`.` inherits them identically).
             ShellKind::Zsh => format!(
                 "{dump_script} \
                  snap=$(command cat <&3); \
@@ -553,16 +504,9 @@ pub struct PreparedCommand {
 // Helpers
 // ============================================================================
 
-/// Create an OS pipe, returning `(read_end, write_end)` as `OwnedFd`.
-///
-/// On Linux, uses `nix::unistd::pipe2(O_CLOEXEC)` to atomically set
-/// close-on-exec, eliminating the race window between `pipe()` and
-/// `fcntl(F_SETFD)` where a concurrent `fork()` could leak fds to an
-/// unrelated child.
-///
-/// On macOS, `pipe2` is not exposed by `nix` 0.30 (the kernel added it
-/// in 10.15 but `nix`'s cfg gate hasn't caught up). Falls back to
-/// `pipe()` + `fcntl(FD_CLOEXEC)` with a best-effort race window.
+/// Create an OS pipe, returning `(read_end, write_end)` as `OwnedFd`. On Linux, uses `nix::unistd::pipe2(O_CLOEXEC)` to atomically set
+/// close-on-exec, eliminating the race window between `pipe()` and `fcntl(F_SETFD)` where a concurrent `fork()` could leak fds to an unrelated
+/// child. On macOS, `pipe2` is not exposed by `nix` 0.30 (the kernel added it in 10.15 but `nix`'s cfg gate hasn't caught up).
 fn os_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     // Linux: atomic O_CLOEXEC via pipe2.
     #[cfg(target_os = "linux")]
@@ -584,11 +528,9 @@ fn os_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     }
 }
 
-/// Set FD_CLOEXEC on a file descriptor so it is NOT inherited by child processes.
-///
-/// This is critical for pipe fds that should stay parent-only: without CLOEXEC,
-/// the child inherits both ends of a pipe after fork, preventing EOF from being
-/// signaled when the parent closes its end.
+/// Set FD_CLOEXEC on a file descriptor so it is NOT inherited by child processes. This is critical
+/// for pipe fds that should stay parent-only: without CLOEXEC, the child inherits both ends of a
+/// pipe after fork, preventing EOF from being signaled when the parent closes its end.
 fn set_cloexec(fd: &OwnedFd) -> std::io::Result<()> {
     let raw = fd.as_raw_fd();
     let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
@@ -654,29 +596,13 @@ pub async fn write_snapshot_to_pipe(snapshot: &str, fd: OwnedFd) -> std::io::Res
     .map_err(std::io::Error::other)?
 }
 
-/// Read the full dump output from the state-out pipe with a timeout.
-///
-/// If a background process inherits fd 4, the pipe never closes and the reader
-/// hangs. The timeout (5s close timeout) prevents this from
-/// blocking the actor loop forever. On timeout, returns whatever was read so far
-/// (which is typically empty, so marker validation will fail and prior state is kept).
+/// Read the full dump output from the state-out pipe with a timeout. If a background process inherits fd 4, the pipe never closes and the
+/// reader hangs. The timeout (5s close timeout) prevents this from blocking the actor loop forever. On timeout, returns whatever was read so
+/// far (which is typically empty, so marker validation will fail and prior state is kept).
 pub async fn read_dump_from_pipe(fd: OwnedFd) -> std::io::Result<String> {
-    // Read until either of the END markers appears, *not* until EOF.
-    //
-    // When the user's command backgrounds a subprocess (`cmd &`), the bg
-    // shell inherits fd 4 (the dump pipe's write-end) and keeps it open
-    // until *it* exits. The parent shell finishes its dump and exits, but
-    // the kernel doesn't close the read-end's EOF until every write-end
-    // holder closes theirs. Without marker-driven termination we'd block
-    // on `read_to_string` for the entire bg lifetime, hit the 5s safety
-    // timeout, and discard the (perfectly complete) dump — which manifests
-    // as `cd` / function / alias state silently failing to persist after
-    // any command that backgrounds something. (See harness scenarios
-    // "State persistence after backgrounded command" and the cd-roundtrip
-    // tests for shell state persistence parity.)
-    //
-    // We additionally cap on `DUMP_READ_TIMEOUT` so a shell that crashed
-    // before emitting the END marker doesn't wedge the actor.
+    // Read until either of the END markers appears, *not* until EOF. When the user's command backgrounds a subprocess (`cmd &`), the bg shell
+    // inherits fd 4 (the dump pipe's write-end) and keeps it open until *it* exits. The parent shell finishes its dump and exits, but the kernel
+    // doesn't close the read-end's EOF until every write-end holder closes theirs.
     match tokio::time::timeout(
         DUMP_READ_TIMEOUT,
         tokio::task::spawn_blocking(move || {
@@ -802,11 +728,9 @@ mod tests {
         assert_eq!(result, output);
     }
 
-    /// Returns true iff a usable bash binary exists at the resolved path.
-    /// Used to gate integration tests so they're skipped (rather than failing)
-    /// on systems where bash isn't installed (e.g. minimal containers).
-    /// On NixOS the resolver returns the nix-store / profile path, so this
-    /// guard works there too.
+    /// Returns true iff a usable bash binary exists at the resolved path. Used to gate integration tests so they're skipped
+    /// (rather than failing) on systems where bash isn't installed (e.g. minimal containers). On NixOS the resolver returns
+    /// the nix-store / profile path, so this guard works there too.
     fn bash_available() -> bool {
         std::path::Path::new(ShellKind::Bash.binary_path()).exists()
     }
@@ -1143,12 +1067,9 @@ mod tests {
         assert_eq!(stdout.trim(), "hello world");
     }
 
-    /// Regression test: a script sourced WITHOUT arguments by the user command
-    /// must not see the wrapper's positional parameters ($1 = the whole
-    /// command string, $2 = the spawn notice). Conda's `bin/activate` forwards
-    /// "$@" to `conda activate`, so a leak makes every `activate_conda`-
-    /// prefixed command fail with `EnvironmentLocationNotFound: Not a conda
-    /// environment: <cwd>/<the entire command string>`.
+    /// Regression test: a script sourced WITHOUT arguments by the user command must not see the wrapper's positional parameters ($1 = the whole
+    /// command string, $2 = the spawn notice). Conda's `bin/activate` forwards "$@" to `conda activate`, so a leak makes every
+    /// `activate_conda`-prefixed command fail with `EnvironmentLocationNotFound: Not a conda environment: <cwd>/<the entire command string>`.
     #[tokio::test]
     async fn test_sourced_script_does_not_inherit_wrapper_positional_args_bash() {
         if !bash_available() {
@@ -1174,10 +1095,9 @@ mod tests {
         assert!(stdout.contains("AFTER_SOURCE_OK"), "got: {stdout:?}");
     }
 
-    /// Regression test: with `allexport` active (restored from the snapshot
-    /// after the model runs `set -a`), the wrapper's `__grok_user_cmd` temp
-    /// variable must not leak into child-process environments or persist into
-    /// subsequent commands via the state dump.
+    /// Regression test: with `allexport` active (restored from the snapshot after the model runs
+    /// `set -a`), the wrapper's `__grok_user_cmd` temp variable must not leak into child-process
+    /// environments or persist into subsequent commands via the state dump.
     #[tokio::test]
     async fn test_user_cmd_var_not_exported_under_allexport_bash() {
         if !bash_available() {
@@ -1191,10 +1111,9 @@ mod tests {
         let (code, _) = run_command(&mut state, "set -a").await;
         assert_eq!(code, 0);
 
-        // This command's wrapper assigns __grok_user_cmd under allexport.
-        // printenv only sees exported vars — it must not see the temp var
-        // (neither from this command's own assignment nor re-exported from a
-        // previous command's state dump).
+        // This command's wrapper assigns __grok_user_cmd under allexport. printenv only sees
+        // exported vars — it must not see the temp var (neither from this command's own assignment
+        // nor re-exported from a previous command's state dump).
         let (code, stdout) = run_command(
             &mut state,
             "printenv __grok_user_cmd >/dev/null 2>&1 && echo LEAKED_TO_ENV || echo ENV_CLEAN",

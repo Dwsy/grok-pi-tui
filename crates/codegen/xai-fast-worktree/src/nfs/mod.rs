@@ -4,6 +4,8 @@
 //! Dest probes and teardown (`dest_is_*`, `force_unmount`) are shared by NFS
 //! and FUSE. Create IPC wire types stay local (daemon owns attach).
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// Matches grove `WorktreeError::IdentityConflict` Display. Parsed once in the client.
+pub(crate) const IDENTITY_CONFLICT_MARK: &str = "identity conflict";
 mod client;
 mod confined;
 pub(crate) use confined::is_safe_worktree_id;
@@ -37,14 +39,12 @@ pub(crate) static GROVE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new((
 use crate::copy::CopyStats;
 use crate::worktree::CreateWorktreeResult;
 use crate::worktree::plan::WorktreePlan;
-use crate::{IgnoredFilesMode, OUT_OF_DISK_CONTEXT, WorkingTreeMode};
+use crate::{IgnoredFilesMode, WorkingTreeMode};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::Duration;
-/// Explicit NFS enablement passed into [`crate::WorktreeBuilder`].
-///
-/// The library never reads pager / grove config; callers resolve flags and
-/// pass the result here.
+/// Explicit NFS enablement for [`crate::WorktreeBuilder`]. The library never
+/// reads pager / grove config; callers resolve flags and pass the result.
 #[derive(Clone, Debug)]
 pub struct NfsWorktreeOpts {
     pub enabled: bool,
@@ -76,12 +76,14 @@ impl Default for NfsWorktreeOpts {
         }
     }
 }
-/// Try the grove worktree arm (Linux FUSE / macOS NFS).
-///
-/// `Ok(None)` is a silent fallthrough (no side effects, or daemon confirmed
-/// abort / provably-dead). `Err` must not copy-fallback: either ENOSPC or an
-/// in-flight create whose dest must not be double-written.
-pub(crate) fn try_grove_worktree(plan: &WorktreePlan) -> Result<Option<CreateWorktreeResult>> {
+pub(crate) use crate::worktree::{GroveSkip, GroveTry};
+fn grove_skipped(skip: GroveSkip) -> Result<Option<GroveTry>> {
+    Ok(Some(GroveTry::Skipped(skip)))
+}
+/// Grove worktree arm (Linux FUSE / macOS NFS). `Ok(None)` = not requested;
+/// `Ok(Some(Skipped(_)))` = fallthrough. `Err` must not copy-fallback: ENOSPC
+/// or an in-flight create whose dest must not be double-written.
+pub(crate) fn try_grove_worktree(plan: &WorktreePlan) -> Result<Option<GroveTry>> {
     let Some(opts) = plan.nfs.as_ref() else {
         return Ok(None);
     };
@@ -92,7 +94,7 @@ pub(crate) fn try_grove_worktree(plan: &WorktreePlan) -> Result<Option<CreateWor
     {
         if !grove_fuse_ready() {
             tracing::info!("grove-fuse skipped: /dev/fuse or fusermount missing");
-            return Ok(None);
+            return grove_skipped(GroveSkip::FuseUnavailable);
         }
         let has_delegate = plan.btrfs_delegate.is_some();
         if !has_delegate
@@ -102,32 +104,50 @@ pub(crate) fn try_grove_worktree(plan: &WorktreePlan) -> Result<Option<CreateWor
             )
         {
             tracing::info!("grove-fuse skipped: private mount namespace");
-            return Ok(None);
+            return grove_skipped(GroveSkip::PrivateMountNamespace);
         }
     }
     if !confined::is_safe_worktree_id(&plan.worktree_id) {
         anyhow::bail!("invalid worktree id {:?}", plan.worktree_id);
     }
+    let linked = source_is_linked_local_view(opts, &plan.source);
     if dest_is_projected_mount(&plan.source) {
-        tracing::info!(
-            source = %plan.source.display(),
-            "nfs worktree skipped: source is itself an NFS mount"
-        );
-        return Ok(None);
-    }
-    if !dest_is_known_unmounted(&plan.source) && !dest_is_mountpoint(&plan.source) {
-        tracing::info!(
-            source = %plan.source.display(),
-            "nfs worktree skipped: source mount table inconclusive"
-        );
-        return Ok(None);
+        if !linked {
+            tracing::info!(
+                source = %plan.source.display(),
+                "nfs worktree skipped: source is itself an NFS mount"
+            );
+            return grove_skipped(GroveSkip::SourceIsGroveMount);
+        }
+        if matches!(plan.working_tree, WorkingTreeMode::PreserveWorkingTree) {
+            tracing::info!(
+                source = %plan.source.display(),
+                "nfs worktree skipped: preserve on a linked local-codebase view"
+            );
+            return grove_skipped(GroveSkip::PreserveOnLinkedView);
+        }
+    } else if !dest_is_known_unmounted(&plan.source) && !dest_is_mountpoint(&plan.source) {
+        if !linked {
+            tracing::info!(
+                source = %plan.source.display(),
+                "nfs worktree skipped: source mount table inconclusive"
+            );
+            return grove_skipped(GroveSkip::MountTableInconclusive);
+        }
+        if matches!(plan.working_tree, WorkingTreeMode::PreserveWorkingTree) {
+            tracing::info!(
+                source = %plan.source.display(),
+                "nfs worktree skipped: preserve on a linked view (inconclusive mount table)"
+            );
+            return grove_skipped(GroveSkip::PreserveOnInconclusiveLinkedView);
+        }
     }
     if is_jj_source(&plan.source) {
         tracing::info!(
             source = %plan.source.display(),
             "nfs worktree skipped: jj source repo"
         );
-        return Ok(None);
+        return grove_skipped(GroveSkip::JjSourceRepo);
     }
     if matches!(plan.working_tree, WorkingTreeMode::PreserveWorkingTree)
         && plan.git_ref != "HEAD"
@@ -137,7 +157,7 @@ pub(crate) fn try_grove_worktree(plan: &WorktreePlan) -> Result<Option<CreateWor
             git_ref = %plan.git_ref,
             "nfs worktree skipped: preserve + non-HEAD is a typed decline"
         );
-        return Ok(None);
+        return grove_skipped(GroveSkip::PreserveNonHeadRef);
     }
     let client = NfsWorktreeClient::from_opts(opts);
     match client.create_worktree(plan) {
@@ -165,7 +185,7 @@ pub(crate) fn try_grove_worktree(plan: &WorktreePlan) -> Result<Option<CreateWor
                 grove["backing"] = serde_json::Value::String(b);
             }
             let metadata = serde_json::json!({ "grove": grove });
-            Ok(Some(CreateWorktreeResult {
+            Ok(Some(GroveTry::Adopted(Box::new(CreateWorktreeResult {
                 worktree_path: adopted.dest,
                 commit,
                 copy_stats: CopyStats::default(),
@@ -173,16 +193,18 @@ pub(crate) fn try_grove_worktree(plan: &WorktreePlan) -> Result<Option<CreateWor
                 dirty_files_report: None,
                 resolved_strategy: grove_resolved_strategy(&adopted.transport),
                 strategy_metadata: Some(metadata),
-            }))
+                skipped: Vec::new(),
+                daemon_capability_class: None,
+            }))))
         }
-        Ok(NfsCreateDecision::Fallback) => Ok(None),
+        Ok(NfsCreateDecision::Fallback) => grove_skipped(GroveSkip::DaemonDeclined),
         Err(NfsTryError::StorageFull) => {
-            let err = std::io::Error::from(std::io::ErrorKind::StorageFull);
-            Err(anyhow::Error::new(err).context(OUT_OF_DISK_CONTEXT))
+            let io = std::io::Error::from(std::io::ErrorKind::StorageFull);
+            Err(anyhow::Error::new(io).context(NfsTryError::StorageFull))
         }
-        Err(NfsTryError::InFlight { phase }) => Err(anyhow::anyhow!(
-            "nfs worktree create still in progress (phase={phase}); not falling back to copy"
-        )),
+        Err(e @ NfsTryError::InFlight { .. }) => Err(anyhow::Error::from(e)),
+        Err(e @ NfsTryError::IdentityConflict(_)) => Err(anyhow::Error::from(e)),
+        Err(e @ NfsTryError::DestStillMounted) => Err(anyhow::Error::from(e)),
         Err(NfsTryError::Other(e)) => Err(e).context("nfs worktree create failed"),
     }
 }
@@ -193,7 +215,7 @@ fn teardown_after_failed_head_read(
     client: &NfsWorktreeClient,
     dest: &Path,
     head_err: anyhow::Error,
-) -> Result<Option<CreateWorktreeResult>> {
+) -> Result<Option<GroveTry>> {
     if let Err(rm) = client.remove_worktree(dest, true) {
         tracing::warn!(
             error = %rm,
@@ -202,16 +224,42 @@ fn teardown_after_failed_head_read(
         );
     }
     if dest_is_mountpoint(dest) || !dest_is_known_unmounted(dest) {
-        return Err(head_err).context(format!(
-            "read HEAD after grove adopt {}; dest still mounted; not falling back to copy",
-            dest.display()
-        ));
+        tracing::warn!(
+            error = %head_err,
+            dest = %dest.display(),
+            "read HEAD after grove adopt; dest still mounted"
+        );
+        return Err(NfsTryError::DestStillMounted.into());
     }
     tracing::warn!(
         dest = %dest.display(),
         "tore down grove dest after failed HEAD read; falling through"
     );
-    Ok(None)
+    grove_skipped(GroveSkip::HeadUnreadableAfterAdopt)
+}
+/// Status capability marking a daemon new enough to abort an in-flight create;
+/// the single marker every client grades the daemon by.
+pub const CAP_CANCEL_WORKTREE_CREATE: &str = "cancel_worktree_create";
+/// Grade a daemon from its advertised Status capabilities. `None` is a Status
+/// RPC that failed, which grades `unknown`; every client shares this policy.
+#[must_use]
+pub fn daemon_capability_class(capabilities: Option<&[String]>) -> &'static str {
+    match capabilities {
+        Some(caps) if caps.iter().any(|c| c == CAP_CANCEL_WORKTREE_CREATE) => "current",
+        Some(_) => "old",
+        None => "unknown",
+    }
+}
+/// Probe Grove daemon capabilities when the arm is enabled. `None` if Grove was not requested.
+#[must_use]
+pub(crate) fn probe_daemon_capability_class(
+    opts: Option<&NfsWorktreeOpts>,
+) -> Option<&'static str> {
+    let opts = opts.filter(|o| o.enabled)?;
+    let status = NfsWorktreeClient::from_opts(opts).daemon_status().ok();
+    Some(daemon_capability_class(
+        status.as_ref().map(|st| st.capabilities.as_slice()),
+    ))
 }
 fn grove_resolved_strategy(transport: &str) -> &'static str {
     if transport.eq_ignore_ascii_case("fuse") {
@@ -277,11 +325,9 @@ fn fusermount_on_path(name: &str) -> bool {
 fn grove_fuse_ready() -> bool {
     true
 }
-/// Grove data dir + `worktree-backing/<id>` for metadata / remove / GC.
-/// Prefers an explicit opt, then a candidate that already has the backing
-/// dir (post-create). Never invents a path: `nfs_record_is_dead` treats a
-/// missing non-empty backing as dead, which would let pin-GC drop a live
-/// worktree. Empty/unknown stays fail-closed.
+/// Grove data dir + `worktree-backing/<id>`. Prefer an explicit opt, then a
+/// candidate that already has the backing dir. Never invent a path: a missing
+/// non-empty backing is treated as dead and pin-GC would drop a live worktree.
 fn resolved_backing_path(opts: &NfsWorktreeOpts, worktree_id: &str) -> Option<std::path::PathBuf> {
     if let Some(d) = opts.data_dir.as_ref() {
         return Some(d.join(WORKTREE_BACKING_DIR).join(worktree_id));
@@ -298,6 +344,14 @@ fn is_jj_source(source: &Path) -> bool {
     source.join(".jj").is_dir()
         || source.join(".git").is_dir() && source.join(".git").join("jj").exists()
 }
+/// Status-confirmed linked local-codebase view. Old daemon / miss → false.
+#[must_use]
+pub fn source_is_linked_local_view(opts: &NfsWorktreeOpts, source: &Path) -> bool {
+    if !opts.enabled {
+        return false;
+    }
+    NfsWorktreeClient::from_opts(opts).source_is_linked_local_view(source)
+}
 pub(crate) fn working_tree_wire(mode: &WorkingTreeMode) -> &'static str {
     match mode {
         WorkingTreeMode::PreserveWorkingTree => "preserve",
@@ -311,19 +365,38 @@ pub(crate) fn ignored_wire(mode: &IgnoredFilesMode) -> &'static str {
         IgnoredFilesMode::Copy { .. } | IgnoredFilesMode::CopyOnly { .. } => "clone",
     }
 }
-/// True when dispatch must not fall through to the copy engine.
-pub(crate) fn nfs_error_blocks_fallback(err: &anyhow::Error) -> bool {
-    err.chain().any(|c| {
+/// Typed Grove hard-fail that blocks copy fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroveHardFail {
+    InFlight,
+    StorageFull,
+    IdentityConflict,
+    DestStillMounted,
+}
+/// Classify a builder `Err` from the typed [`NfsTryError`] in the chain.
+#[must_use]
+pub fn grove_hard_fail(err: &anyhow::Error) -> Option<GroveHardFail> {
+    for c in err.chain() {
+        if let Some(nfs) = c.downcast_ref::<NfsTryError>() {
+            return match nfs {
+                NfsTryError::InFlight { .. } => Some(GroveHardFail::InFlight),
+                NfsTryError::StorageFull => Some(GroveHardFail::StorageFull),
+                NfsTryError::IdentityConflict(_) => Some(GroveHardFail::IdentityConflict),
+                NfsTryError::DestStillMounted => Some(GroveHardFail::DestStillMounted),
+                NfsTryError::Other(_) => None,
+            };
+        }
         if c.downcast_ref::<std::io::Error>()
             .is_some_and(|io| io.kind() == std::io::ErrorKind::StorageFull)
         {
-            return true;
+            return Some(GroveHardFail::StorageFull);
         }
-        let s = c.to_string();
-        s.contains(OUT_OF_DISK_CONTEXT)
-            || s.contains("still in progress")
-            || s.contains("not falling back")
-    })
+    }
+    None
+}
+/// True when dispatch must not fall through to the copy engine.
+pub(crate) fn nfs_error_blocks_fallback(err: &anyhow::Error) -> bool {
+    grove_hard_fail(err).is_some()
 }
 #[cfg(test)]
 mod resolved_backing_tests {
@@ -355,7 +428,7 @@ mod resolved_backing_tests {
 mod fallback_gate_tests {
     use super::*;
     use crate::worktree::plan::WorktreePlan;
-    use crate::{CreationMode, IgnoredFilesMode, WorkingTreeMode};
+    use crate::{CreationMode, IgnoredFilesMode, OUT_OF_DISK_CONTEXT, WorkingTreeMode};
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::sync::Arc;
@@ -392,6 +465,13 @@ mod fallback_gate_tests {
                 }
             }
         })
+    }
+    fn assert_grove_skipped(plan: &WorktreePlan, expected: GroveSkip) {
+        match try_grove_worktree(plan).unwrap() {
+            Some(GroveTry::Skipped(skip)) => assert_eq!(skip, expected),
+            Some(GroveTry::Adopted(_)) => panic!("adopted, expected skip {expected}"),
+            None => panic!("not requested, expected skip {expected}"),
+        }
     }
     fn base_plan(tmp: &TempDir, nfs: Option<NfsWorktreeOpts>) -> WorktreePlan {
         let dest = tmp.path().join("dest");
@@ -471,7 +551,7 @@ mod fallback_gate_tests {
             ..Default::default()
         };
         let plan = base_plan(&tmp, Some(opts));
-        assert!(try_grove_worktree(&plan).unwrap().is_none());
+        assert_grove_skipped(&plan, GroveSkip::JjSourceRepo);
         assert_eq!(creates.load(Ordering::SeqCst), 0);
     }
     #[test]
@@ -489,7 +569,7 @@ mod fallback_gate_tests {
         };
         let mut plan = base_plan(&tmp, Some(opts));
         plan.git_ref = "main".into();
-        assert!(try_grove_worktree(&plan).unwrap().is_none());
+        assert_grove_skipped(&plan, GroveSkip::PreserveNonHeadRef);
         assert_eq!(creates.load(Ordering::SeqCst), 0);
     }
     #[test]
@@ -530,6 +610,41 @@ mod fallback_gate_tests {
         let err = try_grove_worktree(&plan).unwrap_err();
         assert_eq!(err.to_string(), OUT_OF_DISK_CONTEXT);
         assert!(nfs_error_blocks_fallback(&err));
+        assert_eq!(grove_hard_fail(&err), Some(GroveHardFail::StorageFull));
+    }
+    #[test]
+    fn grove_hard_fail_reads_typed_in_flight() {
+        let err = anyhow::Error::from(NfsTryError::InFlight {
+            phase: "materializing".into(),
+        });
+        assert_eq!(grove_hard_fail(&err), Some(GroveHardFail::InFlight));
+        assert!(nfs_error_blocks_fallback(&err));
+    }
+    #[test]
+    fn grove_hard_fail_reads_typed_identity_conflict() {
+        let err = anyhow::Error::from(NfsTryError::IdentityConflict(
+            "worktree w1 identity conflict: mismatched git_ref".into(),
+        ));
+        assert_eq!(grove_hard_fail(&err), Some(GroveHardFail::IdentityConflict));
+        assert!(nfs_error_blocks_fallback(&err));
+    }
+    #[test]
+    fn grove_hard_fail_reads_typed_dest_still_mounted() {
+        let err = anyhow::Error::from(NfsTryError::DestStillMounted);
+        assert_eq!(grove_hard_fail(&err), Some(GroveHardFail::DestStillMounted));
+        assert!(nfs_error_blocks_fallback(&err));
+        let text = err.to_string();
+        assert!(text.contains("dest still mounted"), "{text}");
+        assert!(text.contains("not falling back to copy"), "{text}");
+        assert!(!text.contains("rev-parse"), "{text}");
+    }
+    #[test]
+    fn string_needles_do_not_block_fallback() {
+        let err = anyhow::anyhow!(
+            "worktree w1 identity conflict: mismatched git_ref; not falling back to copy"
+        );
+        assert_eq!(grove_hard_fail(&err), None);
+        assert!(!nfs_error_blocks_fallback(&err));
     }
     #[test]
     fn head_read_failure_after_adopt_tears_down_and_falls_through() {
@@ -578,10 +693,7 @@ mod fallback_gate_tests {
             ..Default::default()
         };
         let plan = base_plan(&tmp, Some(opts));
-        assert!(
-            try_grove_worktree(&plan).unwrap().is_none(),
-            "unmounted dest after failed HEAD must fall through"
-        );
+        assert_grove_skipped(&plan, GroveSkip::HeadUnreadableAfterAdopt);
         assert_eq!(creates.load(Ordering::SeqCst), 1);
         assert_eq!(removes.load(Ordering::SeqCst), 1);
     }
@@ -659,6 +771,11 @@ mod fallback_gate_tests {
         );
         assert_eq!(creates.load(Ordering::SeqCst), 1);
         assert_eq!(crate::grove_wt_create_count("copy"), copy_before);
+        assert!(
+            result.skipped.iter().all(|s| !s.arm.is_grove()),
+            "grove success must not record a grove-nfs skip: {:?}",
+            result.skipped
+        );
     }
     #[cfg(target_os = "linux")]
     #[test]
@@ -736,6 +853,110 @@ mod fallback_gate_tests {
             "dispatch must not copy-fallback after grove-fuse adopt"
         );
         assert_eq!(creates.load(Ordering::SeqCst), 1);
+        assert!(
+            result.skipped.iter().all(|s| !s.arm.is_grove()),
+            "grove success must not record a grove-fuse skip: {:?}",
+            result.skipped
+        );
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn grove_copy_fallback_persists_skip_reason() {
+        xai_test_utils::require_git!();
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        xai_test_utils::git::init_git_repo(&repo);
+        std::fs::write(repo.join("file.txt"), "x").unwrap();
+        xai_test_utils::git::git_commit_all(&repo, "c");
+        let dest = tmp.path().join("dest");
+        let opts = NfsWorktreeOpts {
+            enabled: true,
+            control_sock: Some(tmp.path().join("missing.sock")),
+            ping_timeout: Duration::from_millis(30),
+            create_timeout: Duration::from_millis(30),
+            ..Default::default()
+        };
+        let plan = WorktreePlan {
+            source: repo,
+            dest: dest.clone(),
+            git_ref: "HEAD".into(),
+            parallelism: 1,
+            channel_buffer: 8,
+            working_tree: WorkingTreeMode::PreserveWorkingTree,
+            ignored_files: IgnoredFilesMode::Skip,
+            ignored_parallelism: 1,
+            creation_mode: CreationMode::Linked,
+            cancellation_token: CancellationToken::new(),
+            btrfs_delegate: None,
+            worktree_id: crate::worktree::plan::worktree_id_from_path(&dest),
+            nfs: Some(opts),
+        };
+        let result = crate::worktree::execute_plan(plan).unwrap();
+        assert_eq!(result.resolved_strategy, crate::worktree::STRATEGY_COPY);
+        assert!(
+            result
+                .skipped
+                .iter()
+                .any(|s| s.arm.is_grove() && s.detail != "skipped"),
+            "copy fallback must keep a detailed grove skip: {:?}",
+            result.skipped
+        );
+        assert_eq!(result.daemon_capability_class, Some("unknown"));
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn grove_copy_fallback_persists_ok_none_skip_reason() {
+        xai_test_utils::require_git!();
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        xai_test_utils::git::init_git_repo(&repo);
+        std::fs::write(repo.join("file.txt"), "x").unwrap();
+        xai_test_utils::git::git_commit_all(&repo, "c");
+        std::fs::create_dir(repo.join(".jj")).unwrap();
+        let dest = tmp.path().join("dest");
+        let sock = tmp.path().join("c.sock");
+        let creates = Arc::new(AtomicUsize::new(0));
+        let _h = spawn_counting_daemon(sock.clone(), Arc::clone(&creates));
+        thread::sleep(Duration::from_millis(20));
+        let opts = NfsWorktreeOpts {
+            enabled: true,
+            control_sock: Some(sock),
+            ping_timeout: Duration::from_millis(80),
+            create_timeout: Duration::from_millis(80),
+            ..Default::default()
+        };
+        let plan = WorktreePlan {
+            source: repo,
+            dest: dest.clone(),
+            git_ref: "HEAD".into(),
+            parallelism: 1,
+            channel_buffer: 8,
+            working_tree: WorkingTreeMode::PreserveWorkingTree,
+            ignored_files: IgnoredFilesMode::Skip,
+            ignored_parallelism: 1,
+            creation_mode: CreationMode::Linked,
+            cancellation_token: CancellationToken::new(),
+            btrfs_delegate: None,
+            worktree_id: crate::worktree::plan::worktree_id_from_path(&dest),
+            nfs: Some(opts),
+        };
+        let result = crate::worktree::execute_plan(plan).unwrap();
+        assert_eq!(result.resolved_strategy, crate::worktree::STRATEGY_COPY);
+        assert!(
+            result
+                .skipped
+                .iter()
+                .any(|s| s.arm.is_grove() && s.detail.contains("jj repo")),
+            "Ok(None) skip must keep the jj reason: {:?}",
+            result.skipped
+        );
+        assert_eq!(creates.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            result.daemon_capability_class, None,
+            "a local skip must not spend a Status RPC on a daemon that had no say"
+        );
     }
     #[cfg(target_os = "linux")]
     #[test]
@@ -806,5 +1027,81 @@ mod fallback_gate_tests {
         };
         let result = crate::worktree::execute_plan(plan).unwrap();
         (result.resolved_strategy, creates.load(Ordering::SeqCst))
+    }
+    /// Linked Grove status + CreateWorktree decline must not copy.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linked_grove_declined_does_not_copy() {
+        xai_test_utils::require_git!();
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        xai_test_utils::git::init_git_repo(&repo);
+        std::fs::write(repo.join("marker.txt"), "copied-if-entered").unwrap();
+        xai_test_utils::git::git_commit_all(&repo, "c");
+        let sock = tmp.path().join("c.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        thread::spawn(move || {
+            for incoming in listener.incoming() {
+                let Ok(mut stream) = incoming else { break };
+                let mut line = String::new();
+                let mut reader = BufReader::new(&stream);
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let op = serde_json::from_str::<serde_json::Value>(line.trim())
+                    .ok()
+                    .and_then(|v| v.get("op").and_then(|o| o.as_str()).map(str::to_owned))
+                    .unwrap_or_default();
+                if op == "ping" {
+                    let _ = writeln!(stream, r#"{{"status":"ok","data":{{"v":1,"pong":true}}}}"#);
+                } else if op == "status" {
+                    let _ = writeln!(
+                        stream,
+                        r#"{{"status":"ok","data":{{"v":1,"status":{{"mounts":[{{"kind":"worktree","source_mode":"local"}}]}}}}}}"#
+                    );
+                } else if op == "create_worktree" {
+                    let _ = writeln!(
+                        stream,
+                        r#"{{"status":"ok","data":{{"v":1,"declined":"inconclusive"}}}}"#
+                    );
+                }
+            }
+        });
+        thread::sleep(Duration::from_millis(20));
+        let dest = tmp.path().join("dest");
+        let opts = NfsWorktreeOpts {
+            enabled: true,
+            control_sock: Some(sock),
+            ping_timeout: Duration::from_millis(80),
+            create_timeout: Duration::from_millis(80),
+            ..Default::default()
+        };
+        let copy_before = crate::grove_wt_create_count("copy");
+        let plan = WorktreePlan {
+            source: repo,
+            dest: dest.clone(),
+            git_ref: "HEAD".into(),
+            parallelism: 1,
+            channel_buffer: 8,
+            working_tree: WorkingTreeMode::CleanAll,
+            ignored_files: IgnoredFilesMode::Skip,
+            ignored_parallelism: 1,
+            creation_mode: CreationMode::Linked,
+            cancellation_token: CancellationToken::new(),
+            btrfs_delegate: None,
+            worktree_id: crate::worktree::plan::worktree_id_from_path(&dest),
+            nfs: Some(opts),
+        };
+        let err = crate::worktree::execute_plan(plan).expect_err("must not copy");
+        assert!(
+            err.to_string().contains("refusing copy fallback"),
+            "{err:#}"
+        );
+        assert!(
+            !dest.join("marker.txt").exists(),
+            "linked Grove decline must not file-copy the source"
+        );
+        assert_eq!(crate::grove_wt_create_count("copy"), copy_before);
     }
 }

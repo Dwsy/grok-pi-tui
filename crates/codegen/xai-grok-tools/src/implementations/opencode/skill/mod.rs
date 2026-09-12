@@ -87,14 +87,9 @@ enum FindSkillResult<'a> {
     NotFound,
 }
 
-/// Find a skill by name from the available skills list.
-///
-/// Supports both fully-qualified names (`"local:commit"`) and
-/// short names (`"commit"`).
-///
-/// When a short name matches multiple skills across scopes, returns
-/// `Ambiguous` with the qualified names so the caller can ask for
-/// disambiguation instead of silently picking first-match.
+/// Find a skill by name from the available skills list. Supports both fully-qualified names (`"local:commit"`) and
+/// short names (`"commit"`). When a short name matches multiple skills across scopes, returns `Ambiguous` with the
+/// qualified names so the caller can ask for disambiguation instead of silently picking first-match.
 fn find_skill<'a>(name: &str, skills: &'a [SkillInfo]) -> FindSkillResult<'a> {
     // First try exact match with fully qualified name -- always unambiguous.
     if let Some(skill) = skills

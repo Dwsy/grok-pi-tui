@@ -1,21 +1,30 @@
-//! Line and block viewer popups plus the /btw panel: open/confirm/dismiss
-//! and their key/mouse handlers.
+//! Line and block viewer popups plus the /btw panel: open/confirm/dismiss and their key/mouse handlers.
 
-use super::{AgentView, render_char_buttons};
+use super::{AgentPane, AgentView, BlockViewerResume, render_char_buttons};
 use crate::app::actions::Action;
+
 use crate::app::app_view::InputOutcome;
 use crate::key;
 use crate::scrollback::selection::SelectionBox;
 use crate::scrollback::types::DisplayMode;
 use crate::theme::Theme;
+use crate::views::block_viewer::{BlockViewerPane, format_blockquote};
 use crate::views::btw_overlay::BTW_OVERLAY_ENTRY_IDX;
 use crate::views::file_search::line_viewer::{LineViewerState, PlanViewerItem};
 use crate::views::list_pane::ListItem;
 use crate::views::plan_approval_view::PlanApprovalFocus;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
+use xai_grok_telemetry::events::{BlockViewerOpened, BlockViewerQuoted};
+use xai_grok_telemetry::session_ctx::log_event;
+
+pub(crate) enum IdleEnterQuote {
+    NotHandled,
+    ConsumedEmpty,
+    Quoted(String),
+}
 
 impl AgentView {
     // ── Line viewer methods ────────────────────────────────────────────
@@ -50,7 +59,7 @@ impl AgentView {
             }
             self.line_viewer = Some(viewer);
         } else {
-            // File couldn't be read — cancel the undo group.
+            // The file couldn't be read, so cancel the undo group
             self.prompt.textarea.cancel_undo_group();
         }
     }
@@ -77,10 +86,8 @@ impl AgentView {
             .as_ref()
             .is_some_and(|v| v.list_state.input_mode().is_some());
 
-        // When the search/filter/goto input bar is active, let ListPane
-        // handle everything. Comment mode is special: Enter/Esc are not
-        // consumed by the list state (it returns false), so we handle
-        // save/cancel here.
+        // When the search/filter/goto input bar is active, let ListPane handle everything
+        // Comment mode is special: the list state does not consume Enter/Esc (it returns false), so save/cancel are handled here
         if input_bar_active {
             let is_comment_mode = self.line_viewer.as_ref().is_some_and(|v| {
                 v.list_state.input_mode() == Some(crate::views::list_pane::InputBarMode::Comment)
@@ -106,10 +113,9 @@ impl AgentView {
             return InputOutcome::Changed;
         }
 
-        // Plan-approval `Esc` doesn't close the viewer (use `q` / `Ctrl+\`),
-        // but it still clears a transient visual selection or accepted search
-        // matcher first, so the graduated dashboard-overlay back-out (which
-        // declines to fire while a matcher is active) isn't left dead-ended.
+        // In plan approval, `Esc` doesn't close the viewer (use `q` / `Ctrl+\`)
+        // It still clears a transient visual selection or an accepted search matcher first
+        // Backing out of the dashboard overlay declines to fire while a matcher is active, so without this clearing Esc would be a dead key
         if in_plan_approval && key!(Esc).matches(key) {
             if let Some(ref mut viewer) = self.line_viewer {
                 if viewer.list_state.visual_mode {
@@ -136,8 +142,7 @@ impl AgentView {
             return self.enter_plan_commenting();
         }
 
-        // Casual mode: same `c` / `s` shortcuts as plan approval so the
-        // footer hints actually work.
+        // Casual mode: same `c` / `s` shortcuts as plan approval so the footer hints actually work
         if !in_plan_approval && self.is_plan_viewer() && key!('c').matches(key) {
             return self.enter_casual_plan_commenting();
         }
@@ -153,8 +158,8 @@ impl AgentView {
             return self.approve_plan();
         }
 
-        // s: switch to prompt so the user can type an overall revision
-        // message before submitting. Enter from Prompt does the actual send.
+        // s: switch to prompt so the user can type an overall revision message before submitting
+        // Enter from Prompt does the actual send
         if in_plan_approval && key!('s').matches(key) {
             if let Some(ref mut pav) = self.plan_approval_view {
                 pav.focus = PlanApprovalFocus::Prompt;
@@ -259,8 +264,8 @@ impl AgentView {
             if in_plan_approval {
                 return InputOutcome::Changed;
             }
-            // In the plan viewer, Esc first clears visual selection / search
-            // before closing. q and Ctrl-C always close immediately.
+            // In the plan viewer, Esc first clears visual selection / search before closing
+            // q and Ctrl-C always close immediately
             if key!(Esc).matches(key)
                 && let Some(ref mut viewer) = self.line_viewer
             {
@@ -284,7 +289,6 @@ impl AgentView {
     }
 
     /// Confirm line viewer: update the element, optionally with a line range.
-    ///
     /// `include_range`: if true and visual mode is active, appends `:N-M`.
     /// If false, confirms with just the file path (strips any existing range).
     fn confirm_line_viewer(&mut self, include_range: bool) {
@@ -334,11 +338,8 @@ impl AgentView {
         if let Some(ref mut pav) = self.plan_approval_view {
             pav.focus = PlanApprovalFocus::Preview;
         }
-        // If a casual plan comment was in progress when the modal
-        // closed (via [✗], click-outside, or any other path that
-        // doesn't route through `cancel_casual_plan_commenting`),
-        // restore the pre-comment prompt text so the user's original
-        // text isn't lost behind the in-progress comment draft.
+        // The modal can close mid-comment via [✗], click-outside, or any path that skips `cancel_casual_plan_commenting`
+        // Restore the pre-comment prompt text so the user's original text isn't lost behind the comment draft
         // Mirrors `cancel_casual_plan_commenting`.
         if let Some(stashed) = self.casual_stashed_prompt.take() {
             self.prompt.restore(stashed);
@@ -364,9 +365,13 @@ impl AgentView {
         self.minimal_btw_lifecycle = None;
         self.btw_focused = false;
         self.clear_btw_drag_state();
+        // Panel gone: drop the held highlight. Scroll only cancels an in-flight drag.
+        self.clear_btw_owned_selection();
         InputOutcome::Changed
     }
 
+    /// Cancel an in-flight `/btw` text drag. Does not drop a finished highlight.
+    /// Selection coordinates are content-relative, so scroll does not make them stale.
     pub(super) fn clear_btw_drag_state(&mut self) {
         let is_btw = self
             .pending_text_drag
@@ -394,13 +399,9 @@ impl AgentView {
             return InputOutcome::Changed;
         };
 
-        // `popup_area` is the list-rendered area (excludes the divider
-        // + footer rows in plan modes); used for dispatching mouse
-        // events into `ListPaneState`. `modal_area` is the full inner
-        // rect of the modal frame (includes the footer); used by the
-        // click-outside-modal check so that clicks on the divider or
-        // the empty space between footer buttons don't accidentally
-        // close the modal.
+        // `popup_area` is the list-rendered area, excluding the divider and footer rows in plan modes
+        // Mouse events dispatch into `ListPaneState` against it
+        // The click-outside check uses `modal_area` so clicks on the divider or the space between footer buttons don't close the modal
         let popup_area = viewer.last_popup_area;
         let modal_area = viewer.last_modal_area;
 
@@ -411,8 +412,7 @@ impl AgentView {
         let approve_area = viewer.plan_ref().and_then(|p| p.approve_button_area);
         let comment_btn_area = viewer.plan_ref().and_then(|p| p.comment_button_area);
         let copy_btn_area = viewer.plan_ref().and_then(|p| p.copy_button_area);
-        // Cached `is_plan_viewer()` so we don't need to call self while
-        // the line_viewer is mutably borrowed below.
+        // Cached `is_plan_viewer()` so we don't need to call self while the line_viewer is mutably borrowed below
         let is_plan_preview =
             viewer.kind == crate::views::file_search::line_viewer::LineViewerKind::PlanPreview;
 
@@ -454,14 +454,14 @@ impl AgentView {
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                // Click on close button -> cancel.
+                // A click on the close button cancels
                 if close_area.is_some_and(|a| a.contains((mouse.column, mouse.row).into())) {
                     if self.plan_approval_view.is_none() {
                         self.cancel_line_viewer();
                     }
                     return InputOutcome::Changed;
                 }
-                // Click on fullscreen button -> toggle fullscreen.
+                // A click on the fullscreen button toggles fullscreen
                 if fs_area.is_some_and(|a| a.contains((mouse.column, mouse.row).into())) {
                     if let Some(ref mut v) = self.line_viewer {
                         v.fullscreen = !v.fullscreen;
@@ -475,8 +475,7 @@ impl AgentView {
                     if self.plan_approval_view.is_some() {
                         return self.approve_plan();
                     } else if is_plan_preview && !self.plan_comments.is_empty() {
-                        // Casual mode: the only action button shown is
-                        // `s send` (when there are comments to send).
+                        // Casual mode: the only action button shown is `s send` (when there are comments to send)
                         return self.send_casual_plan_comments();
                     }
                     return InputOutcome::Changed;
@@ -488,11 +487,8 @@ impl AgentView {
                     if is_plan_preview {
                         return self.enter_casual_plan_commenting();
                     }
-                    // The comment button is only set on plan viewers,
-                    // so the two arms above are exhaustive in practice.
-                    // Return here to make the dead fall-through
-                    // explicit and to match the abandon/approve hit
-                    // patterns just above.
+                    // The comment button is only set on plan viewers, so the two arms above are exhaustive in practice
+                    // Return here to make the dead fall-through explicit and to match the abandon/approve hit patterns just above
                     return InputOutcome::Changed;
                 }
                 if copy_btn_area.is_some_and(|a| a.contains((mouse.column, mouse.row).into())) {
@@ -507,9 +503,8 @@ impl AgentView {
                     }
                     return self.send_casual_plan_comments();
                 }
-                // Mermaid buttons before click-to-comment (early return ends
-                // the `viewer` borrow so `handle_inline_media_click` can take
-                // `&mut self`).
+                // Mermaid buttons are checked before click-to-comment
+                // The early return ends the `viewer` borrow so `handle_inline_media_click` can take `&mut self`
                 let mermaid_hit = self
                     .inline_media_hits
                     .mermaid_buttons
@@ -645,9 +640,7 @@ impl AgentView {
                 };
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                // Drag-to-extend works in both plan-approval and casual
-                // plan-preview modes (anywhere the PlanPreview viewer is
-                // showing).
+                // Drag-to-extend works in both plan-approval and casual plan-preview modes (anywhere the PlanPreview viewer is showing)
                 if is_plan_preview
                     && let Some(area) = popup_area
                     && let Some(ln) = viewer.source_line_at_screen_row(mouse.row, area)
@@ -686,8 +679,8 @@ impl AgentView {
                         let hi = start.max(end);
                         let range = lo..hi + 1;
                         if let Some(ref mut pav) = self.plan_approval_view {
-                            // First-entry-only stash (same as enter_plan_commenting): a second
-                            // gutter drag while Commenting must not replace frozen freeform.
+                            // Stash only on the first entry into commenting, same as enter_plan_commenting
+                            // A second gutter drag while Commenting must not replace the stashed prompt text
                             if pav.stashed_feedback_prompt.is_none() {
                                 pav.stashed_feedback_prompt = Some(self.prompt.stash());
                             }
@@ -696,7 +689,7 @@ impl AgentView {
                             pav.focus = PlanApprovalFocus::Commenting;
                             self.prompt.set_text("");
                         } else {
-                            // First-entry-only stash; see enter_casual_plan_commenting.
+                            // Stash only on the first entry; see enter_casual_plan_commenting
                             if self.casual_stashed_prompt.is_none() {
                                 self.casual_stashed_prompt = Some(self.prompt.stash());
                             }
@@ -740,9 +733,8 @@ impl AgentView {
 
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
                 let clicked_line = viewer.source_line_at_screen_row(mouse.row, area);
-                // Drag selection works in both modes whenever the
-                // plan preview is showing — but only on source rows
-                // (we need a 1-based line number as the drag anchor).
+                // Drag selection works in both modes whenever the plan preview is showing
+                // It only works on source rows: the drag anchor needs a 1-based line number
                 if is_plan_preview && let Some(ln) = clicked_line {
                     viewer.plan_mut().gutter_drag_start = Some(ln);
                     viewer.plan_mut().gutter_drag_end = Some(ln);
@@ -750,11 +742,8 @@ impl AgentView {
 
                 viewer.plan_mut().last_click_at = Some(std::time::Instant::now());
 
-                // A single click on any list row — source line OR
-                // existing comment annotation — enters commenting (or
-                // edit-comment) for that row. Same shortcut as
-                // selecting + pressing `c` / Enter. Works for both
-                // plan-approval and casual plan-preview modes.
+                // A single click on any list row (a source line or an existing comment row) enters commenting or comment editing for that row
+                // It is the same shortcut as selecting the row and pressing `c` / Enter, in both plan-approval and casual plan-preview modes
                 // Skip Mermaid affordance rows (button hits handled above).
                 let on_list_row = mouse.row >= area.y && {
                     let ry = (mouse.row - area.y) as usize;
@@ -771,13 +760,9 @@ impl AgentView {
                         })
                         .unwrap_or(false)
                 };
-                // Skip the click-to-comment trigger if the user is
-                // already composing a comment. Without this guard, any
-                // click on a list row would re-enter commenting and
-                // re-stash the (now-comment) prompt, clobbering the
-                // user's pre-comment text and preventing the mouse from
-                // being used to reposition the cursor without
-                // committing to a fresh comment.
+                // Skip the click-to-comment trigger if the user is already composing a comment
+                // Without this guard, any click on a list row would re-enter commenting and re-stash the prompt, now holding the comment draft
+                // That clobbers the user's pre-comment text and makes any mouse click commit to a fresh comment instead of just moving the cursor
                 let in_pav_commenting = self
                     .plan_approval_view
                     .as_ref()
@@ -810,11 +795,8 @@ impl AgentView {
     // -- Scrollback selection box buttons -------------------------------------
 
     /// Render ⧉ (copy) and ↗ (view) buttons on the scrollback selection box.
-    ///
-    /// Two modes:
-    /// - **Corner row** (expanded or ungrouped): buttons on the `╭...╮` row.
-    /// - **Inline** (collapsed + grouped): buttons on the selected entry's row,
-    ///   overlaying content at the right edge.
+    /// **Corner row** (expanded or ungrouped): buttons on the `╭...╮` row.
+    /// **Inline** (collapsed and grouped): buttons on the selected entry's row, overlaying content at the right edge.
     pub(super) fn render_selection_buttons(
         &mut self,
         buf: &mut Buffer,
@@ -856,7 +838,7 @@ impl AgentView {
         }
 
         // Determine inline vs corner mode.
-        // Inline: entry is collapsed AND part of a group (group_range > 1).
+        // Inline: entry is collapsed and part of a group (group_range > 1)
         let split_mode = self
             .scrollback
             .appearance()
@@ -981,6 +963,131 @@ impl AgentView {
         }
     }
 
+    pub(crate) fn dismiss_block_viewer(&mut self) {
+        if let Some(viewer) = self.block_viewer.take() {
+            self.block_viewer_resume = Some(BlockViewerResume {
+                entry_id: viewer.entry_id,
+                kind: viewer.kind,
+                selected_id: viewer.resume_selected_id(),
+                scroll_offset: viewer.list_state.scroll_offset(),
+                follow_mode: viewer.list_state.follow_mode,
+            });
+        }
+    }
+
+    pub(crate) fn clear_block_viewer(&mut self) {
+        self.block_viewer = None;
+        self.block_viewer_resume = None;
+    }
+
+    pub(crate) fn show_bg_task_viewer(&mut self, task_id: &str) -> bool {
+        let Some(task) = self.session.bg_tasks.get(task_id) else {
+            return false;
+        };
+        // A task can lack a scrollback anchor: the completed-early race never pushes a block,
+        // and a scrollback swap can drop it. The viewer renders from the task's own stdout,
+        // so open it on the sentinel anchor instead of dead-clicking the [↗] button.
+        let entry_id = task
+            .scrollback_entry_id
+            .unwrap_or_else(|| crate::scrollback::entry::EntryId::new(0));
+        let is_running = task.status == crate::app::agent::BgTaskStatus::Running;
+        let pane = crate::views::block_viewer::BlockViewerPane::for_bg_task(
+            entry_id,
+            task_id,
+            &task.stdout,
+            is_running,
+        );
+        self.install_block_viewer(pane);
+        self.set_active_pane(AgentPane::Scrollback, true);
+        true
+    }
+
+    pub(crate) fn install_block_viewer(&mut self, mut pane: BlockViewerPane) {
+        if let Some(resume) = self.block_viewer_resume
+            && resume.entry_id == pane.entry_id
+            && resume.kind == pane.kind
+            && !(resume.follow_mode && pane.list_state.follow_mode)
+        {
+            if resume.follow_mode {
+                pane.pin_to_tail();
+            } else {
+                pane.list_state.follow_mode = false;
+                if let Some(id) = resume
+                    .selected_id
+                    .filter(|id| pane.contains_item_id(*id) || *id > u64::MAX / 2)
+                {
+                    pane.list_state.select_by_id(id);
+                }
+                pane.list_state.set_scroll_offset(resume.scroll_offset);
+                pane.request_reveal_selection();
+            }
+        }
+        self.show_block_viewer(pane);
+    }
+
+    pub(crate) fn show_block_viewer(&mut self, pane: BlockViewerPane) {
+        log_event(BlockViewerOpened {
+            kind: pane.kind.telemetry_kind(),
+        });
+        self.block_viewer = Some(pane);
+    }
+
+    pub(crate) fn try_take_idle_enter_quote(&mut self, key: &KeyEvent) -> IdleEnterQuote {
+        let Some(viewer) = self.block_viewer.as_ref() else {
+            return IdleEnterQuote::NotHandled;
+        };
+        if viewer.list_state.input_mode().is_some()
+            || key.code != KeyCode::Enter
+            || key.modifiers != KeyModifiers::NONE
+            || key.kind != KeyEventKind::Press
+        {
+            return IdleEnterQuote::NotHandled;
+        }
+        let quoted = format_blockquote(&viewer.selected_plain_text());
+        if quoted.is_empty() {
+            return IdleEnterQuote::ConsumedEmpty;
+        }
+        log_event(BlockViewerQuoted {
+            kind: viewer.kind.telemetry_kind(),
+        });
+        self.dismiss_block_viewer();
+        IdleEnterQuote::Quoted(quoted)
+    }
+
+    pub(crate) fn insert_quoted_reply(&mut self, quoted: &str) {
+        self.prompt_input_mode = super::PromptInputMode::Normal;
+        let delim_at = self
+            .prompt
+            .textarea
+            .selection_range()
+            .map(|range| range.start)
+            .unwrap_or_else(|| self.prompt.cursor());
+        let at_line_start = delim_at == 0
+            || self
+                .prompt
+                .text()
+                .as_bytes()
+                .get(delim_at - 1)
+                .is_some_and(|b| *b == b'\n');
+        self.prompt.textarea.begin_undo_group();
+        if !at_line_start {
+            self.prompt.insert_replacing_selection("\n");
+        } else if self.prompt.textarea.selection_range().is_some() {
+            self.prompt.insert_replacing_selection("");
+        }
+        self.prompt.handle_paste(quoted);
+        self.prompt.insert_replacing_selection("\n\n");
+        self.prompt.textarea.end_undo_group();
+        self.prompt.refresh_slash(&self.session.models);
+        if let Some(eff) = self.notify_suggestion_text_changed() {
+            self.pending_effects.push(eff);
+        }
+        if let Some(eff) = self.notify_plugin_cta_text_changed() {
+            self.pending_effects.push(eff);
+        }
+        self.set_active_pane(AgentPane::Prompt, true);
+    }
+
     /// Handle a key event when the block viewer is open.
     ///
     /// Returns `Changed` if consumed, `Unchanged` if the key should bubble up.
@@ -1003,23 +1110,34 @@ impl AgentView {
         if let Some((current, forward)) = tool_navigation {
             if let Some(target) = self.adjacent_tool_viewer_index(current, forward) {
                 self.scrollback.set_selected(Some(target));
-                self.close_block_viewer();
+                self.dismiss_block_viewer();
                 return InputOutcome::Action(Action::OpenBlockViewer);
             }
             return InputOutcome::Changed;
+        }
+
+        let Some(viewer) = self.block_viewer.as_ref() else {
+            return InputOutcome::Unchanged;
+        };
+
+        if viewer.is_close_key(key) {
+            self.dismiss_block_viewer();
+            return InputOutcome::Changed;
+        }
+
+        match self.try_take_idle_enter_quote(key) {
+            IdleEnterQuote::NotHandled => {}
+            IdleEnterQuote::ConsumedEmpty => return InputOutcome::Changed,
+            IdleEnterQuote::Quoted(quoted) => {
+                self.insert_quoted_reply(&quoted);
+                return InputOutcome::Changed;
+            }
         }
 
         let Some(ref mut viewer) = self.block_viewer else {
             return InputOutcome::Unchanged;
         };
 
-        // Check for close signals first (Esc/q/Ctrl-F)
-        if viewer.is_close_key(key) {
-            self.close_block_viewer();
-            return InputOutcome::Changed;
-        }
-
-        // Route to viewer — returns whether the key was consumed
         if !viewer.handle_key(key) {
             return InputOutcome::Unchanged;
         }
@@ -1027,10 +1145,9 @@ impl AgentView {
         // Handle raw toggle: capture old source map, toggle, rebuild with stability
         if viewer.raw_toggle_pending {
             viewer.raw_toggle_pending = false;
-            // Record scroll anchor BEFORE toggle so the selected line stays
-            // at the same screen position after the rebuild.
+            // Record the scroll anchor before the toggle so the selected line stays at the same screen position after the rebuild
             viewer.list_state.set_scroll_anchor();
-            // Capture source map BEFORE toggle for cursor mapping
+            // Capture the source map before the toggle for cursor mapping
             let old_source_line = self
                 .scrollback
                 .get_by_id(viewer.entry_id)
@@ -1076,12 +1193,13 @@ impl AgentView {
             return InputOutcome::Changed;
         };
 
-        // Route to modal chrome first (close button, click-outside).
+        // Route to the modal window controls first (close button, click-outside)
         let modal_outcome =
             handle_modal_mouse(&mut viewer.modal, mouse.kind, mouse.column, mouse.row);
         match modal_outcome {
             ModalWindowOutcome::CloseRequested => {
-                self.close_block_viewer();
+                self.dismiss_block_viewer();
+
                 return InputOutcome::Changed;
             }
             ModalWindowOutcome::Handled => return InputOutcome::Changed,
@@ -1104,8 +1222,7 @@ impl AgentView {
             _ => {}
         }
 
-        // Collect any pending copy text: drag-release auto-copy (like
-        // scrollback finish_text_drag) or Y/y key handler copy.
+        // Collect any pending copy text: drag-release auto-copy (like scrollback finish_text_drag) or Y/y key handler copy
         let drag_text = viewer.drag_copy_text.take();
         let entry_id = viewer.entry_id;
         let key_text = if drag_text.is_none() {
@@ -1115,7 +1232,7 @@ impl AgentView {
         } else {
             None
         };
-        // viewer borrow ends here — clipboard + toast can use &mut self.
+        // The viewer borrow ends here, so clipboard and toast can use &mut self
         if let Some(text) = drag_text.or(key_text) {
             self.copy_to_clipboard(&text);
         }
@@ -1125,8 +1242,7 @@ impl AgentView {
 
     /// Dynamic fold label for the shortcuts bar hint.
     ///
-    /// Returns "expand" if the selected entry is collapsed/truncated,
-    /// "collapse" if expanded, or `None` if the selected entry isn't foldable.
+    /// Returns "expand" if the selected entry is collapsed/truncated, "collapse" if expanded, or `None` if the selected entry isn't foldable.
     pub(super) fn selected_fold_label(&self) -> Option<&'static str> {
         let idx = self.scrollback.selected()?;
         let entry = self.scrollback.get(idx)?;

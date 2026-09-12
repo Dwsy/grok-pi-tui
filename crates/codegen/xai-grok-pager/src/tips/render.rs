@@ -1,5 +1,3 @@
-//! Tip renderer.
-
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -24,8 +22,7 @@ pub fn tip_height(width: u16, tip: &str) -> u16 {
     if line_width <= width {
         1
     } else {
-        // Ceiling division — word wrapping may use slightly more rows than
-        // a naive character split, but this is a close-enough upper bound.
+        // Ceiling division: word wrapping may use slightly more rows than a naive character split, but this is a close-enough upper bound
         (line_width as u32)
             .div_ceil(width as u32)
             .min(u16::MAX as u32) as u16
@@ -73,13 +70,8 @@ pub fn render_tip(area: Rect, buf: &mut Buffer, tip: &str, inset: u16) {
         .render(text, buf);
 }
 
-/// Blank every cell of `area` (chars, colors, and modifiers) in `color`.
-///
-/// Modifiers MUST be reset here: ratatui's `Cell::set_style` only *merges*
-/// modifiers (`insert(add)` / `remove(sub)`), so a later paint whose style
-/// carries no `sub_modifier` inherits whatever BOLD/ITALIC/… an earlier
-/// same-frame paint left behind (e.g. the welcome tip's bold `Tip: ` prefix
-/// bleeding into the ephemeral tip as "**Queue**d · Enter to send now").
+/// Blank every cell of `area` (chars, colors, and modifiers) in `color`. Modifiers MUST be reset here: ratatui's
+/// `Cell::set_style` only *merges* modifiers (`insert(add)` / `remove(sub)`).
 fn clear_rect(buf: &mut Buffer, area: Rect, color: Color) {
     for row in 0..area.height {
         for col in 0..area.width {
@@ -93,9 +85,9 @@ fn clear_rect(buf: &mut Buffer, area: Rect, color: Color) {
     }
 }
 
-/// Render a pre-styled tip line into the banner rect. The whole rect is
-/// cleared first (it can be taller than one row when a wrapped session tip
-/// reserved it) and the line paints on the first row, truncated at width.
+/// Render a pre-styled tip line into the banner rect.
+/// The whole rect is cleared first; it can be taller than one row when a wrapped session tip reserved it.
+/// The line paints on the first row, truncated at width.
 pub fn render_ephemeral_tip(area: Rect, buf: &mut Buffer, line: &Line<'static>) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -148,16 +140,10 @@ mod tests {
         assert_eq!(row_text(&buf, area, 0), "XXXXXXXX", "untouched");
     }
 
-    /// Regression: a bold underpaint in the banner rect (e.g. the welcome
-    /// tip's `Tip: ` prefix painted the same frame) must not bleed BOLD into
-    /// the ephemeral tip. `Cell::set_style` merges modifiers, so the clear
-    /// pass has to reset them explicitly — otherwise `Queued · Enter …`
-    /// rendered as bold `Queue` + regular `d` (5 leaked bold cells).
     #[test]
     fn clears_leaked_modifiers_from_underpaint() {
         let area = Rect::new(0, 0, 40, 1);
         let mut buf = Buffer::empty(area);
-        // Simulate the phantom session-tip underpaint: 5 bold cells ("Tip: ").
         buf.set_string(
             0,
             0,
@@ -165,17 +151,18 @@ mod tests {
             Style::default().add_modifier(Modifier::BOLD),
         );
 
-        // The send-now tip shape: dim text with a single bold key chord.
+        let prefix = "Status · ";
+        let chord = "Enter";
         let dim = Style::default();
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let line = Line::from(vec![
-            Span::styled("Queued · ", dim),
-            Span::styled("Enter", bold),
-            Span::styled(" to send now", dim),
+            Span::styled(prefix, dim),
+            Span::styled(chord, bold),
+            Span::styled(" to continue", dim),
         ]);
         render_ephemeral_tip(area, &mut buf, &line);
 
-        assert_eq!(row_text(&buf, area, 0).trim(), "Queued · Enter to send now");
+        assert_eq!(row_text(&buf, area, 0).trim(), "Status · Enter to continue");
         let bold_cols: Vec<u16> = (0..area.width)
             .filter(|&x| {
                 buf.cell((x, 0))
@@ -184,10 +171,10 @@ mod tests {
                     .contains(Modifier::BOLD)
             })
             .collect();
-        // Inset by one: "Queued · " occupies cols 1..10, "Enter" cols 10..15.
+        let chord_start = 1 + prefix.chars().count() as u16;
         assert_eq!(
             bold_cols,
-            (10..15).collect::<Vec<u16>>(),
+            (chord_start..chord_start + chord.chars().count() as u16).collect::<Vec<u16>>(),
             "only the Enter chord may be bold — no leak from the underpaint"
         );
     }

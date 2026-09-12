@@ -1,9 +1,4 @@
-//! `x.ai/hooks/*` extension handlers.
-//!
-//! The file-hook list/action endpoints for the pager's hooks modal, plus the
-//! client-registered hook wire types and `parse_client_hooks`.
-
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use agent_client_protocol as acp;
 use serde::Deserialize;
@@ -21,28 +16,59 @@ struct ListRequest {
     session_id: String,
 }
 
-pub(crate) fn hook_spec_to_info(spec: &xai_grok_hooks::config::HookSpec) -> HookInfo {
+/// Current hooks as wire DTOs for `HooksListResponse` / `HooksChanged`
+/// payloads. Reads the disabled set and registered dirs fresh from disk so
+/// every producer converts with the same inputs.
+pub(crate) fn current_hook_infos(
+    registry: Option<&xai_grok_hooks::discovery::HookRegistry>,
+) -> Vec<HookInfo> {
+    let Some(registry) = registry else {
+        return Vec::new();
+    };
+    let disabled = xai_grok_hooks::trust::DisabledHooks::load();
+    let registered = crate::config::registered_hook_paths();
+    hook_specs_to_infos(&registry.all_hooks(), &disabled, &registered)
+}
+
+/// Convert a whole spec list to wire DTOs. `removable` is source-level: `HooksAction::Remove` unregisters the entire `source_dir`, and a managed-policy member pins the directory (removal is refused), so no hook in such a source is removable.
+fn hook_specs_to_infos(
+    specs: &[&xai_grok_hooks::config::HookSpec],
+    disabled: &xai_grok_hooks::trust::DisabledHooks,
+    registered_dirs: &HashSet<String>,
+) -> Vec<HookInfo> {
+    let pinned_dirs: HashSet<String> = specs
+        .iter()
+        .filter(|s| s.is_managed_policy())
+        .map(|s| s.source_dir.display().to_string())
+        .collect();
+    specs
+        .iter()
+        .map(|spec| hook_spec_to_info_with(spec, disabled, registered_dirs, &pinned_dirs))
+        .collect()
+}
+
+fn hook_spec_to_info_with(
+    spec: &xai_grok_hooks::config::HookSpec,
+    disabled: &xai_grok_hooks::trust::DisabledHooks,
+    registered_dirs: &HashSet<String>,
+    pinned_source_dirs: &HashSet<String>,
+) -> HookInfo {
     use xai_grok_hooks::event::HookEventName;
 
     let event = match spec.event {
-        // Session lifecycle
         HookEventName::SessionStart => HookEvent::SessionStart,
         HookEventName::SessionEnd => HookEvent::SessionEnd,
         HookEventName::Stop => HookEvent::Stop,
         HookEventName::StopFailure => HookEvent::StopFailure,
         HookEventName::StopCancelled => HookEvent::StopCancelled,
-        // Tool events
         HookEventName::PreToolUse => HookEvent::PreToolUse,
         HookEventName::PostToolUse => HookEvent::PostToolUse,
         HookEventName::PostToolUseFailure => HookEvent::PostToolUseFailure,
         HookEventName::PermissionDenied => HookEvent::PermissionDenied,
-        // User / notification
         HookEventName::UserPromptSubmit => HookEvent::UserPromptSubmit,
         HookEventName::Notification => HookEvent::Notification,
-        // Subagent
         HookEventName::SubagentStart => HookEvent::SubagentStart,
         HookEventName::SubagentStop | HookEventName::SubagentEnd => HookEvent::SubagentStop,
-        // Compaction
         HookEventName::PreCompact => HookEvent::PreCompact,
         HookEventName::PostCompact => HookEvent::PostCompact,
     };
@@ -53,17 +79,15 @@ pub(crate) fn hook_spec_to_info(spec: &xai_grok_hooks::config::HookSpec) -> Hook
         HookHandlerType::Command
     };
 
-    // Display the pre-expansion source string when available so the
-    // pager UI / ACP DTO never leaks values resolved from the user
-    // `env` map (which may contain secrets like API tokens). Fall back
-    // to the post-expansion form for any future code path that builds
-    // a `HookSpec` without populating the raw source.
     let command_display = spec
         .command_raw
         .clone()
         .or_else(|| spec.command.as_ref().map(|p| p.display().to_string()));
     let url_display = spec.url_raw.clone().or_else(|| spec.url.clone());
 
+    let source_dir = spec.source_dir.display().to_string();
+    let removable =
+        registered_dirs.contains(&source_dir) && !pinned_source_dirs.contains(&source_dir);
     HookInfo {
         name: spec.name.clone(),
         event,
@@ -72,33 +96,22 @@ pub(crate) fn hook_spec_to_info(spec: &xai_grok_hooks::config::HookSpec) -> Hook
         command: command_display,
         url: url_display,
         timeout_ms: spec.timeout_ms,
-        source_dir: spec.source_dir.display().to_string(),
-        disabled: xai_grok_hooks::trust::is_hook_disabled(&spec.name),
+        source_dir,
+        disabled: xai_grok_hooks::trust::hook_disabled_for_display_with(spec, disabled),
+        pinned: spec.is_managed_policy(),
+        removable,
     }
 }
 
-// Wire types for client-registered hooks (`x.ai/hooks/run`); the gate that uses
-// them lives in `session::acp_session::hooks`.
-
-/// A matcher group from the client's registration: `{ matcher, hookCallbackIds, timeout }`.
-///
-/// `pub` (not `pub(crate)`) because [`ClientHooks`] flows through the public
-/// `SessionCommand::SnapshotClientHooks` so subagents can inherit the parent's hooks.
 #[derive(Debug, Clone)]
 pub struct ClientHookGroup {
-    /// `None` (wire `null`, `""`, or `"*"`) matches every tool.
     pub matcher: Option<HookMatcher>,
     pub callback_ids: Vec<String>,
-    /// Per-group gate reply deadline (wire seconds); `None` uses the default.
     pub timeout: Option<std::time::Duration>,
 }
 
 pub(crate) type ClientHooks = HashMap<HookEventName, Vec<ClientHookGroup>>;
 
-/// One hook dispatched to a client callback: the shared [`HookEventEnvelope`]
-/// (flattened, camelCase) plus the `hookCallbackId` it targets. The same shape is sent
-/// for both the `x.ai/hooks/run` request (gate) and the `x.ai/hooks/event` notification
-/// (observe-only), so the client decodes one payload for every hook.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientHookDispatch<'a> {
@@ -118,7 +131,6 @@ pub(crate) const ADVERTISED_DECISIONS: &[&str] = &["deny", "block"];
 pub(crate) const ADVERTISED_STOP_SIGNALS: &[&str] =
     &["continue", "stopReason", "additionalContext"];
 
-/// Only `Deny` blocks; every other value proceeds (fail-open).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ClientHookDecision {
@@ -126,12 +138,11 @@ pub(crate) enum ClientHookDecision {
     Continue,
     #[serde(alias = "block")]
     Deny,
+    Ask,
     #[serde(other)]
     Other,
 }
 
-/// Response payload for `x.ai/hooks/run` (client to agent). `Default` (used on
-/// timeout, transport error, or a malformed reply) proceeds.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientHookResponse {
@@ -147,11 +158,6 @@ pub(crate) struct ClientHookResponse {
     pub additional_context: Option<String>,
 }
 
-/// Parse client hooks from `session/new` `_meta["x.ai/hooks"]`, shaped
-/// `{ "<Event>": [{ matcher, hookCallbackIds }] }` (PascalCase or snake_case
-/// events). Each `matcher` is compiled with the agent's [`HookMatcher`] so client
-/// and file hooks match identically. Unknown events, malformed groups, invalid
-/// matchers, and callback-less groups are skipped; absent meta yields no hooks.
 pub(crate) fn parse_client_hooks(meta: Option<&acp::Meta>) -> ClientHooks {
     let mut hooks = ClientHooks::new();
     let Some(map) = meta
@@ -175,25 +181,17 @@ pub(crate) fn parse_client_hooks(meta: Option<&acp::Meta>) -> ClientHooks {
             .filter_map(|group| parse_hook_group(event, group))
             .collect();
         if !groups.is_empty() {
-            // Key by the canonical event so a registration under an alias (e.g.
-            // `SubagentEnd`) still matches the event the agent fires (`SubagentStop`).
             hooks.entry(event.canonical()).or_default().extend(groups);
         }
     }
     hooks
 }
 
-/// Hooks to apply on a `load_session` reconnect: `Some` (possibly empty, an explicit
-/// clear) when the request meta carries `x.ai/hooks`, else `None` so a reconnect that
-/// omits the key leaves the live registrations from `session/new` untouched.
 pub(crate) fn reconnect_client_hooks(meta: Option<&acp::Meta>) -> Option<ClientHooks> {
     meta.and_then(|m| m.get("x.ai/hooks"))
         .map(|_| parse_client_hooks(meta))
 }
 
-/// Parse one `{ matcher, hookCallbackIds }` registration entry. Returns `None`
-/// (with a warning) when the entry is malformed, carries no callback ids, or its
-/// matcher fails to compile.
 fn parse_hook_group(event: HookEventName, value: &serde_json::Value) -> Option<ClientHookGroup> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -202,7 +200,6 @@ fn parse_hook_group(event: HookEventName, value: &serde_json::Value) -> Option<C
         matcher: Option<String>,
         #[serde(default)]
         hook_callback_ids: Vec<String>,
-        /// Per-group gate timeout in seconds.
         #[serde(default)]
         timeout: Option<f64>,
     }
@@ -214,19 +211,13 @@ fn parse_hook_group(event: HookEventName, value: &serde_json::Value) -> Option<C
         tracing::warn!(%event, "ignoring x.ai/hooks group with no hookCallbackIds");
         return None;
     }
-    // Drop a non-finite/non-positive timeout (fall back to the default gate timeout) and
-    // cap it so a client can't make a tool hang on the gate for an unbounded time.
     const MAX_HOOK_TIMEOUT_SECS: f64 = 600.0;
     let timeout = group
         .timeout
         .filter(|s| s.is_finite() && *s > 0.0)
         .map(|s| std::time::Duration::from_secs_f64(s.min(MAX_HOOK_TIMEOUT_SECS)));
     let matcher = match group.matcher.as_deref() {
-        // Match-all tokens map to no matcher (group always fires). `HookMatcher::new`
-        // also treats these as match-all; short-circuiting here keeps the intent explicit.
         None | Some("") | Some("*") => None,
-        // Same policy as file hooks (`MatcherPolicy::Ignored`): warn and drop
-        // the matcher rather than let the registration appear scoped.
         Some(pattern)
             if event.traits().matcher == xai_grok_hooks::event::MatcherPolicy::Ignored =>
         {
@@ -277,13 +268,10 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use std::path::PathBuf;
     use xai_grok_hooks::config::HookSpec;
     use xai_grok_hooks::event::HookEventName;
 
-    /// Minimal `HookSpec` for `hook_spec_to_info` tests (`handler_type` is unused;
-    /// the DTO derives it from `url`).
     fn make_spec(
         command_raw: Option<&str>,
         command: Option<&str>,
@@ -308,12 +296,19 @@ mod tests {
         }
     }
 
-    /// `*_raw` (pre-expansion) wins over the resolved value so secrets never reach
-    /// the DTO; then the resolved value, else `None`. Same for `command` and `url`.
     #[test]
-    fn hook_spec_to_info_display_precedence() {
-        let command =
-            |raw, resolved| hook_spec_to_info(&make_spec(raw, resolved, None, None)).command;
+    fn hook_spec_to_info_raw_display_wins_so_secrets_never_reach_dto() {
+        let no_disabled = xai_grok_hooks::trust::DisabledHooks::from_names([]);
+        let no_dirs = HashSet::new();
+        let command = |raw, resolved| {
+            hook_specs_to_infos(
+                &[&make_spec(raw, resolved, None, None)],
+                &no_disabled,
+                &no_dirs,
+            )
+            .remove(0)
+            .command
+        };
         assert_eq!(
             command(Some("${VAR}/x"), Some("/resolved/x")).as_deref(),
             Some("${VAR}/x")
@@ -324,7 +319,15 @@ mod tests {
         );
         assert!(command(None, None).is_none());
 
-        let url = |raw, resolved| hook_spec_to_info(&make_spec(None, None, raw, resolved)).url;
+        let url = |raw, resolved| {
+            hook_specs_to_infos(
+                &[&make_spec(None, None, raw, resolved)],
+                &no_disabled,
+                &no_dirs,
+            )
+            .remove(0)
+            .url
+        };
         assert_eq!(
             url(
                 Some("https://${HOST}/p?token=${TOKEN}"),
@@ -338,6 +341,54 @@ mod tests {
             Some("https://h/c")
         );
         assert!(url(None, None).is_none());
+    }
+
+    /// `removable` must mean "Remove can succeed": a managed-policy member pins the whole source directory even when it is user-registered, and an unpinned sibling in that directory is pinned along with it.
+    /// Both managed tiers (`SystemManaged` and `Requirements`) pin identically.
+    #[test]
+    fn hook_specs_to_infos_pins_removable_at_source_level() {
+        let no_disabled = xai_grok_hooks::trust::DisabledHooks::from_names([]);
+        let registered: HashSet<String> = [
+            "/reg/policy".to_string(),
+            "/reg/req".to_string(),
+            "/reg/user".to_string(),
+        ]
+        .into();
+
+        let mut policy = make_spec(Some("a"), None, None, None);
+        policy.source_dir = PathBuf::from("/reg/policy");
+        policy.layer = xai_grok_hooks::config::HookProvenance::SystemManaged;
+        let mut sibling = make_spec(Some("b"), None, None, None);
+        sibling.source_dir = PathBuf::from("/reg/policy");
+        let mut req = make_spec(Some("r"), None, None, None);
+        req.source_dir = PathBuf::from("/reg/req");
+        req.layer = xai_grok_hooks::config::HookProvenance::Requirements;
+        let mut req_sibling = make_spec(Some("s"), None, None, None);
+        req_sibling.source_dir = PathBuf::from("/reg/req");
+        let mut user = make_spec(Some("c"), None, None, None);
+        user.source_dir = PathBuf::from("/reg/user");
+        let unregistered = make_spec(Some("d"), None, None, None); // stays at /tmp
+
+        let infos = hook_specs_to_infos(
+            &[&policy, &sibling, &req, &req_sibling, &user, &unregistered],
+            &no_disabled,
+            &registered,
+        );
+        assert!(infos[0].pinned && !infos[0].removable);
+        assert!(
+            !infos[1].pinned && !infos[1].removable,
+            "unpinned sibling of a managed-policy hook must not be removable"
+        );
+        assert!(
+            infos[2].pinned && !infos[2].removable,
+            "Requirements tier must pin its source like SystemManaged"
+        );
+        assert!(
+            !infos[3].pinned && !infos[3].removable,
+            "unpinned sibling of a Requirements hook must not be removable"
+        );
+        assert!(infos[4].removable);
+        assert!(!infos[5].removable, "unregistered dirs are never removable");
     }
 
     #[test]
@@ -360,9 +411,9 @@ mod tests {
         let matcher = pre[0].matcher.as_ref().unwrap();
         assert!(matcher.is_match("run_terminal_command"));
         assert!(!matcher.is_match("read_file"));
-        assert!(pre[1].matcher.is_none()); // null / "*" = match-all
+        assert!(pre[1].matcher.is_none());
         assert!(pre[2].matcher.is_none());
-        assert!(hooks.contains_key(&HookEventName::PostToolUse)); // snake_case resolves
+        assert!(hooks.contains_key(&HookEventName::PostToolUse));
     }
 
     #[test]
@@ -388,8 +439,6 @@ mod tests {
         assert_eq!(groups[0].callback_ids, ["good"]);
     }
 
-    /// A group's `timeout` (seconds) parses to a `Duration`; absent or non-positive falls
-    /// back to the default gate timeout (`None`).
     #[test]
     fn parse_client_hooks_reads_group_timeout() {
         let meta = serde_json::json!({
@@ -404,13 +453,11 @@ mod tests {
         });
         let groups = &parse_client_hooks(meta.as_object())[&HookEventName::PreToolUse];
         assert_eq!(groups[0].timeout, Some(std::time::Duration::from_secs(5)));
-        assert_eq!(groups[1].timeout, None); // non-positive -> default
-        assert_eq!(groups[2].timeout, None); // absent -> default
-        assert_eq!(groups[3].timeout, Some(std::time::Duration::from_secs(600))); // capped
+        assert_eq!(groups[1].timeout, None);
+        assert_eq!(groups[2].timeout, None);
+        assert_eq!(groups[3].timeout, Some(std::time::Duration::from_secs(600)));
     }
 
-    /// A registration under the `SubagentEnd` alias must land on the canonical
-    /// `SubagentStop` key the agent fires.
     #[test]
     fn parse_client_hooks_canonicalizes_subagent_alias() {
         let meta = serde_json::json!({
@@ -421,9 +468,6 @@ mod tests {
         assert!(!hooks.contains_key(&HookEventName::SubagentEnd));
     }
 
-    /// Reconnect refresh applies hooks only when the load meta carries `x.ai/hooks`:
-    /// an absent key returns `None` (don't wipe `session/new` registrations); a present
-    /// key returns `Some` (an empty object is an explicit clear).
     #[test]
     fn reconnect_client_hooks_only_when_key_present() {
         assert!(reconnect_client_hooks(None).is_none());
@@ -441,8 +485,6 @@ mod tests {
         assert!(set.is_some_and(|h| h.contains_key(&HookEventName::PreToolUse)));
     }
 
-    /// `deny` parses to `Deny` (+ optional message); everything else fails open:
-    /// unknown values to `Other`, missing/empty/default to `Continue`.
     #[test]
     fn client_hook_response_deserialization() {
         let deny: ClientHookResponse =
@@ -471,8 +513,6 @@ mod tests {
         assert_eq!(stop.stop_reason.as_deref(), Some("budget"));
         assert_eq!(stop.additional_context.as_deref(), Some("ctx"));
 
-        // Literal stop-hook output parses on the raw wire: `block` aliases
-        // `deny` and `reason` aliases `systemMessage`.
         let blocked: ClientHookResponse =
             serde_json::from_str(r#"{"decision":"block","reason":"run the tests"}"#).unwrap();
         assert_eq!(blocked.decision, ClientHookDecision::Deny);
@@ -523,8 +563,6 @@ mod tests {
         }
     }
 
-    /// The callback id sits beside the flattened envelope (camelCase keys,
-    /// `hookEventName` snake_case); the one shape sent for both run and event.
     #[test]
     fn client_hook_dispatch_serializes_envelope() {
         use xai_grok_hooks::event::{HookEventEnvelope, HookPayload};

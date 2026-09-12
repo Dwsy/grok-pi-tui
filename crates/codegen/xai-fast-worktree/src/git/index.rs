@@ -8,17 +8,8 @@ use anyhow::{Context, Result};
 use crate::copy::cow::clone_file;
 use crate::git::discovery::find_worktree_git_dir;
 
-/// Copy the git index from source to destination worktree.
-///
-/// Resolves the actual git directory for both sides, handling linked worktrees
-/// where `.git` is a file pointing to the real git dir. Both sides use
-/// `find_worktree_git_dir` for consistency: for a regular repo it returns
-/// `.git/`, for a linked worktree it follows the `gitdir:` pointer.
-///
-/// Uses CoW (reflink) copy for efficiency on APFS/Btrfs.
-///
-/// Returns `true` if the index was actually copied, `false` if the source
-/// has no index file.
+/// Copy the index, following `gitdir:` pointers on both sides. Reflink when
+/// possible. `true` if copied, `false` if the source has no index.
 pub(crate) fn copy_git_index(source: &Path, dest_worktree: &Path) -> Result<bool> {
     let source_git_dir = find_worktree_git_dir(source)?;
     let dest_git_dir = find_worktree_git_dir(dest_worktree)?;
@@ -40,13 +31,9 @@ pub(crate) fn copy_git_index(source: &Path, dest_worktree: &Path) -> Result<bool
             )
         })?;
 
-        // Handle split index: when core.splitIndex is enabled, the index
-        // file references a `sharedindex.<hash>` file that must be
-        // reachable from the same directory as the index. For linked
-        // worktrees the shared index lives in the common git dir (the
-        // main repo's `.git/`), not in `.git/worktrees/<name>/`.
-        // Symlink any sharedindex.* files from the source's common dir
-        // into the dest git dir so gix can resolve them.
+        // Split index: `sharedindex.<hash>` must sit beside the index. Linked
+        // worktrees keep it in the common git dir, so symlink it into dest or
+        // gix cannot resolve it.
         link_shared_indexes(&source_git_dir, &dest_git_dir)?;
 
         tracing::debug!(
@@ -60,35 +47,17 @@ pub(crate) fn copy_git_index(source: &Path, dest_worktree: &Path) -> Result<bool
     }
 }
 
-/// Symlink `sharedindex.*` files from the source into the destination
-/// git directory.
-///
-/// When `core.splitIndex` is enabled, the main index file contains a
-/// `link` extension referencing a content-addressed `sharedindex.<hash>`
-/// file. `gix::index::File::at()` looks for this file in the **same
-/// directory** as the index file. For linked worktrees the index lives
-/// in `.git/worktrees/<name>/` but the shared index lives in the common
-/// `.git/` directory. We bridge this by symlinking.
-///
-/// We scan **two** directories for shared index files:
-/// 1. The source's **common dir** (main repo `.git/`) — where git
-///    typically stores shared index files.
-/// 2. The source's **own git dir** (`.git/worktrees/<name>/`) — git may
-///    create new shared index files directly here when running inside a
-///    linked worktree with `core.splitIndex` enabled.
-///
-/// No-op if there are no `sharedindex.*` files (i.e. split index is not
-/// in use).
+/// Symlink `sharedindex.*` beside the dest index. gix looks in the same
+/// directory; linked worktrees store them in the common dir or the worktree
+/// git dir. No-op if split index is unused.
 fn link_shared_indexes(source_git_dir: &Path, dest_git_dir: &Path) -> Result<()> {
     // Resolve the common dir: for a linked worktree the `commondir` file
     // points to the shared `.git/`. For a regular repo the git dir IS the
     // common dir.
     let source_common_dir = resolve_common_dir(source_git_dir);
 
-    // Collect directories to scan. Always include the common dir. If the
-    // source git dir is different (i.e. source is a linked worktree), also
-    // scan the source git dir itself — git may have created shared index
-    // files directly there.
+    // Always scan the common dir. A linked worktree may also have created
+    // shared index files in its own git dir.
     let mut dirs_to_scan: Vec<&Path> = vec![&source_common_dir];
     if source_git_dir != source_common_dir {
         dirs_to_scan.push(source_git_dir);
@@ -157,11 +126,8 @@ fn link_shared_indexes(source_git_dir: &Path, dest_git_dir: &Path) -> Result<()>
     Ok(())
 }
 
-/// Resolve the common git directory from a worktree git dir.
-///
-/// For a linked worktree, `.git/worktrees/<name>/commondir` contains a
-/// relative path (typically `../..`) pointing to the shared `.git/`.
-/// For a regular repo, the git dir itself is the common dir.
+/// Common git dir. Linked worktrees store a relative path in `commondir`;
+/// a regular repo's git dir is already the common dir.
 fn resolve_common_dir(git_dir: &Path) -> PathBuf {
     let commondir_file = git_dir.join("commondir");
     if let Ok(content) = std::fs::read_to_string(&commondir_file) {
@@ -174,10 +140,8 @@ fn resolve_common_dir(git_dir: &Path) -> PathBuf {
     }
 }
 
-/// Update index entries with new stat information from file metadata.
-///
-/// This updates the stat cache (mtime, size, etc.) for files that were copied,
-/// avoiding the need for a full `git update-index --refresh`.
+/// Refresh the stat cache for copied files so a full `git update-index
+/// --refresh` is unnecessary.
 pub(crate) fn update_index_stats(
     worktree_path: &Path,
     file_metadata: &[(PathBuf, Metadata)],

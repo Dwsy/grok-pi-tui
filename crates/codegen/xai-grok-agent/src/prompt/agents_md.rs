@@ -12,22 +12,17 @@ use crate::prompt::ignore::{build_gitignore, is_ignored};
 
 use xai_grok_tools::types::compat::CompatConfig;
 
-/// Represents an agent config file with its path and content.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentConfigFile {
     /// The filename (e.g., "AGENTS.md", "Claude.md")
     pub file_name: String,
     /// The full absolute path to the config file
     pub file_path: String,
-    /// The content of the config file
     pub content: String,
 }
 
-/// Find matching agent config files in a directory.
-///
-/// `filenames` is the (compat-gated) recognized list, precomputed once by the
-/// caller so the cwd→root walk doesn't re-allocate it per directory. When all
-/// cells are on it equals the legacy `AGENT_FILENAMES` list exactly.
+/// `filenames` is the (compat-gated) recognized list, precomputed once by the caller so the cwd-to-root walk doesn't re-allocate it per directory.
+/// When all compat cells are on it equals the legacy `AGENT_FILENAMES` list exactly.
 fn find_agent_files(dir: &Path, filenames: &[&str]) -> Vec<PathBuf> {
     filenames
         .iter()
@@ -38,9 +33,8 @@ fn find_agent_files(dir: &Path, filenames: &[&str]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Find `*.md` files in `.grok/rules/`, `.claude/rules/`, and `.cursor/rules/`,
-/// sorted alphabetically. `rules_subdirs` is the (compat-gated) list, precomputed
-/// once by the caller so the walk doesn't re-allocate it per directory.
+/// Find `*.md` files in `.grok/rules/`, `.claude/rules/`, and `.cursor/rules/`, sorted alphabetically.
+/// `rules_subdirs` is the (compat-gated) list, precomputed once by the caller so the walk doesn't re-allocate it per directory.
 fn find_rules_files(dir: &Path, rules_subdirs: &[&str]) -> Vec<PathBuf> {
     let mut results = Vec::new();
     for rules_subdir in rules_subdirs {
@@ -66,8 +60,6 @@ fn find_rules_files(dir: &Path, rules_subdirs: &[&str]) -> Vec<PathBuf> {
     results
 }
 
-/// Canonicalize a path for discovery deduplication, falling back to the
-/// original path when canonicalization fails.
 fn canonical_for_dedup(path: &Path) -> PathBuf {
     dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
@@ -142,37 +134,55 @@ fn add_discovered_candidate(
 }
 
 /// Read Agents.md from ~/.grok/, git repo root, and session cwd.
-/// Returns a list of AgentConfigFile with their file names, full paths, and contents.
-///
-/// `compat` gates which vendor (`.claude`/`.cursor`) surfaces are scanned for
-/// rules / project-instruction files; pass `CompatConfig::default()` to
-/// preserve the historical all-vendors behavior.
+/// `compat` gates which vendor directories are scanned. `CompatConfig::default()` preserves all-vendors behavior.
+/// `project_trusted` omits project-scope files when false.
 pub async fn read_agents_config_with_paths(
     working_directory: &str,
     compat: CompatConfig,
+    project_trusted: bool,
 ) -> Vec<AgentConfigFile> {
     let workspace_user_dir = crate::prompt::workspace_user::optional_workspace_user_dir();
-    read_agents_config_with_options(working_directory, workspace_user_dir.as_deref(), compat).await
+    read_agents_config_with_options(
+        working_directory,
+        workspace_user_dir.as_deref(),
+        compat,
+        project_trusted,
+    )
+    .await
 }
 
-/// Inner implementation that accepts an optional workspace user dir as a
-/// parameter, making it testable without environment variable mutation.
+/// Inner implementation that accepts an optional workspace user dir as a parameter, making it testable without environment variable mutation.
 async fn read_agents_config_with_options(
     working_directory: &str,
     workspace_user_dir: Option<&Path>,
     compat: CompatConfig,
+    project_trusted: bool,
 ) -> Vec<AgentConfigFile> {
     read_agents_config_with_roots(
         working_directory,
         workspace_user_dir,
         compat,
         xai_grok_tools::util::grok_home::grok_home(),
-        dirs::home_dir(),
+        xai_dirs::home_dir(),
+        project_trusted,
     )
     .await
 }
 
 const HOME_RULES_DIRS: &[&str] = &["rules"];
+
+/// Project instruction markers on the supplied roots, including gitignored files and empty rules directories.
+pub fn has_project_instruction_markers_in<'a>(
+    chain_dirs: impl IntoIterator<Item = &'a Path>,
+) -> bool {
+    let compat = CompatConfig::default();
+    let filenames = compat.agent_filenames();
+    let rules_dirs = compat.rules_dirs();
+    chain_dirs.into_iter().any(|dir| {
+        filenames.iter().any(|name| dir.join(name).exists())
+            || rules_dirs.iter().any(|subdir| dir.join(subdir).is_dir())
+    })
+}
 
 async fn read_agents_config_with_roots(
     working_directory: &str,
@@ -180,11 +190,14 @@ async fn read_agents_config_with_roots(
     compat: CompatConfig,
     grok_home: PathBuf,
     home_dir: Option<PathBuf>,
+    project_trusted: bool,
 ) -> Vec<AgentConfigFile> {
     let cwd = PathBuf::from(working_directory);
-    let git_root = git2::Repository::discover(&cwd)
-        .ok()
-        .and_then(|repo| repo.workdir().map(Path::to_path_buf));
+    let project_sources = crate::repo::StartupProjectSources::with_workspace_user(
+        &cwd,
+        workspace_user_dir.map(Path::to_path_buf),
+    );
+    let git_root = project_sources.chain.git_root.clone();
     let gitignore = build_gitignore(git_root.as_deref());
     let agent_filenames = compat.agent_filenames();
     let project_rules_dirs = compat.rules_dirs();
@@ -219,35 +232,13 @@ async fn read_agents_config_with_roots(
     }
 
     let mut project_roots = Vec::new();
-    if let Some(ref root) = git_root {
-        let mut current = Some(cwd.as_path());
-        let mut chain = Vec::new();
-        while let Some(dir) = current {
-            if !chain.iter().any(|existing| existing == dir) {
-                chain.push(dir.to_path_buf());
-            }
-            if dir == root.as_path() {
-                break;
-            }
-            current = dir.parent();
-        }
-        chain.reverse();
-
-        if let Some(user_dir) = workspace_user_dir {
-            let user_dir_canonical = canonical_for_dedup(user_dir);
-            if !chain
-                .iter()
-                .any(|dir| canonical_for_dedup(dir) == user_dir_canonical)
-            {
-                chain.insert(1.min(chain.len()), user_dir.to_path_buf());
-            }
-        }
-
-        for dir in chain {
-            add_discovery_root(&mut project_roots, dir, true, &project_rules_dirs);
-        }
-    } else {
-        add_discovery_root(&mut project_roots, cwd, true, &project_rules_dirs);
+    for dir in project_sources.instruction_dirs() {
+        add_discovery_root(
+            &mut project_roots,
+            dir.to_path_buf(),
+            true,
+            &project_rules_dirs,
+        );
     }
 
     let roots = home_roots
@@ -257,6 +248,9 @@ async fn read_agents_config_with_roots(
     let mut candidates = Vec::new();
     let mut seen_candidates = std::collections::HashMap::new();
     for (root, is_project) in roots {
+        if is_project && !project_trusted {
+            continue;
+        }
         if root.scan_named_files {
             for path in find_agent_files(&root.path, &agent_filenames) {
                 if !is_ignored(&path, gitignore.as_ref(), git_root.as_deref()) {
@@ -313,8 +307,7 @@ pub fn format_agents_md_section(configs: &[AgentConfigFile]) -> Option<String> {
 }
 
 /// Verbatim leading bytes [`render_agents_md`] emits for every reminder block.
-/// Used by `xai-grok-shell` to structurally detect legacy untagged AGENTS.md
-/// copies (pre-`SyntheticReason::ProjectInstructions`) on resumed sessions.
+/// Used by `xai-grok-shell` to structurally detect legacy untagged AGENTS.md copies (pre-`SyntheticReason::ProjectInstructions`) on resumed sessions.
 pub const LEGACY_AGENTS_MD_REMINDER_PREFIX: &str =
     "\n\n<system-reminder>\nAs you answer the user's questions, you can use the following context";
 
@@ -322,11 +315,11 @@ pub const LEGACY_AGENTS_MD_REMINDER_PREFIX: &str =
 /// Shared with unit tests so CI fails if the pattern is ever invalid or too narrow.
 const SYSTEM_REMINDER_TAG_PATTERN: &str = r"(?i)<(\s*/?\s*system[-_]reminder)";
 
-/// Literal pattern only — compile failure is a programmer bug, not a runtime input error.
+/// Literal pattern only: compile failure is a programmer bug, not a runtime input error.
 static SYSTEM_REMINDER_TAG_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(SYSTEM_REMINDER_TAG_PATTERN).unwrap());
 
-/// HTML-escape leading `<` so untrusted AGENTS.md cannot break out of / forge harness framing.
+/// HTML-escape leading `<` so untrusted AGENTS.md cannot break out of or forge harness framing.
 fn neutralize_reminder_tags(content: &str) -> String {
     SYSTEM_REMINDER_TAG_RE
         .replace_all(content, "&lt;$1")
@@ -377,8 +370,7 @@ mod tests {
         fs::write(tmp.path().join("AGENTS.md"), "# Instructions").unwrap();
 
         let files = find_agent_files(tmp.path(), &CompatConfig::default().agent_filenames());
-        // On case-insensitive filesystems (macOS), both "Agents.md" and "AGENTS.md"
-        // resolve to the same file, so we may get more than 1 result.
+        // On case-insensitive filesystems (macOS), both "Agents.md" and "AGENTS.md" resolve to the same file, so we may get more than 1 result
         assert!(!files.is_empty());
         assert!(
             files
@@ -489,7 +481,6 @@ mod tests {
             content: long_content,
         }];
         let section = format_agents_md_section(&configs).unwrap();
-        // No cap: the full content is delivered verbatim, with no truncation marker.
         assert!(
             section.contains(&"A".repeat(5000)),
             "full content must be preserved"
@@ -518,11 +509,12 @@ mod tests {
         )
         .unwrap();
 
-        // cwd = repo root (user dir is NOT in the walk path)
+        // cwd is the repo root (user dir is NOT in the walk path)
         let configs = read_agents_config_with_options(
             repo_root.to_str().unwrap(),
             Some(&user_dir),
             CompatConfig::default(),
+            /*project_trusted*/ true,
         )
         .await;
 
@@ -545,15 +537,15 @@ mod tests {
         fs::create_dir_all(&user_dir).unwrap();
         fs::write(user_dir.join("AGENTS.md"), "# Dedup test instructions").unwrap();
 
-        // cwd IS the user dir — the walk already includes it
+        // cwd IS the user dir: the walk already includes it
         let configs = read_agents_config_with_options(
             user_dir.to_str().unwrap(),
             Some(&user_dir),
             CompatConfig::default(),
+            /*project_trusted*/ true,
         )
         .await;
 
-        // "Dedup test instructions" should appear exactly once
         let count = configs
             .iter()
             .filter(|c| c.content.contains("Dedup test instructions"))
@@ -576,11 +568,12 @@ mod tests {
         fs::create_dir_all(&user_dir).unwrap();
         fs::write(user_dir.join("AGENTS.md"), "# Ghost instructions").unwrap();
 
-        // Pass None — simulates env vars not set
+        // Pass None: simulates env vars not set
         let configs = read_agents_config_with_options(
             repo_root.to_str().unwrap(),
             None,
             CompatConfig::default(),
+            /*project_trusted*/ true,
         )
         .await;
 
@@ -601,9 +594,13 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("AGENTS.md"), "# outside git").unwrap();
 
-        let configs =
-            read_agents_config_with_options(dir.to_str().unwrap(), None, CompatConfig::default())
-                .await;
+        let configs = read_agents_config_with_options(
+            dir.to_str().unwrap(),
+            None,
+            CompatConfig::default(),
+            /*project_trusted*/ true,
+        )
+        .await;
         assert!(configs.iter().any(|c| c.content.contains("outside git")));
     }
 
@@ -648,6 +645,7 @@ mod tests {
             CompatConfig::default(),
             grok_home,
             Some(home),
+            /*project_trusted*/ true,
         )
         .await;
         let contents: Vec<&str> = configs
@@ -698,6 +696,7 @@ mod tests {
             rules_only,
             grok_home.clone(),
             Some(home.clone()),
+            /*project_trusted*/ true,
         )
         .await;
         for vendor in [".claude", ".cursor"] {
@@ -722,6 +721,7 @@ mod tests {
             agents_only,
             grok_home,
             Some(home),
+            /*project_trusted*/ true,
         )
         .await;
         for vendor in [".claude", ".cursor"] {
@@ -757,6 +757,7 @@ mod tests {
             CompatConfig::default(),
             nested.clone(),
             None,
+            /*project_trusted*/ true,
         )
         .await;
         assert_eq!(
@@ -793,6 +794,7 @@ mod tests {
             CompatConfig::default(),
             repo.clone(),
             None,
+            /*project_trusted*/ true,
         )
         .await;
         for expected in ["home-rule", "project-grok-rule", "project-claude-rule"] {
@@ -830,6 +832,7 @@ mod tests {
             compat,
             grok_home,
             Some(home),
+            /*project_trusted*/ true,
         )
         .await;
         assert_eq!(
@@ -861,6 +864,7 @@ mod tests {
             CompatConfig::default(),
             repo.clone(),
             None,
+            /*project_trusted*/ true,
         )
         .await;
         assert_eq!(configs.len(), 1);
@@ -905,6 +909,7 @@ mod tests {
             CompatConfig::default(),
             grok_home,
             Some(home),
+            /*project_trusted*/ true,
         )
         .await;
         for body in [
@@ -948,10 +953,10 @@ mod tests {
             repo_root.to_str().unwrap(),
             Some(&user_dir),
             CompatConfig::default(),
+            /*project_trusted*/ true,
         )
         .await;
 
-        // Both should be found
         let has_repo = configs
             .iter()
             .any(|c| c.content.contains("XYZZY_REPO_ROOT_MARKER"));
@@ -992,7 +997,7 @@ mod tests {
         ] {
             assert!(re.is_match(sample), "should match: {sample}");
         }
-        // Prefix match by design (attrs ok); only reject shapes that are not the tag name.
+        // Prefix match by design (attributes may follow); only reject shapes that are not the tag name
         for sample in [
             "system-reminder",
             "<system-remind>",
@@ -1065,6 +1070,7 @@ mod tests {
             repo_root.to_str().unwrap(),
             None,
             CompatConfig::default(),
+            /*project_trusted*/ true,
         )
         .await;
 
@@ -1098,6 +1104,7 @@ mod tests {
             repo_root.to_str().unwrap(),
             None,
             CompatConfig::default(),
+            /*project_trusted*/ true,
         )
         .await;
 

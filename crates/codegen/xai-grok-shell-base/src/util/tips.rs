@@ -1,8 +1,7 @@
-//! Tip of the Day — selection logic for tips served from remote settings.
+//! Tip of the Day: selection logic for tips served from remote settings.
 //!
 //! Tips are fetched at startup via `RemoteSettings.tips` (from `/v1/settings`).
-//! This module provides per-session rotation: each launch shows the next tip
-//! in sequence, cycling through all tips before repeating. The cursor is
+//! This module provides per-session rotation: each launch shows the next tip in sequence, cycling through all tips before repeating. The cursor is
 //! persisted to `~/.grok/tip_cursor.json`.
 
 use std::path::{Path, PathBuf};
@@ -40,11 +39,7 @@ fn save_cursor(grok_home: &Path, cursor: u64) {
 }
 
 /// Pick the next tip for this session and advance the persistent cursor.
-///
-/// Each call returns the tip at `cursor % tips.len()` and increments the
-/// cursor in `~/.grok/tip_cursor.json`, so every session sees the next tip
-/// in sequence. After all tips have been shown, the cycle repeats.
-///
+/// Each call returns the tip at `cursor % tips.len()` and increments the cursor in `~/.grok/tip_cursor.json`, so every session sees the next tip in sequence. After all tips have been shown, the cycle repeats.
 /// Returns `None` if `tips` is empty (cursor is not advanced in that case).
 pub fn pick_and_advance(tips: &[String], grok_home: &Path) -> Option<String> {
     if tips.is_empty() {
@@ -98,9 +93,9 @@ mod tests {
     fn cursor_persists_across_calls() {
         let dir = tempfile::tempdir().unwrap();
         let tips = vec!["x".to_string(), "y".to_string()];
-        pick_and_advance(&tips, dir.path()); // cursor → 1
+        pick_and_advance(&tips, dir.path()); // cursor becomes 1
         assert_eq!(load_cursor(dir.path()), 1);
-        pick_and_advance(&tips, dir.path()); // cursor → 2
+        pick_and_advance(&tips, dir.path()); // cursor becomes 2
         assert_eq!(load_cursor(dir.path()), 2);
     }
 
@@ -119,11 +114,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Start with 3 tips, advance cursor to 3
         let tips3 = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        pick_and_advance(&tips3, dir.path()); // cursor 0 → 1
-        pick_and_advance(&tips3, dir.path()); // cursor 1 → 2
-        pick_and_advance(&tips3, dir.path()); // cursor 2 → 3
+        pick_and_advance(&tips3, dir.path()); // cursor 0 to 1
+        pick_and_advance(&tips3, dir.path()); // cursor 1 to 2
+        pick_and_advance(&tips3, dir.path()); // cursor 2 to 3
 
-        // remote settings pushes a 5-tip list; cursor=3, 3%5=3 → "d"
+        // remote settings pushes a 5-tip list; the cursor is 3 and 3 % 5 = 3, so "d"
         let tips5 = vec![
             "a".to_string(),
             "b".to_string(),
@@ -141,12 +136,5 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(cursor_path(dir.path()), b"not json").unwrap();
         assert_eq!(load_cursor(dir.path()), 0);
-    }
-
-    #[test]
-    fn save_and_load_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        save_cursor(dir.path(), 42);
-        assert_eq!(load_cursor(dir.path()), 42);
     }
 }

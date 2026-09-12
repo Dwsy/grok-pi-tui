@@ -15,10 +15,8 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr as _;
 
-/// A hyperlink region on a single screen row, in absolute viewport coordinates.
-///
-/// Handed to [`Terminal::set_frame_links`] each frame. The terminal folds these
-/// into a per-cell link layer that participates in the frame diff, so OSC 8
+/// A hyperlink region on a single screen row, in absolute viewport coordinates. Handed to [`Terminal::set_frame_links`]
+/// each frame. The terminal folds these into a per-cell link layer that participates in the frame diff, so OSC 8
 /// sequences are emitted (and cleared) by the same machinery that draws cells.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkSpan {
@@ -40,7 +38,8 @@ struct LinkRef {
 }
 
 struct LastNamedOsc8 {
-    source_id: u32,
+    /// `None` groups consecutive unnamed same-URL wrap fragments.
+    source_id: Option<u32>,
     url: Arc<str>,
     osc8_id: u32,
 }
@@ -53,14 +52,8 @@ fn resolve_link<'a>(ids: &[u32], table: &'a [LinkRef], i: usize) -> Option<&'a L
     }
 }
 
-/// Emit an OSC 8 hyperlink open sequence.
-///
-/// Control characters are stripped from `url` to prevent premature sequence
-/// termination or escape injection. The sequence is terminated with BEL
-/// (`\x07`) for broadest terminal/multiplexer support; here the BEL is
-/// immediately followed by the cell draw's ESC (cursor move / SGR), which all
-/// mainstream terminals parse correctly (OSC-BEL followed by CSI is ubiquitous,
-/// e.g. title sets). ST would also be valid but is less widely supported.
+/// Emit an OSC 8 hyperlink open sequence. Control characters are stripped from `url` to prevent premature sequence
+/// termination or escape injection. ST would also be valid but is less widely supported.
 fn write_osc8_open<W: Write>(w: &mut W, url: &str, id: Option<u32>) -> io::Result<()> {
     let sanitized: std::borrow::Cow<str> = if url.chars().any(|c| c.is_control()) {
         std::borrow::Cow::Owned(url.chars().filter(|c| !c.is_control()).collect())
@@ -78,26 +71,23 @@ fn write_osc8_close<W: Write>(w: &mut W) -> io::Result<()> {
     w.write_all(b"\x1b]8;;\x07")
 }
 
-/// Markdown ids restart per document; OSC 8 `id=` is terminal-global.
-/// Consecutive wrap segments of the same source id+URL reuse the last emitted id.
+/// Markdown ids restart per document; OSC 8 `id=` is terminal-global. Full-screen apps must set `id=` so wrap fragments
+/// group as one hyperlink (Windows Terminal hover / Ctrl+click). Consecutive spans that share a source id and URL reuse
+/// the reminted id; unnamed consecutive same-URL spans (soft-wrap of a scanned URL) do too.
 fn next_osc8_id(
     span: &LinkSpan,
     last_named: &mut Option<LastNamedOsc8>,
     next: &mut u32,
 ) -> Option<u32> {
-    let Some(source_id) = span.id else {
-        *last_named = None;
-        return None;
-    };
     if let Some(last) = last_named.as_ref()
-        && last.source_id == source_id
+        && last.source_id == span.id
         && last.url.as_ref() == span.url.as_ref()
     {
         return Some(last.osc8_id);
     }
     *next = next.saturating_add(1);
     *last_named = Some(LastNamedOsc8 {
-        source_id,
+        source_id: span.id,
         url: Arc::clone(&span.url),
         osc8_id: *next,
     });
@@ -106,10 +96,8 @@ fn next_osc8_id(
 
 #[derive(Debug, Hash)]
 pub struct OurFrame<'a> {
-    /// Where should the cursor be after drawing this frame?
-    ///
-    /// If `None`, the cursor is hidden and its position is controlled by the backend. If `Some((x,
-    /// y))`, the cursor is shown and placed at `(x, y)` after the call to `Terminal::draw()`.
+    /// Where should the cursor be after drawing this frame? If `None`, the cursor is hidden and its position is controlled by
+    /// the backend. If `Some((x, y))`, the cursor is shown and placed at `(x, y)` after the call to `Terminal::draw()`.
     pub(crate) cursor_position: Option<Position>,
 
     /// The area of the viewport
@@ -142,51 +130,9 @@ impl<'a> From<Frame<'a>> for OurFrame<'a> {
     }
 }
 
-/// An interface to interact and draw [`Frame`]s on the user's terminal.
-///
-/// This is the main entry point for Ratatui. It is responsible for drawing and maintaining the
-/// state of the buffers, cursor and viewport.
-///
-/// The [`Terminal`] is generic over a [`Backend`] implementation which is used to interface with
-/// the underlying terminal library. The [`Backend`] trait is implemented for three popular Rust
-/// terminal libraries: [Crossterm], [Termion] and [Termwiz]. See the [`backend`] module for more
-/// information.
-///
-/// The `Terminal` struct maintains two buffers: the current and the previous.
-/// When the widgets are drawn, the changes are accumulated in the current buffer.
-/// At the end of each draw pass, the two buffers are compared, and only the changes
-/// between these buffers are written to the terminal, avoiding any redundant operations.
-/// After flushing these changes, the buffers are swapped to prepare for the next draw cycle.
-///
-/// The terminal also has a viewport which is the area of the terminal that is currently visible to
-/// the user. It can be either fullscreen, inline or fixed. See [`Viewport`] for more information.
-///
-/// Applications should detect terminal resizes and call [`Terminal::draw`] to redraw the
-/// application with the new size. This will automatically resize the internal buffers to match the
-/// new size for inline and fullscreen viewports. Fixed viewports are not resized automatically.
-///
-/// # Examples
-///
-/// ```rust,no_run
-/// use std::io::stdout;
-///
-/// use ratatui::{backend::CrosstermBackend, widgets::Paragraph, Terminal};
-///
-/// let backend = CrosstermBackend::new(stdout());
-/// let mut terminal = Terminal::new(backend)?;
-/// terminal.draw(|frame| {
-///     let area = frame.area();
-///     frame.render_widget(Paragraph::new("Hello World!"), area);
-/// })?;
-/// # std::io::Result::Ok(())
-/// ```
-///
-/// [Crossterm]: https://crates.io/crates/crossterm
-/// [Termion]: https://crates.io/crates/termion
-/// [Termwiz]: https://crates.io/crates/termwiz
-/// [`backend`]: crate::backend
-/// [`Backend`]: crate::backend::Backend
-/// [`Buffer`]: crate::buffer::Buffer
+/// See the [`backend`] module for more information. At the end of each draw pass, the two buffers are compared, and only
+/// the changes between these buffers are written to the terminal, avoiding any redundant operations. After flushing these
+/// changes, the buffers are swapped to prepare for the next draw cycle. Fixed viewports are not resized automatically.
 #[derive(Debug, Default, Clone, Eq, PartialEq, Hash)]
 pub struct Terminal<B>
 where
@@ -238,18 +184,6 @@ where
     B: Backend,
 {
     /// Creates a new [`Terminal`] with the given [`Backend`] with a full screen viewport.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use std::io::stdout;
-    ///
-    /// use ratatui::{backend::CrosstermBackend, Terminal};
-    ///
-    /// let backend = CrosstermBackend::new(stdout());
-    /// let terminal = Terminal::new(backend)?;
-    /// # std::io::Result::Ok(())
-    /// ```
     pub fn new(backend: B) -> io::Result<Self> {
         Self::with_options(
             backend,
@@ -260,19 +194,6 @@ where
     }
 
     /// Creates a new [`Terminal`] with the given [`Backend`] and [`TerminalOptions`].
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use std::io::stdout;
-    ///
-    /// use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal, TerminalOptions, Viewport};
-    ///
-    /// let backend = CrosstermBackend::new(stdout());
-    /// let viewport = Viewport::Fixed(Rect::new(0, 0, 10, 10));
-    /// let terminal = Terminal::with_options(backend, TerminalOptions { viewport })?;
-    /// # std::io::Result::Ok(())
-    /// ```
     pub fn with_options(mut backend: B, options: TerminalOptions) -> io::Result<Self> {
         let area = match options.viewport {
             Viewport::Fullscreen | Viewport::Inline(_) => {
@@ -330,14 +251,9 @@ where
         &mut self.backend
     }
 
-    /// Obtains a difference between the previous and the current buffer and passes it to the
-    /// current backend for drawing. Returns `true` if any cells were changed.
-    ///
-    /// Uses [`diff_large`] instead of ratatui's [`Buffer::diff`] to avoid a `u16`
-    /// truncation bug: upstream `pos_of()` casts the flat cell index to `u16`
-    /// before computing `(x, y)`, which silently wraps around when
-    /// `width * height > 65 535`.  On extra-large terminals (e.g. 420×160 = 67 200
-    /// cells) this causes the entire UI to be rendered into a tiny corner.
+    /// Uses [`diff_large`] instead of ratatui's [`Buffer::diff`] to avoid a `u16` truncation bug: upstream `pos_of()` casts
+    /// the flat cell index to `u16` before computing `(x, y)`, which silently wraps around when `width * height > 65 535`. On
+    /// extra-large terminals (e.g. 420×160 = 67 200 cells) this causes the entire UI to be rendered into a tiny corner.
     pub fn flush(&mut self) -> io::Result<bool> {
         let previous_buffer = &self.buffers[1 - self.current];
         let current_buffer = &self.buffers[self.current];
@@ -350,18 +266,9 @@ where
         Ok(has_changes)
     }
 
-    /// Set the hyperlink spans for the frame about to be flushed.
-    ///
-    /// Rebuilds the *current* link layer from `spans` (absolute viewport
-    /// coordinates); the previous layer is retained so [`flush_with_links`] can
-    /// diff it. Call once per frame, after rendering and before
-    /// [`flush_with_links`]. Passing an empty slice clears the frame's links
-    /// (so links from the previous frame are diffed away).
-    ///
-    /// [`LinkSpan::id`] is a source grouping key. Consecutive spans with the
-    /// same id and URL share one reminted OSC 8 `id=` starting at 1.
-    ///
-    /// [`flush_with_links`]: Self::flush_with_links
+    /// Rebuilds the *current* link layer from `spans` (absolute viewport coordinates); the previous layer is retained so
+    /// [`flush_with_links`] can diff it. Call once per frame, after rendering and before [`flush_with_links`]. Passing an
+    /// empty slice clears the frame's links (so links from the previous frame are diffed away).
     pub fn set_frame_links(&mut self, spans: &[LinkSpan]) {
         let area = self.viewport_area;
         let width = area.width as usize;
@@ -401,13 +308,9 @@ where
         }
     }
 
-    /// Like [`flush`](Self::flush) but emits OSC 8 hyperlinks for cells covered
-    /// by the current link layer (see [`set_frame_links`](Self::set_frame_links)).
-    ///
-    /// A cell is rewritten when its content/style changed **or** its link
-    /// changed, so links are cleared automatically when they disappear — no
-    /// out-of-band repaint. Contiguous runs of cells sharing the same link are
-    /// wrapped in a single OSC 8 open/close around the upstream cell draw.
+    /// Like [`flush`](Self::flush) but emits OSC 8 hyperlinks for cells covered by the current link layer (see
+    /// [`set_frame_links`](Self::set_frame_links)). A cell is rewritten when its content/style changed or its link changed,
+    /// so links are cleared automatically when they disappear — no out-of-band repaint.
     pub fn flush_with_links(&mut self) -> io::Result<bool>
     where
         B: Write,
@@ -415,11 +318,9 @@ where
         let cur = self.current;
         let prev = 1 - cur;
 
-        // Fast path: no hyperlinks in either the current or previous frame. The
-        // link layer can't affect the diff or emission, so fall back to the
-        // plain cell diff + draw — byte-for-byte identical to `flush` with zero
-        // per-cell link resolution. This keeps the overwhelmingly common
-        // link-free frame (streaming output, etc.) as cheap as before.
+        // Fast path: no hyperlinks in either the current or previous frame. The link layer can't affect the diff or emission, so
+        // fall back to the plain cell diff + draw — byte-for-byte identical to `flush` with zero per-cell link resolution. This
+        // keeps the overwhelmingly common link-free frame (streaming output, etc.) as cheap as before.
         if self.link_tables[cur].is_empty() && self.link_tables[prev].is_empty() {
             return self.flush();
         }
@@ -447,26 +348,13 @@ where
         Ok(has_changes)
     }
 
-    /// Updates the Terminal so that internal buffers match the requested area.
-    ///
-    /// Requested area will be saved to remain consistent when rendering. This leads to a full clear
-    /// of the screen.
+    /// Updates the Terminal so that internal buffers match the requested area. Requested area will be saved to remain
+    /// consistent when rendering. This leads to a full clear of the screen.
     pub fn resize(&mut self, area: Rect) -> io::Result<()> {
         let next_area = match self.viewport {
-            // Full-height inline viewport: the inline viewport currently spans the
-            // entire terminal. This is how the viewport is used when the alternate
-            // screen is unavailable (e.g. under Zellij or tmux control mode, or
-            // with `--no-alt-screen`): the whole terminal is one inline viewport
-            // standing in for a fullscreen app. On resize it must keep spanning
-            // the entire terminal, exactly like a fullscreen viewport.
-            //
-            // The generic `compute_inline_size` path below is built for a *small*
-            // inline viewport anchored near the cursor and is wrong here in two
-            // ways: (1) it clamps the height to the fixed `Viewport::Inline(height)`
-            // captured at startup, so enlarging the terminal never grows the
-            // viewport — the UI ends up truncated at the bottom even though the
-            // width tracks the resize; and (2) on shrink it can reposition the
-            // viewport partly or fully off-screen. Filling the new area avoids both.
+            // This is how the viewport is used when the alternate screen is unavailable (e.g. under Zellij or tmux control mode, or
+            // with `--no-alt-screen`): the whole terminal is one inline viewport standing in for a fullscreen app. On resize it must
+            // keep spanning the entire terminal, exactly like a fullscreen viewport. Filling the new area avoids both.
             Viewport::Inline(_)
                 if self.viewport_area.y == 0
                     && self.viewport_area.height >= self.last_known_area.height =>
@@ -507,56 +395,9 @@ where
         Ok(())
     }
 
-    /// Draws a single frame to the terminal.
-    ///
-    /// Returns a [`CompletedFrame`] if successful, otherwise a [`std::io::Error`].
-    ///
-    /// If the render callback passed to this method can fail, use [`try_draw`] instead.
-    ///
-    /// Applications should call `draw` or [`try_draw`] in a loop to continuously render the
-    /// terminal. These methods are the main entry points for drawing to the terminal.
-    ///
-    /// [`try_draw`]: Terminal::try_draw
-    ///
-    /// This method will:
-    ///
-    /// - autoresize the terminal if necessary
-    /// - call the render callback, passing it a [`Frame`] reference to render to
-    /// - flush the current internal state by copying the current buffer to the backend
-    /// - move the cursor to the last known position if it was set during the rendering closure
-    /// - return a [`CompletedFrame`] with the current buffer and the area of the terminal
-    ///
-    /// The [`CompletedFrame`] returned by this method can be useful for debugging or testing
-    /// purposes, but it is often not used in regular applicationss.
-    ///
-    /// The render callback should fully render the entire frame when called, including areas that
-    /// are unchanged from the previous frame. This is because each frame is compared to the
-    /// previous frame to determine what has changed, and only the changes are written to the
-    /// terminal. If the render callback does not fully render the frame, the terminal will not be
-    /// in a consistent state.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # let backend = ratatui::backend::TestBackend::new(10, 10);
-    /// # let mut terminal = ratatui::Terminal::new(backend)?;
-    /// use ratatui::{layout::Position, widgets::Paragraph};
-    ///
-    /// // with a closure
-    /// terminal.draw(|frame| {
-    ///     let area = frame.area();
-    ///     frame.render_widget(Paragraph::new("Hello World!"), area);
-    ///     frame.set_cursor_position(Position { x: 0, y: 0 });
-    /// })?;
-    ///
-    /// // or with a function
-    /// terminal.draw(render)?;
-    ///
-    /// fn render(frame: &mut ratatui::Frame) {
-    ///     frame.render_widget(Paragraph::new("Hello World!"), frame.area());
-    /// }
-    /// # std::io::Result::Ok(())
-    /// ```
+    /// Returns a [`CompletedFrame`] if successful, otherwise a [`std::io::Error`]. This method will: This is because each
+    /// frame is compared to the previous frame to determine what has changed, and only the changes are written to the
+    /// terminal. If the render callback does not fully render the frame, the terminal will not be in a consistent state.
     pub fn draw<F>(&mut self, render_callback: F) -> io::Result<CompletedFrame<'_>>
     where
         F: FnOnce(&mut Frame),
@@ -567,71 +408,9 @@ where
         })
     }
 
-    /// Tries to draw a single frame to the terminal.
-    ///
-    /// Returns [`Result::Ok`] containing a [`CompletedFrame`] if successful, otherwise
-    /// [`Result::Err`] containing the [`std::io::Error`] that caused the failure.
-    ///
-    /// This is the equivalent of [`Terminal::draw`] but the render callback is a function or
-    /// closure that returns a `Result` instead of nothing.
-    ///
-    /// Applications should call `try_draw` or [`draw`] in a loop to continuously render the
-    /// terminal. These methods are the main entry points for drawing to the terminal.
-    ///
-    /// [`draw`]: Terminal::draw
-    ///
-    /// This method will:
-    ///
-    /// - autoresize the terminal if necessary
-    /// - call the render callback, passing it a [`Frame`] reference to render to
-    /// - flush the current internal state by copying the current buffer to the backend
-    /// - move the cursor to the last known position if it was set during the rendering closure
-    /// - return a [`CompletedFrame`] with the current buffer and the area of the terminal
-    ///
-    /// The render callback passed to `try_draw` can return any [`Result`] with an error type that
-    /// can be converted into an [`std::io::Error`] using the [`Into`] trait. This makes it possible
-    /// to use the `?` operator to propagate errors that occur during rendering. If the render
-    /// callback returns an error, the error will be returned from `try_draw` as an
-    /// [`std::io::Error`] and the terminal will not be updated.
-    ///
-    /// The [`CompletedFrame`] returned by this method can be useful for debugging or testing
-    /// purposes, but it is often not used in regular applicationss.
-    ///
-    /// The render callback should fully render the entire frame when called, including areas that
-    /// are unchanged from the previous frame. This is because each frame is compared to the
-    /// previous frame to determine what has changed, and only the changes are written to the
-    /// terminal. If the render function does not fully render the frame, the terminal will not be
-    /// in a consistent state.
-    ///
-    /// # Examples
-    ///
-    /// ```should_panic
-    /// # use ratatui::layout::Position;;
-    /// # let backend = ratatui::backend::TestBackend::new(10, 10);
-    /// # let mut terminal = ratatui::Terminal::new(backend)?;
-    /// use std::io;
-    ///
-    /// use ratatui::widgets::Paragraph;
-    ///
-    /// // with a closure
-    /// terminal.try_draw(|frame| {
-    ///     let value: u8 = "not a number".parse().map_err(io::Error::other)?;
-    ///     let area = frame.area();
-    ///     frame.render_widget(Paragraph::new("Hello World!"), area);
-    ///     frame.set_cursor_position(Position { x: 0, y: 0 });
-    ///     io::Result::Ok(())
-    /// })?;
-    ///
-    /// // or with a function
-    /// terminal.try_draw(render)?;
-    ///
-    /// fn render(frame: &mut ratatui::Frame) -> io::Result<()> {
-    ///     let value: u8 = "not a number".parse().map_err(io::Error::other)?;
-    ///     frame.render_widget(Paragraph::new("Hello World!"), frame.area());
-    ///     Ok(())
-    /// }
-    /// # io::Result::Ok(())
-    /// ```
+    /// Tries to draw a single frame to the terminal. Returns [`Result::Ok`] containing a [`CompletedFrame`] if successful,
+    /// otherwise [`Result::Err`] containing the [`std::io::Error`] that caused the failure. This is because each frame is
+    /// compared to the previous frame to determine what has changed, and only the changes are written to the terminal.
     pub fn try_draw<F, E>(&mut self, render_callback: F) -> io::Result<CompletedFrame<'_>>
     where
         F: FnOnce(&mut Frame) -> Result<(), E>,
@@ -692,10 +471,7 @@ where
         Ok(())
     }
 
-    /// Gets the current cursor position.
-    ///
-    /// This is the position of the cursor after the last draw call and is returned as a tuple of
-    /// `(x, y)` coordinates.
+    /// This is the position of the cursor after the last draw call and is returned as a tuple of `(x, y)` coordinates.
     #[deprecated = "the method get_cursor_position indicates more clearly what about the cursor to get"]
     pub fn get_cursor(&mut self) -> io::Result<(u16, u16)> {
         let Position { x, y } = self.get_cursor_position()?;
@@ -774,82 +550,9 @@ where
         self.backend.size()
     }
 
-    /// Insert some content before the current inline viewport. This has no effect when the
-    /// viewport is not inline.
-    ///
-    /// The `draw_fn` closure will be called to draw into a writable `Buffer` that is `height`
-    /// lines tall. The content of that `Buffer` will then be inserted before the viewport.
-    ///
-    /// If the viewport isn't yet at the bottom of the screen, inserted lines will push it towards
-    /// the bottom. Once the viewport is at the bottom of the screen, inserted lines will scroll
-    /// the area of the screen above the viewport upwards.
-    ///
-    /// Before:
-    /// ```ignore
-    /// +---------------------+
-    /// | pre-existing line 1 |
-    /// | pre-existing line 2 |
-    /// +---------------------+
-    /// |       viewport      |
-    /// +---------------------+
-    /// |                     |
-    /// |                     |
-    /// +---------------------+
-    /// ```
-    ///
-    /// After inserting 2 lines:
-    /// ```ignore
-    /// +---------------------+
-    /// | pre-existing line 1 |
-    /// | pre-existing line 2 |
-    /// |   inserted line 1   |
-    /// |   inserted line 2   |
-    /// +---------------------+
-    /// |       viewport      |
-    /// +---------------------+
-    /// +---------------------+
-    /// ```
-    ///
-    /// After inserting 2 more lines:
-    /// ```ignore
-    /// +---------------------+
-    /// | pre-existing line 2 |
-    /// |   inserted line 1   |
-    /// |   inserted line 2   |
-    /// |   inserted line 3   |
-    /// |   inserted line 4   |
-    /// +---------------------+
-    /// |       viewport      |
-    /// +---------------------+
-    /// ```
-    ///
-    /// If more lines are inserted than there is space on the screen, then the top lines will go
-    /// directly into the terminal's scrollback buffer. At the limit, if the viewport takes up the
-    /// whole screen, all lines will be inserted directly into the scrollback buffer.
-    ///
-    /// # Examples
-    ///
-    /// ## Insert a single line before the current viewport
-    ///
-    /// ```rust
-    /// use ratatui::{
-    ///     backend::TestBackend,
-    ///     style::{Color, Style},
-    ///     text::{Line, Span},
-    ///     widgets::{Paragraph, Widget},
-    ///     Terminal,
-    /// };
-    /// # let backend = TestBackend::new(10, 10);
-    /// # let mut terminal = Terminal::new(backend).unwrap();
-    /// terminal.insert_before(1, |buf| {
-    ///     Paragraph::new(Line::from(vec![
-    ///         Span::raw("This line will be added "),
-    ///         Span::styled("before", Style::default().fg(Color::Blue)),
-    ///         Span::raw(" the current viewport"),
-    ///     ]))
-    ///     .render(buf.area, buf);
-    /// });
-    /// ```
+    /// Insert some content before the current inline viewport. This has no effect when the viewport is not inline. The
+    /// content of that `Buffer` will then be inserted before the viewport. If the viewport isn't yet at the bottom of the
+    /// screen, inserted lines will push it towards the bottom. Insert a single line before the current viewport
     pub fn insert_before<F>(&mut self, height: u16, draw_fn: F) -> io::Result<()>
     where
         F: FnOnce(&mut Buffer),
@@ -863,43 +566,16 @@ where
         }
     }
 
-    /// Sets the height of an inline viewport and resizes it accordingly.
-    ///
-    /// This method only works with inline viewports. For other viewport types, it has no effect.
-    /// The viewport will be resized to the new height, and the buffers will be cleared and
-    /// reallocated to match the new size.
-    ///
-    /// # Arguments
-    ///
-    /// * `new_height` - The new height for the inline viewport in lines
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use ratatui::{Terminal, TerminalOptions, Viewport};
-    ///
-    /// let mut terminal = Terminal::with_options(backend, TerminalOptions {
-    ///     viewport: Viewport::Inline(8),
-    /// })?;
-    ///
-    /// // Later, resize the viewport to 12 lines
-    /// terminal.set_viewport_height(12)?;
-    /// ```
+    /// Sets the height of an inline viewport and resizes it accordingly. This method only works with inline viewports. For
+    /// other viewport types, it has no effect. The viewport will be resized to the new height, and the buffers will be
+    /// cleared and reallocated to match the new size.
     pub fn set_viewport_height(&mut self, new_height: u16) -> io::Result<()> {
         if !matches!(self.viewport, Viewport::Inline(_)) {
             return Ok(());
         }
-        // Judge grow-vs-shrink against the ACTUAL current viewport height, not
-        // the stored `Viewport::Inline(height)`. The two can drift when a caller
-        // repositions or resizes the inline viewport out-of-band via
-        // `set_viewport_area` (minimal mode's content-anchored commit path
-        // shrinks the viewport that way before `insert_before`). Comparing
-        // against a stale stored height made a genuine grow read as a shrink,
-        // skipping the grow-time `scroll_up` below — so the viewport's top never
-        // moved up and the taller region ran off the bottom of the screen (an
-        // opened dropdown's items landed off-screen). Keep the stored height in
-        // lockstep with the area height on the way out so `resize`
-        // (`compute_inline_size`) also sees the real height.
+        // Comparing against a stale stored height made a genuine grow read as a shrink, skipping the grow-time `scroll_up` below
+        // — so the viewport's top never moved up and the taller region ran off the bottom of the screen (an opened dropdown's
+        // items landed off-screen).
         let old_height = self.viewport_area.height;
         if let Viewport::Inline(height) = &mut self.viewport {
             *height = new_height;
@@ -915,14 +591,9 @@ where
                 let overflow =
                     (self.viewport_area.y + new_height).saturating_sub(self.last_known_area.height);
                 if overflow > 0 {
-                    // Scroll the rows the taller viewport will cover up into the
-                    // terminal's native scrollback *before* moving the viewport
-                    // origin up, so committed content is preserved instead of
-                    // overwritten. Minimal mode (and any inline consumer) relies
-                    // on this when growing the viewport for an overlay near the
-                    // bottom of the screen. The pager builds without the
-                    // `scrolling-regions` feature; that variant is a separate
-                    // (unused-by-the-pager) path left as a TODO.
+                    // Scroll the rows the taller viewport will cover up into the terminal's native scrollback *before* moving the viewport
+                    // origin up, so committed content is preserved instead of overwritten. The pager builds without the `scrolling-regions`
+                    // feature; that variant is a separate (unused-by-the-pager) path left as a TODO.
                     #[cfg(not(feature = "scrolling-regions"))]
                     self.scroll_up(overflow)?;
                     self.viewport_area.y.saturating_sub(overflow)
@@ -968,26 +639,13 @@ where
         let viewport_height: i32 = self.viewport_area.height.into();
         let screen_height: i32 = self.last_known_area.height.into();
 
-        // The algorithm here is to loop, drawing large chunks of text (up to a screen-full at a
-        // time), until the remainder of the buffer plus the viewport fits on the screen. We choose
-        // this loop condition because it guarantees that we can write the remainder of the buffer
-        // with just one call to Self::draw_lines().
+        // The algorithm here is to loop, drawing large chunks of text (up to a screen-full at a time), until the remainder of
+        // the buffer plus the viewport fits on the screen. We choose this loop condition because it guarantees that we can write
+        // the remainder of the buffer with just one call to Self::draw_lines().
         while buffer_height + viewport_height > screen_height {
-            // We will draw as much of the buffer as possible on this iteration in order to make
-            // forward progress. So we have:
-            //
-            //     to_draw = min(buffer_height, screen_height)
-            //
-            // We may need to scroll the screen up to make room to draw. We choose the minimal
-            // possible scroll amount so we don't end up with the viewport sitting in the middle of
-            // the screen when this function is done. The amount to scroll by is:
-            //
-            //     scroll_up = max(0, drawn_height + to_draw - screen_height)
-            //
-            // We want `scroll_up` to be enough so that, after drawing, we have used the whole
-            // screen (drawn_height - scroll_up + to_draw = screen_height). However, there might
-            // already be enough room on the screen to draw without scrolling (drawn_height +
-            // to_draw <= screen_height). In this case, we just don't scroll at all.
+            // We choose the minimal possible scroll amount so we don't end up with the viewport sitting in the middle of the screen
+            // when this function is done. We want `scroll_up` to be enough so that, after drawing, we have used the whole screen
+            // (drawn_height - scroll_up + to_draw = screen_height). In this case, we just don't scroll at all.
             let to_draw = buffer_height.min(screen_height);
             let scroll_up = 0.max(drawn_height + to_draw - screen_height);
             self.scroll_up(scroll_up as u16)?;
@@ -996,20 +654,9 @@ where
             buffer_height -= to_draw;
         }
 
-        // There is now enough room on the screen for the remaining buffer plus the viewport,
-        // though we may still need to scroll up some of the existing text first. It's possible
-        // that by this point we've drained the buffer, but we may still need to scroll up to make
-        // room for the viewport.
-        //
-        // We want to scroll up the exact amount that will leave us completely filling the screen.
-        // However, it's possible that the viewport didn't start on the bottom of the screen and
-        // the added lines weren't enough to push it all the way to the bottom. We deal with this
-        // case by just ensuring that our scroll amount is non-negative.
-        //
-        // We want:
-        //   screen_height = drawn_height - scroll_up + buffer_height + viewport_height
-        // Or, equivalently:
-        //   scroll_up = drawn_height + buffer_height + viewport_height - screen_height
+        // There is now enough room on the screen for the remaining buffer plus the viewport, though we may still need to scroll
+        // up some of the existing text first. However, it's possible that the viewport didn't start on the bottom of the screen
+        // and the added lines weren't enough to push it all the way to the bottom.
         let scroll_up = 0.max(drawn_height + buffer_height + viewport_height - screen_height);
         self.scroll_up(scroll_up as u16)?;
         self.draw_lines(
@@ -1024,25 +671,17 @@ where
             ..self.viewport_area
         });
 
-        // Clear the viewport off the screen. We didn't clear earlier for two reasons. First, it
-        // wasn't necessary because the buffer we drew out of isn't sparse, so it overwrote
-        // whatever was on the screen. Second, there is a weird bug with tmux where a full screen
-        // clear plus immediate scrolling causes some garbage to go into the scrollback.
+        // We didn't clear earlier for two reasons. First, it wasn't necessary because the buffer we drew out of isn't sparse, so
+        // it overwrote whatever was on the screen. Second, there is a weird bug with tmux where a full screen clear plus
+        // immediate scrolling causes some garbage to go into the scrollback.
         self.clear()?;
 
         Ok(())
     }
 
-    /// Implement `Self::insert_before` using scrolling regions.
-    ///
-    /// If a terminal supports scrolling regions, it means that we can define a subset of rows of
-    /// the screen, and then tell the terminal to scroll up or down just within that region. The
-    /// rows outside of the region are not affected.
-    ///
-    /// This function utilizes this feature to avoid having to redraw the viewport. This is done
-    /// either by splitting the screen at the top of the viewport, and then creating a gap by
-    /// either scrolling the viewport down, or scrolling the area above it up. The lines to insert
-    /// are then drawn into the gap created.
+    /// If a terminal supports scrolling regions, it means that we can define a subset of rows of the screen, and then tell
+    /// the terminal to scroll up or down just within that region. The rows outside of the region are not affected. This
+    /// function utilizes this feature to avoid having to redraw the viewport.
     #[cfg(feature = "scrolling-regions")]
     fn insert_before_scrolling_regions(
         &mut self,
@@ -1173,12 +812,9 @@ where
     }
 }
 
-/// Like [`Buffer::diff`] but safe for buffers whose `width * height > u16::MAX`.
-///
-/// Upstream ratatui (0.29) `Buffer::pos_of()` casts the flat index to `u16`
-/// before dividing by width, silently wrapping at 65 535.  This replacement
-/// performs the division in `usize` so terminals with >65 535 cells render
-/// correctly.
+/// Like [`Buffer::diff`] but safe for buffers whose `width * height > u16::MAX`. Upstream ratatui (0.29)
+/// `Buffer::pos_of()` casts the flat index to `u16` before dividing by width, silently wrapping at 65 535. This
+/// replacement performs the division in `usize` so terminals with >65 535 cells render correctly.
 fn diff_large<'a>(prev: &Buffer, next: &'a Buffer) -> Vec<(u16, u16, &'a Cell)> {
     let previous_buffer = &prev.content;
     let next_buffer = &next.content;
@@ -1206,11 +842,9 @@ fn diff_large<'a>(prev: &Buffer, next: &'a Buffer) -> Vec<(u16, u16, &'a Cell)> 
     updates
 }
 
-/// Like [`diff_large`] but a cell is also considered changed when its hyperlink
-/// changed between the previous and current frame (even if the glyph/style is
-/// identical). This is what makes OSC 8 links participate in the frame diff:
-/// adding, removing, or retargeting a link forces the affected cells to be
-/// rewritten so the terminal's link state stays in sync.
+/// Like [`diff_large`] but a cell is also considered changed when its hyperlink changed between the previous and current
+/// frame (even if the glyph/style is identical). This is what makes OSC 8 links participate in the frame diff: adding,
+/// removing, or retargeting a link forces the affected cells to be rewritten so the terminal's link state stays in sync.
 #[allow(clippy::too_many_arguments)]
 fn diff_large_with_links<'a>(
     prev: &Buffer,
@@ -1249,14 +883,9 @@ fn diff_large_with_links<'a>(
     updates
 }
 
-/// Emit a frame's cell updates with OSC 8 hyperlinks.
-///
-/// Updates are grouped into maximal runs that resolve to the same link, and the
-/// upstream [`Backend::draw`] is reused per run (so all SGR / wide-char / cursor
-/// handling is unchanged); each linked run is wrapped in one OSC 8 open/close.
-/// Keeping a link open across `draw`'s internal cursor moves is correct because
-/// OSC 8 is a sticky terminal mode — only the written cells inherit it, and
-/// unchanged cells in any gap keep whatever link they already had.
+/// Emit a frame's cell updates with OSC 8 hyperlinks. Keeping a link open across `draw`'s internal cursor moves is
+/// correct because OSC 8 is a sticky terminal mode — only the written cells inherit it, and unchanged cells in any gap
+/// keep whatever link they already had.
 fn emit_frame_with_links<B: Backend + Write>(
     backend: &mut B,
     updates: &[(u16, u16, &Cell)],
@@ -1272,11 +901,9 @@ fn emit_frame_with_links<B: Backend + Write>(
 
     let mut i = 0;
     while i < updates.len() {
-        // Invariant: `i < updates.len()` (loop guard) and below `i < j <=
-        // updates.len()`, so `updates[i]` and the slice `updates[i..j]` never
-        // panic. `resolve` indexes via `cur_ids.get(..)` (bounds-safe) and the
-        // coordinates come from `diff_large_with_links` as `area.{x,y} + ..`, so
-        // `(y - area.y)` / `(x - area.x)` cannot underflow.
+        // Invariant: `i < updates.len()` (loop guard) and below `i < j <= updates.len()`, so `updates[i]` and the slice
+        // `updates[i..j]` never panic. `resolve` indexes via `cur_ids.get(..)` (bounds-safe) and the coordinates come from
+        // `diff_large_with_links` as `area.{x,y} +..`, so `(y - area.y)` / `(x - area.x)` cannot underflow.
         let (x, y, _) = updates[i];
         let link = resolve(x, y);
 
@@ -1347,19 +974,15 @@ impl<B: Backend> Terminal<B> {
         self.viewport_area
     }
 
-    /// The full terminal area as last seen by `autoresize` (i.e. the whole
-    /// screen, not just the inline viewport). This is the exact value
-    /// `set_viewport_height`'s grow/shrink math uses, so callers that size the
-    /// viewport relative to the screen (e.g. the minimal-mode overlay host)
-    /// should read it here for consistency.
+    /// The full terminal area as last seen by `autoresize` (i.e. the whole screen, not just the inline viewport). This is the
+    /// exact value `set_viewport_height`'s grow/shrink math uses, so callers that size the viewport relative to the screen
+    /// (e.g. the minimal-mode overlay host) should read it here for consistency.
     pub fn last_known_area(&self) -> Rect {
         self.last_known_area
     }
 
-    /// Switch the viewport kind in place, keeping the backend alive.
-    ///
-    /// `Viewport::Inline` issues a cursor-position query (caller must be the
-    /// only stdin reader), and both buffers reset — follow with a full redraw.
+    /// Switch the viewport kind in place, keeping the backend alive. `Viewport::Inline` issues a cursor-position query
+    /// (caller must be the only stdin reader), and both buffers reset — follow with a full redraw.
     pub fn set_viewport(&mut self, viewport: Viewport) -> io::Result<()> {
         let area = match viewport {
             Viewport::Fullscreen | Viewport::Inline(_) => {
@@ -1422,13 +1045,9 @@ mod inline_resize_tests {
         .unwrap()
     }
 
-    /// A full-height inline viewport (the alt-screen-unavailable case used under
-    /// Zellij / tmux control mode / `--no-alt-screen`) must GROW to fill the
-    /// terminal when it is enlarged.
-    ///
-    /// Regression test for the bug where the viewport height was clamped to the
-    /// startup height (truncated at the bottom) while the width still tracked the
-    /// resize.
+    /// A full-height inline viewport (the alt-screen-unavailable case used under Zellij / tmux control mode /
+    /// `--no-alt-screen`) must GROW to fill the terminal when it is enlarged. Regression test for the bug where the viewport
+    /// height was clamped to the startup height (truncated at the bottom) while the width still tracked the resize.
     #[test]
     fn inline_full_height_grows_with_terminal() {
         let mut terminal = full_height_inline(80, 24);
@@ -1512,10 +1131,8 @@ mod inline_resize_tests {
         assert_eq!(terminal.viewport_area(), Rect::new(0, 0, 100, 50));
     }
 
-    /// A *small* inline viewport (height < terminal height, anchored near the
-    /// bottom) must NOT be forced to full height — it keeps the standard
-    /// `compute_inline_size` behavior, so the full-height special-case does not
-    /// over-apply.
+    /// A *small* inline viewport (height < terminal height, anchored near the bottom) must NOT be forced to full height — it
+    /// keeps the standard `compute_inline_size` behavior, so the full-height special-case does not over-apply.
     #[test]
     fn small_inline_viewport_is_not_forced_full() {
         let backend = TestBackend::new(80, 24);
@@ -1531,11 +1148,9 @@ mod inline_resize_tests {
         terminal.backend_mut().resize(120, 40);
         terminal.autoresize().unwrap();
 
-        // The full-height special-case keys off the viewport spanning the whole
-        // terminal (height >= terminal height). A small inline viewport does not,
-        // so its height stays clamped to the small inline target while the width
-        // tracks the resize — i.e. it keeps the standard `compute_inline_size`
-        // behavior and is not ballooned to full height.
+        // The full-height special-case keys off the viewport spanning the whole terminal (height >= terminal height). A small
+        // inline viewport does not, so its height stays clamped to the small inline target while the width tracks the resize —
+        // i.e. it keeps the standard `compute_inline_size` behavior and is not ballooned to full height.
         assert_eq!(terminal.viewport_area().height, 3);
         assert_eq!(terminal.viewport_area().width, 120);
     }

@@ -1,14 +1,11 @@
-//! Turn lifecycle orchestration for trace uploads.
+use super::drain::PendingUploadGuard;
 use crate::session::repo_changes::TraceExportConfig;
 use futures::FutureExt as _;
 use tokio::sync::oneshot;
 use xai_grok_workspace::permission::PermissionEvent;
 /// Request to upload a trace for a synthetic auto-wake turn.
-///
-/// Sent by the notification bridge (for bash task completions) or the
-/// subagent coordinator (for subagent completions) to the `MvpAgent`'s
-/// synthetic trace handler, which allocates a turn number and drives
-/// the before/after artifact uploads.
+/// The notification bridge sends it for bash task completions; the subagent coordinator sends it for subagent completions.
+/// The `MvpAgent`'s synthetic trace handler receives it, allocates a turn number, and drives the before/after artifact uploads.
 pub(crate) struct SyntheticTurnTraceRequest {
     pub session_id: agent_client_protocol::SessionId,
     pub prompt_id: String,
@@ -16,13 +13,12 @@ pub(crate) struct SyntheticTurnTraceRequest {
     pub before_session_copy_rx:
         oneshot::Receiver<anyhow::Result<crate::session::persistence::SessionStateCopy>>,
 }
-/// Outcome of a session-state upload with categorized failure reason.
+/// Outcome of a session-state upload.
 pub(crate) enum UploadOutcome {
     #[allow(dead_code)]
     Confirmed,
-    /// Not confirmed within the flush deadline; the upload continues in the
-    /// live queue worker. Not `Confirmed`: cloud restorability is unobserved,
-    /// so `restorable_turn_number` must not advance on it.
+    /// Not confirmed within the flush deadline; the upload continues in the live queue worker.
+    /// Cloud restorability is unobserved, so `restorable_turn_number` must not advance on it.
     #[allow(dead_code)]
     Deferred,
     Failed {
@@ -38,31 +34,61 @@ impl UploadOutcome {
 /// How turn-end artifact uploads wait on cloud storage.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum UploadWait {
-    /// Await per-artifact cloud confirmation. Used by detached background
-    /// upload tasks, where a slow bucket costs nothing user-visible.
+    /// Await per-artifact cloud confirmation.
+    /// Detached background upload tasks use this mode, where a slow bucket delays nothing the user sees.
     Confirm,
-    /// Durable-accept into the upload queue; `complete_prompt_trace` then
-    /// flushes the queue with one bounded, non-terminal wait before the
-    /// prompt response. Every await on this path is bounded: by `deadline`
-    /// directly (session-state confirmation, the flush) or by
-    /// the floored per-attempt budget derived from it
-    /// (`blocking_attempt_budget`: non-durable-accept direct uploads, the
-    /// manifest write).
+    /// Durable-accept into the upload queue; `complete_prompt_trace` then flushes the queue with one bounded, non-terminal wait before the prompt response. Each accept/upload/confirmation wait is bounded: by `deadline` directly (the flush; the queue-backed session-state confirm) or by the floored per-attempt budget derived from it (`blocking_attempt_budget`: the session-copy handoff, non-durable- accept direct uploads, the queue-less session-state confirm, the manifest write). Only the `spawn_blocking` archive build precedes the bound.
     Defer { deadline: tokio::time::Instant },
+}
+/// Whether turn-end uploads hold the prompt response or run after it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TurnEndUploads {
+    /// Finalize after the response returns; uploads never delay the turn.
+    Background,
+    /// Hold the response until uploads settle, bounded by this budget.
+    Wait { budget: std::time::Duration },
+}
+/// Turn-message capture handed to [`complete_prompt_trace`].
+#[derive(Debug)]
+pub(crate) enum TurnMessages {
+    Captured(xai_chat_state::TurnCapture),
+    Missing(MissingTurnMessages),
+}
+/// Why there is no capture to upload — answered-empty must not be conflated
+/// with never-answered: only `Empty` may record the benign skip.
+#[derive(Debug)]
+pub(crate) enum MissingTurnMessages {
+    /// The actor answered: the turn genuinely captured nothing.
+    Empty,
+    /// The actor never answered `TakeTurnMessages` within the bound (wedged
+    /// child teardown): a real miss, recorded as a failure.
+    TakeTimedOut,
+    /// The actor is gone: the command channel or the responder dropped
+    /// without an answer — a real miss, recorded as a failure.
+    ChannelDropped,
+}
+impl From<Option<xai_chat_state::TurnCapture>> for TurnMessages {
+    fn from(capture: Option<xai_chat_state::TurnCapture>) -> Self {
+        match capture {
+            Some(capture) => Self::Captured(capture),
+            None => Self::Missing(MissingTurnMessages::Empty),
+        }
+    }
 }
 /// Why trace uploads are enabled or disabled for a given prompt.
 pub(crate) use xai_grok_telemetry::session_metrics::TraceUploadReason;
-/// Per-turn context for trace artifact uploads.
 #[derive(Clone)]
 pub(crate) struct PromptTraceContext {
     pub(crate) gcs_config: TraceExportConfig,
     pub(crate) session_info: crate::session::info::Info,
     pub(crate) turn_number: u64,
+    pub(crate) attempt_id: Option<String>,
     pub(crate) session_handle: crate::session::SessionHandle,
+    pub(crate) memory_mode: Option<crate::config::MemoryMode>,
     pub(crate) session_registry_enabled: bool,
     pub(crate) upload_queue: Option<xai_file_utils::queue::UploadQueue>,
     pub(crate) artifact_tracker: super::manifest::ArtifactTracker,
-    pub(crate) auth_manager: std::sync::Arc<crate::auth::AuthManager>,
+    pub(crate) auth_manager: std::sync::Arc<xai_grok_login::AuthManager>,
 }
 impl PromptTraceContext {
     pub(crate) fn artifact_upload_context(&self) -> super::manifest::ArtifactUploadContext {
@@ -72,33 +98,87 @@ impl PromptTraceContext {
         }
     }
 }
-/// Spawn a fire-and-forget upload task that logs panics.
-pub(crate) fn spawn_upload_task<F>(task_name: &'static str, fut: F)
+enum UploadSpanAttach {
+    Child,
+    Link {
+        prompt_id: String,
+        session_id: String,
+    },
+}
+/// Spawn an upload task that logs panics. Join the returned handle to wait it out
+/// (opt-in blocking mode); dropping it detaches the task to the exit drain.
+pub(crate) fn spawn_upload_task<F>(task_name: &'static str, fut: F) -> tokio::task::JoinHandle<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    spawn_upload_task_attached(task_name, UploadSpanAttach::Child, fut)
+}
+/// Spawns under a new root span so the turn span does not stay open for the upload.
+pub(crate) fn spawn_linked_upload_task<F>(
+    task_name: &'static str,
+    prompt_id: impl std::fmt::Display,
+    session_id: impl std::fmt::Display,
+    fut: F,
+) where
+    F: Future<Output = ()> + Send + 'static,
+{
+    spawn_upload_task_attached(
+        task_name,
+        UploadSpanAttach::Link {
+            prompt_id: prompt_id.to_string(),
+            session_id: session_id.to_string(),
+        },
+        fut,
+    );
+}
+fn spawn_upload_task_attached<F>(
+    task_name: &'static str,
+    attach: UploadSpanAttach,
+    fut: F,
+) -> tokio::task::JoinHandle<()>
 where
     F: Future<Output = ()> + Send + 'static,
 {
     use tracing::Instrument;
-    let parent_span = tracing::Span::current();
-    tokio::spawn(
-        async move {
-            let result = std::panic::AssertUnwindSafe(fut).catch_unwind().await;
-            if let Err(panic_payload) = result {
-                let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "unknown panic".to_string()
-                };
-                tracing::error!(
-                    task = task_name,
-                    panic = %panic_msg,
-                    "Upload task panicked"
-                );
-            }
+    let pending = PendingUploadGuard::register();
+    let span = match attach {
+        UploadSpanAttach::Child => tracing::Span::current(),
+        UploadSpanAttach::Link {
+            prompt_id,
+            session_id,
+        } => {
+            let root = tracing::info_span!(
+                parent: None,
+                "upload.task",
+                task = task_name,
+                prompt_id = %prompt_id,
+                session_id = %session_id,
+            );
+            xai_grok_otel::link_span_to_current(&root);
+            root
         }
-        .instrument(parent_span),
-    );
+    };
+    tokio::spawn(wrap_upload_task(task_name, pending, fut).instrument(span))
+}
+async fn wrap_upload_task<F>(task_name: &'static str, _pending: PendingUploadGuard, fut: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let result = std::panic::AssertUnwindSafe(fut).catch_unwind().await;
+    if let Err(panic_payload) = result {
+        let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        };
+        tracing::error!(
+            task = task_name,
+            panic = %panic_msg,
+            "Upload task panicked"
+        );
+    }
 }
 #[cfg(test)]
 pub(crate) async fn join_required_restore_artifacts<Fs, Fp, Fm>(
@@ -114,13 +194,17 @@ where
     let (outcome, _, _) = futures::join!(session_state, permission_events, memory);
     outcome
 }
-/// Take the out-of-band streaming capture for `prompt_id`, always draining the
-/// live slot (even when committed) so a later turn cannot inherit it, and
-/// return it only when the turn did NOT commit its assistant message. A
-/// committed turn's reasoning is already in `afterStateHistory`, so its capture
-/// is dropped. Stamps `model_id` (when absent); the caller stamps the
-/// site-specific `reason` lazily on the returned `Some`. Shared by every
-/// turn-end take site (main success / error, synthetic, subagent).
+/// A turn with this stop reason committed its assistant content: `EndTurn` naturally, `MaxTokens` via Length salvage.
+/// The result drives `turn_result.json`'s `completed` and [`take_streaming_partial`]'s `committed`.
+pub(crate) fn stop_reason_commits_turn(stop_reason: agent_client_protocol::StopReason) -> bool {
+    matches!(
+        stop_reason,
+        agent_client_protocol::StopReason::EndTurn | agent_client_protocol::StopReason::MaxTokens
+    )
+}
+/// Take the out-of-band streaming capture for `prompt_id`, returning it only when the turn did NOT commit its assistant message. The live slot is always drained (even when committed) so a later turn cannot inherit it.
+/// A committed turn's reasoning is already in `afterStateHistory`, so its capture is dropped. Stamps `model_id` (when absent); the caller stamps the site-specific `reason` lazily on the returned `Some`.
+/// Every turn-end take site (main success / error, synthetic, subagent) calls this.
 pub(crate) async fn take_streaming_partial(
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<crate::session::SessionCommand>,
     prompt_id: String,
@@ -158,12 +242,9 @@ pub(crate) async fn take_streaming_partial(
         cap
     })
 }
-/// Complete the prompt trace. Returns `Ok(true)` when session state is
-/// durably confirmed and `restorable_turn_number` can advance.
-///
-/// With [`UploadWait::Defer`] the whole turn-end set — artifact accepts, the
-/// bounded queue flush, terminal telemetry, and the manifest write — runs in
-/// here, deadline-bounded; callers make a plain call in either mode.
+/// Complete the prompt trace. Returns `Ok(true)` when session state is durably confirmed and `restorable_turn_number` can advance.
+/// With [`UploadWait::Defer`], the artifact accepts, the queue flush, terminal telemetry, and the manifest write all run here within the deadline.
+/// Callers make a plain call in either mode.
 #[tracing::instrument(
     name = "upload.complete_prompt_trace",
     skip_all,
@@ -175,15 +256,13 @@ pub(crate) async fn complete_prompt_trace(
     session_copy_rx: oneshot::Receiver<
         anyhow::Result<crate::session::persistence::SessionStateCopy>,
     >,
-    turn_messages: Option<xai_chat_state::TurnCapture>,
+    turn_messages: TurnMessages,
     streaming_partial: Option<crate::session::acp_session::StreamingTurnCapture>,
     wait: UploadWait,
 ) -> anyhow::Result<bool> {
-    use super::manifest::{
-        build_manifest, resolve_upload_method, skip_artifact, write_upload_manifest,
-    };
+    use super::manifest::{build_manifest, resolve_upload_method, write_upload_manifest};
     let upload_method = resolve_upload_method(&ctx.gcs_config);
-    let method_str = upload_method.as_str();
+    let method_str = upload_method.as_ref();
     xai_grok_telemetry::session_ctx::log_session_event(
         crate::agent::session_metrics::TraceUploadAttempted {
             session_id: ctx.session_info.id.0.to_string(),
@@ -197,15 +276,13 @@ pub(crate) async fn complete_prompt_trace(
         })
     };
     let failed_before = queue_failed_count();
-    let turn_messages_ok = if let Some(capture) = turn_messages {
-        super::trace::upload_turn_messages(&ctx, capture, wait).await
-    } else {
-        skip_artifact(
-            &ctx.artifact_tracker,
-            "turn_messages.json",
-            "no_turn_messages_captured",
-        );
-        true
+    let turn_messages_ok = match turn_messages {
+        TurnMessages::Captured(capture) => {
+            super::trace::upload_turn_messages(&ctx, capture, wait).await
+        }
+        TurnMessages::Missing(missing) => {
+            record_missing_turn_messages(&ctx.artifact_tracker, missing)
+        }
     };
     if let Some(capture) = streaming_partial.as_ref() {
         super::trace::upload_streaming_partial(&ctx, capture, wait).await;
@@ -213,7 +290,7 @@ pub(crate) async fn complete_prompt_trace(
     let (upload_outcome, _, _) = futures::join!(
         super::trace::upload_session_state(&ctx, "after", session_copy_rx, wait),
         super::trace::upload_permission_events(&ctx, &permission_events, wait),
-        super::trace::upload_memory_state(&ctx),
+        super::memory::upload_memory_state(&ctx, wait),
     );
     let artifacts_confirmed = upload_outcome.is_confirmed();
     let gated_artifact_failure: Option<(String, Option<u16>)> = None;
@@ -275,11 +352,52 @@ pub(crate) async fn complete_prompt_trace(
                 .await
                 .is_err()
             {
-                tracing::warn!("upload manifest write timed out");
+                tracing::warn!(
+                    "upload manifest not confirmed within its attempt budget; \
+                     a durably spooled manifest stays with the queue"
+                );
             }
         }
     }
     Ok(artifacts_confirmed)
+}
+/// Manifest record and ok-flag when there is no capture to upload: an empty turn keeps the benign skip, while a timed-out take (wedged actor) fails the artifact so `fully_uploaded` and the terminal event cannot report success for a capture the wedge dropped.
+fn record_missing_turn_messages(
+    tracker: &super::manifest::ArtifactTracker,
+    missing: MissingTurnMessages,
+) -> bool {
+    match missing {
+        MissingTurnMessages::Empty => {
+            super::manifest::skip_artifact(
+                tracker,
+                "turn_messages.json",
+                "no_turn_messages_captured",
+            );
+            true
+        }
+        MissingTurnMessages::TakeTimedOut => {
+            super::manifest::record_artifact(
+                tracker,
+                "turn_messages.json",
+                super::manifest::ArtifactResult::Failed {
+                    reason: "take_timed_out",
+                    error: Some("session actor did not answer TakeTurnMessages within the bound"),
+                },
+            );
+            false
+        }
+        MissingTurnMessages::ChannelDropped => {
+            super::manifest::record_artifact(
+                tracker,
+                "turn_messages.json",
+                super::manifest::ArtifactResult::Failed {
+                    reason: "channel_dropped",
+                    error: Some("session actor dropped TakeTurnMessages without answering"),
+                },
+            );
+            false
+        }
+    }
 }
 /// Parse `_meta.agentProfile` as a JSON object or string name.
 /// Returns `None` if absent or invalid.
@@ -318,13 +436,9 @@ pub(crate) fn parse_agent_profile_from_meta(
     );
     None
 }
-/// Parse `_meta.askUserQuestion` as a boolean.
-///
-/// `Some(false)` means the pager set `--no-ask-user`; the shell propagates
-/// it to `AgentBuilder::with_ask_user_question_enabled(false)` so the tool
-/// is stripped from the model's advertised tool list. `Some(true)` explicitly
-/// enables the tool for this session. `None` means the field is absent — the
-/// caller falls back to the `ask_user_question` feature (default ON).
+/// Parse `_meta.askUserQuestion` as a boolean. `Some(false)` means the pager set `--no-ask-user`.
+/// The shell passes it to `AgentBuilder::with_ask_user_question_enabled(false)` so the tool is stripped from the model's advertised tool list. `Some(true)` explicitly enables the tool for this session.
+/// `None` means the field is absent; the caller falls back to the `ask_user_question` feature (default ON).
 pub(crate) fn parse_ask_user_question_from_meta(
     meta: Option<&agent_client_protocol::Meta>,
 ) -> Option<bool> {
@@ -340,7 +454,6 @@ pub(crate) fn parse_ask_user_question_from_meta(
         }
     }
 }
-/// Look up a session's model, falling back to the agent default.
 pub(crate) fn lookup_session_model(
     session_model: Option<agent_client_protocol::ModelId>,
     default_model_id: &agent_client_protocol::ModelId,
@@ -370,6 +483,48 @@ pub(crate) fn apply_yolo_mode_to_matching_sessions<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stop_reason_commits_turn_matches_contract() {
+        use agent_client_protocol::StopReason;
+        assert!(stop_reason_commits_turn(StopReason::EndTurn));
+        assert!(stop_reason_commits_turn(StopReason::MaxTokens));
+        assert!(!stop_reason_commits_turn(StopReason::Cancelled));
+        assert!(!stop_reason_commits_turn(StopReason::Refusal));
+        assert!(!stop_reason_commits_turn(StopReason::MaxTurnRequests));
+    }
+    /// A never-answered `TakeTurnMessages` — wedged actor (timeout) or dead actor (dropped channel) — must fail the artifact (denting `fully_uploaded` and the terminal event via `turn_messages_failed`), while the genuinely-empty turn keeps its benign skip.
+    #[test]
+    fn missing_turn_messages_distinguishes_unanswered_from_empty() {
+        use super::super::manifest::{ArtifactStatus, new_artifact_tracker};
+        let tracker = new_artifact_tracker();
+        assert!(record_missing_turn_messages(
+            &tracker,
+            MissingTurnMessages::Empty
+        ));
+        assert!(matches!(
+            tracker.lock().statuses.get("turn_messages.json"),
+            Some(ArtifactStatus::Skipped)
+        ));
+        for (missing, reason) in [
+            (MissingTurnMessages::TakeTimedOut, "take_timed_out"),
+            (MissingTurnMessages::ChannelDropped, "channel_dropped"),
+        ] {
+            let tracker = new_artifact_tracker();
+            assert!(!record_missing_turn_messages(&tracker, missing));
+            assert!(matches!(
+                tracker.lock().statuses.get("turn_messages.json"),
+                Some(ArtifactStatus::Failed)
+            ));
+            assert_eq!(
+                tracker
+                    .lock()
+                    .failures
+                    .get("turn_messages.json")
+                    .map(|d| d.reason.as_str()),
+                Some(reason)
+            );
+        }
+    }
     /// Hangs if a slow optional artifact is accidentally added to the join.
     #[tokio::test]
     async fn restorable_artifacts_do_not_wait_for_slow_optional_artifacts() {
@@ -431,7 +586,7 @@ mod tests {
     fn subagent_artifact_set_is_parent_minus_gated_artifacts() {
         let _ = super::super::trace::upload_session_state;
         let _ = super::super::trace::upload_permission_events;
-        let _ = super::super::trace::upload_memory_state;
+        let _ = super::super::memory::upload_memory_state;
         let _ = super::super::trace::upload_turn_messages;
         let _ = super::super::trace::upload_turn_result;
     }
@@ -460,9 +615,7 @@ mod tests {
     fn parse_ask_user_question_returns_none_for_empty_meta() {
         assert_eq!(parse_ask_user_question_from_meta(None), None);
     }
-    /// Non-bool values are ignored (defensive: the shell falls back to the
-    /// resolved `ask_user_question` feature rather than panicking
-    /// on malformed input).
+    /// Non-bool values are ignored: the shell falls back to the resolved `ask_user_question` feature rather than panicking on malformed input.
     #[test]
     fn parse_ask_user_question_ignores_non_bool() {
         let meta = serde_json::json!({ "askUserQuestion": "no" });

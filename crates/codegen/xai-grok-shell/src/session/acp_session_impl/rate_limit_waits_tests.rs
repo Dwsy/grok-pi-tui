@@ -149,15 +149,14 @@ async fn running_out_of_attempts_stops_the_waiting_and_names_that_cause() {
 
 #[test]
 fn budget_limit_cause_strings_are_stable() {
-    assert_eq!(BudgetLimit::Attempts.as_str(), "attempts_spent");
-    assert_eq!(BudgetLimit::TotalWait.as_str(), "deadline_spent");
+    assert_eq!(BudgetLimit::Attempts.as_ref(), "attempts_spent");
+    assert_eq!(BudgetLimit::TotalWait.as_ref(), "deadline_spent");
 }
 
 #[test]
 fn default_attempts_ladder_exhausts_exactly_at_the_budget() {
     let cap_ms = xai_grok_sampler::MAX_RETRY_BACKOFF.as_millis() as u64;
-    // Mirrors `retry_backoff_with_jitter`'s pre-jitter base (2s doubling, capped);
-    // the 2s base is pinned by the sampler's own backoff test.
+    // Mirrors `retry_backoff_with_jitter`'s pre-jitter base (2s doubling, capped); the 2s base is pinned by the sampler's own backoff test
     let ladder: Duration = (1..=RateLimitWaitConfig::DEFAULT_MAX_ATTEMPTS)
         .map(|attempt| {
             let base_ms = 2000u64

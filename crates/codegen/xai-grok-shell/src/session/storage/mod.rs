@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use std::io::{self, BufRead, BufReader, Seek};
+use std::io::{self, BufRead, BufReader, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use crate::extensions::notification::SessionNotification;
@@ -14,7 +14,6 @@ use xai_grok_sampling_types::ReasoningEffort;
 use xai_grok_workspace::session::file_state::RewindPoint;
 
 pub mod jsonl;
-#[allow(dead_code)] // Transaction APIs remain deferred until later protocol wiring.
 pub(crate) mod relocation;
 mod replay;
 #[cfg(test)]
@@ -23,28 +22,48 @@ pub mod search;
 mod search_content;
 pub(crate) mod summary_write;
 
-/// The session search index moved to its own crate; re-exported here so
-/// `session::storage::search_fts::…` keeps resolving for its consumers.
+/// The session search index moved to its own crate; re-exported here so `session::storage::search_fts::…` keeps resolving for its consumers.
 pub use xai_grok_session_search::fts as search_fts;
 
-/// On-disk file names, relative to a session directory. Single source of truth for
-/// the storage adapter and the session/state and session/import extensions.
+/// On-disk file names, relative to a session directory.
+/// Single source of truth for the storage adapter and the session/state and session/import extensions.
 pub(crate) const SUMMARY_FILE: &str = "summary.json";
 pub(crate) const PLAN_FILE: &str = "plan.json";
 pub(crate) const PLAN_MODE_FILE: &str = "plan_mode.json";
 pub(crate) const SIGNALS_FILE: &str = "signals.json";
+pub(crate) const USAGE_FILE: &str = "usage.json";
 pub(crate) const GOAL_STATE_FILE: &str = "goal/state.json";
 pub(crate) const ANNOUNCEMENT_STATE_FILE: &str = "announcement_state.json";
 pub(crate) const CHAT_HISTORY_FILE: &str = "chat_history.jsonl";
 pub(crate) const UPDATES_FILE: &str = "updates.jsonl";
 
-/// Write `bytes` to `path` by writing a uniquely named sibling temp file and
-/// renaming it over the target, so a crash or a concurrent writer never leaves a
-/// torn file. The temp is removed on failure.
+/// Write `bytes` to `path` by writing a uniquely named sibling temp file and renaming it over the target.
+/// A crash or a concurrent writer never leaves a torn file; the temp is removed on failure.
 pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_bytes_atomic_with(path, bytes, sync_file_durable, || {
+        sync_parent_dir_durable(path)
+    })
+}
+
+fn write_bytes_atomic_with(
+    path: &Path,
+    bytes: &[u8],
+    sync_file: impl Fn(&std::fs::File) -> io::Result<()>,
+    sync_parent: impl Fn() -> io::Result<()>,
+) -> io::Result<()> {
     let tmp = temp_sibling(path);
-    match std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)) {
-        Ok(()) => Ok(()),
+    let write_synced = || -> io::Result<()> {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        // NTFS/ext4 journal a rename as old-file-or-new-file only when the new file's data is already flushed
+        // Without this fsync a power loss can leave the committed rename in place with zero-length content
+        sync_file(&file)
+    };
+    // Old-or-new only covers replacing a file, whose direntry is already durable A first-time create (a session's first summary.json) has no old file.
+    // Its new entry can vanish on power loss until the parent directory is synced A retry after a rename whose parent sync failed sees the file present and cannot tell create from replace.
+    // So every successful rename pays the parent sync.
+    match write_synced().and_then(|()| std::fs::rename(&tmp, path)) {
+        Ok(()) => sync_parent(),
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
             Err(e)
@@ -82,20 +101,128 @@ pub(crate) fn sync_file_durable(_file: &std::fs::File) -> io::Result<()> {
     ))
 }
 
-/// Async sibling of [`write_bytes_atomic`].
-pub(crate) async fn write_bytes_atomic_async(path: &Path, bytes: Vec<u8>) -> io::Result<()> {
-    let tmp = temp_sibling(path);
-    let result = match tokio::fs::write(&tmp, bytes).await {
-        Ok(()) => tokio::fs::rename(&tmp, path).await,
-        Err(e) => Err(e),
-    };
-    if result.is_err() {
-        let _ = tokio::fs::remove_file(&tmp).await;
-    }
-    result
+/// Fsync `dir` so entries just created or renamed into it survive power loss.
+#[cfg(target_os = "macos")]
+pub(crate) fn sync_dir_durable(dir: &Path) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let file = std::fs::File::open(dir)?;
+    file.sync_all()?;
+    // Match file durability: macOS fsync may stop at volatile drive caches.
+    fullfsync_raw(file.as_raw_fd())
 }
 
-/// Serialize `items` to newline-delimited JSON bytes.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn sync_dir_durable(dir: &Path) -> io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(windows)]
+pub(crate) fn sync_dir_durable(_dir: &Path) -> io::Result<()> {
+    // Windows has no supported directory-handle fsync
+    // NTFS journals directory metadata, which can roll a very recent create back to absent but never to garbage
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn sync_dir_durable(_dir: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "durable directory sync is unsupported on this platform",
+    ))
+}
+
+/// Fsync `<cwd_dir>/.cwd` if present.
+/// Hash-encoded path recovery must not be frozen to a torn marker when a later parent-dir sync makes its direntry durable.
+/// Open write-capable: Windows `FlushFileBuffers` on a read-only handle cannot persist the bytes.
+pub(crate) fn sync_cwd_marker_if_present(cwd_dir: &Path) -> io::Result<()> {
+    sync_cwd_marker_if_present_with(cwd_dir, sync_file_durable)
+}
+
+pub(crate) fn sync_cwd_marker_if_present_with(
+    cwd_dir: &Path,
+    sync_file: impl Fn(&std::fs::File) -> io::Result<()>,
+) -> io::Result<()> {
+    let cwd_file = cwd_dir.join(".cwd");
+    match std::fs::OpenOptions::new().write(true).open(&cwd_file) {
+        Ok(file) => sync_file(&file),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+pub(crate) fn sync_parent_dir_durable(path: &Path) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
+    sync_dir_durable(parent)
+}
+
+/// Run `create` (a `create_dir_all`-style creation of `dir`), then [`sync_dir_durable`] every directory that gained a new entry.
+/// The created chain itself then survives power loss; fsyncing a file only makes its own direntry durable, not the directories above it.
+/// The ancestors are snapshotted before `create` because afterwards the whole chain exists; an already-existing occupied chain pays no sync.
+pub(crate) fn create_dir_all_durable(
+    dir: &Path,
+    create: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    create_dir_all_durable_with(dir, create, sync_dir_durable)
+}
+
+pub(crate) fn create_dir_all_durable_with(
+    dir: &Path,
+    create: impl FnOnce(&Path) -> io::Result<()>,
+    sync_dir: impl Fn(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut gaining_an_entry = Vec::new();
+    let mut cursor = dir;
+    while !cursor.exists() {
+        let Some(parent) = cursor.parent() else { break };
+        gaining_an_entry.push(parent);
+        cursor = parent;
+    }
+    create(dir)?;
+    // A retry after a create whose parent sync failed sees the whole chain present and would otherwise sync nothing.
+    // Re-sync a bounded ancestor list so the new direntry is durable, but only when `dir` is still empty.
+    // `init_session` calls this on every open.
+    let retry_ancestors;
+    let to_sync: &[&Path] = if !gaining_an_entry.is_empty() {
+        &gaining_an_entry
+    } else if std::fs::read_dir(dir)
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(false)
+    {
+        retry_ancestors = dir
+            .ancestors()
+            .skip(1)
+            .take(4)
+            .filter(|parent| !is_fs_root(parent))
+            .collect::<Vec<_>>();
+        &retry_ancestors
+    } else {
+        return Ok(());
+    };
+    // Fresh creates under a new top-level directory include `/` in `gaining_an_entry`; skip it here so both paths honor the root rule
+    for parent in to_sync {
+        if is_fs_root(parent) {
+            continue;
+        }
+        sync_dir(parent)?;
+    }
+    Ok(())
+}
+
+fn is_fs_root(path: &Path) -> bool {
+    path.parent()
+        .is_none_or(|parent| parent.as_os_str().is_empty())
+}
+
+pub(crate) async fn write_bytes_atomic_async(path: &Path, bytes: Vec<u8>) -> io::Result<()> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || write_bytes_atomic(&path, &bytes))
+        .await
+        .map_err(io::Error::other)?
+}
+
 fn to_jsonl_bytes<T: serde::Serialize>(items: &[T]) -> io::Result<Vec<u8>> {
     let mut content = Vec::new();
     for item in items {
@@ -106,13 +233,10 @@ fn to_jsonl_bytes<T: serde::Serialize>(items: &[T]) -> io::Result<Vec<u8>> {
     Ok(content)
 }
 
-/// Write `items` as newline-delimited JSON to `path`, atomically (see
-/// [`write_bytes_atomic`]).
 pub(crate) fn write_jsonl_atomic<T: serde::Serialize>(path: &Path, items: &[T]) -> io::Result<()> {
     write_bytes_atomic(path, &to_jsonl_bytes(items)?)
 }
 
-/// Async sibling of [`write_jsonl_atomic`].
 pub(crate) async fn write_jsonl_atomic_async<T: serde::Serialize>(
     path: &Path,
     items: &[T],
@@ -120,15 +244,15 @@ pub(crate) async fn write_jsonl_atomic_async<T: serde::Serialize>(
     write_bytes_atomic_async(path, to_jsonl_bytes(items)?).await
 }
 
-/// A unique sibling temp path, e.g. `summary.json` -> `summary.json.<uuid>.tmp`.
+/// A unique sibling temp path, e.g. `summary.json` becomes `summary.json.<uuid>.tmp`.
 fn temp_sibling(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(format!(".{}.tmp", uuid::Uuid::now_v7()));
     PathBuf::from(name)
 }
 
-/// Rebuild the derived `chat_history.jsonl` cache from `updates.jsonl`, the durable
-/// source of truth, so a session restores from its update stream alone.
+/// Rebuild the derived `chat_history.jsonl` cache from `updates.jsonl`, the durable source of truth.
+/// A session then restores from its update stream alone.
 pub(crate) mod chat_rebuild {
     use std::collections::{HashMap, HashSet};
     use std::io;
@@ -137,11 +261,12 @@ pub(crate) mod chat_rebuild {
     use agent_client_protocol as acp;
 
     use super::{CHAT_HISTORY_FILE, SessionUpdate, UPDATES_FILE, UpdatesIterator};
-    use crate::sampling::{AssistantItem, ContentPart, ConversationItem, ToolCall};
+    use crate::sampling::{
+        AssistantItem, ContentPart, ConversationItem, SyntheticReason, ToolCall, UserItem,
+    };
 
-    /// Rebuild `chat_history.jsonl` from `updates.jsonl` alone. Builds a temp file and
-    /// renames it over the target, so a failed rebuild leaves the existing cache intact
-    /// rather than a truncated partial that load would trust.
+    /// Rebuild `chat_history.jsonl` from `updates.jsonl` alone. Builds a temp file and renames it over the target.
+    /// A failed rebuild leaves the existing cache intact rather than a truncated partial that load would trust.
     pub(crate) fn rebuild_chat_history(dir: &Path) -> io::Result<usize> {
         use std::io::{Seek, Write};
 
@@ -196,12 +321,11 @@ pub(crate) mod chat_rebuild {
         Ok(reducer.count())
     }
 
-    /// Reduces ACP session updates into conversation items.
-    ///
-    /// Turn boundaries: User→Agent flushes user, Agent→User flushes agent,
-    /// tool completion flushes agent before emitting result.
+    /// Turn boundaries: a switch from user to agent flushes the user item, and a switch from agent to user flushes the agent item.
+    /// Tool completion flushes the agent item before emitting the result.
     struct ChatReducer {
         user_parts: Vec<ContentPart>,
+        user_is_interjection: bool,
         agent_text: String,
         agent_tool_calls: Vec<ToolCall>,
 
@@ -218,6 +342,7 @@ pub(crate) mod chat_rebuild {
         fn new() -> Self {
             Self {
                 user_parts: Vec::new(),
+                user_is_interjection: false,
                 agent_text: String::new(),
                 agent_tool_calls: Vec::new(),
                 in_user_turn: false,
@@ -272,6 +397,15 @@ pub(crate) mod chat_rebuild {
                 out.extend(self.flush_agent());
                 self.in_user_turn = true;
             }
+            // Interjections never merge with an adjacent prompt run (tool-only first response, drain right after the
+            // echo), and each interjection's text chunk opens its own item, as the live drain pushed them
+            let interjection = super::is_interjection_chunk(chunk);
+            let opens_interjection =
+                interjection && matches!(chunk.content, acp::ContentBlock::Text(_));
+            if interjection != self.user_is_interjection || opens_interjection {
+                out.extend(self.flush_user());
+            }
+            self.user_is_interjection = interjection;
 
             match &chunk.content {
                 acp::ContentBlock::Text(t) => {
@@ -349,7 +483,6 @@ pub(crate) mod chat_rebuild {
             Vec::new()
         }
 
-        /// Backfill tool arguments from ToolCallUpdate if ToolCall didn't have them.
         fn maybe_backfill_args(&mut self, id: &str, fields: &acp::ToolCallUpdateFields) {
             let Some(raw) = &fields.raw_input else { return };
             let needs_backfill = self.tool_args.get(id).is_none_or(String::is_empty);
@@ -392,10 +525,16 @@ pub(crate) mod chat_rebuild {
         }
 
         fn flush_user(&mut self) -> Option<ConversationItem> {
+            let interjection = std::mem::take(&mut self.user_is_interjection);
             if self.user_parts.is_empty() {
                 return None;
             }
-            let item = ConversationItem::user_with_parts(std::mem::take(&mut self.user_parts));
+            let content = std::mem::take(&mut self.user_parts);
+            let item = ConversationItem::User(UserItem {
+                content,
+                synthetic_reason: interjection.then_some(SyntheticReason::Interjection),
+                ..Default::default()
+            });
             self.item_count += 1;
             Some(item)
         }
@@ -425,6 +564,7 @@ pub(crate) mod chat_rebuild {
 
         fn reset(&mut self) {
             self.user_parts.clear();
+            self.user_is_interjection = false;
             self.agent_text.clear();
             self.agent_tool_calls.clear();
             self.tool_args.clear();
@@ -473,14 +613,12 @@ pub(crate) mod chat_rebuild {
 }
 
 /// Iterator that streams session updates from a JSONL file without loading all into memory.
-/// Each call to `next()` reads and parses one line.
 pub struct UpdatesIterator {
     reader: BufReader<std::fs::File>,
     line_buffer: String,
 }
 
 impl UpdatesIterator {
-    /// Create a new iterator over updates in the given file.
     /// Returns None if the file doesn't exist.
     pub fn open(path: &Path) -> io::Result<Option<Self>> {
         if !path.exists() {
@@ -493,10 +631,8 @@ impl UpdatesIterator {
         }))
     }
 
-    /// Returns the current byte position in the underlying file.
-    /// After iterating, this is the offset of the next unread byte (i.e., EOF
-    /// if all updates were consumed). Used to record the replay end offset for
-    /// subsequent delta replay.
+    /// After iterating, the position is the offset of the next unread byte (i.e., EOF if all updates were consumed).
+    /// Used to record the replay end offset for subsequent delta replay.
     pub fn stream_position(&mut self) -> io::Result<u64> {
         self.reader.stream_position()
     }
@@ -524,16 +660,12 @@ impl Iterator for UpdatesIterator {
     }
 }
 
-/// Method name for standard ACP session/update notifications.
 const ACP_SESSION_UPDATE_METHOD: &str = "session/update";
 
-/// Method name for xAI extension session/update notifications.
 pub(crate) const XAI_SESSION_UPDATE_METHOD: &str = "_x.ai/session/update";
 
-/// A unified session update that can be either an ACP notification or an xAI extension notification.
-/// This allows storing all session updates in chronological order.
-///
-/// Note: The `Serialize` implementation produces a format without timestamp (for GCS uploads, etc.).
+/// One type for both notification kinds, so all session updates can be stored in chronological order.
+/// The `Serialize` implementation produces a format without timestamp (for GCS uploads, etc.).
 /// For disk storage with timestamps, use `SessionUpdateEnvelope` via the JSONL adapter methods.
 #[derive(Debug, Clone)]
 pub enum SessionUpdate {
@@ -558,7 +690,7 @@ impl serde::Serialize for SessionUpdate {
             }
             SessionUpdate::Xai(notification) => {
                 map.serialize_entry("method", XAI_SESSION_UPDATE_METHOD)?;
-                map.serialize_entry("params", notification)?;
+                map.serialize_entry("params", &*notification.without_live_agent_address())?;
             }
         }
         map.end()
@@ -576,21 +708,16 @@ impl<'de> serde::Deserialize<'de> for SessionUpdate {
     }
 }
 
-/// The serialized envelope for a session update, including metadata for debugging.
 /// This is the typed structure that gets written to updates.jsonl (disk storage only).
-///
-/// Note: This is separate from `SessionUpdate`'s own serialization to avoid affecting
-/// other consumers (e.g., network listeners) who don't need the timestamp metadata.
+/// It is separate from `SessionUpdate`'s own serialization so other consumers (e.g., network listeners) don't see the timestamp metadata.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SessionUpdateEnvelope {
     /// Unix timestamp (seconds since epoch) when this update was written.
     /// Useful for debugging timing issues in the updates.jsonl file.
     #[serde(default)]
     pub timestamp: u64,
-    /// The method name identifying the update type.
     /// Either "session/update" for ACP or "_x.ai/session/update" for xAI extensions.
     pub method: String,
-    /// The actual notification payload.
     pub params: serde_json::Value,
 }
 
@@ -611,12 +738,11 @@ impl SessionUpdateEnvelope {
             SessionUpdate::Xai(notification) => Ok(Self {
                 timestamp,
                 method: XAI_SESSION_UPDATE_METHOD.to_string(),
-                params: serde_json::to_value(notification)?,
+                params: notification.to_durable_value()?,
             }),
         }
     }
 
-    /// Convert this envelope back into a SessionUpdate.
     pub(crate) fn into_update(self) -> Result<SessionUpdate, serde_json::Error> {
         if self.method == XAI_SESSION_UPDATE_METHOD {
             let notification: SessionNotification = serde_json::from_value(self.params)?;
@@ -630,23 +756,17 @@ impl SessionUpdateEnvelope {
 
     /// Try to parse from a JSON value, handling both envelope format and legacy raw format.
     pub(crate) fn from_value(value: serde_json::Value) -> Result<SessionUpdate, serde_json::Error> {
-        // Check if this looks like an envelope (has "method" field)
         if value.get("method").is_some() {
             let envelope: SessionUpdateEnvelope = serde_json::from_value(value)?;
             envelope.into_update()
         } else {
             // Backwards compatibility: old format without envelope wrapper
-            // Treat as raw ACP notification
             let notification: acp::SessionNotification = serde_json::from_value(value)?;
             Ok(SessionUpdate::Acp(Box::new(notification)))
         }
     }
 
     /// Parse a session update directly from a JSON string, avoiding intermediate `Value` allocation.
-    ///
-    /// Uses a borrowing envelope with `&RawValue` for the params field so the JSON bytes
-    /// for the notification payload are only parsed once (directly to the typed struct)
-    /// instead of twice (str -> Value -> typed).
     pub(crate) fn from_str(line: &str) -> Result<SessionUpdate, serde_json::Error> {
         #[derive(serde::Deserialize)]
         struct BorrowedEnvelope<'a> {
@@ -656,7 +776,6 @@ impl SessionUpdateEnvelope {
             params: &'a serde_json::value::RawValue,
         }
 
-        // Try to parse as envelope first (has "method" + "params")
         if let Ok(envelope) = serde_json::from_str::<BorrowedEnvelope<'_>>(line) {
             let raw_params = envelope.params.get();
             return if envelope.method == Some(XAI_SESSION_UPDATE_METHOD) {
@@ -684,7 +803,6 @@ pub struct PersistedData {
     pub plan_state: Option<TodoState>,
     /// Persisted plan mode lifecycle state (None for sessions created before plan mode)
     pub plan_mode_state: Option<crate::session::plan_mode::PlanModeSnapshot>,
-    /// Rewind points for session rewind functionality
     pub rewind_points: Vec<RewindPoint>,
     /// Persisted session signals (None for sessions created before signals persistence)
     pub signals: Option<SessionSignals>,
@@ -695,15 +813,15 @@ pub struct PersistedData {
     pub workflow_runs: Vec<crate::session::workflow::store::RestoredWorkflowRun>,
 }
 
-/// Persisted data WITHOUT updates - for memory-efficient session loading
+/// Persisted data WITHOUT updates, for memory-efficient session loading
 #[derive(Debug, Clone)]
 pub struct PersistedDataLight {
     pub summary: Summary,
     pub chat_history: Vec<ConversationItem>,
     pub plan_state: Option<TodoState>,
     pub plan_mode_state: Option<crate::session::plan_mode::PlanModeSnapshot>,
-    // No `rewind_points` field: the resume path defers them (loaded lazily by
-    // `FileStateTracker`). Use `load_session` for the eager set.
+    // No `rewind_points` field: the resume path defers them (loaded lazily by `FileStateTracker`)
+    // Use `load_session` for the eager set
     /// Persisted session signals (None for sessions created before signals persistence)
     pub signals: Option<SessionSignals>,
     /// Persisted announcement tracking state (None for sessions before this feature)
@@ -713,10 +831,11 @@ pub struct PersistedDataLight {
     pub workflow_runs: Vec<crate::session::workflow::store::RestoredWorkflowRun>,
 }
 
-/// Result of copying session data
 #[derive(Debug, Clone)]
 pub struct CopySessionResult {
     pub chat_messages_copied: usize,
+    /// Logical agent minted into the fork summary, if any.
+    pub agent_id: Option<String>,
     pub updates_copied: usize,
     pub plan_state_copied: bool,
     /// Whether `plan_mode.json` (plan mode lifecycle state) was copied.
@@ -726,33 +845,32 @@ pub struct CopySessionResult {
     pub tool_state_copied: bool,
     /// Whether `announcement_state.json` was copied.
     pub announcement_state_copied: bool,
-    /// Number of `compaction/segment_*.md` (+ `INDEX.md`) files copied from the
-    /// source session's compaction archive. `0` when disabled or none exist.
+    /// Number of `compaction/segment_*.md` (and `INDEX.md`) files copied from the source session's compaction archive.
+    /// `0` when disabled or none exist.
     pub compaction_segments_copied: usize,
-    /// Number of `compaction_checkpoints/{uuid}.json` files copied for the
-    /// checkpoint records retained in the copied updates. `0` when no records
-    /// survive the copy or their files are missing from the source.
+    /// Number of `compaction_checkpoints/{uuid}.json` files copied for the checkpoint records retained in the copied updates.
+    /// `0` when no records survive the copy or their files are missing from the source.
     pub compaction_checkpoints_copied: usize,
 }
 
 /// Options for copying session data during fork
 #[derive(Debug, Clone)]
 pub struct CopySessionOptions {
+    /// Root-session forks mint a durable identity during the copy.
+    /// Generic and subagent copies leave identity ownership to their caller.
+    pub mint_session_identity: bool,
     /// Parent session ID to set in the forked session's summary.
     pub parent_session_id: Option<String>,
-    /// Model ID override for the forked session (None = keep source model).
+    /// Model ID override for the forked session (None keeps the source model).
     pub new_model_id: Option<String>,
     /// Truncate copied history to this prompt index (0-based, inclusive).
     pub target_prompt_index: Option<usize>,
     /// When true, skip `transform_conversation_cwd` during copy.
-    ///
-    /// Set for forks where the child should see the original project path
-    /// (e.g. worktree forks with a persisted `display_cwd`). Non-worktree
-    /// forks should keep this false so conversation paths are rewritten to
-    /// the new cwd.
+    /// Set for forks where the child should see the original project path.
+    /// Non-worktree forks should keep this false so conversation paths are rewritten to the new cwd.
     pub skip_cwd_transform: bool,
-    /// Stable display path for fork sessions. Persisted in the forked
-    /// summary so the prompt-facing cwd survives session restore/reload.
+    /// Stable display path for fork sessions.
+    /// Persisted in the forked summary so the prompt-facing cwd survives session restore/reload.
     pub prompt_display_cwd: Option<String>,
 
     // ── Generic fork extensions (used by subagent + worktree forks) ──
@@ -769,29 +887,26 @@ pub struct CopySessionOptions {
     pub copy_plan_mode_state: bool,
     /// Whether to copy the signals file. Defaults to `true`.
     pub copy_signals: bool,
+    /// Whether to copy persisted usage. Defaults to `true`.
+    /// Independent of `copy_signals` so a resume can keep billed history without parent telemetry.
+    pub copy_usage: bool,
     /// Whether to copy `tool_state.json` (persisted tool state). Defaults to `true`.
     pub copy_tool_state: bool,
     /// Whether to copy `announcement_state.json`. Defaults to `true`.
     pub copy_announcement_state: bool,
-    /// Whether to copy the `compaction/` segment archive (`segment_*.md` +
-    /// `INDEX.md`, the verbose pre-compaction transcripts). Defaults to
-    /// `false` — these can be large and most copy paths don't need them. Forks
-    /// enable it so the child retains the parent's pre-compaction history.
+    /// Whether to copy the `compaction/` segment archive (`segment_*.md` and `INDEX.md`, the verbose pre-compaction transcripts).
+    /// Defaults to `false`: these can be large and most copy paths don't need them.
+    /// Forks enable it so the child retains the parent's pre-compaction history.
     pub copy_compaction_segments: bool,
-    /// When true, apply fork-safety filtering to copied chat history:
-    /// - Strip synthetic user messages (doom loop warnings, compaction metadata)
-    /// - Truncate at the last complete turn boundary
-    /// - Remove trailing incomplete assistant responses
+    /// When true, apply fork-safety filtering to copied chat history.
+    /// Strip synthetic user messages (doom loop warnings, compaction metadata).
+    /// Truncate at the last complete turn boundary.
     pub fork_filter: bool,
-    /// Number of inherited parent conversation items. Stored in the child's
-    /// summary so compaction can preserve the inherited prefix.
+    /// Number of inherited parent conversation items.
+    /// Stored in the child's summary so compaction can preserve the inherited prefix.
     pub inherited_prefix_len: Option<usize>,
-    /// When true, strip `reasoning` (thinking/reasoning_content) from all
-    /// assistant messages in the copied chat history.
-    ///
-    /// Set for forks so that the new session does not inherit the prior
-    /// model's chain-of-thought -- each fork starts with a clean slate
-    /// for reasoning on the new prompt.
+    /// When true, strip `reasoning` (thinking/reasoning_content) from all assistant messages in the copied chat history.
+    /// Set for forks so that the new session does not inherit the prior model's chain-of-thought.
     pub strip_reasoning: bool,
     /// The original workspace directory this worktree session was spawned from.
     /// Propagated to the forked session's `Summary::source_workspace_dir`.
@@ -801,6 +916,7 @@ pub struct CopySessionOptions {
 impl Default for CopySessionOptions {
     fn default() -> Self {
         Self {
+            mint_session_identity: false,
             parent_session_id: None,
             new_model_id: None,
             target_prompt_index: None,
@@ -812,6 +928,7 @@ impl Default for CopySessionOptions {
             copy_plan_state: true,
             copy_plan_mode_state: true,
             copy_signals: true,
+            copy_usage: true,
             copy_tool_state: true,
             copy_announcement_state: true,
             copy_compaction_segments: false,
@@ -842,10 +959,23 @@ fn acp_user_chunk_prompt_index(update: &SessionUpdate) -> Option<usize> {
 pub(crate) const HOST_TURN_META_KEY: &str = "hostTurn";
 
 pub(crate) fn is_host_turn_chunk(chunk: &acp::ContentChunk) -> bool {
+    chunk_meta_flag(chunk, HOST_TURN_META_KEY)
+}
+
+/// `ContentChunk._meta` flag on a persisted mid-turn interjection's user chunks. The text block keeps the
+/// model-facing frame and carries the typed text in `displayText`; the pager and the chat rebuilders key on this.
+pub const INTERJECTION_META_KEY: &str = "interjection";
+
+pub fn is_interjection_chunk(chunk: &acp::ContentChunk) -> bool {
+    chunk_meta_flag(chunk, INTERJECTION_META_KEY)
+}
+
+/// Boolean `ContentChunk._meta` flag; anything but a literal `true` reads as `false`.
+pub fn chunk_meta_flag(chunk: &acp::ContentChunk, key: &str) -> bool {
     chunk
         .meta
         .as_ref()
-        .and_then(|m| m.get(HOST_TURN_META_KEY))
+        .and_then(|m| m.get(key))
         .and_then(|v| v.as_bool())
         == Some(true)
 }
@@ -868,15 +998,12 @@ fn is_acp_user_message_chunk(update: &SessionUpdate) -> bool {
 }
 
 /// Tracks user-message runs for turn counting (updates truncate / filter_rewind).
-///
-/// Progressive: every user run counts until the first `promptIndex` appears;
-/// after that only marked runs count (mid-turn phantoms omit the marker).
-/// A change of `promptIndex` (including unmarked ↔ marked) opens a new run —
-/// matching replay's split so back-to-back cancelled prompts stay distinct.
+/// Progressive: every user run counts until the first `promptIndex` appears; after that only marked runs count (mid-turn phantoms omit the marker).
+/// A change of `promptIndex` (including between unmarked and marked) opens a new run.
 struct UserRunTurnTracker {
     seen_marker: bool,
     in_user: bool,
-    /// `promptIndex` of the current user run (`None` = unmarked / phantom run).
+    /// `promptIndex` of the current user run (`None` means an unmarked phantom run).
     current_run_pi: Option<usize>,
 }
 
@@ -922,9 +1049,8 @@ impl UserRunTurnTracker {
     }
 }
 
-/// How many items to keep for `target_prompt_index` (0-based, inclusive):
-/// the scan cuts at the opening chunk of the next counted turn. Unmarked
-/// user runs count as turns only before the first `_meta.promptIndex`.
+/// How many items to keep for `target_prompt_index` (0-based, inclusive): the scan cuts at the opening chunk of the next counted turn.
+/// Unmarked user runs count as turns only before the first `_meta.promptIndex`.
 fn truncate_for_prompt_by<T>(
     items: &[T],
     target_prompt_index: usize,
@@ -957,6 +1083,12 @@ pub enum AppendUpdateError {
 }
 
 #[derive(Debug)]
+pub enum AppendChatError {
+    NotCommitted(io::Error),
+    Committed(io::Error),
+}
+
+#[derive(Debug)]
 pub enum AppendCwdSwitchError {
     NotCommitted(io::Error),
     Committed {
@@ -981,55 +1113,90 @@ impl std::fmt::Display for AppendUpdateError {
     }
 }
 
-/// Storage adapter trait for session persistence
+impl AppendChatError {
+    pub fn into_io_error(self) -> io::Error {
+        match self {
+            Self::NotCommitted(error) | Self::Committed(error) => error,
+        }
+    }
+}
+
+impl std::fmt::Display for AppendChatError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotCommitted(error) | Self::Committed(error) => error.fmt(formatter),
+        }
+    }
+}
+
+/// Session files a sync barrier flushes.
+/// The persistence actor marks the files that took buffered writes since the last successful barrier.
+/// Atomic-rename writes are durable at write time and never enter the set.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionFileSet {
+    pub updates: bool,
+    pub chat: bool,
+    pub summary: bool,
+    pub plan: bool,
+    pub rewind_points: bool,
+}
+
+impl SessionFileSet {
+    pub(crate) const ALL: Self = Self {
+        updates: true,
+        chat: true,
+        summary: true,
+        plan: true,
+        rewind_points: true,
+    };
+
+    pub(crate) fn is_empty(self) -> bool {
+        self == Self::default()
+    }
+}
+
 /// Abstracts over different storage backends (JSONL, SQLite, etc.)
 #[async_trait]
 pub trait StorageAdapter: Send + Sync {
     /// Initialize a new session or load existing one
-    /// Returns the Summary (creates if needed, loads if exists)
     async fn init_session(&self, info: &Info, model_id: acp::ModelId) -> io::Result<Summary>;
 
-    /// Set the session title unconditionally (manual `/rename`); last write
-    /// wins. Also marks the title manual (`Summary::title_is_manual`) so
-    /// clients restore the prompt-border title on resume.
+    /// Set the session title unconditionally (manual `/rename`); last write wins.
+    /// Also marks the title manual (`Summary::title_is_manual`) so clients restore the prompt-border title on resume.
     async fn update_session_title(&self, info: &Info, session_title: String) -> io::Result<()>;
 
-    /// Set the session title only if the session has no title yet, used by
-    /// automatic LLM title generation so it never overwrites a manual
-    /// `/rename`. Never marks the title manual. Returns `true` if the title
-    /// was written, `false` if an existing title was preserved. The check and
-    /// write are atomic under the summary lock, so a concurrent manual rename
-    /// always wins.
+    /// Set the session title only if the session has no title yet, used by automatic LLM title generation so it never overwrites a manual `/rename`.
+    /// Never marks the title manual.
+    /// Returns `true` if the title was written, `false` if an existing title was preserved.
     async fn set_generated_title_if_absent(
         &self,
         info: &Info,
         session_title: String,
     ) -> io::Result<bool>;
 
-    /// Overwrite an existing auto title with a refreshed one (early-session
-    /// title refresh at turns 3 and 6), but never a manual `/rename`. The
-    /// manual check and write are atomic under the summary lock, so a
-    /// concurrent manual rename always wins. Returns `true` if the title was
-    /// written, `false` if a manual pin was preserved.
+    /// Overwrite an existing auto title with a refreshed one (early-session title refresh at turns 3 and 6), but never a manual `/rename`.
+    /// The manual check and write are atomic under the summary lock, so a concurrent manual rename always wins.
+    /// Returns `true` if the title was written, `false` if a manual pin was preserved.
     async fn regenerate_generated_title(
         &self,
         info: &Info,
         session_title: String,
     ) -> io::Result<bool>;
 
-    /// Clear a manual `/rename` pin (`/rename --auto`). Sets
-    /// `title_is_manual = false` and, when a pin was present, blanks
-    /// `generated_title` and `session_summary` so `display_title()` is
-    /// empty. Returns `true` iff a manual pin was actually cleared.
+    /// Stamp `session_kind` only if the session has none yet, atomically under the summary lock.
+    /// A kind already on disk (crash-recovered dir, concurrent writer) is preserved.
+    async fn set_session_kind_if_absent(&self, info: &Info, kind: String) -> io::Result<()>;
+
+    /// Clear a manual `/rename` pin (`/rename --auto`).
+    /// Sets `title_is_manual = false` and, when a pin was present, blanks `generated_title` and `session_summary` so `display_title()` is empty.
     /// Idempotent when the title is not manual.
     async fn reset_title_to_auto(&self, info: &Info) -> io::Result<bool>;
 
-    /// Replace or clear (`None`) the latest session recap preview in
-    /// `summary.json`; last-writer-wins. Distinct from `last_turn_summary`.
+    /// Replace or clear (`None`) the latest session recap preview in `summary.json`; last-writer-wins.
+    /// Distinct from `last_turn_summary`.
     async fn set_last_recap(&self, info: &Info, recap: Option<String>) -> io::Result<()>;
 
-    /// Replace or clear (`None`) the per-turn dashboard summary
-    /// (`(text, prompt_id)`) in `summary.json`; last-writer-wins.
+    /// Replace or clear (`None`) the per-turn dashboard summary (`(text, prompt_id)`) in `summary.json`; last-writer-wins.
     async fn set_last_turn_summary(
         &self,
         info: &Info,
@@ -1065,6 +1232,18 @@ pub trait StorageAdapter: Send + Sync {
     /// Append a chat message and increment counter.
     async fn append_chat_message(&self, info: &Info, message: &ConversationItem) -> io::Result<()>;
 
+    /// Append one chat message and report whether the JSONL record was committed before an error.
+    /// Bookkeeping (summary counters) can fail after the append has already reached the page cache.
+    async fn append_chat_message_commit_aware(
+        &self,
+        info: &Info,
+        message: &ConversationItem,
+    ) -> Result<(), AppendChatError> {
+        self.append_chat_message(info, message)
+            .await
+            .map_err(AppendChatError::NotCommitted)
+    }
+
     /// Append one working-directory switch generation exactly once.
     async fn append_cwd_switch_commit_aware(
         &self,
@@ -1077,18 +1256,15 @@ pub trait StorageAdapter: Send + Sync {
         )))
     }
 
-    /// Update the current model in summary (delegates to
-    /// `update_current_model_and_agent` with `agent_name = None`).
+    /// Update the current model in summary (delegates to `update_current_model_and_agent` with `agent_name = None`).
     async fn update_current_model(&self, info: &Info, model_id: &acp::ModelId) -> io::Result<()> {
         self.update_current_model_and_agent(info, model_id, None, None)
             .await
     }
 
     /// Update the current model and agent name in summary.
-    /// `agent_name` is the resolved agent definition name
-    /// persisted so session resume doesn't depend on the mutable model catalog.
-    /// `None` leaves the existing `agent_name` unchanged (used by legacy callers
-    /// that only update the model ID).
+    /// `agent_name` is the resolved agent definition name, persisted so session resume doesn't depend on the mutable model catalog.
+    /// `None` leaves the existing `agent_name` unchanged (used by legacy callers that only update the model ID).
     async fn update_current_model_and_agent(
         &self,
         info: &Info,
@@ -1116,27 +1292,46 @@ pub trait StorageAdapter: Send + Sync {
         request_id: Option<&str>,
     ) -> io::Result<()>;
 
-    /// Write/update the plan state
+    async fn update_wake_start(
+        &self,
+        info: &Info,
+        start: crate::session::persistence::WakeStart,
+        abort: tokio_util::sync::CancellationToken,
+    ) -> io::Result<()>;
+
+    async fn restore_wake_summary(
+        &self,
+        info: &Info,
+        prior: crate::session::persistence::WakeSummaryState,
+    ) -> io::Result<()>;
+
     async fn write_plan_state(&self, info: &Info, state: &TodoState) -> io::Result<()>;
 
-    /// Write/update plan mode lifecycle state
     async fn write_plan_mode_state(
         &self,
         info: &Info,
         state: &crate::session::plan_mode::PlanModeSnapshot,
     ) -> io::Result<()>;
 
-    /// Write/update the session signals snapshot
     async fn write_signals(&self, info: &Info, signals: &SessionSignals) -> io::Result<()>;
 
-    /// Write/update the announcement tracking state
+    async fn read_usage(
+        &self,
+        info: &Info,
+    ) -> io::Result<Option<crate::session::usage_file::SessionUsageFile>>;
+
+    async fn write_usage(
+        &self,
+        info: &Info,
+        usage: &crate::session::usage_file::SessionUsageFile,
+    ) -> io::Result<()>;
+
     async fn write_announcement_state(
         &self,
         info: &Info,
         state: &crate::session::announcement_state::AnnouncementState,
     ) -> io::Result<()>;
 
-    /// Write/update the goal mode orchestration state
     async fn write_goal_mode_state(
         &self,
         info: &Info,
@@ -1153,45 +1348,42 @@ pub trait StorageAdapter: Send + Sync {
 
     async fn delete_workflow_run_state(&self, info: &Info, run_id: &str) -> io::Result<()>;
 
-    /// Load all persisted data for a session
     async fn load_session(&self, info: &Info) -> io::Result<PersistedData>;
 
-    /// Load session data WITHOUT updates (for memory efficiency when updates
-    /// will be streamed). Implementations also do NOT read rewind points here;
-    /// those are deferred and lazily loaded on demand from the path returned by
-    /// [`rewind_points_file_path`](StorageAdapter::rewind_points_file_path).
+    /// Load session data WITHOUT updates (for memory efficiency when updates will be streamed).
+    /// Implementations also do NOT read rewind points here.
+    /// Those are deferred and lazily loaded on demand from the path returned by [`rewind_points_file_path`](StorageAdapter::rewind_points_file_path).
     async fn load_session_without_updates(&self, info: &Info) -> io::Result<PersistedDataLight>;
 
-    /// Loads the summary of the session
     async fn load_summary(&self, info: &Info) -> io::Result<Summary>;
 
-    /// List session summaries, optionally filtered by current working directory.
     /// When `cwd` is `None`, returns summaries for all sessions.
     async fn list_sessions(&self, cwd: Option<&str>) -> io::Result<Vec<Summary>>;
 
-    /// Permanently delete a session's stored data (all files for the
-    /// session). Implementations must treat a missing session as success
-    /// (idempotent delete).
+    /// Permanently delete a session's stored data (all files for the session).
+    /// Implementations must treat a missing session as success (idempotent delete).
     async fn delete_session(&self, info: &Info) -> io::Result<()>;
 
-    /// Append a rewind point for session rewind functionality
     async fn append_rewind_point(&self, info: &Info, point: &RewindPoint) -> io::Result<()>;
 
-    /// Load all rewind points for a session
     async fn load_rewind_points(&self, info: &Info) -> io::Result<Vec<RewindPoint>>;
 
-    /// Sync all session files to disk. Called before CopyFile to ensure all writes are persisted.
-    async fn sync_session_files(&self, info: &Info) -> io::Result<()>;
+    /// Sync the selected session files, plus the session directory entry once, to stable media.
+    /// Backs the `FlushAndAck` barrier (dirty files only) and the pre-`CopyFile` flush ([`SessionFileSet::ALL`]).
+    /// An error means the barrier must not ack.
+    async fn sync_session_files_selected(
+        &self,
+        info: &Info,
+        files: SessionFileSet,
+    ) -> io::Result<()>;
 
     /// Truncate rewind points from a specific prompt index (inclusive)
     /// Used when rewinding to remove future history
     async fn truncate_rewind_points_from(&self, info: &Info, from_index: usize) -> io::Result<()>;
 
-    /// Merge rewind points at indices `>= target_index` into the point at
-    /// `target_index - 1` and drop the folded points, as a read-modify-write on
-    /// disk (used after a ConversationOnly rewind). Reading the current on-disk
-    /// set makes this authoritative: it never relies on a (possibly partially
-    /// loaded) in-memory tracker, so historical points can't be lost.
+    /// Merge rewind points at indices `>= target_index` into the point at `target_index - 1` and drop the folded points.
+    /// Runs as a read-modify-write on disk (used after a ConversationOnly rewind).
+    /// Reading the current on-disk set makes this authoritative.
     async fn merge_rewind_points_from(&self, info: &Info, target_index: usize) -> io::Result<()>;
 
     /// Replace the entire chat history (used for compaction and rewind)
@@ -1201,14 +1393,11 @@ pub trait StorageAdapter: Send + Sync {
         messages: &[ConversationItem],
     ) -> io::Result<()>;
 
-    /// Copy the on-disk chat history before a destructive image-strip
-    /// rewrite (first backup wins), mirroring the `*.corrupt` quarantine.
-    /// Required, not defaulted: a new adapter must choose its
-    /// recoverability story explicitly.
+    /// Copy the on-disk chat history before a destructive image-strip rewrite (first backup wins), mirroring the `*.corrupt` quarantine.
+    /// Required, not defaulted: a new adapter must choose explicitly how its data stays recoverable.
     async fn backup_chat_history_before_strip(&self, info: &Info) -> io::Result<()>;
 
     /// Copy session data from source to target, transforming session IDs
-    /// The `options` parameter allows setting parent session tracking and model overrides.
     async fn copy_session_data(
         &self,
         source_info: &Info,
@@ -1217,28 +1406,24 @@ pub trait StorageAdapter: Send + Sync {
     ) -> io::Result<CopySessionResult>;
 
     /// Load only user prompts from a session's updates file.
-    /// This is an optimized method that avoids loading chat_history, plan_state, etc.
     /// Returns user prompts in chronological order.
     async fn load_prompts_only(&self, info: &Info) -> io::Result<Vec<String>>;
     /// Load assistant text content from a session's updates file.
     /// Returns assistant responses in chronological order, extracted from ContentChunk text.
     async fn load_assistant_text(&self, info: &Info) -> io::Result<Vec<String>>;
 
-    /// Load tool metadata from a session's updates file.
-    /// Per Phase 1 contract (ACP data model):
-    /// - Tool name: from `ToolCall.title` (display name; acp::ToolCall has no .name field)
-    /// - File paths: from `ToolCall.locations[].path` (ACP stores locations, not parsed arguments)
-    /// - Errors: skipped (no is_error field on acp::SessionUpdate::ToolCallUpdate)
+    /// Tool name: from `ToolCall.title` (display name; acp::ToolCall has no .name field).
+    /// File paths: from `ToolCall.locations[].path` (ACP stores locations, not parsed arguments).
+    /// Errors: skipped (no is_error field on acp::SessionUpdate::ToolCallUpdate).
     async fn load_tool_metadata(&self, info: &Info) -> io::Result<Vec<String>>;
 
     /// Get the path to the updates file for streaming reads.
     /// Returns None if the storage backend doesn't support streaming.
     fn updates_file_path(&self, info: &Info) -> Option<std::path::PathBuf>;
 
-    /// Path to the rewind-points file for lazy/deferred loading, or None if the
-    /// backend doesn't persist them to a streamable file. The adapter owns the
-    /// on-disk layout, so callers must use this rather than recomputing the path
-    /// (it differs for non-default storage modes, e.g. subagent/fork sessions).
+    /// Path to the rewind-points file for lazy/deferred loading, or None if the backend doesn't persist them to a streamable file.
+    /// The adapter owns the on-disk layout, so callers must use this rather than recomputing the path.
+    /// The path differs for non-default storage modes, e.g. subagent/fork sessions.
     fn rewind_points_file_path(&self, info: &Info) -> Option<std::path::PathBuf>;
 
     /// Append a feedback entry (user feedback) to feedback.jsonl
@@ -1263,8 +1448,8 @@ pub trait StorageAdapter: Send + Sync {
     ) -> io::Result<()>;
 
     /// Write a compaction request artifact to `compaction_requests/{request_id}.json`.
-    /// Captures the exact request sent to the compaction model and the response
-    /// (or final error) it produced. Used for offline prompt iteration.
+    /// Captures the exact request sent to the compaction model and the response (or final error) it produced.
+    /// Used for offline prompt iteration.
     async fn write_compaction_request(
         &self,
         info: &Info,
@@ -1272,16 +1457,15 @@ pub trait StorageAdapter: Send + Sync {
     ) -> io::Result<()>;
 
     /// Write a recap request artifact to `recap_requests/{request_id}.json`.
-    /// Captures the exact request sent for `/recap` or auto recap and the
-    /// response (or error). Used for offline recap prompt / garble analysis.
+    /// Captures the exact request sent for `/recap` or auto recap and the response (or error).
+    /// Used for offline recap prompt and garble analysis.
     async fn write_recap_request(
         &self,
         info: &Info,
         request: &crate::extensions::notification::RecapRequestFile,
     ) -> io::Result<()>;
 
-    /// Render+write `compaction/segment_NNN.md` (storage assigns the resume-safe
-    /// index) and append its `INDEX.md` row.
+    /// Render and write `compaction/segment_NNN.md` (storage assigns the resume-safe index) and append its `INDEX.md` row.
     async fn write_compaction_segment(
         &self,
         info: &Info,
@@ -1296,10 +1480,9 @@ pub trait StorageAdapter: Send + Sync {
     ) -> io::Result<crate::extensions::notification::CompactionCheckpointFile>;
 }
 
-/// Backup-gated strip rewrite: the destructive rewrite runs only when the
-/// backup landed, so recoverability can never be silently forfeited (full
-/// disk, read-only volume). Factored out of the persistence actor so the
-/// gate ordering is testable against a real adapter.
+/// Backup-gated strip rewrite: the destructive rewrite runs only when the backup landed.
+/// So recoverability can never be silently forfeited (full disk, read-only volume).
+/// Factored out of the persistence actor so the gate ordering is testable against a real adapter.
 pub(crate) async fn strip_rewrite_gated(
     storage: &dyn StorageAdapter,
     info: &Info,
@@ -1317,10 +1500,9 @@ pub use replay::{
     load_updates_for_replay, prepare_replay_lines, replay_would_emit, stream_replay_updates_at,
     stream_replay_updates_at_hinted,
 };
-pub(crate) use replay::{ReplayToolCollapser, filter_delta_replay_lines};
+pub(crate) use replay::{ReplayToolCollapser, UnfinishedSubagent, filter_delta_replay_lines};
 
-/// Extracts `method` and raw `params` from an updates.jsonl envelope
-/// without parsing the notification payload.
+/// Extracts `method` and raw `params` from an updates.jsonl envelope without parsing the notification payload.
 #[derive(serde::Deserialize)]
 pub(crate) struct RawLinePeek<'a> {
     #[serde(default)]
@@ -1370,11 +1552,9 @@ enum RewindStep {
     Other,
 }
 
-/// Shared rewind dead-branch filter. `classify` maps each item to its
-/// [`RewindStep`]; the driver tracks prompt boundaries and, on a marker,
-/// truncates survivors back to the target prompt. [`filter_rewind_lines`] and
-/// [`filter_rewind_updates`] wrap this over raw JSONL and typed updates so the
-/// two paths share one algorithm.
+/// Shared rewind dead-branch filter. `classify` maps each item to its [`RewindStep`].
+/// The driver tracks prompt boundaries and, on a marker, truncates survivors back to the target prompt.
+/// [`filter_rewind_lines`] and [`filter_rewind_updates`] wrap this over raw JSONL and typed updates so the two paths share one algorithm.
 fn filter_rewind_by<T>(items: Vec<T>, classify: impl Fn(&T) -> RewindStep) -> Vec<T> {
     let mut result: Vec<T> = Vec::with_capacity(items.len());
     let mut prompt_starts: Vec<usize> = Vec::new();
@@ -1402,8 +1582,7 @@ fn filter_rewind_by<T>(items: Vec<T>, classify: impl Fn(&T) -> RewindStep) -> Ve
     result
 }
 
-/// Classify a raw JSONL line by peeking at its tag and `_meta` without fully
-/// deserializing the payload.
+/// Classify a raw JSONL line by peeking at its tag and `_meta` without fully deserializing the payload.
 fn rewind_step_for_line(line: &str) -> RewindStep {
     let (raw_params, is_xai) = if let Ok(env) = serde_json::from_str::<RawLinePeek<'_>>(line) {
         let raw = env.params.map(|p| p.get()).unwrap_or(line);
@@ -1438,7 +1617,6 @@ fn rewind_step_for_line(line: &str) -> RewindStep {
     RewindStep::Other
 }
 
-/// Classify a typed `SessionUpdate`.
 fn rewind_step_for_update(update: &SessionUpdate) -> RewindStep {
     if let SessionUpdate::Xai(n) = update
         && let crate::extensions::notification::SessionUpdate::RewindMarker {
@@ -1458,8 +1636,6 @@ fn rewind_step_for_update(update: &SessionUpdate) -> RewindStep {
     RewindStep::Other
 }
 
-/// Filter rewind dead branches from raw JSONL lines.
-///
 /// Canonical raw-line rewind filter used by the initial and delta replay paths.
 /// Skips parsing entirely when no rewind markers are present.
 pub(crate) fn filter_rewind_lines(lines: Vec<&str>) -> Vec<&str> {
@@ -1469,10 +1645,7 @@ pub(crate) fn filter_rewind_lines(lines: Vec<&str>) -> Vec<&str> {
     filter_rewind_by(lines, |line| rewind_step_for_line(line))
 }
 
-/// Filter rewind dead branches from typed `SessionUpdate` values.
-///
-/// Typed equivalent of [`filter_rewind_lines`] over the same
-/// [`filter_rewind_by`] driver, operating on fully-deserialized updates.
+/// Typed equivalent of [`filter_rewind_lines`] over the same [`filter_rewind_by`] driver.
 pub fn filter_rewind_updates(updates: Vec<SessionUpdate>) -> Vec<SessionUpdate> {
     let has_rewinds = updates.iter().any(|u| {
         matches!(
@@ -1489,12 +1662,8 @@ pub fn filter_rewind_updates(updates: Vec<SessionUpdate>) -> Vec<SessionUpdate> 
     filter_rewind_by(updates, rewind_step_for_update)
 }
 
-/// Strip `<fork-context>` and `<resume-context>` XML wrappers from user
-/// message chunks so replayed/exported prompts show clean text.
-///
-/// Only modifies `UserMessageChunk` text content; all other update types
-/// pass through unchanged. The tags are injected by the subagent fork/resume
-/// logic in `subagent.rs`.
+/// Strip `<fork-context>` and `<resume-context>` XML wrappers from user message chunks so replayed/exported prompts show clean text.
+/// The tags are injected by the subagent fork/resume logic in `subagent.rs`.
 pub fn strip_context_wrappers(update: acp::SessionUpdate) -> acp::SessionUpdate {
     let acp::SessionUpdate::UserMessageChunk(mut chunk) = update else {
         return update;
@@ -1515,8 +1684,8 @@ pub fn strip_context_wrappers(update: acp::SessionUpdate) -> acp::SessionUpdate 
     acp::SessionUpdate::UserMessageChunk(chunk)
 }
 
-/// The session dir's `updates.jsonl` path if it exists, else `None`. Sole owner
-/// of the "does this dir have a replayable updates file" gate.
+/// The session dir's `updates.jsonl` path if it exists, else `None`.
+/// Sole owner of the "does this dir have a replayable updates file" gate.
 pub(crate) fn replay_updates_path_in_dir(
     session_dir: &std::path::Path,
 ) -> Option<std::path::PathBuf> {
@@ -1528,17 +1697,12 @@ pub(crate) fn replay_updates_path_in_dir(
 // Selective prompt-extraction parser
 // ============================================================================
 
-/// An event yielded by [`PromptExtractIterator`].
-///
-/// Each event represents the minimal information extracted from one
-/// `updates.jsonl` line without deserializing the full typed notification.
+/// Each event represents the minimal information extracted from one `updates.jsonl` line without deserializing the full typed notification.
 #[derive(Debug, PartialEq)]
 pub enum PromptExtractEvent {
     /// A text chunk from a `UserMessageChunk` ACP update.
-    ///
-    /// Multiple consecutive `UserTextChunk` events belong to the same user
-    /// message and should be concatenated by the caller. `prompt_index` is the
-    /// chunk `_meta.promptIndex` when the turn pipeline stamped one.
+    /// Multiple consecutive `UserTextChunk` events belong to the same user message and should be concatenated by the caller.
+    /// `prompt_index` is the chunk `_meta.promptIndex` when the turn pipeline stamped one.
     UserTextChunk {
         text: String,
         prompt_index: Option<usize>,
@@ -1549,8 +1713,7 @@ pub enum PromptExtractEvent {
     /// Any in-progress user message should be flushed before truncating.
     RewindTo(usize),
 
-    /// Any other update type — signals that the current user message (if any)
-    /// has ended.
+    /// Any other update type: the current user message (if any) has ended.
     NotUserMessage,
 }
 
@@ -1571,29 +1734,14 @@ impl PromptExtractEvent {
 }
 
 /// Iterator that streams [`PromptExtractEvent`]s from a `updates.jsonl` file.
-///
-/// Unlike [`UpdatesIterator`], this never materialises a full
-/// `acp::SessionNotification` or `SessionNotification`. Instead it uses
-/// zero-copy `serde_json` deserialization with `&RawValue` to peek at the
-/// discriminant field and only extracts the one or two fields actually needed
-/// for prompt reconstruction:
-///
-/// - ACP `"user_message_chunk"` → `update.content.text`
-/// - xAI `"rewind_marker"`      → `update.target_prompt_index`
-/// - everything else             → [`PromptExtractEvent::NotUserMessage`]
-///
-/// Parse errors on individual lines are treated conservatively as
-/// `NotUserMessage` (matching the "skip malformed line" behavior of the
-/// original [`UpdatesIterator`]-based path, but safely terminating any
-/// in-progress user-message accumulation).
+/// Unlike [`UpdatesIterator`], this never builds a full `acp::SessionNotification` or `SessionNotification`.
+/// Instead it uses zero-copy `serde_json` deserialization with `&RawValue` to peek at the discriminant field.
 pub struct PromptExtractIterator {
     reader: std::io::BufReader<std::fs::File>,
     line_buffer: String,
 }
 
 impl PromptExtractIterator {
-    /// Open a `updates.jsonl` file for selective prompt extraction.
-    ///
     /// Returns `None` if the file does not exist.
     pub fn open(path: &std::path::Path) -> std::io::Result<Option<Self>> {
         if !path.exists() {
@@ -1629,23 +1777,9 @@ impl Iterator for PromptExtractIterator {
     }
 }
 
-/// Assemble accumulated user-prompt strings from a stream of [`PromptExtractEvent`]s.
-///
-/// Encapsulates the accumulation, flush, and rewind-truncation rules in one
-/// place so that every caller — whether reading from disk or from an in-memory
-/// iterator — applies identical prompt-extraction semantics:
-///
-/// - Consecutive `UserTextChunk` events are concatenated into one prompt until
-///   a non-user event or a `promptIndex` change opens a new run.
-/// - Progressive counting (same as [`UserRunTurnTracker`]): every user run
-///   counts until the first `_meta.promptIndex`; after that only marked runs
-///   count (mid-turn phantoms are dropped from the list).
-/// - `NotUserMessage` flushes any in-progress prompt.
-/// - `RewindTo(n)` flushes then truncates the list to `n` **counted** prompts.
-///
-/// The resulting `Vec` is the resume `prompt_texts` / rewind-picker index
-/// space: `prompt_index == prompts.len()` after load, matching live turn
-/// stamping (not raw user-message count).
+/// Consecutive `UserTextChunk` events are concatenated into one prompt until a non-user event or a `promptIndex` change opens a new run.
+/// Progressive counting (same as [`UserRunTurnTracker`]): every user run counts until the first `_meta.promptIndex`.
+/// After that only marked runs count (mid-turn phantoms are dropped from the list).
 pub fn collect_prompts_from_events(iter: impl Iterator<Item = PromptExtractEvent>) -> Vec<String> {
     let mut prompts: Vec<String> = Vec::new();
     let mut current = String::new();
@@ -1747,14 +1881,8 @@ pub fn collect_prompts_from_events(iter: impl Iterator<Item = PromptExtractEvent
 
     prompts
 }
-/// Collect assistant text from a stream of [`SessionUpdate`]s.
-///
 /// Extracts `ContentChunk.text` from `AgentMessageChunk` updates.
-/// Capped at 100k chars total.
-///
-/// Note: This collector does not honor rewind markers (unlike PromptExtractIterator).
-/// Rewound-away branches may still contribute to FTS index. This is a known limitation;
-/// fix by using a rewind-aware replay model (future work).
+/// Rewound-away branches may still contribute to FTS index.
 pub fn collect_assistant_text(
     iter: impl Iterator<Item = io::Result<SessionUpdate>>,
 ) -> Vec<String> {
@@ -1836,20 +1964,9 @@ pub fn collect_assistant_text(
     texts
 }
 
-/// Collect tool metadata from a stream of [`SessionUpdate`]s.
-///
-/// Per Phase 1 contract (ACP data model):
-/// - Tool name: from `ToolCall.title` (display name; acp::ToolCall has no .name)
-/// - File paths: from `ToolCall.locations[].path` (ACP stores locations, not raw arguments)
-/// - Errors: skipped (no is_error on acp::ToolCallUpdate)
-///
-/// Bounds:
-/// - Max 200 tool calls per session
-/// - Each extraction capped at 100k chars before final join
-///
-/// Note: This collector does not honor rewind markers (unlike PromptExtractIterator).
-/// Rewound-away branches may still contribute to FTS index. This is a known limitation;
-/// fix by using a rewind-aware replay model (future work).
+/// Tool name: from `ToolCall.title` (display name; acp::ToolCall has no .name).
+/// Errors: skipped (no is_error on acp::ToolCallUpdate).
+/// Each extraction capped at 100k chars before final join.
 pub fn collect_tool_metadata(iter: impl Iterator<Item = io::Result<SessionUpdate>>) -> Vec<String> {
     let mut meta: Vec<String> = Vec::new();
     let mut tool_call_count = 0usize;
@@ -1914,14 +2031,12 @@ pub fn collect_tool_metadata(iter: impl Iterator<Item = io::Result<SessionUpdate
 }
 
 // ---------------------------------------------------------------------------
-// Selective serde structs — only the fields we care about
+// Selective serde structs: only the fields we care about
 // ---------------------------------------------------------------------------
 
-/// Peek inside ACP or xAI `params` to read the `update.sessionUpdate` tag and
-/// any fields relevant to `user_message_chunk` or `rewind_marker`.
+/// Peek inside ACP or xAI `params` to read the `update.sessionUpdate` tag and any fields relevant to `user_message_chunk` or `rewind_marker`.
 ///
-/// Works for both method types because both use the same `update.sessionUpdate`
-/// discriminant key in the params JSON.
+/// Works for both method types because both use the same `update.sessionUpdate` discriminant key in the params JSON.
 #[derive(serde::Deserialize)]
 struct ParamsPeek<'a> {
     #[serde(borrow)]
@@ -1943,16 +2058,13 @@ struct UpdatePeek<'a> {
 }
 
 /// Selective peek at a `user_message_chunk` content object.
-///
-/// Shared with the search collectors in [`search`] so the peeked fields and
-/// their escape-tolerance cannot drift between the prompt-extraction and
-/// indexing paths.
+/// Shared with the search collectors in [`search`].
+/// The peeked fields and their escape-tolerance therefore cannot drift between the prompt-extraction and indexing paths.
 #[derive(serde::Deserialize)]
 pub(crate) struct ContentPeek<'a> {
     #[serde(rename = "type", default)]
     pub content_type: Option<&'a str>,
-    // `Cow`, not `&str`: serde cannot borrow from JSON strings containing
-    // escapes, and the resulting parse error would drop the whole prompt.
+    // `Cow`, not `&str`: serde cannot borrow from JSON strings containing escapes, and the resulting parse error would drop the whole prompt
     #[serde(borrow, default)]
     pub text: Option<std::borrow::Cow<'a, str>>,
     #[serde(rename = "_meta", default)]
@@ -1966,33 +2078,26 @@ pub(crate) struct ContentMetaPeek<'a> {
 }
 
 /// Parse one `updates.jsonl` line into a [`PromptExtractEvent`].
-///
-/// Always returns an event: `NotUserMessage` for every line that is not a
-/// user-message chunk or rewind marker (including unparseable ones), so an
-/// in-progress prompt is always flushed conservatively.
-///
-/// Fast path: only those two kinds can produce a non-`NotUserMessage` event, and
-/// their discriminant appears verbatim, so a cheap substring pre-check skips the
-/// serde peeks for the vast majority of lines. A line merely embedding the
-/// discriminant in its content still falls through to the full parse.
+/// Always returns an event: `NotUserMessage` for every line that is not a user-message chunk or rewind marker (including unparseable ones).
+/// Fast path: only those two kinds can produce a non-`NotUserMessage` event, and their discriminant appears verbatim.
 pub(crate) fn parse_prompt_extract_event(line: &str) -> PromptExtractEvent {
     if !line.contains(&*USER_MESSAGE_CHUNK) && !line.contains(&*REWIND_MARKER) {
         return PromptExtractEvent::NotUserMessage;
     }
 
-    // Step 1: try to extract the envelope (method + raw params).
+    // Step 1: try to extract the envelope (method and raw params)
     let (raw_params, is_xai) = if let Ok(env) = serde_json::from_str::<RawLinePeek<'_>>(line) {
         let raw = env.params.map(|p| p.get()).unwrap_or(line);
         let xai = env.method == Some(XAI_SESSION_UPDATE_METHOD);
         (raw, xai)
     } else {
-        // Not a valid envelope → try legacy format: the line IS the params.
+        // Not a valid envelope, so try legacy format: the line IS the params
         (line, false)
     };
 
     // Step 2: parse the discriminant and relevant payload fields in one pass.
     let Ok(peek) = serde_json::from_str::<ParamsPeek<'_>>(raw_params) else {
-        // Cannot determine update type → treat conservatively.
+        // Cannot determine update type, so treat conservatively
         return PromptExtractEvent::NotUserMessage;
     };
 
@@ -2028,8 +2133,7 @@ pub(crate) fn parse_prompt_extract_event(line: &str) -> PromptExtractEvent {
                 prompt_index,
             };
         }
-        // user_message_chunk with non-text content (e.g., image) still ends
-        // any in-progress user message.
+        // user_message_chunk with non-text content (e.g., image) still ends any in-progress user message
         return PromptExtractEvent::NotUserMessage;
     }
 
@@ -2051,6 +2155,491 @@ pub(crate) fn parse_prompt_extract_event(line: &str) -> PromptExtractEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod rebuild_interjections {
+        use super::*;
+        use crate::sampling::{ContentPart, ConversationItem, SyntheticReason};
+        use std::sync::Arc;
+
+        fn text_chunk(text: &str) -> acp::ContentChunk {
+            acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(text)))
+        }
+
+        fn user(text: &str) -> acp::SessionUpdate {
+            acp::SessionUpdate::UserMessageChunk(text_chunk(text))
+        }
+
+        fn agent(text: &str) -> acp::SessionUpdate {
+            acp::SessionUpdate::AgentMessageChunk(text_chunk(text))
+        }
+
+        /// A persisted interjection chunk as the shell writes it: framed text plus the `interjection` flag.
+        fn interjection(typed: &str) -> acp::SessionUpdate {
+            let mut meta = serde_json::Map::new();
+            meta.insert(INTERJECTION_META_KEY.into(), serde_json::json!(true));
+            acp::SessionUpdate::UserMessageChunk(
+                text_chunk(&xai_interjection_core::format_interjection(
+                    typed.to_string(),
+                ))
+                .meta(Some(meta)),
+            )
+        }
+
+        fn tool_call(id: &str) -> acp::SessionUpdate {
+            acp::SessionUpdate::ToolCall(acp::ToolCall::new(acp::ToolCallId::new(id), "run"))
+        }
+
+        fn tool_done(id: &str) -> acp::SessionUpdate {
+            acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                acp::ToolCallId::new(id),
+                acp::ToolCallUpdateFields::new().status(Some(acp::ToolCallStatus::Completed)),
+            ))
+        }
+
+        fn rebuild(updates: Vec<acp::SessionUpdate>) -> Vec<ConversationItem> {
+            let sid = acp::SessionId::new(Arc::from("s"));
+            let dir = tempfile::tempdir().unwrap();
+            let envelopes: Vec<SessionUpdateEnvelope> = updates
+                .into_iter()
+                .map(|update| {
+                    SessionUpdate::Acp(Box::new(acp::SessionNotification::new(sid.clone(), update)))
+                })
+                .map(|u| SessionUpdateEnvelope::from_update(&u).unwrap())
+                .collect();
+            write_jsonl_atomic(&dir.path().join(UPDATES_FILE), &envelopes).unwrap();
+            chat_rebuild::rebuild_chat_history(dir.path()).unwrap();
+            std::fs::read_to_string(dir.path().join(CHAT_HISTORY_FILE))
+                .unwrap()
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect()
+        }
+
+        /// `(text, is_interjection)` of every user item, in order.
+        fn users(items: &[ConversationItem]) -> Vec<(String, bool)> {
+            items
+                .iter()
+                .filter_map(|item| match item {
+                    ConversationItem::User(u) => Some((
+                        u.content
+                            .iter()
+                            .filter_map(|p| match p {
+                                ContentPart::Text { text } => Some(text.as_ref()),
+                                _ => None,
+                            })
+                            .collect(),
+                        u.synthetic_reason == Some(SyntheticReason::Interjection),
+                    )),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn framed(typed: &str) -> String {
+            xai_interjection_core::format_interjection(typed.to_string())
+        }
+
+        #[test]
+        fn interjection_keeps_persisted_frame_and_is_tagged() {
+            let items = rebuild(vec![
+                user("start the build"),
+                agent("building"),
+                interjection("ok run the stop for me"),
+                agent("stopping"),
+            ]);
+            assert_eq!(
+                users(&items),
+                [
+                    ("start the build".to_string(), false),
+                    (framed("ok run the stop for me"), true),
+                ]
+            );
+        }
+
+        /// Tool-only first response: no agent text closes the prompt run before the interjection lands.
+        #[test]
+        fn interjection_adjacent_to_prompt_run_is_a_separate_item() {
+            let items = rebuild(vec![
+                user("start the build"),
+                tool_call("c1"),
+                tool_done("c1"),
+                interjection("ok run the stop for me"),
+                agent("stopping"),
+            ]);
+            assert_eq!(
+                users(&items),
+                [
+                    ("start the build".to_string(), false),
+                    (framed("ok run the stop for me"), true),
+                ]
+            );
+        }
+
+        /// A batch drain pushes one item per interjection; a following prompt echo must not join the last one.
+        #[test]
+        fn consecutive_interjections_stay_distinct_and_next_prompt_is_plain() {
+            let items = rebuild(vec![
+                user("start"),
+                agent("working"),
+                interjection("first"),
+                interjection("second"),
+                user("next prompt"),
+                agent("done"),
+            ]);
+            assert_eq!(
+                users(&items),
+                [
+                    ("start".to_string(), false),
+                    (framed("first"), true),
+                    (framed("second"), true),
+                    ("next prompt".to_string(), false),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn chunk_meta_flag_requires_literal_true() {
+        let chunk = |meta: Option<serde_json::Value>| {
+            acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("x")))
+                .meta(meta.map(|m| m.as_object().cloned().unwrap()))
+        };
+        assert!(chunk_meta_flag(
+            &chunk(Some(serde_json::json!({"k": true}))),
+            "k"
+        ));
+        assert!(!chunk_meta_flag(
+            &chunk(Some(serde_json::json!({"k": false}))),
+            "k"
+        ));
+        assert!(!chunk_meta_flag(
+            &chunk(Some(serde_json::json!({"k": "true"}))),
+            "k"
+        ));
+        assert!(!chunk_meta_flag(
+            &chunk(Some(serde_json::json!({"k": 1}))),
+            "k"
+        ));
+        assert!(!chunk_meta_flag(
+            &chunk(Some(serde_json::json!({"other": true}))),
+            "k"
+        ));
+        assert!(!chunk_meta_flag(&chunk(None), "k"));
+    }
+
+    #[test]
+    fn atomic_write_runs_file_sync_barrier_before_rename_replaces_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("summary.json");
+        std::fs::write(&target, b"old").unwrap();
+
+        let target_bytes_at_sync = std::cell::RefCell::new(Vec::new());
+        write_bytes_atomic_with(
+            &target,
+            b"new",
+            |_| {
+                *target_bytes_at_sync.borrow_mut() = std::fs::read(&target).unwrap();
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            target_bytes_at_sync.borrow().as_slice(),
+            b"old",
+            "the sync barrier must run on the temp file before the rename commits"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+    }
+
+    #[test]
+    fn atomic_write_syncs_parent_directory_after_the_rename_commits_a_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("summary.json");
+
+        let events = std::cell::RefCell::new(Vec::new());
+        write_bytes_atomic_with(
+            &target,
+            b"new",
+            |_| {
+                events.borrow_mut().push("sync_file");
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push(
+                    if std::fs::read(&target).is_ok_and(|bytes| bytes == b"new") {
+                        "sync_parent_after_rename"
+                    } else {
+                        "sync_parent_before_rename"
+                    },
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            events.borrow().as_slice(),
+            ["sync_file", "sync_parent_after_rename"],
+            "the parent-directory sync must run after the rename commits the new entry"
+        );
+    }
+
+    #[test]
+    fn atomic_write_syncs_parent_directory_after_rename_even_when_replacing() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("summary.json");
+        std::fs::write(&target, b"old").unwrap();
+
+        let parent_syncs = std::cell::Cell::new(0);
+        write_bytes_atomic_with(
+            &target,
+            b"new",
+            |_| Ok(()),
+            || {
+                parent_syncs.set(parent_syncs.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            parent_syncs.get(),
+            1,
+            "a retry after a failed create-barrier would otherwise skip the parent sync"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+    }
+
+    #[test]
+    fn atomic_write_retries_parent_sync_after_a_failed_create_barrier() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("summary.json");
+
+        let first = write_bytes_atomic_with(
+            &target,
+            b"new",
+            |_| Ok(()),
+            || Err(io::Error::other("directory barrier failed")),
+        );
+        assert_eq!(first.unwrap_err().to_string(), "directory barrier failed");
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+
+        let parent_syncs = std::cell::Cell::new(0);
+        write_bytes_atomic_with(
+            &target,
+            b"newer",
+            |_| Ok(()),
+            || {
+                parent_syncs.set(parent_syncs.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(parent_syncs.get(), 1);
+        assert_eq!(std::fs::read(&target).unwrap(), b"newer");
+    }
+
+    #[test]
+    fn create_dir_all_durable_syncs_every_directory_gaining_an_entry_on_a_fresh_chain() {
+        let root = tempfile::tempdir().unwrap();
+        let group = root.path().join("sessions").join("cwd");
+        let session = group.join("session-id");
+
+        let synced = std::cell::RefCell::new(Vec::new());
+        create_dir_all_durable_with(
+            &session,
+            |dir| std::fs::create_dir_all(dir),
+            |dir| {
+                synced.borrow_mut().push(dir.to_path_buf());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(session.is_dir());
+        assert_eq!(
+            synced.borrow().as_slice(),
+            [
+                group.clone(),
+                root.path().join("sessions"),
+                root.path().to_path_buf()
+            ],
+            "each directory holding a newly created entry must be synced, up to the first pre-existing ancestor"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_dir_all_durable_fresh_create_skips_the_filesystem_root() {
+        let unique = format!("grok-durable-create-{}", uuid::Uuid::now_v7());
+        let top = Path::new("/").join(&unique);
+        let dir = top.join("sessions").join("id");
+        assert!(
+            !top.exists(),
+            "test unique top-level path must not already exist: {}",
+            top.display()
+        );
+
+        let synced = std::cell::RefCell::new(Vec::new());
+        create_dir_all_durable_with(
+            &dir,
+            |_dir| Ok(()),
+            |path| {
+                synced.borrow_mut().push(path.to_path_buf());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let synced = synced.borrow();
+        assert!(
+            !synced.iter().any(|path| is_fs_root(path)),
+            "a fresh create whose chain reaches a top-level directory must not fsync /, got {synced:?}"
+        );
+        assert!(
+            synced.iter().any(|path| path == &top),
+            "the new top-level directory itself must still be synced, got {synced:?}"
+        );
+        assert!(
+            synced.iter().any(|path| path == &top.join("sessions")),
+            "intermediate parents that gained an entry must still be synced, got {synced:?}"
+        );
+    }
+
+    #[test]
+    fn create_dir_all_durable_resyncs_ancestors_when_an_empty_chain_already_exists() {
+        let root = tempfile::tempdir().unwrap();
+        let session = root.path().join("sessions").join("cwd").join("session-id");
+        std::fs::create_dir_all(&session).unwrap();
+
+        let synced = std::cell::RefCell::new(Vec::new());
+        create_dir_all_durable_with(
+            &session,
+            |dir| std::fs::create_dir_all(dir),
+            |dir| {
+                synced.borrow_mut().push(dir.to_path_buf());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let synced = synced.borrow();
+        assert!(
+            synced.iter().any(|path| path == session.parent().unwrap()),
+            "a retry must re-sync the parent that holds the session direntry, got {synced:?}"
+        );
+        assert!(
+            !synced.iter().any(|path| is_fs_root(path)),
+            "must not fsync the filesystem root, got {synced:?}"
+        );
+    }
+
+    #[test]
+    fn create_dir_all_durable_occupied_existing_chain_pays_no_sync() {
+        let root = tempfile::tempdir().unwrap();
+        let session = root.path().join("sessions").join("cwd").join("session-id");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("summary.json"), b"{}").unwrap();
+
+        let synced = std::cell::RefCell::new(Vec::new());
+        create_dir_all_durable_with(
+            &session,
+            |dir| std::fs::create_dir_all(dir),
+            |dir| {
+                synced.borrow_mut().push(dir.to_path_buf());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(
+            synced.borrow().is_empty(),
+            "resume of a populated session dir must not fsync ancestors, got {:?}",
+            synced.borrow()
+        );
+    }
+
+    #[test]
+    fn create_dir_all_durable_retries_ancestor_syncs_after_a_failed_create_barrier() {
+        let root = tempfile::tempdir().unwrap();
+        let session = root.path().join("sessions").join("cwd").join("session-id");
+
+        let first = create_dir_all_durable_with(
+            &session,
+            |dir| std::fs::create_dir_all(dir),
+            |_| Err(io::Error::other("directory barrier failed")),
+        );
+        assert_eq!(first.unwrap_err().to_string(), "directory barrier failed");
+        assert!(session.is_dir());
+
+        let synced = std::cell::RefCell::new(Vec::new());
+        create_dir_all_durable_with(
+            &session,
+            |dir| std::fs::create_dir_all(dir),
+            |dir| {
+                synced.borrow_mut().push(dir.to_path_buf());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(
+            synced
+                .borrow()
+                .iter()
+                .any(|path| path == session.parent().unwrap()),
+            "a retry after create+failed sync must still durableize the new direntry"
+        );
+    }
+
+    #[test]
+    fn atomic_write_parent_sync_error_propagates_and_keeps_the_committed_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("summary.json");
+
+        let error = write_bytes_atomic_with(
+            &target,
+            b"new",
+            |_| Ok(()),
+            || Err(io::Error::other("directory barrier failed")),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "directory barrier failed");
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"new",
+            "a failed directory barrier reports the error but never unwinds the committed rename"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn atomic_write_sync_barrier_error_propagates_keeps_target_and_leaves_no_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("summary.json");
+        std::fs::write(&target, b"old").unwrap();
+
+        let error = write_bytes_atomic_with(
+            &target,
+            b"new",
+            |_| Err(io::Error::other("file barrier failed")),
+            || Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "file barrier failed");
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "a failed sync must remove its temp file"
+        );
+    }
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -2083,8 +2672,7 @@ mod tests {
 
     #[test]
     fn acp_user_text_chunk_with_json_escapes_yields_user_text() {
-        // Escaped JSON strings cannot be borrowed as &str; a regression to a
-        // borrowed peek field would drop this prompt from extraction.
+        // Escaped JSON strings cannot be borrowed as &str; a regression to a borrowed peek field would drop this prompt from extraction
         let line = acp_envelope(
             r#"{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"multi\nline \"quoted\" caf\u00e9"}}"#,
         );
@@ -2092,8 +2680,7 @@ mod tests {
             parse_prompt_extract_event(&line),
             PromptExtractEvent::user_text("multi\nline \"quoted\" caf\u{e9}")
         );
-        // An escaped bash command now parses too and must be excluded by the
-        // bash_command predicate (it used to be excluded by the parse failure).
+        // An escaped bash command now parses too and must be excluded by the bash_command predicate (it used to be excluded by the parse failure)
         let bash = acp_envelope(
             r#"{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"! echo \"hi\"","_meta":{"bash_command":"echo \"hi\""}}}"#,
         );
@@ -2156,8 +2743,6 @@ mod tests {
         );
     }
 
-    /// An ACP `user_message_chunk` with an image content block (not text) must
-    /// end the current user message without yielding any text.
     #[test]
     fn acp_user_message_chunk_image_yields_not_user() {
         let line = acp_envelope(
@@ -2169,7 +2754,6 @@ mod tests {
         );
     }
 
-    /// Malformed JSON must produce `NotUserMessage` (conservative flush).
     #[test]
     fn malformed_json_yields_not_user() {
         assert_eq!(
@@ -2178,8 +2762,7 @@ mod tests {
         );
     }
 
-    /// Empty string — the iterator skips blanks, but a direct call must still
-    /// classify conservatively (the parser always yields an event now).
+    /// Empty string: the iterator skips blanks, but a direct call must still classify conservatively.
     #[test]
     fn empty_string_yields_not_user() {
         assert_eq!(
@@ -2188,7 +2771,6 @@ mod tests {
         );
     }
 
-    /// A valid JSON object that has no recognisable ACP/xAI shape — NotUserMessage.
     #[test]
     fn unknown_json_object_yields_not_user() {
         assert_eq!(
@@ -2197,11 +2779,7 @@ mod tests {
         );
     }
 
-    /// Legacy format: raw `acp::SessionNotification` without an outer envelope.
-    ///
-    /// Old sessions wrote `{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk",...}}`
-    /// directly without the `method`/`params` envelope.  The parser must still
-    /// extract user text from these lines.
+    /// Old sessions wrote `{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk",...}}` directly without the `method`/`params` envelope.
     #[test]
     fn legacy_format_user_message_chunk() {
         let line = r#"{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"legacy prompt"}}}"#;
@@ -2221,8 +2799,6 @@ mod tests {
     }
 
     // ── PromptExtractIterator integration tests via tempfile ──────────────────
-
-    use std::io::Write as _;
 
     fn write_updates_file(lines: &[&str]) -> tempfile::NamedTempFile {
         let mut f = tempfile::NamedTempFile::new().unwrap();
@@ -2313,7 +2889,6 @@ mod tests {
         let f = write_updates_file(&[bad, &good]);
 
         let events = collect_events(f.path());
-        // bad line → NotUserMessage; good line → UserTextChunk
         assert_eq!(events.len(), 2);
         assert_eq!(events[0], PromptExtractEvent::NotUserMessage);
         assert_eq!(events[1], PromptExtractEvent::user_text("ok"));
@@ -2326,9 +2901,8 @@ mod tests {
         assert!(result.unwrap().is_none());
     }
 
-    /// Full round-trip: simulate a session with two user prompts, one rewind,
-    /// then a new prompt.  Assemble the events into prompts the same way
-    /// `load_user_prompts_from_updates` does.
+    /// Full round-trip: simulate a session with two user prompts, one rewind, then a new prompt.
+    /// Assemble the events into prompts the same way `load_user_prompts_from_updates` does.
     #[test]
     fn full_round_trip_with_rewind() {
         // Turn 1: "first prompt"
@@ -2441,9 +3015,8 @@ mod tests {
         )))
     }
 
-    /// The fork copy classifies raw lines while replay parity tests classify
-    /// typed updates; a divergence between the two classifiers would silently
-    /// shift fork truncation boundaries.
+    /// The fork copy classifies raw lines while replay parity tests classify typed updates.
+    /// A divergence between the two classifiers would silently shift fork truncation boundaries.
     #[test]
     fn rewind_step_classifiers_agree_on_serialized_updates() {
         let rewind = SessionUpdate::Xai(Box::new(
@@ -2543,7 +3116,7 @@ mod tests {
             user_chunk("new3", Some(3)),
             agent_chunk("A3"),
         ];
-        // Target 1 keeps old0+old1; cut at new2.
+        // Target 1 keeps old0 and old1; cut at new2
         assert_eq!(
             truncate_for_prompt_by(&updates, 1, rewind_step_for_update),
             4
@@ -2582,7 +3155,7 @@ mod tests {
         let n3 = acp_envelope(
             r#"{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"new3"},"_meta":{"promptIndex":3}}"#,
         );
-        // Rewind to target 2: keep turns 0,1 (old0, old1); drop new2+.
+        // Rewind to target 2: keep turns 0,1 (old0, old1); drop new2 and everything after
         let rw = xai_envelope(
             r#"{"sessionUpdate":"rewind_marker","target_prompt_index":2,"created_at":"2024-01-01"}"#,
         );
@@ -2696,7 +3269,7 @@ mod tests {
         let a2 = acp_envelope(
             r#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"resp2"}}"#,
         );
-        // Rewind to prompt 1 — kills u2, a2
+        // Rewind to prompt 1 kills u2, a2
         let rw = xai_envelope(
             r#"{"sessionUpdate":"rewind_marker","target_prompt_index":1,"created_at":"2024-01-01"}"#,
         );
@@ -2718,7 +3291,6 @@ mod tests {
         ];
         let result = filter_rewind_lines(lines);
 
-        // u1, a1 survive. u2, a2, rewind marker removed. u3, a3 added.
         assert_eq!(result.len(), 4);
         assert!(result[0].contains("first"));
         assert!(result[1].contains("resp1"));
@@ -2745,8 +3317,7 @@ mod tests {
         );
         let torn = "{ torn, unparseable jsonl line";
 
-        // The malformed line is kept but not counted as a prompt boundary, so
-        // the rewind still drops prompt 1.
+        // The malformed line is kept but not counted as a prompt boundary, so the rewind still drops prompt 1
         let survivors = filter_rewind_lines(vec![
             user_message_1.as_str(),
             agent_message_1.as_str(),
@@ -2804,7 +3375,7 @@ mod tests {
         let a3 = acp_envelope(
             r#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"r3"}}"#,
         );
-        // Rewind to prompt 2 — kills p3/r3
+        // Rewind to prompt 2 kills p3/r3
         let rw1 = xai_envelope(
             r#"{"sessionUpdate":"rewind_marker","target_prompt_index":2,"created_at":"2024-01-01"}"#,
         );
@@ -2814,7 +3385,7 @@ mod tests {
         let a4 = acp_envelope(
             r#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"r4"}}"#,
         );
-        // Rewind to prompt 1 — kills p2/r2/p4/r4
+        // Rewind to prompt 1 kills p2/r2/p4/r4
         let rw2 = xai_envelope(
             r#"{"sessionUpdate":"rewind_marker","target_prompt_index":1,"created_at":"2024-01-01"}"#,
         );
@@ -2837,15 +3408,13 @@ mod tests {
         ];
         let result = filter_rewind_lines(lines);
 
-        // Only p1, r1, final survive
         assert_eq!(result.len(), 3);
         assert!(result[0].contains("p1"));
         assert!(result[1].contains("r1"));
         assert!(result[2].contains("final"));
     }
 
-    /// The raw-line filter and the typed filter must truncate an identical
-    /// rewind timeline to the same surviving updates, in the same order.
+    /// The raw-line filter and the typed filter must truncate an identical rewind timeline to the same surviving updates, in the same order.
     #[test]
     fn filter_rewind_lines_and_updates_agree() {
         let u1 = acp_envelope(
@@ -2902,9 +3471,8 @@ mod tests {
         assert_eq!(via_lines, via_updates);
     }
 
-    /// An out-of-range rewind target folds to `result.len()` (the
-    /// `unwrap_or(result.len())` branch in `filter_rewind_by`), so truncation is
-    /// a no-op and every survivor is kept.
+    /// An out-of-range rewind target folds to `result.len()` (the `unwrap_or(result.len())` branch in `filter_rewind_by`).
+    /// So truncation is a no-op and every survivor is kept.
     #[test]
     fn filter_rewind_out_of_range_target_keeps_all() {
         let u1 = acp_envelope(
@@ -2924,7 +3492,6 @@ mod tests {
         let lines = vec![u1.as_str(), a1.as_str(), rw.as_str(), u2.as_str()];
         let result = filter_rewind_lines(lines);
 
-        // Marker is dropped; the three ACP survivors remain in order.
         assert_eq!(result.len(), 3);
         assert!(result[0].contains("p1"));
         assert!(result[1].contains("r1"));
@@ -2971,7 +3538,6 @@ mod tests {
         let result = collect_assistant_text(updates.into_iter());
         let total: usize = result.iter().map(|s| s.len()).sum();
         assert!(total <= 100_000, "got {total} chars");
-        // Verify non-ASCII content is present (not corrupted by truncation)
         assert!(
             result.iter().any(|s| s.contains("café")),
             "non-ASCII should be preserved"
@@ -3002,7 +3568,7 @@ mod tests {
             .map(|s| Ok(serde_json::from_str(&s).unwrap()))
             .collect();
         let result = collect_tool_metadata(updates.into_iter());
-        // Should cap at 200 tool calls (title + paths, but paths empty so just titles)
+        // The calls have empty locations, so every collected entry is a title
         let titles: Vec<_> = result.iter().filter(|s| s.starts_with("tool_")).collect();
         assert_eq!(titles.len(), 200);
     }
@@ -3010,7 +3576,7 @@ mod tests {
     #[test]
     fn from_str_unknown_xai_variant_deserializes_via_envelope() {
         // Simulates an updates.jsonl line containing a removed variant (e.g. git_branch_update).
-        // SessionUpdateEnvelope::from_str must not error — the Unknown catch-all absorbs it.
+        // SessionUpdateEnvelope::from_str must not error; the Unknown catch-all absorbs it
         let line = xai_envelope(r#"{"sessionUpdate":"git_branch_update","branch":"main"}"#);
         let update = SessionUpdateEnvelope::from_str(&line).unwrap();
         match update {

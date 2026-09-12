@@ -1,5 +1,6 @@
 #![cfg_attr(rustfmt, rustfmt::skip)]
     use super::*;
+    use crate::app::actions::PermissionLabel;
 
     #[test]
     fn exit_plan_mode_auto_opens_inline_cursor_plan_preview() {
@@ -66,8 +67,7 @@
             agent.plan_approval_view.as_ref().map(|s| s.source),
             Some(crate::views::plan_approval_view::PlanReviewSource::FileBacked)
         );
-        // File-backed bodies still open via request plan_content even when
-        // plan.md is not on disk under the agent's cwd.
+        // A file-backed body still opens from the request's plan_content even when plan.md is not on disk under the agent's cwd
         assert_eq!(
             agent
                 .line_viewer
@@ -79,9 +79,8 @@
 
     #[test]
     fn exit_plan_mode_empty_opens_placeholder_preview() {
-        // Empty plan.md must still surface a decision UI — otherwise the user
-        // only sees "Waiting on plan approval" with a dead Tab:plan and thinks
-        // the session is stuck.
+        // An empty plan.md must still open the approval UI
+        // Otherwise the user only sees "Waiting on plan approval" with a dead Tab:plan and thinks the session is stuck
         let mut app = make_app_with_agent("sess-1");
         let (ext, _rx) = make_exit_plan_ext(None);
 
@@ -109,11 +108,8 @@
 
     #[test]
     fn exit_plan_mode_dismisses_open_modal() {
-        // Regression: if the user has Ctrl+P command palette open when the
-        // agent calls exit_plan_mode, the modal must be dismissed so the
-        // plan preview is visible and input routes correctly. Otherwise the
-        // modal hides the line viewer in draw order while input gets
-        // routed to the invisible line viewer, leaving the user stuck.
+        // Regression: if the Ctrl+P command palette is open when the agent calls exit_plan_mode, the modal must be dismissed
+        // Otherwise the modal hides the line viewer in draw order while input routes to the invisible line viewer, leaving the user stuck
         let mut app = make_app_with_agent("sess-1");
         {
             let agent = app.agents.get_mut(&AgentId(0)).unwrap();
@@ -143,10 +139,8 @@
 
     #[test]
     fn exit_plan_mode_dismisses_open_block_viewer() {
-        // Regression: if the user has an Edit/tool block_viewer open when
-        // exit_plan_mode opens, dismiss it so wheel scroll reaches the plan
-        // line_viewer. Draw returns on line_viewer (plan visible) but
-        // handle_scroll prefers block_viewer while it remains in state.
+        // Regression: if an Edit/tool block_viewer is open when exit_plan_mode opens, dismiss it so wheel scroll reaches the plan line_viewer
+        // Draw returns on line_viewer (the plan stays visible), but handle_scroll prefers block_viewer while it remains in state
         let mut app = make_app_with_agent("sess-1");
         {
             let agent = app.agents.get_mut(&AgentId(0)).unwrap();
@@ -192,8 +186,7 @@
         assert!(handle_exit_plan_mode(second, &mut app));
         let agent = app.agents.get_mut(&AgentId(0)).unwrap();
         assert!(agent.latest_inline_plan_content.is_none());
-        // Empty approval still opens the placeholder decision surface (not a
-        // silent "no plan" toast) so the user always sees a way to proceed.
+        // An empty approval still opens the placeholder, not a silent "no plan" toast, so the user always sees a way to proceed
         assert_eq!(
             agent
                 .line_viewer
@@ -307,9 +300,8 @@
         assert!(rx.try_recv().is_err(), "response must NOT be sent yet");
     }
 
-    /// Regression: tool-call titles containing `"enter_plan_mode"` must not
-    /// flip plan mode (the substring matcher used to brick sessions on any
-    /// tool mentioning the phrase, e.g. a Grep with that pattern).
+    /// Regression: tool-call titles containing `"enter_plan_mode"` must not flip plan mode.
+    /// The substring matcher used to flip it on any tool mentioning the phrase, e.g. a Grep with that pattern, leaving the session stuck.
     #[test]
     fn tool_call_with_enter_plan_mode_substring_does_not_activate_plan_mode() {
         let mut agent = make_agent(Some("s1"));
@@ -324,9 +316,10 @@
             make_tool_call("mcp__foo__enter_plan_mode"),
         ];
         for update in &updates {
-            let refresh_needed = detect_plan_mode_change(update, &mut agent);
-            assert!(
-                !refresh_needed,
+            let transition = detect_plan_mode_change(update, &mut agent);
+            assert_eq!(
+                transition,
+                None,
                 "tool-call title (not a CurrentModeUpdate) must not request refresh"
             );
             assert!(
@@ -336,8 +329,8 @@
         }
     }
 
-    /// Symmetric: tool-call titles containing `"exit_plan_mode"` must not
-    /// deactivate plan mode either. Exit is signaled by `CurrentModeUpdate`.
+    /// Symmetric: tool-call titles containing `"exit_plan_mode"` must not deactivate plan mode either.
+    /// Exit is signaled by `CurrentModeUpdate`.
     #[test]
     fn tool_call_with_exit_plan_mode_substring_does_not_deactivate_plan_mode() {
         let mut agent = make_agent(Some("s1"));
@@ -350,8 +343,8 @@
             make_tool_call("Execute `rg exit_plan_mode`"),
         ];
         for update in &updates {
-            let refresh_needed = detect_plan_mode_change(update, &mut agent);
-            assert!(!refresh_needed);
+            let transition = detect_plan_mode_change(update, &mut agent);
+            assert_eq!(transition, None);
             assert!(
                 agent.plan_mode_active,
                 "tool-call title must not flip plan mode"
@@ -360,57 +353,97 @@
     }
 
     #[test]
-    fn current_mode_update_plan_activates_plan_mode() {
-        let mut agent = make_agent(Some("s1"));
-        assert!(!agent.plan_mode_active);
+    fn detect_plan_mode_change_classifies_transitions() {
+        // (staged pending, was_active, mode id; `None` is a tool-call update) -> transition
+        let cases = [
+            (None, false, Some("plan"), Some(PlanModeTransition::EnteredByAgent)),
+            (Some(true), false, Some("plan"), Some(PlanModeTransition::EnteredByUser)),
+            (Some(false), false, Some("plan"), Some(PlanModeTransition::EnteredByUser)),
+            (Some(true), true, Some("plan"), Some(PlanModeTransition::Unchanged)),
+            (Some(true), true, Some("default"), Some(PlanModeTransition::Exited)),
+            (None, true, Some("browser_use"), Some(PlanModeTransition::Exited)),
+            (Some(true), false, None, None),
+        ];
+        for (pending, was_active, mode_id, expected) in cases {
+            let label = format!("pending={pending:?} was_active={was_active} mode={mode_id:?}");
+            let mut agent = make_agent(Some("s1"));
+            agent.plan_mode_active = was_active;
+            agent.plan_mode_pending = pending;
+            let update = match mode_id {
+                Some(id) => make_current_mode_update(id),
+                None => make_tool_call("enter_plan_mode"),
+            };
 
-        let refresh_needed = detect_plan_mode_change(&make_current_mode_update("plan"), &mut agent);
-        assert!(refresh_needed);
-        assert!(agent.plan_mode_active);
-        assert!(agent.plan_mode_pending.is_none());
+            let transition = detect_plan_mode_change(&update, &mut agent);
+
+            assert_eq!(transition, expected, "{label}");
+            if transition.is_some() {
+                assert_eq!(agent.plan_mode_active, mode_id == Some("plan"), "{label}");
+                assert!(agent.plan_mode_pending.is_none(), "{label}");
+            } else {
+                assert_eq!(agent.plan_mode_active, was_active, "{label}");
+                assert_eq!(agent.plan_mode_pending, pending, "{label}");
+            }
+        }
+    }
+
+    fn current_mode_update_msg(session_id: &str, mode_id: &str, is_replay: bool) -> AcpClientMessage {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let request = acp::SessionNotification::new(
+            acp::SessionId::new(session_id),
+            make_current_mode_update(mode_id),
+        )
+        .meta(serde_json::json!({ "isReplay": is_replay }).as_object().cloned());
+        AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+            request,
+            response_tx: tx,
+        })
+    }
+
+    fn plan_entry_rows(app: &AppView) -> Vec<PermissionLabel> {
+        app.agents[&AgentId(0)]
+            .scrollback
+            .session_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                SessionEvent::PlanModeEnteredByAgent { permission } => Some(permission),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
-    fn current_mode_update_default_deactivates_plan_mode() {
-        let mut agent = make_agent(Some("s1"));
-        agent.plan_mode_active = true;
-        agent.plan_mode_pending = Some(true);
+    fn agent_plan_entry_pushes_scrollback_row_once() {
+        let mut app = make_app_with_agent("sess-plan");
+        app.current_ui.permission_mode = Some("auto".into());
+        app.agents.get_mut(&AgentId(0)).unwrap().session.yolo_mode = true;
 
-        let refresh_needed =
-            detect_plan_mode_change(&make_current_mode_update("default"), &mut agent);
-        assert!(refresh_needed);
-        assert!(!agent.plan_mode_active);
-        assert!(agent.plan_mode_pending.is_none());
-    }
+        let _ = handle(current_mode_update_msg("sess-plan", "plan", false), &mut app);
+        assert_eq!(plan_entry_rows(&app), vec![PermissionLabel::AlwaysApprove]);
+        assert!(app.agents[&AgentId(0)].plan_mode_active);
 
-    /// Unknown mode ids (e.g. a custom agent definition name like
-    /// `"browser_use"`) parse to `SessionMode::Default` and deactivate
-    /// plan mode.
-    #[test]
-    fn current_mode_update_unknown_id_treated_as_default() {
-        let mut agent = make_agent(Some("s1"));
-        agent.plan_mode_active = true;
+        // `loading_replay` makes the replayed update acceptable, so the gate (not the drop) suppresses the row
+        let _ = handle(current_mode_update_msg("sess-plan", "default", false), &mut app);
+        app.agents.get_mut(&AgentId(0)).unwrap().session.loading_replay = true;
+        let _ = handle(current_mode_update_msg("sess-plan", "plan", true), &mut app);
+        assert_eq!(plan_entry_rows(&app).len(), 1, "replayed entry must not add a row");
+        assert!(app.agents[&AgentId(0)].plan_mode_active, "state still applies on replay");
 
-        let refresh_needed =
-            detect_plan_mode_change(&make_current_mode_update("browser_use"), &mut agent);
-        assert!(refresh_needed);
-        assert!(!agent.plan_mode_active);
-    }
+        let _ = handle(current_mode_update_msg("sess-plan", "default", false), &mut app);
+        let _ = handle(current_mode_update_msg("sess-plan", "plan", false), &mut app);
+        assert_eq!(plan_entry_rows(&app).len(), 1, "entry during a session load must not add a row");
 
-    /// Idempotent CurrentModeUpdate still signals refresh because
-    /// `plan_mode_pending` was cleared (affects effective state).
-    #[test]
-    fn current_mode_update_signals_refresh_even_on_no_op_active_change() {
-        let mut agent = make_agent(Some("s1"));
-        agent.plan_mode_active = true;
-        agent.plan_mode_pending = Some(true);
-
-        let refresh_needed = detect_plan_mode_change(&make_current_mode_update("plan"), &mut agent);
-        assert!(
-            refresh_needed,
-            "CurrentModeUpdate must always signal refresh — pending was cleared"
-        );
-        assert!(agent.plan_mode_active);
-        assert!(agent.plan_mode_pending.is_none());
+        app.agents.get_mut(&AgentId(0)).unwrap().session.loading_replay = false;
+        for staged in [Some(true), Some(false)] {
+            let _ = handle(current_mode_update_msg("sess-plan", "default", false), &mut app);
+            app.agents.get_mut(&AgentId(0)).unwrap().plan_mode_pending = staged;
+            let _ = handle(current_mode_update_msg("sess-plan", "plan", false), &mut app);
+            assert_eq!(
+                plan_entry_rows(&app).len(),
+                1,
+                "user-driven entry (staged {staged:?}) must not add a row"
+            );
+            assert!(app.agents[&AgentId(0)].plan_mode_active);
+        }
     }
 

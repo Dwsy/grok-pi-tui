@@ -1,7 +1,7 @@
 //! Layer-2 stream transform for the Anthropic Messages API.
 //!
-//! Consumes a raw `MessageStreamEvent` stream and produces
-//! [`SamplingEvent`]s. Pure: no I/O, no shell coupling.
+//! Consumes a raw `MessageStreamEvent` stream and produces [`SamplingEvent`]s.
+//! Pure: no I/O, no shell coupling.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -19,24 +19,7 @@ use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
 use crate::metrics::InferenceLatencyStats;
 use crate::types::RequestId;
 
-/// The verbatim wire string for a Messages API stop reason, before it collapses
-/// into the internal [`StopReason`]. Uses the enum's serde `snake_case`
-/// renaming so it cannot drift from the wire contract.
-fn messages_stop_reason_wire(sr: &messages::StopReason) -> String {
-    match serde_json::to_value(sr) {
-        Ok(serde_json::Value::String(s)) => s,
-        other => {
-            debug_assert!(
-                false,
-                "StopReason must serialize to a string, got {other:?}"
-            );
-            "end_turn".to_string()
-        }
-    }
-}
-
-/// Returns whether a Messages API event reflects real model progress
-/// rather than a liveness-only heartbeat (Ping).
+/// Returns whether a Messages API event reflects real model progress rather than a liveness-only heartbeat (Ping).
 pub(crate) fn messages_event_has_meaningful_content(event: &MessageStreamEvent) -> bool {
     match event {
         MessageStreamEvent::Ping => false,
@@ -50,10 +33,8 @@ pub(crate) fn messages_event_has_meaningful_content(event: &MessageStreamEvent) 
     }
 }
 
-/// Per-block streaming accumulator. The Anthropic Messages API reports
-/// content as a sequence of indexed blocks (text / thinking /
-/// tool_use), each with start / delta / stop events. We accumulate
-/// per-index and finalize each block on `ContentBlockStop`.
+/// The Anthropic Messages API reports content as a sequence of indexed blocks (text / thinking / tool_use), each with start / delta / stop events.
+/// We accumulate per-index and finalize each block on `ContentBlockStop`.
 struct BlockState {
     block_type: BlockType,
     text_acc: String,
@@ -71,13 +52,9 @@ enum BlockType {
     Thinking,
 }
 
-/// Transform a raw Anthropic Messages API stream into a stream of
-/// [`SamplingEvent`]s.
-///
-/// Yields exactly one terminal event ([`SamplingEvent::Completed`] or
-/// [`SamplingEvent::Failed`]) per request. Server-side `Error` events
-/// translate to `SamplingError::Api { status: 500, .. }` so the actor's
-/// retry loop treats them as retryable transport-level errors.
+/// Transform a raw Anthropic Messages API stream into a stream of [`SamplingEvent`]s.
+/// Yields exactly one terminal event ([`SamplingEvent::Completed`] or [`SamplingEvent::Failed`]) per request.
+/// The actor's retry loop treats them as retryable transport-level errors.
 pub fn stream_messages<'a>(
     raw_stream: BoxStream<'a, Result<MessageStreamEvent, SamplingError>>,
     model_metadata: Option<ResponseModelMetadata>,
@@ -87,6 +64,13 @@ pub fn stream_messages<'a>(
     async_stream::stream! {
         use messages::{ContentBlock, StreamDelta};
 
+        let decode_region = crate::span_timing::Region::from_span(tracing::info_span!(
+            "sampling.stream_decode",
+            ttft_ms = tracing::field::Empty,
+            ttlb_ms = tracing::field::Empty,
+            output_tokens = tracing::field::Empty,
+            chunk_count = tracing::field::Empty,
+        ));
         let stream_start = Instant::now();
         let mut chunk_timestamps: Vec<Instant> = Vec::new();
 
@@ -107,8 +91,8 @@ pub fn stream_messages<'a>(
 
         // Final-message-level accumulators
         let mut final_model: Option<String> = None;
-        // Anthropic Messages API `input_tokens` is the uncached portion; cache hits and writes are reported
-        // in separate buckets and must be summed for the true total prompt size.
+        // Anthropic Messages API `input_tokens` is the uncached portion
+        // Cache hits and writes are reported in separate buckets and must be summed for the true total prompt size
         let mut final_input_tokens: u32 = 0;
         let mut final_cache_read_input_tokens: u32 = 0;
         let mut final_cache_creation_input_tokens: u32 = 0;
@@ -117,15 +101,13 @@ pub fn stream_messages<'a>(
         let mut final_stop_message: Option<String> = None;
         let mut final_message_id: Option<String> = None;
         let mut final_raw_stop_reason: Option<String> = None;
-        // The provider's matched stop sequence (Messages `message_delta.stop_sequence`),
-        // set only on a `stop_sequence`-terminated turn; carried through so the
-        // headless `streaming-messages-json` consumer can echo it.
+        // The provider sends the matched stop sequence in `message_delta.stop_sequence` on a `stop_sequence`-terminated turn
+        // It is carried through so the headless `streaming-messages-json` consumer can echo it
         let mut final_stop_sequence: Option<String> = None;
 
-        // Assistant-response accumulators (built up as ContentBlockStop
-        // events fire). Reasoning is collected into a synthesized
-        // `rs::ReasoningItem` and emitted as a sibling
-        // `ConversationItem::Reasoning` before the trailing Assistant.
+        // Assistant-response accumulators (built up as ContentBlockStop events fire)
+        // Reasoning is collected into a synthesized `rs::ReasoningItem`
+        // It is emitted as a sibling `ConversationItem::Reasoning` before the trailing Assistant
         let mut assistant_text = String::new();
         let mut assistant_tool_calls: Vec<ToolCall> = Vec::new();
         let mut assistant_reasoning: Option<rs::ReasoningItem> = None;
@@ -136,9 +118,7 @@ pub fn stream_messages<'a>(
         let mut first_token_emitted = false;
         let mut last_content_chunk_at = Instant::now();
 
-        // Tool-call index counter for per-tool deltas (separate from
-        // the block index, which can be interleaved with text/thinking
-        // blocks).
+        // Tool-call index counter for per-tool deltas (separate from the block index, which can be interleaved with text/thinking blocks)
         let mut next_tool_index: u32 = 0;
         let mut block_to_tool_index: BTreeMap<u32, u32> = BTreeMap::new();
 
@@ -179,9 +159,8 @@ pub fn stream_messages<'a>(
                     final_input_tokens = message.usage.input_tokens;
                     final_cache_read_input_tokens = message.usage.cache_read_input_tokens;
                     final_cache_creation_input_tokens = message.usage.cache_creation_input_tokens;
-                    // Surface the real id/model/input-usage in order, before any
-                    // content, so partial-mode framing emits them on the real
-                    // `message_start` instead of a synthesized placeholder.
+                    // Yield the real id, model, and input usage before any content
+                    // Partial-mode framing then emits them on the real `message_start` instead of a synthesized placeholder
                     yield SamplingEvent::ResponseStarted {
                         request_id: request_id.clone(),
                         message_id: message.id,
@@ -255,18 +234,15 @@ pub fn stream_messages<'a>(
                                 text_acc: String::new(),
                                 tool_name: name.clone(),
                                 tool_id: id.clone(),
-                                // Anthropic Messages API streams arguments via
-                                // InputJsonDelta events; starting from
-                                // "{}" then appending fragments would
-                                // produce invalid JSON.
+                                // Anthropic Messages API streams arguments via InputJsonDelta events
+                                // Starting from "{}" then appending fragments would produce invalid JSON
                                 args_acc: String::new(),
                                 thinking_acc: String::new(),
                                 signature: String::new(),
                             },
                         );
 
-                        // Emit initial id+name so subscribers can pre-allocate
-                        // UI for the tool call before arguments stream in.
+                        // Emit the initial id and name so subscribers can pre-allocate UI for the tool call before arguments stream in
                         yield SamplingEvent::ToolCallDelta {
                             request_id: request_id.clone(),
                             tool_index,
@@ -275,16 +251,9 @@ pub fn stream_messages<'a>(
                             arguments_delta: None,
                         };
                     }
-                    // Encrypted reasoning the model chose to redact. Deliberately
-                    // parse-only: the `RedactedThinking` wire variant exists so a
-                    // stream that includes one deserializes instead of failing the
-                    // whole event parse and discarding an already-streamed
-                    // response, but its opaque `data` blob is not surfaced as a
-                    // `SamplingEvent` — forwarding it to the headless reducer's
-                    // `redacted_thinking` block would need a new event threaded
-                    // through the deferred sampler→shell→reducer hop and handled by
-                    // every `SamplingEvent` consumer (TUI included), so it is not
-                    // wired. No consumer claims redacted_thinking support.
+                    // Encrypted reasoning the model chose to redact
+                    // The `RedactedThinking` wire variant exists so a stream containing one deserializes instead of failing the whole event parse
+                    // Its opaque `data` blob is not forwarded as a `SamplingEvent`; no consumer claims redacted_thinking support
                     ContentBlock::RedactedThinking { .. } => {}
                     // Image / ToolResult are not expected in assistant streams.
                     _ => {}
@@ -362,9 +331,8 @@ pub fn stream_messages<'a>(
                                 }
                             }
                             BlockType::Thinking => {
-                                // Surface the encrypted signature in order (at the
-                                // thinking block's stop) so partial-mode framing can
-                                // emit `signature_delta` before its `content_block_stop`.
+                                // Yield the encrypted signature at the thinking block's stop
+                                // Partial-mode framing can then emit `signature_delta` before its `content_block_stop`
                                 if !state.signature.is_empty() {
                                     yield SamplingEvent::ReasoningCompleted {
                                         request_id: request_id.clone(),
@@ -372,12 +340,9 @@ pub fn stream_messages<'a>(
                                     };
                                 }
                                 if !state.thinking_acc.is_empty() || !state.signature.is_empty() {
-                                    // Anthropic Messages API `Thinking` blocks uniquely
-                                    // carry an encrypted `signature` distinct
-                                    // from the text; either field may be
-                                    // empty. Build directly rather than via
-                                    // `synthesized_reasoning_item` since the
-                                    // helper assumes a non-empty summary.
+                                    // Anthropic Messages API `Thinking` blocks uniquely carry an encrypted `signature` distinct from the text
+                                    // Either field may be empty
+                                    // Build directly rather than via `synthesized_reasoning_item` since the helper assumes a non-empty summary
                                     let summary = if state.thinking_acc.is_empty() {
                                         vec![]
                                     } else {
@@ -413,16 +378,16 @@ pub fn stream_messages<'a>(
                 }
 
                 MessageStreamEvent::MessageDelta { delta, usage } => {
-                    // Normalize the provider's stop detail to a plain message;
-                    // the shell logs it when it surfaces a refusal.
+                    // Normalize the provider's stop detail to a plain message; the shell logs it when it shows a refusal
                     if let Some(details) = delta.stop_details {
                         final_stop_message = details.explanation;
                     }
                     // Keep the exact wire string so consumers can echo it.
-                    final_raw_stop_reason =
-                        delta.stop_reason.as_ref().map(messages_stop_reason_wire);
-                    // The matched stop sequence rides the same terminal delta
-                    // (present only on a `stop_sequence` stop); carry it verbatim.
+                    final_raw_stop_reason = delta
+                        .stop_reason
+                        .as_ref()
+                        .map(messages::StopReason::wire_str);
+                    // The matched stop sequence arrives on the same terminal delta (present only on a `stop_sequence` stop); carry it verbatim
                     if delta.stop_sequence.is_some() {
                         final_stop_sequence = delta.stop_sequence.clone();
                     }
@@ -431,12 +396,10 @@ pub fn stream_messages<'a>(
                         messages::StopReason::MaxTokens => StopReason::Length,
                         messages::StopReason::StopSequence => StopReason::Stop,
                         messages::StopReason::ToolUse => StopReason::ToolCalls,
-                        // The model declined to continue; whatever streamed is
-                        // the complete response, so end the turn cleanly.
+                        // The model declined to continue; whatever streamed is the complete response, so end the turn cleanly
                         messages::StopReason::Refusal => StopReason::ContentFilter,
                         messages::StopReason::PauseTurn => {
-                            // Anthropic Messages API expects a resend-to-continue; we end the
-                            // turn instead, so leave a triage trail.
+                            // Anthropic Messages API expects the client to resend to continue; we end the turn instead
                             tracing::warn!(
                                 wire_stop_reason = "pause_turn",
                                 "pause_turn ended the turn like stop (no auto-continue)"
@@ -444,13 +407,11 @@ pub fn stream_messages<'a>(
                             StopReason::Stop
                         }
                         messages::StopReason::ModelContextWindowExceeded => {
-                            // Output-side overflow on a successful stream: stays in the
-                            // max_tokens truncation class — compact-on-error recovery needs
-                            // an Api error carrying model metadata plus a prompt-side
-                            // overflow, neither of which exists here.
+                            // Output-side overflow on a successful stream maps to the Length stop class
+                            // Compact-on-error recovery needs an Api error carrying model metadata and a prompt-side overflow; neither exists here
                             tracing::warn!(
                                 wire_stop_reason = "model_context_window_exceeded",
-                                "context window hit mid-generation; surfacing as max_tokens truncation"
+                                "context window hit mid-generation; mapping to the Length stop class"
                             );
                             StopReason::Length
                         }
@@ -476,13 +437,11 @@ pub fn stream_messages<'a>(
                 }
 
                 MessageStreamEvent::MessageStop => {
-                    // Final message complete; the loop exits naturally
-                    // when the underlying stream ends.
+                    // Final message complete; the loop exits naturally when the underlying stream ends
                 }
 
                 MessageStreamEvent::Ping => {
-                    // Liveness only, no action; the inner timeout was
-                    // already reset above by the successful `next()`.
+                    // Liveness only, no action; the inner timeout was already reset above by the successful `next()`
                 }
 
                 MessageStreamEvent::Error { error } => {
@@ -518,17 +477,12 @@ pub fn stream_messages<'a>(
             }
         }
 
-        if final_stop_reason == Some(StopReason::Length) {
-            yield SamplingEvent::Failed {
-                request_id: request_id.clone(),
-                error: SamplingErrorInfo::from(&SamplingError::MaxTokensTruncation),
-            };
-            return;
-        }
+        // A `Length` stop is NOT failed here
+        // The transform completes with `stop_reason=Length` and `drive_l2` decides fail-vs-salvage per the request's `LengthPolicy`
 
         // ── Build the final response ─────────────────────────────────
         let model_id = final_model.unwrap_or_default();
-        // Match the OAI Responses convention: prompt_tokens = full prompt, cached_prompt_tokens = cache hits only.
+        // Match the OAI Responses convention: prompt_tokens holds the full prompt, cached_prompt_tokens counts cache hits only
         let total_prompt_tokens = final_input_tokens
             .saturating_add(final_cache_read_input_tokens)
             .saturating_add(final_cache_creation_input_tokens);
@@ -545,9 +499,13 @@ pub fn stream_messages<'a>(
             None
         };
 
-        let stop_reason = if !assistant_tool_calls.is_empty() {
-            // Completed tool_use blocks win even over Refusal: the calls are
-            // real model output the agent loop must resolve.
+        let stop_reason = if final_stop_reason == Some(StopReason::Length) {
+            // Length wins even over completed tool_use blocks
+            // The provider closes a block it cut mid-stream, so the trailing call's arguments may be silently truncated
+            // Fail-vs-salvage belongs to the `LengthPolicy` gate
+            final_stop_reason
+        } else if !assistant_tool_calls.is_empty() {
+            // Completed tool_use blocks win even over Refusal: the calls are real model output the agent loop must resolve
             Some(StopReason::ToolCalls)
         } else {
             final_stop_reason
@@ -571,6 +529,22 @@ pub fn stream_messages<'a>(
         let stream_end = Instant::now();
         let metrics =
             InferenceLatencyStats::from_timestamps(stream_start, &chunk_timestamps, stream_end);
+
+        decode_region
+            .span()
+            .record("ttlb_ms", metrics.time_to_last_byte_ms as i64);
+        decode_region
+            .span()
+            .record("chunk_count", metrics.chunk_count as i64);
+        if let Some(ttft) = metrics.time_to_first_token_ms {
+            decode_region.span().record("ttft_ms", ttft as i64);
+        }
+        if let Some(u) = usage.as_ref() {
+            decode_region
+                .span()
+                .record("output_tokens", u.completion_tokens as i64);
+        }
+        drop(decode_region);
 
         let response = ConversationResponse {
             items,

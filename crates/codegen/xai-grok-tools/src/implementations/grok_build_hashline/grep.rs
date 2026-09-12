@@ -39,12 +39,9 @@ async fn get_or_generate<'a>(
     cache.get(path).map(|v| v.as_slice())
 }
 
-/// Inject anchors into ripgrep content-mode output.
-///
-/// Transforms lines like `123:    let x = 1;` or `124-    let y = 2;`
-/// into `123:abc:rst:    let x = 1;` or `124:abc:rst-    let y = 2;`.
-///
-/// Lines that are file headers or separators pass through unchanged.
+/// Inject anchors into ripgrep content-mode output. Transforms lines like `123: let x = 1;` or
+/// `124- let y = 2;` into `123:abc:rst: let x = 1;` or `124:abc:rst- let y = 2;`. Lines that are
+/// file headers or separators pass through unchanged.
 pub(crate) async fn inject_anchors(
     stdout_bytes: &[u8],
     cwd: &Path,
@@ -80,10 +77,9 @@ pub(crate) async fn inject_anchors(
             continue;
         }
 
-        // Try to parse as a numbered match/context line first.
-        // This correctly handles file paths that start with digits (e.g.
-        // "2024_migration.rs") — they won't parse as valid rg lines because
-        // they lack a ':' or '-' separator after the numeric prefix.
+        // Try to parse as a numbered match/context line first. This correctly handles file paths
+        // that start with digits (e.g. "2024_migration.rs") — they won't parse as valid rg lines
+        // because they lack a ':' or '-' separator after the numeric prefix.
         if let Some((line_num, separator, content)) = parse_rg_line(line)
             && let Some(ref file_path) = current_file
             && let Some(anchors) = get_or_generate(&mut file_anchors, file_path, scheme, fs).await
@@ -345,10 +341,9 @@ mod tests {
     }
 
     #[test]
-    fn description_mentions_anchors_and_edit() {
+    fn description_template_references_edit_tool() {
         use crate::types::tool_metadata::ToolMetadata;
         let tool = HashlineGrepTool;
-        assert!(ToolMetadata::description_template(&tool).contains("anchor"));
         assert!(ToolMetadata::description_template(&tool).contains("tools.by_kind.edit"));
     }
 

@@ -26,7 +26,8 @@ const BUILD_STALE_DURATION_SEC: u64 = 600;
 const BG_REFRESH_STALE_DURATION_SEC: u64 = 300;
 
 /// Operations that require locking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum IndexOperation {
     /// Loading index from cache (shared/read lock).
     Load,
@@ -39,16 +40,6 @@ pub enum IndexOperation {
 }
 
 impl IndexOperation {
-    /// String representation for lock file.
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Load => "load",
-            Self::Save => "save",
-            Self::Build => "build",
-            Self::BackgroundRefresh => "background_refresh",
-        }
-    }
-
     /// Whether this operation requires exclusive access.
     pub fn is_exclusive(&self) -> bool {
         match self {
@@ -70,7 +61,7 @@ impl IndexOperation {
 
 impl std::fmt::Display for IndexOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
+        write!(f, "{}", self.as_ref())
     }
 }
 
@@ -142,31 +133,8 @@ impl LockResult {
 }
 
 /// Try to acquire a lock for an index operation on a workspace.
-///
-/// Returns `LockResult::Acquired` with a guard if successful, or `LockResult::Busy`
-/// if another operation is in progress.
-///
-/// # Arguments
-///
-/// * `workspace` - The workspace root path
-/// * `operation` - The type of operation to perform
-///
-/// # Example
-///
-/// ```ignore
-/// use xai_codebase_graph::manager::lock::{try_lock, IndexOperation, LockResult};
-///
-/// let workspace = Path::new("/path/to/workspace");
-/// match try_lock(workspace, IndexOperation::Build) {
-///     LockResult::Acquired(guard) => {
-///         // Do work...
-///         // Lock is released when guard is dropped
-///     }
-///     LockResult::Busy { operation, holder_pid } => {
-///         println!("Busy: {} by pid {:?}", operation, holder_pid);
-///     }
-/// }
-/// ```
+/// `Acquired` with a guard on success; `Busy` if another operation is in progress.
+/// The lock is released when the guard is dropped.
 pub fn try_lock(workspace: &Path, operation: IndexOperation) -> LockResult {
     let workspace = canonicalize_workspace(workspace);
     let lock_file_path = get_lock_file_path(&workspace);
@@ -363,7 +331,7 @@ fn try_acquire_file_lock(
     // Write our lock file
     let contents = format!(
         "operation={}\npid={}\nstarted={}\nworkspace={}\n",
-        operation.as_str(),
+        operation.as_ref(),
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

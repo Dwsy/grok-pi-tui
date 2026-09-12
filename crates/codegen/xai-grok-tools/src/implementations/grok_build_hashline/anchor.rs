@@ -8,11 +8,9 @@ pub use super::scheme::{
     ParsedAnchor, ShiftResult, ValidationResult,
 };
 
-/// Split file content into lines suitable for anchor generation.
-///
-/// Strips trailing newlines from each line (matching the convention used by
-/// `AnchorScheme::generate_anchors`). The returned `Vec<&str>` has one entry
-/// per logical line.
+/// Split file content into lines suitable for anchor generation. Strips trailing newlines from each
+/// line (matching the convention used by `AnchorScheme::generate_anchors`). The returned
+/// `Vec<&str>` has one entry per logical line.
 pub fn split_lines(content: &str) -> Vec<&str> {
     if content.is_empty() {
         return vec![""];
@@ -30,19 +28,15 @@ pub fn split_lines(content: &str) -> Vec<&str> {
     lines
 }
 
-/// Generate anchors for file content using the given scheme.
-///
-/// Convenience wrapper: splits `content` into lines and calls
-/// `scheme.generate_anchors()`.
+/// Generate anchors for file content using the given scheme. Convenience wrapper: splits `content`
+/// into lines and calls `scheme.generate_anchors()`.
 pub fn generate_for_content(scheme: &dyn AnchorScheme, content: &str) -> Vec<Anchor> {
     let lines = split_lines(content);
     scheme.generate_anchors(&lines)
 }
 
-/// Validate a parsed anchor against file content.
-///
-/// Convenience wrapper: splits `content` into lines and calls
-/// `scheme.validate()`.
+/// Validate a parsed anchor against file content. Convenience wrapper: splits `content` into lines
+/// and calls `scheme.validate()`.
 pub fn validate_against_content(
     scheme: &dyn AnchorScheme,
     anchor: &ParsedAnchor,
@@ -52,10 +46,8 @@ pub fn validate_against_content(
     scheme.validate(anchor, &lines)
 }
 
-/// Search for a shifted anchor in file content.
-///
-/// Convenience wrapper: splits `content` into lines and calls
-/// `scheme.find_shifted()`.
+/// Search for a shifted anchor in file content. Convenience wrapper: splits `content` into lines
+/// and calls `scheme.find_shifted()`.
 pub fn find_shifted_in_content(
     scheme: &dyn AnchorScheme,
     anchor: &ParsedAnchor,

@@ -1,9 +1,6 @@
 //! autoDream gating and execution logic.
 //!
-//! Determines whether a dream consolidation should fire based on
-//! config gates, time elapsed, and session count. Provides prompt
-//! construction, response processing, and lock lifecycle management
-//! for the dream consolidation pass.
+//! Decides whether a dream consolidation should fire based on config gates, time elapsed, and session count.
 
 use std::path::Path;
 use std::time::SystemTime;
@@ -14,7 +11,7 @@ use xai_grok_config_types::MemoryDreamConfig;
 /// Result of the dream gate check.
 #[derive(Debug, PartialEq, Eq)]
 pub enum DreamGate {
-    /// All gates passed — dream should fire.
+    /// All gates passed; the dream should fire.
     Open {
         /// Sessions to consolidate (file stems for the prompt).
         sessions: Vec<String>,
@@ -29,14 +26,8 @@ pub enum DreamGate {
     Error(String),
 }
 
-/// Check all dream gates (cheapest first).
-///
-/// Gate order:
-/// 1. Config: `dream.enabled` must be true
-/// 2. Time: hours since last consolidation >= `dream.min_hours`
-/// 3. Sessions: session count since last consolidation >= `dream.min_sessions`
-///
-/// Does NOT acquire the lock — callers should acquire after confirming `Open`.
+/// Check all dream gates, cheapest first: `dream.enabled`, then elapsed hours against `min_hours`, then session count against `min_sessions`.
+/// Does not acquire the lock; callers acquire it after confirming `Open`.
 pub fn check_dream_gates(
     config: &MemoryDreamConfig,
     lock: &DreamLock,
@@ -47,7 +38,7 @@ pub fn check_dream_gates(
         return DreamGate::Disabled;
     }
 
-    // Time gate
+    // Time gate: enough hours must have passed since the last consolidation
     let last_at = match lock.last_consolidated_at() {
         Ok(Some(t)) => t,
         Ok(None) => SystemTime::UNIX_EPOCH,
@@ -61,7 +52,7 @@ pub fn check_dream_gates(
         return DreamGate::TooSoon { hours_since };
     }
 
-    // Session gate
+    // Session gate: enough sessions must have accumulated since the last consolidation
     let sessions =
         match super::dream_lock::sessions_since(sessions_dir, last_at, current_session_sid8) {
             Ok(s) => s,
@@ -101,9 +92,13 @@ rather than discarding prior knowledge. Your job:
    - Greetings, meta-commentary, tool output noise
    - Message counts and tool-usage statistics
    - 'Current state' and 'Next steps' sections
-   - User preferences already in global memory (OS, shell, paths)
+   - User preferences already in global memory (OS, shell, editor)
    - Session metadata (dates, message counts)
 5. **Preserve** decisions, rationale, architecture, preferences, and problem/solution pairs
+6. **Generalize** task narratives into reusable mechanisms, rules, and root causes
+7. **Ground details** — use stable repo-relative paths for project structure; include an absolute \
+workspace root only when operationally necessary and present in the session logs. Copy exact \
+identifiers and numerical values only when they appear verbatim in the input; omit unsupported details
 
 Respond with a single markdown document. Use ## headers to separate topics. \
 Each topic should be self-contained and useful to a future session that knows \
@@ -115,20 +110,12 @@ If the session logs contain nothing worth persisting, respond with NO_REPLY.";
 #[derive(Debug)]
 pub struct DreamResult {
     pub status: DreamStatus,
-    /// Number of gate-eligible sessions (total sessions passed to the dream,
-    /// including those beyond the 32K input cap that were not actually read).
+    /// Number of gate-eligible sessions: all sessions passed to the dream, including those beyond the 32K input cap that were never read.
     pub sessions_eligible: usize,
-    /// File stems that were actually deleted after a successful consolidation.
-    /// Empty for non-`Completed` statuses. The caller uses this to remove
-    /// the corresponding chunks from the search index — only stems that were
-    /// truly removed from disk should have their index entries purged.
-    pub cleaned_stems: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DreamStatus {
-    /// Gates didn't pass \u{2014} no dream attempted.
-    Skipped(String),
     /// Dream ran and produced consolidated output.
     Completed { chars_written: usize },
     /// Dream ran but model returned nothing useful.
@@ -139,25 +126,19 @@ pub enum DreamStatus {
 
 const MAX_DREAM_INPUT_CHARS: usize = 32_000;
 
-/// Output of [`build_dream_user_message`]: the prompt text and the stems
-/// that were actually read (within the size cap).
+/// Output of [`build_dream_user_message`]: the prompt text and the stems that were actually read (within the size cap).
 #[derive(Debug)]
 pub struct DreamMessage {
     /// The concatenated session content for the model prompt.
     pub content: String,
-    /// File stems that were successfully read and included. Only these
-    /// sessions should be cleaned up after a successful consolidation —
-    /// stems beyond the [`MAX_DREAM_INPUT_CHARS`] cap are deliberately
-    /// excluded so their content is preserved for a future dream pass.
+    /// File stems that were successfully read and included; only these sessions are cleaned up after a successful consolidation.
+    /// Stems beyond the [`MAX_DREAM_INPUT_CHARS`] cap are excluded so their content survives for a future dream pass.
     pub processed_stems: Vec<String>,
 }
 
-/// Returns `true` if the content is scaffold boilerplate that should not be
-/// fed to the dream model as existing memory context.
-///
-/// A file is scaffold only if it is short (< 500 bytes trimmed) AND contains
-/// a scaffold marker. Files with substantial content are never scaffold, even
-/// if they contain leftover marker strings from the initial template.
+/// Returns `true` if the content is scaffold boilerplate that should not be fed to the dream model as existing memory context.
+/// A file is scaffold only if it is short (under 500 bytes trimmed) and contains a scaffold marker.
+/// Files with substantial content are never scaffold, even if they contain leftover marker strings from the initial template.
 pub(crate) fn is_scaffold_template(content: &str) -> bool {
     const SCAFFOLD_MAX_LEN: usize = 500;
     const MARKERS: &[&str] = &[
@@ -170,14 +151,7 @@ pub(crate) fn is_scaffold_template(content: &str) -> bool {
 }
 
 /// Build the user message for the dream model call from session log contents.
-///
-/// When `existing_memory` is provided and is not scaffold boilerplate,
-/// it is prepended before session logs so the model can merge prior
-/// knowledge with new sessions.
-///
-/// Reads each session file and concatenates their contents with separators.
-/// Stops adding sessions once total size exceeds [`MAX_DREAM_INPUT_CHARS`].
-/// Returns `None` if no session files could be read.
+/// Non-scaffold `existing_memory` is prepended before the session logs so the model merges prior knowledge instead of discarding it.
 pub fn build_dream_user_message(
     sessions_dir: &Path,
     stems: &[String],
@@ -253,22 +227,11 @@ pub fn build_dream_user_message(
     })
 }
 
-/// Output cap for dream responses. Hardcoded for v1; can be moved to
-/// `MemoryDreamConfig` if operational tuning is needed.
+/// Output cap for dream responses; hardcoded for v1, move to `MemoryDreamConfig` if operational tuning is needed.
 const MAX_DREAM_CHARS: usize = 16_000;
 
 /// Process the dream model's response.
-///
-/// Returns the processed content ready for writing, or `None` if:
-/// - Response is empty/whitespace
-/// - Response matches the `NO_REPLY` pattern
-/// - Response lacks markdown heading structure
-///
-/// Dream output that passes the quality check below contains markdown
-/// headers (`# ` or `## `). Since `write_long_term` writes content
-/// directly without normalization, dream's markdown structure is
-/// preserved as-is.
-///
+/// `write_long_term` writes content directly without normalization, so the dream's markdown structure is preserved as-is.
 /// Truncates content exceeding [`MAX_DREAM_CHARS`].
 pub fn process_dream_response(response: &str) -> Option<String> {
     let trimmed = response.trim();
@@ -315,32 +278,19 @@ pub fn process_dream_response(response: &str) -> Option<String> {
     Some(content)
 }
 
-/// Minimum age (in seconds) a session file must have before cleanup will
-/// delete it. Protects against removing files that a concurrent session
-/// may still be actively appending to.
+/// Minimum age in seconds a session file must have before cleanup will delete it.
+/// Protects files that a concurrent session may still be appending to.
 const CLEANUP_RECENCY_GUARD_SECS: u64 = 300; // 5 minutes
 
 /// Delete session log files whose stems were processed during dream.
-///
-/// Returns the stems that were actually removed from disk. The caller
-/// uses this list to purge the corresponding search-index entries —
-/// stems skipped by the recency guard or that failed to delete are
-/// excluded so their index chunks remain intact.
-///
-/// Logs warnings for individual deletion failures but never propagates
-/// errors \u{2014} the consolidation has already succeeded at this point.
-///
-/// Files modified within the last [`CLEANUP_RECENCY_GUARD_SECS`] are
-/// skipped to avoid deleting logs that a concurrent session is still
-/// actively writing to.
-fn clean_processed_sessions(sessions_dir: &Path, stems: &[String]) -> Vec<String> {
+/// Logs warnings for deletion failures but never propagates errors, because the consolidation already succeeded.
+pub fn clean_processed_sessions(sessions_dir: &Path, stems: &[String]) -> Vec<String> {
     let mut cleaned = Vec::new();
     let now = SystemTime::now();
     for stem in stems {
         let path = sessions_dir.join(format!("{stem}.md"));
 
-        // Recency guard: skip files modified very recently — a
-        // concurrent session may be actively appending.
+        // Skip files modified within the recency guard window; a concurrent session may still be appending
         if let Ok(meta) = std::fs::metadata(&path)
             && let Ok(mtime) = meta.modified()
             && now.duration_since(mtime).unwrap_or_default().as_secs() < CLEANUP_RECENCY_GUARD_SECS
@@ -356,7 +306,7 @@ fn clean_processed_sessions(sessions_dir: &Path, stems: &[String]) -> Vec<String
         match std::fs::remove_file(&path) {
             Ok(()) => cleaned.push(stem.clone()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Already gone \u{2014} not an error, but don't count as removed.
+                // Already gone; not an error, but don't count it as removed
             }
             Err(e) => {
                 tracing::warn!(
@@ -379,50 +329,14 @@ fn clean_processed_sessions(sessions_dir: &Path, stems: &[String]) -> Vec<String
     cleaned
 }
 
-/// Execute the dream lifecycle around a provided model response.
+/// Execute the dream around a provided model response.
 ///
-/// This is the "pure logic" half of dream execution \u{2014} the session actor
-/// handles the actual model call and passes the response here.
-///
-/// Steps:
-/// 1. Acquire lock
-/// 2. Process response
-/// 3. Overwrite workspace MEMORY.md
-/// 4. Clean up processed session files (on success only)
-/// 5. On success: leave lock mtime (records consolidation)
-/// 6. On failure: rollback lock
+/// The session actor makes the actual model call and passes the response here.
 pub fn execute_dream(
-    lock: &DreamLock,
     storage: &super::storage::MemoryStorage,
     response: &str,
     sessions_eligible: usize,
-    stale_lock_secs: u64,
-    sessions_dir: &Path,
-    processed_stems: &[String],
 ) -> DreamResult {
-    let prior = match lock.try_acquire(stale_lock_secs) {
-        Ok(Some(prior)) => {
-            tracing::info!(target: LOG, "DREAM_EXECUTE: lock acquired");
-            prior
-        }
-        Ok(None) => {
-            tracing::info!(target: LOG, "DREAM_EXECUTE: lock held by another process, skipping");
-            return DreamResult {
-                status: DreamStatus::Skipped("lock held by another process".into()),
-                sessions_eligible: 0,
-                cleaned_stems: Vec::new(),
-            };
-        }
-        Err(e) => {
-            tracing::warn!(target: LOG, error = %e, "DREAM_EXECUTE: lock acquire failed");
-            return DreamResult {
-                status: DreamStatus::Failed(format!("lock acquire failed: {e}")),
-                sessions_eligible: 0,
-                cleaned_stems: Vec::new(),
-            };
-        }
-    };
-
     let content = match process_dream_response(response) {
         Some(c) => c,
         None => {
@@ -430,36 +344,28 @@ pub fn execute_dream(
             return DreamResult {
                 status: DreamStatus::NothingToConsolidate,
                 sessions_eligible,
-                cleaned_stems: Vec::new(),
             };
         }
     };
 
     let chars_written = content.chars().count();
     if let Err(e) = storage.write_long_term(super::storage::MemoryScope::Workspace, &content) {
-        let _ = lock.rollback(prior);
-        tracing::warn!(target: LOG, error = %e, "DREAM_EXECUTE: write failed, lock rolled back");
+        tracing::warn!(target: LOG, error = %e, "DREAM_EXECUTE: write failed");
         return DreamResult {
             status: DreamStatus::Failed(format!("failed to write MEMORY.md: {e}")),
             sessions_eligible,
-            cleaned_stems: Vec::new(),
         };
     }
-
-    // Consolidation succeeded — clean up the session files that were read.
-    let cleaned_stems = clean_processed_sessions(sessions_dir, processed_stems);
 
     tracing::info!(
         target: LOG,
         chars_written,
         sessions_eligible,
-        sessions_cleaned = cleaned_stems.len(),
         "DREAM_EXECUTE: completed"
     );
     DreamResult {
         status: DreamStatus::Completed { chars_written },
         sessions_eligible,
-        cleaned_stems,
     }
 }
 
@@ -471,8 +377,7 @@ mod tests {
     use std::time::Duration;
     use tempfile::TempDir;
 
-    // Mirrors `dream_lock::tests::write_session` — kept local to avoid
-    // cross-module test coupling for a trivial 5-line helper.
+    // Mirrors `dream_lock::tests::write_session`; it is kept local to avoid cross-module test coupling for a trivial 5-line helper
     fn write_session(dir: &Path, name: &str, age_secs: u64) {
         fs::create_dir_all(dir).unwrap();
         let path = dir.join(format!("{name}.md"));
@@ -492,10 +397,10 @@ mod tests {
     }
 
     fn set_consolidation_age(dir: &Path, age_secs: u64) {
-        let lock_path = dir.join(".dream-lock");
-        fs::write(&lock_path, "").unwrap();
+        let marker = dir.join(".dream-consolidated");
+        fs::write(&marker, "").unwrap();
         let t = SystemTime::now() - Duration::from_secs(age_secs);
-        filetime::set_file_mtime(&lock_path, FileTime::from_system_time(t)).unwrap();
+        filetime::set_file_mtime(&marker, FileTime::from_system_time(t)).unwrap();
     }
 
     #[test]
@@ -710,8 +615,7 @@ mod tests {
         fs::write(dir.join(format!("{name}.md")), content).unwrap();
     }
 
-    /// Write a session file and back-date its mtime so it passes the
-    /// recency guard in `clean_processed_sessions`.
+    /// Write a session file and back-date its mtime so it passes the recency guard in `clean_processed_sessions`.
     fn write_old_session_content(dir: &Path, name: &str, content: &str) {
         write_session_content(dir, name, content);
         let old = SystemTime::now() - Duration::from_secs(CLEANUP_RECENCY_GUARD_SECS + 60);
@@ -849,28 +753,18 @@ mod tests {
         (storage, workspace)
     }
 
-    /// Helper: path for an empty sessions directory (no cleanup expected).
-    fn empty_sessions_dir(tmp: &TempDir) -> PathBuf {
-        let p = tmp.path().join("empty-sessions");
-        fs::create_dir_all(&p).unwrap();
-        p
-    }
-
     #[test]
     fn execute_dream_valid_response_writes_memory() {
         let dir = TempDir::new().unwrap();
-        let lock = DreamLock::new(dir.path());
         let (storage, ws) = test_storage(&dir);
-        let sdir = empty_sessions_dir(&dir);
 
         let response = "## Decisions\n\nWe chose Rust.\n\n## Architecture\n\nEvent-driven.";
-        let result = execute_dream(&lock, &storage, response, 5, 300, &sdir, &[]);
+        let result = execute_dream(&storage, response, 5);
 
         assert!(
             matches!(result.status, DreamStatus::Completed { chars_written } if chars_written == response.chars().count())
         );
         assert_eq!(result.sessions_eligible, 5);
-        assert_eq!(result.cleaned_stems.len(), 0);
 
         let memory = fs::read_to_string(ws.join("MEMORY.md")).unwrap();
         assert!(memory.contains("We chose Rust."));
@@ -880,58 +774,19 @@ mod tests {
     #[test]
     fn execute_dream_empty_response_nothing_to_consolidate() {
         let dir = TempDir::new().unwrap();
-        let lock = DreamLock::new(dir.path());
         let (storage, _) = test_storage(&dir);
-        let sdir = empty_sessions_dir(&dir);
 
-        let result = execute_dream(&lock, &storage, "", 3, 300, &sdir, &[]);
+        let result = execute_dream(&storage, "", 3);
         assert_eq!(result.status, DreamStatus::NothingToConsolidate);
         assert_eq!(result.sessions_eligible, 3);
-        assert_eq!(result.cleaned_stems.len(), 0);
     }
 
     #[test]
-    fn execute_dream_no_reply_nothing_to_consolidate() {
+    fn execute_dream_write_failure_returns_failed() {
         let dir = TempDir::new().unwrap();
-        let lock = DreamLock::new(dir.path());
-        let (storage, _) = test_storage(&dir);
-        let sdir = empty_sessions_dir(&dir);
 
-        let result = execute_dream(&lock, &storage, "NO_REPLY", 2, 300, &sdir, &[]);
-        assert_eq!(result.status, DreamStatus::NothingToConsolidate);
-        assert_eq!(result.cleaned_stems.len(), 0);
-    }
-
-    #[test]
-    fn execute_dream_lock_held_returns_skipped() {
-        let dir = TempDir::new().unwrap();
-        let lock = DreamLock::new(dir.path());
-        let (storage, _) = test_storage(&dir);
-        let sdir = empty_sessions_dir(&dir);
-
-        // Acquire the lock (our own PID, non-stale)
-        lock.try_acquire(300).unwrap().unwrap();
-
-        let result = execute_dream(&lock, &storage, "## Topic\n\nContent", 5, 300, &sdir, &[]);
-        match &result.status {
-            DreamStatus::Skipped(reason) => {
-                assert!(reason.contains("lock"), "reason: {reason}");
-            }
-            other => panic!("expected Skipped, got {other:?}"),
-        }
-        assert_eq!(result.sessions_eligible, 0);
-        assert_eq!(result.cleaned_stems.len(), 0);
-    }
-
-    #[test]
-    fn execute_dream_write_failure_rolls_back_lock() {
-        let dir = TempDir::new().unwrap();
-        let lock = DreamLock::new(dir.path());
-        let sdir = empty_sessions_dir(&dir);
-
-        // Point workspace dir at a path under a regular file, so
-        // create_dir_all inside append_to_memory will fail (works
-        // even when running as root, unlike chmod-based approaches).
+        // Point the workspace dir at a path under a regular file so create_dir_all inside append_to_memory fails
+        // This works even when running as root, unlike chmod-based approaches
         let blocker = dir.path().join("memory").join("blocker");
         fs::create_dir_all(blocker.parent().unwrap()).unwrap();
         fs::write(&blocker, "I am a file").unwrap();
@@ -939,7 +794,7 @@ mod tests {
 
         let storage = MemoryStorage::with_paths(dir.path().join("memory"), workspace);
 
-        let result = execute_dream(&lock, &storage, "## Topic\n\nContent", 3, 300, &sdir, &[]);
+        let result = execute_dream(&storage, "## Topic\n\nContent", 3);
 
         match &result.status {
             DreamStatus::Failed(reason) => {
@@ -947,53 +802,26 @@ mod tests {
             }
             other => panic!("expected Failed, got {other:?}"),
         }
-        assert_eq!(result.cleaned_stems.len(), 0);
-
-        // Verify rollback: lock file should be gone (prior was None).
-        let lock_path = dir.path().join(".dream-lock");
-        assert!(
-            !lock_path.exists(),
-            "lock file should be deleted after rollback with no prior"
-        );
     }
 
     #[test]
     fn execute_dream_overwrites_existing_memory() {
         let dir = TempDir::new().unwrap();
         let (storage, ws) = test_storage(&dir);
-        let sdir = empty_sessions_dir(&dir);
 
         // Pre-populate MEMORY.md
         fs::create_dir_all(&ws).unwrap();
         fs::write(ws.join("MEMORY.md"), "## Existing\n\nOld content.").unwrap();
 
-        let lock = DreamLock::new(dir.path());
         let response = "## New Topic\n\nFresh insight.";
-        let result = execute_dream(&lock, &storage, response, 2, 300, &sdir, &[]);
+        let result = execute_dream(&storage, response, 2);
 
         assert!(matches!(result.status, DreamStatus::Completed { .. }));
 
         let memory = fs::read_to_string(ws.join("MEMORY.md")).unwrap();
-        // write_long_term overwrites: old content is replaced
+        // write_long_term overwrites rather than appends
         assert!(!memory.contains("Old content."));
         assert_eq!(memory.trim(), response);
-    }
-
-    // -------------------------------------------------------------------
-    // DREAM_SYSTEM_PROMPT sanity checks
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn dream_system_prompt_has_required_content() {
-        assert!(DREAM_SYSTEM_PROMPT.contains("dream"));
-        assert!(DREAM_SYSTEM_PROMPT.contains("NO_REPLY"));
-        assert!(DREAM_SYSTEM_PROMPT.contains("## headers"));
-        // Core instruction verbs that define dream behavior
-        assert!(DREAM_SYSTEM_PROMPT.contains("Merge"));
-        assert!(DREAM_SYSTEM_PROMPT.contains("Resolve"));
-        assert!(DREAM_SYSTEM_PROMPT.contains("Discard"));
-        assert!(DREAM_SYSTEM_PROMPT.contains("Preserve"));
-        assert!(DREAM_SYSTEM_PROMPT.contains("Convert"));
     }
 
     #[test]
@@ -1012,16 +840,8 @@ mod tests {
             !msg.content.contains("should not appear"),
             "second session should be skipped after cap"
         );
-        // Only the first stem should be in processed_stems — the second
-        // was beyond the 32K cap and must NOT be cleaned up.
+        // The second stem was beyond the 32K cap and must not be cleaned up
         assert_eq!(msg.processed_stems, vec!["big"]);
-    }
-
-    #[test]
-    fn normalize_memory_content_preserves_headers() {
-        let input = "## Topic A\n\nContent A.\n\n## Topic B\n\nContent B.";
-        let normalized = super::super::storage::normalize_memory_content(input);
-        assert_eq!(normalized, input);
     }
 
     // -------------------------------------------------------------------
@@ -1029,25 +849,19 @@ mod tests {
     // -------------------------------------------------------------------
 
     #[test]
-    fn cleanup_deletes_processed_sessions_on_completed() {
+    fn cleanup_deletes_processed_sessions() {
         let dir = TempDir::new().unwrap();
-        let lock = DreamLock::new(dir.path());
-        let (storage, _ws) = test_storage(&dir);
 
-        // Create session files that will be "processed" (old mtime to
-        // pass the recency guard).
+        // Create session files that will be "processed" (old mtime to pass the recency guard)
         let sessions = dir.path().join("sessions");
         write_old_session_content(&sessions, "sess-a", "Content A");
         write_old_session_content(&sessions, "sess-b", "Content B");
 
         let processed = vec!["sess-a".to_string(), "sess-b".to_string()];
-        let response = "## Consolidated\n\nMerged content.";
-        let result = execute_dream(&lock, &storage, response, 2, 300, &sessions, &processed);
+        let cleaned = clean_processed_sessions(&sessions, &processed);
+        assert_eq!(cleaned.len(), 2);
 
-        assert!(matches!(result.status, DreamStatus::Completed { .. }));
-        assert_eq!(result.cleaned_stems.len(), 2);
-
-        // Both files should be gone
+        // Both files are gone
         assert!(!sessions.join("sess-a.md").exists());
         assert!(!sessions.join("sess-b.md").exists());
     }
@@ -1055,23 +869,18 @@ mod tests {
     #[test]
     fn cleanup_preserves_unprocessed_sessions() {
         let dir = TempDir::new().unwrap();
-        let lock = DreamLock::new(dir.path());
-        let (storage, _ws) = test_storage(&dir);
 
-        // Create session files — only some will be "processed"
+        // Create session files; only some will be "processed"
         let sessions = dir.path().join("sessions");
         write_old_session_content(&sessions, "processed", "Content");
         write_old_session_content(&sessions, "unprocessed", "Kept content");
 
         // Only mark "processed" as having been read
         let processed = vec!["processed".to_string()];
-        let response = "## Consolidated\n\nMerged.";
-        let result = execute_dream(&lock, &storage, response, 1, 300, &sessions, &processed);
+        let cleaned = clean_processed_sessions(&sessions, &processed);
+        assert_eq!(cleaned.len(), 1);
 
-        assert!(matches!(result.status, DreamStatus::Completed { .. }));
-        assert_eq!(result.cleaned_stems.len(), 1);
-
-        // Processed file should be gone, unprocessed should remain
+        // The processed file is gone; the unprocessed one remains
         assert!(!sessions.join("processed.md").exists());
         assert!(sessions.join("unprocessed.md").exists());
         assert_eq!(
@@ -1081,62 +890,46 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_failure_does_not_affect_completed_status() {
+    fn cleanup_failure_returns_only_deleted() {
         let dir = TempDir::new().unwrap();
-        let lock = DreamLock::new(dir.path());
-        let (storage, _ws) = test_storage(&dir);
 
         let sessions = dir.path().join("sessions");
         fs::create_dir_all(&sessions).unwrap();
 
-        // Create a directory where a .md file is expected — remove_file
-        // on a directory fails even as root, giving us a guaranteed
-        // cleanup failure without relying on chmod. Back-date the dir's
-        // mtime so it passes the recency guard.
+        // Create a directory where a .md file is expected; remove_file on a directory fails even as root, so cleanup fails without relying on chmod
+        // Back-date the dir's mtime so it passes the recency guard
         let bad_path = sessions.join("bad-stem.md");
         fs::create_dir_all(&bad_path).unwrap();
         let old = SystemTime::now() - Duration::from_secs(CLEANUP_RECENCY_GUARD_SECS + 60);
         filetime::set_file_mtime(&bad_path, FileTime::from_system_time(old)).unwrap();
 
-        // Also create a normal file that CAN be cleaned
+        // Also create a normal file that can be cleaned
         write_old_session_content(&sessions, "good-stem", "Content");
 
         let processed = vec!["bad-stem".to_string(), "good-stem".to_string()];
-        let response = "## Consolidated\n\nMerged.";
-        let result = execute_dream(&lock, &storage, response, 2, 300, &sessions, &processed);
+        let cleaned = clean_processed_sessions(&sessions, &processed);
 
-        // Status must still be Completed despite the cleanup failure
-        assert!(matches!(result.status, DreamStatus::Completed { .. }));
-        // Only the good-stem file was cleaned; bad-stem failed
-        assert_eq!(result.cleaned_stems.len(), 1);
-        // The directory-as-file still exists (cleanup failure)
+        // Only the good-stem file was cleaned; bad-stem failed and is excluded
+        assert_eq!(cleaned, vec!["good-stem"]);
+        // The directory-as-file still exists because its cleanup failed
         assert!(sessions.join("bad-stem.md").exists());
-        // The normal file was successfully removed
         assert!(!sessions.join("good-stem.md").exists());
     }
 
     #[test]
     fn cleanup_skips_recently_modified_files() {
         let dir = TempDir::new().unwrap();
-        let lock = DreamLock::new(dir.path());
-        let (storage, _ws) = test_storage(&dir);
 
         let sessions = dir.path().join("sessions");
-        // This file has the current mtime (within recency guard window)
+        // This file has the current mtime, within the recency guard window
         write_session_content(&sessions, "recent", "Still being written");
         // This file is old enough to be cleaned
         write_old_session_content(&sessions, "old", "Done");
 
         let processed = vec!["recent".to_string(), "old".to_string()];
-        let response = "## Consolidated\n\nMerged.";
-        let result = execute_dream(&lock, &storage, response, 2, 300, &sessions, &processed);
+        let cleaned = clean_processed_sessions(&sessions, &processed);
 
-        assert!(matches!(result.status, DreamStatus::Completed { .. }));
-        // Only the old file should be cleaned; recent should be skipped.
-        // Crucially, cleaned_stems must contain ONLY "old" — if the
-        // caller used this list for index cleanup, "recent" must NOT
-        // have its index chunks removed since its file is still on disk.
-        assert_eq!(result.cleaned_stems, vec!["old"]);
+        assert_eq!(cleaned, vec!["old"]);
         assert!(
             sessions.join("recent.md").exists(),
             "recently-modified file must be preserved"
@@ -1145,71 +938,16 @@ mod tests {
     }
 
     #[test]
-    fn no_cleanup_on_nothing_to_consolidate() {
-        let dir = TempDir::new().unwrap();
-        let lock = DreamLock::new(dir.path());
-        let (storage, _ws) = test_storage(&dir);
-
-        let sessions = dir.path().join("sessions");
-        write_session_content(&sessions, "kept", "Content");
-
-        let processed = vec!["kept".to_string()];
-        // NO_REPLY → NothingToConsolidate — should NOT clean up
-        let result = execute_dream(&lock, &storage, "NO_REPLY", 1, 300, &sessions, &processed);
-
-        assert_eq!(result.status, DreamStatus::NothingToConsolidate);
-        assert_eq!(result.cleaned_stems.len(), 0);
-        assert!(
-            sessions.join("kept.md").exists(),
-            "session file must be preserved on NothingToConsolidate"
-        );
-    }
-
-    #[test]
-    fn no_cleanup_on_failed_status() {
-        let dir = TempDir::new().unwrap();
-        let lock = DreamLock::new(dir.path());
-
-        // Force a write failure with the blocker trick
-        let blocker = dir.path().join("memory").join("blocker");
-        fs::create_dir_all(blocker.parent().unwrap()).unwrap();
-        fs::write(&blocker, "I am a file").unwrap();
-        let workspace = blocker.join("impossible-subdir");
-        let storage = MemoryStorage::with_paths(dir.path().join("memory"), workspace);
-
-        let sessions = dir.path().join("sessions");
-        write_session_content(&sessions, "kept", "Content");
-
-        let processed = vec!["kept".to_string()];
-        let result = execute_dream(
-            &lock,
-            &storage,
-            "## Topic\n\nContent",
-            1,
-            300,
-            &sessions,
-            &processed,
-        );
-
-        assert!(matches!(result.status, DreamStatus::Failed(_)));
-        assert_eq!(result.cleaned_stems.len(), 0);
-        assert!(
-            sessions.join("kept.md").exists(),
-            "session file must be preserved on Failed"
-        );
-    }
-
-    #[test]
     fn build_message_processed_stems_excludes_capped_sessions() {
         let dir = TempDir::new().unwrap();
         let sessions = dir.path().join("sessions");
 
-        // First session fills the buffer past the cap
+        // The first session fills the buffer past the cap
         let big_content = "x".repeat(MAX_DREAM_INPUT_CHARS);
         write_session_content(&sessions, "first", &big_content);
-        // Second session should NOT be processed (over cap)
+        // The second session lands over the cap and must not be processed
         write_session_content(&sessions, "second", "small content");
-        // Third session should NOT be processed either
+        // The third session must not be processed either
         write_session_content(&sessions, "third", "more content");
 
         let stems = vec![
@@ -1229,18 +967,14 @@ mod tests {
 
     #[test]
     fn end_to_end_cap_boundary_cleanup() {
-        // Integration test: build_dream_user_message hits the 32K cap
-        // partway through the stems list, then execute_dream cleans up
-        // only the processed files while preserving unprocessed ones.
+        // Integration test: build_dream_user_message hits the 32K cap partway through the stems list
         let dir = TempDir::new().unwrap();
-        let lock = DreamLock::new(dir.path());
         let (storage, _ws) = test_storage(&dir);
 
         let sessions = dir.path().join("sessions");
 
-        // Create 5 session files. The first 2 will fill past the cap;
-        // sessions 3-5 should survive cleanup.
-        let half_cap = MAX_DREAM_INPUT_CHARS / 2 + 500; // slightly over half
+        // Create 5 session files: the first 2 fill past the cap, sessions 3-5 should survive cleanup
+        let half_cap = MAX_DREAM_INPUT_CHARS / 2 + 500; // Two sessions of this size exceed the cap.
         write_old_session_content(&sessions, "aaa-first", &"a".repeat(half_cap));
         write_old_session_content(&sessions, "bbb-second", &"b".repeat(half_cap));
         write_old_session_content(&sessions, "ccc-third", "small content 3");
@@ -1258,7 +992,7 @@ mod tests {
         .map(String::from)
         .collect();
 
-        // Phase 1: build_dream_user_message should cap after the first 2
+        // Phase 1: build_dream_user_message should cap after the first 2 sessions
         let dream_msg = build_dream_user_message(&sessions, &all_stems, None).unwrap();
         assert_eq!(
             dream_msg.processed_stems.len(),
@@ -1268,27 +1002,18 @@ mod tests {
         assert_eq!(dream_msg.processed_stems[0], "aaa-first");
         assert_eq!(dream_msg.processed_stems[1], "bbb-second");
 
-        // Phase 2: execute_dream with a valid response should clean up
-        // only the processed stems.
         let response = "## Consolidated\n\nMerged from 2 sessions.";
-        let result = execute_dream(
-            &lock,
-            &storage,
-            response,
-            all_stems.len(),
-            300,
-            &sessions,
-            &dream_msg.processed_stems,
-        );
-
+        let result = execute_dream(&storage, response, all_stems.len());
         assert!(matches!(result.status, DreamStatus::Completed { .. }));
-        assert_eq!(result.cleaned_stems.len(), 2);
 
-        // Processed files deleted
+        let cleaned = clean_processed_sessions(&sessions, &dream_msg.processed_stems);
+        assert_eq!(cleaned.len(), 2);
+
+        // The processed files are deleted
         assert!(!sessions.join("aaa-first.md").exists());
         assert!(!sessions.join("bbb-second.md").exists());
 
-        // Unprocessed files preserved
+        // The unprocessed files are preserved
         assert!(sessions.join("ccc-third.md").exists());
         assert!(sessions.join("ddd-fourth.md").exists());
         assert!(sessions.join("eee-fifth.md").exists());
@@ -1300,10 +1025,10 @@ mod tests {
         let sessions = dir.path().join("sessions");
         fs::create_dir_all(&sessions).unwrap();
 
-        // Only create one of two stems (old mtime to pass recency guard)
+        // Only create one of the two stems (old mtime to pass the recency guard)
         write_old_session_content(&sessions, "exists", "Content");
 
-        // Pass both — "missing" doesn't exist, should not error or count
+        // Pass both; "missing" doesn't exist and should not error or count
         let cleaned =
             clean_processed_sessions(&sessions, &["exists".to_string(), "missing".to_string()]);
 

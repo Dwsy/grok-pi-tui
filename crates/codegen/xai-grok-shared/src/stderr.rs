@@ -13,17 +13,14 @@ pub fn stderr_lock() -> MutexGuard<'static, ()> {
     stderr_output_lock().lock()
 }
 
-/// Execute `f` with exclusive access to the TUI's stderr writer.
-///
-/// When [`xai_tty_utils::redirect_native_stderr`] has been called, this
-/// writes to the dup'd fd that points at the real terminal (bypassing the
-/// `/dev/null` redirect on fd 2). Otherwise falls back to normal stderr.
+/// When [`xai_tty_utils::redirect_native_stderr`] has been called, this writes to the dup'd fd that points at the real
+/// terminal. Otherwise falls back to normal stderr. Event-loop-thread code must enqueue on the pager's `EscapeWriter`;
+/// this helper is for startup/teardown/suspend paths and non-loop threads.
 pub fn with_locked_stderr<T>(f: impl FnOnce(&mut std::fs::File) -> T) -> T {
     let _guard = stderr_lock();
     let mut file = xai_tty_utils::dup_tui_stderr().unwrap_or_else(|_| {
-        // Fallback: try_clone stderr to get an independently-owned
-        // File. This path is hit if redirect_native_stderr was never
-        // called or fd dup fails.
+        // Fallback: try_clone stderr to get an independently-owned File
+        // This path is hit if redirect_native_stderr was never called or fd dup fails
         let stderr = std::io::stderr();
         let stderr_file: std::fs::File;
         #[cfg(unix)]

@@ -23,10 +23,9 @@ impl fmt::Display for LineSegment<'_> {
     }
 }
 
-/// The parse events `split_into_line_segments` distinguishes. Everything the
-/// splitter cares about: printable characters (visual width), CR, LF; every
-/// other action (SGR colors, cursor moves, OSC, …) merely extends the current
-/// segment byte range.
+/// The parse events `split_into_line_segments` distinguishes. Everything the splitter cares about: printable characters
+/// (visual width), CR, LF; every other action (SGR colors, cursor moves, OSC, …) merely extends the current segment byte
+/// range.
 enum SegmentEvent {
     Print(char),
     CarriageReturn,
@@ -35,12 +34,9 @@ enum SegmentEvent {
     Other,
 }
 
-/// `anstyle_parse::Perform` implementor that records the single event (if
-/// any) produced by the byte just fed to the parser.
-///
-/// The VTE state machine dispatches at most one action per input byte, so a
-/// one-slot buffer is sufficient. Print events are dispatched on the *final*
-/// byte of a UTF-8 sequence; the char itself tells us how many bytes it spans.
+/// `anstyle_parse::Perform` implementor that records the single event (if any) produced by the byte just fed to the
+/// parser. The VTE state machine dispatches at most one action per input byte, so a one-slot buffer is sufficient. Print
+/// events are dispatched on the *final* byte of a UTF-8 sequence; the char itself tells us how many bytes it spans.
 #[derive(Default)]
 struct EventCollector {
     event: Option<SegmentEvent>,
@@ -123,10 +119,8 @@ pub fn split_into_line_segments<'a>(input: &'a str, term_width: usize) -> Vec<Li
 
         match event {
             SegmentEvent::LineFeed => {
-                // Emit current segment but strip \r if the segment ended with it.
-                // Note: `segment_end` (not `index`) is deliberate — a LF can
-                // fire mid-escape-sequence ("\x1b[3\n1m"), and the pending
-                // escape bytes must not leak into the emitted segment.
+                // Emit current segment but strip \r if the segment ended with it. Note: `segment_end` (not `index`) is deliberate — a LF
+                // can fire mid-escape-sequence ("\x1b[3\n1m"), and the pending escape bytes must not leak into the emitted segment.
                 push_segment!(segment_end - usize::from(prev_is_cr), true);
                 // We skip \n itself (and possibly the preceding \r, and any
                 // pending escape bytes) so they don't end up in segments
@@ -140,10 +134,8 @@ pub fn split_into_line_segments<'a>(input: &'a str, term_width: usize) -> Vec<Li
                 is_cr = true;
             }
             SegmentEvent::Print(ch) => {
-                // Input is a valid &str, so print fires on the last byte of
-                // the char's UTF-8 encoding; anything unclaimed before the
-                // char (e.g. an aborted escape) folds into the current
-                // segment so the wrap point lands on the char boundary.
+                // Input is a valid &str, so print fires on the last byte of the char's UTF-8 encoding; anything unclaimed before the
+                // char (e.g. an aborted escape) folds into the current segment so the wrap point lands on the char boundary.
                 let char_bytes = ch.len_utf8();
                 segment_end = index + 1 - char_bytes;
 

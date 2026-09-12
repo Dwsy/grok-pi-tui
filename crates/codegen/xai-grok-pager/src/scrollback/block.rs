@@ -7,69 +7,47 @@ use crate::appearance::AppearanceConfig;
 use crate::inline_media_ffmpeg::inline_media_reserved_rows;
 use crate::prompt_images::{InlineMediaInfo, ScrollbackImageRef, ScrollbackVideoRef};
 use xai_grok_pager_diff::DiffHunk;
-// Imported (rather than referenced as `crate::…`) so the default trait method
-// below stays free of `crate::` tokens: `#[enum_delegate::register]` captures
-// default method bodies into a generated macro, where `crate::` trips
-// `clippy::crate_in_macro_def`.
 
 use super::blocks::mermaid_content::DiagramAffordance;
 use super::blocks::{
-    AgentMessageBlock, BgTaskBlock, BtwBlock, ContextInfoBlock, CreditLimitBlock,
-    EditToolCallBlock, ExecuteToolCallBlock, LineRange, ListDirToolCallBlock, OtherToolCallBlock,
-    ReadToolCallBlock, SearchFileMatch, SearchToolCallBlock, SessionEvent, SessionEventBlock,
-    SubagentBlock, SubagentBlockKind, SystemMessageBlock, ThinkingBlock, ToolCallBlock,
-    UserPromptBlock, WorkflowBlock,
+    AgentMessageBlock, BgTaskBlock, BtwBlock, ContextInfoBlock, EditToolCallBlock,
+    ExecuteToolCallBlock, LineRange, ListDirToolCallBlock, OtherToolCallBlock, ReadToolCallBlock,
+    SearchFileMatch, SearchToolCallBlock, SessionEvent, SessionEventBlock, SubagentBlock,
+    SubagentBlockKind, SystemMessageBlock, ThinkingBlock, ToolCallBlock, UserPromptBlock,
+    WorkflowBlock,
 };
 use super::types::{
     AccentStyle, BlockBackground, BlockContext, BlockOutput, DisplayMode, RenderedBlockOutput,
     Selectable, SelectionBoundaries, derive_selection_text,
 };
 
-/// The trailing inline image anchored within a block's rendered output.
-///
-/// Built by the default [`inline_media_placements`](BlockContent::inline_media_placements)
-/// for a block's single [`inline_media`](BlockContent::inline_media) image (tool
-/// media, e.g. an `OtherToolCallBlock`). Mermaid diagrams do not use this path —
-/// they render as a code block plus a text affordance row instead.
+/// The trailing inline image anchored within a block's rendered output. Mermaid diagrams do not use this path; they
+/// render as a code block plus a text affordance row instead.
 #[derive(Debug, Clone)]
 pub struct AnchoredMedia {
     /// Media metadata (path, raster dimensions, type).
     pub info: InlineMediaInfo,
-    /// Post-wrap row offset, from the block's first content row, where the
-    /// image's top edge is anchored. (Tool-media blocks have no top vpad, so
-    /// this is measured from the entry top.)
+    /// Post-wrap row offset, from the block's first content row, where the image's top edge is anchored.
+    /// (Tool-media blocks have no top vpad, so this is measured from the entry top.)
     pub row_offset: u16,
     /// Height of the image area in rows (the crop region).
     pub rows: u16,
 }
 
-/// Trait for block content description.
-///
-/// Each block type implements this trait. The RenderBlock enum delegates to
-/// the inner type automatically via enum_delegate.
-///
-/// Note: This trait describes *what* to render (content, styles, padding).
-/// Actual rendering to a Buffer is done via the `Renderable` trait from
-/// `ui/render/renderable.rs`.
-#[enum_delegate::register]
+/// Each block type implements this trait. The RenderBlock enum delegates to the inner type via the `delegate_block!` macro below.
+/// This trait describes *what* to render (content, styles, padding).
+/// Actual rendering to a Buffer is done via the `Renderable` trait from `ui/render/renderable.rs`.
 pub trait BlockContent {
     /// Produce renderable content for the given context.
     fn output(&self, ctx: &BlockContext) -> BlockOutput;
 
     /// Accent line style (color, animation).
-    ///
     /// Returns `None` for blocks without an accent line.
     /// Returns `Some(AccentStyle)` with color and animation info.
     fn accent(&self, ctx: &BlockContext) -> Option<AccentStyle>;
 
-    /// Bullet/icon color style.
-    ///
-    /// Returns `None` to use default styling (gray when collapsed, primary when expanded).
-    /// Returns `Some(AccentStyle)` to use a specific color (dimmed when collapsed+groupable).
-    ///
-    /// Default: delegates to `accent()` — bullet matches accent color.
-    /// Override for blocks where bullet differs from accent (e.g., Thinking: accent
-    /// when expanded but default bullet; failed Read: no accent but red bullet).
+    /// Bullet/icon color style. Default: delegates to `accent()`, so the bullet matches the accent color. a failed Read
+    /// has no accent but a red bullet.
     fn bullet(&self, ctx: &BlockContext) -> Option<AccentStyle> {
         self.accent(ctx)
     }
@@ -86,8 +64,7 @@ pub trait BlockContent {
 
     /// Vertical padding (blank line with accent top/bottom).
     ///
-    /// Borrows the appearance rather than taking a [`BlockContext`] so the
-    /// O(history) height passes do not build one per entry.
+    /// Borrows the appearance rather than taking a [`BlockContext`] so the O(history) height passes do not build one per entry.
     fn has_vpad_for(&self, _appearance: &AppearanceConfig) -> bool {
         true
     }
@@ -106,13 +83,8 @@ pub trait BlockContent {
         true
     }
 
-    /// Get the next display mode when toggling fold.
-    ///
-    /// Default behavior: toggle between Collapsed and Expanded.
-    /// Blocks can override for 3-way cycling (e.g., thinking blocks).
-    ///
-    /// The `is_running` parameter allows blocks to behave differently
-    /// while streaming (e.g., thinking blocks might skip Collapsed while running).
+    /// Get the next display mode when toggling fold. Default behavior: toggle between Collapsed and Expanded. Blocks
+    /// can override for 3-way cycling. The `is_running` parameter allows blocks to behave differently while streaming.
     fn next_fold_mode(&self, current: DisplayMode, is_running: bool) -> DisplayMode {
         let _ = is_running; // Default ignores running state
         match current {
@@ -122,10 +94,8 @@ pub trait BlockContent {
     }
 
     /// Get the display mode to use when explicitly collapsing (left/h key).
-    ///
-    /// Default: Collapsed. Blocks can override to use a different minimum mode
-    /// when running (e.g., execute blocks use Truncated while running to keep
-    /// showing the streaming output preview).
+    /// Default: Collapsed. Blocks can override to use a different minimum mode when running.
+    /// Execute blocks use Truncated while running to keep showing the streaming output preview.
     fn collapse_mode(&self, is_running: bool) -> DisplayMode {
         let _ = is_running;
         DisplayMode::Collapsed
@@ -138,13 +108,9 @@ pub trait BlockContent {
         DisplayMode::Expanded
     }
 
-    /// Display mode to adopt when the entry finishes running.
-    ///
-    /// Called by `finish_running()`. Returns `Some(mode)` to override
-    /// the current display mode, or `None` to keep it as-is.
-    ///
-    /// Default: `None` (no change). Blocks that auto-collapse on finish
-    /// (thinking, execute) or on error (edit) should override this.
+    /// Display mode to adopt when the entry finishes running. Called by `finish_running()`. Returns `Some(mode)` to
+    /// override the current display mode, or `None` to keep it as-is. Default: `None` (no change). Blocks that
+    /// auto-collapse on finish (thinking, execute) or on error (edit) should override this.
     fn finished_display_mode(&self) -> Option<DisplayMode> {
         None
     }
@@ -156,32 +122,20 @@ pub trait BlockContent {
     }
 
     /// Whether this block should display a bullet/icon prefix.
-    ///
-    /// Default: `false`. Override to opt in (e.g., ToolCallBlock when bullet
-    /// is configured, ThinkingBlock when collapsed). The bullet character and
-    /// color are determined by the appearance config and accent style.
+    /// Default: `false`. Override to opt in (e.g., ToolCallBlock when the bullet is configured, ThinkingBlock when collapsed).
+    /// The bullet character and color are determined by the appearance config and accent style.
     fn has_bullet(&self, _ctx: &BlockContext) -> bool {
         false
     }
 
-    /// Preamble content for the fullscreen viewer.
-    ///
-    /// Returns styled header lines shown above the ListPane content.
-    /// Uses expanded/bright styling (not dull-gray collapsed).
-    /// Returns `None` for blocks without a natural header (e.g., agent messages).
+    /// Preamble content for the fullscreen viewer. Returns `None` for blocks without a natural header.
     fn preamble(&self, _ctx: &BlockContext) -> Option<Text<'static>> {
         None
     }
 
-    /// Whether this block participates in dense group rendering.
-    ///
-    /// Groupable blocks that are adjacent form a "group" — they render without
-    /// gap rows between them when collapsed. Non-groupable blocks (e.g.,
-    /// AgentMessage, UserPrompt) always have gap rows around them and break
-    /// any adjacent group.
-    ///
-    /// Default: `false` (opt-in). Override to `true` for tool calls, thinking,
-    /// system messages, and other blocks that should pack densely.
+    /// Whether this block participates in dense group rendering. Groupable blocks that are adjacent form a "group":
+    /// they render without gap rows between them when collapsed. Non-groupable blocks always have gap rows around them
+    /// and break any adjacent group.
     fn is_groupable(&self) -> bool {
         false
     }
@@ -196,34 +150,22 @@ pub trait BlockContent {
         &[]
     }
 
-    /// Inline media metadata for blocks that should display media inline in
-    /// the scrollback. The renderer uses this to reserve height and the draw
-    /// loop uses it to emit terminal image escape sequences. Default: none.
+    /// Inline media metadata for blocks that should display media inline in the scrollback.
+    /// The renderer uses this to reserve height and the draw loop uses it to emit terminal image escape sequences. Default: none.
     fn inline_media(&self) -> Option<InlineMediaInfo> {
         None
     }
 
-    /// The block's trailing inline media, if any (tool media).
-    ///
-    /// Wraps a block's single [`inline_media`](Self::inline_media) into one
-    /// trailing placement: the image sits one padding row below the block's
-    /// text, with `rows + 3` rows reserved beneath the text (padding + image +
-    /// padding + button) and the second text line exposed as the click-to-copy
-    /// filepath. Blocks without `inline_media()` return empty.
-    ///
-    /// The `inline_media()`-is-`None` early return is the load-bearing fast path:
-    /// every non-media block (all agent messages, all non-media tool calls)
-    /// returns here without building `output()`. The `output()` rebuild below
-    /// runs only for an actual media block (today only `OtherToolCallBlock`),
-    /// whose `output()` is a cheap 2–3 line build.
+    /// Blocks without `inline_media()` return empty. Every non-media block (all agent messages, all non-media tool
+    /// calls) returns here without building `output()`. The `output()` rebuild below runs only for a media block (today
+    /// only `OtherToolCallBlock`), whose `output()` is a cheap 2 or 3 line build.
     fn inline_media_placements(&self, ctx: &BlockContext) -> Vec<AnchoredMedia> {
         let Some(info) = self.inline_media() else {
             return Vec::new();
         };
-        // Trailing geometry: image starts one row below the block's text
-        // (`content_lines + 1`), fitted to the same cell budget
-        // `EntryRenderer::inline_media_rows` reserves. The line count needs the
-        // laid-out output; the generic wrapper can't know it otherwise.
+        // Trailing geometry: the image starts one row below the block's text (`content_lines + 1`)
+        // It is fitted to the same cell budget `EntryRenderer::inline_media_rows` reserves
+        // The line count needs the laid-out output; the generic wrapper can't know it otherwise
         let content_lines = self.output(ctx).lines.len() as u16;
         let (rows, _total_rows) = inline_media_reserved_rows(&info, ctx.width);
         vec![AnchoredMedia {
@@ -233,19 +175,15 @@ pub trait BlockContent {
         }]
     }
 
-    /// Clickable affordance rows for the diagrams in this block's `output()`
-    /// (the `auto`/`on` Mermaid display). Each entry's `row_offset` is a
-    /// block-relative post-wrap row the draw loop paints
-    /// `[Open Image] [Copy Image Path] [Copy Source]` onto and registers click hit-rects
-    /// for. Default: none (only agent messages with diagrams override this).
+    /// Clickable affordance rows for the diagrams in this block's `output()` (the `auto`/`on` Mermaid display).
+    /// Default: none (only agent messages with diagrams override this).
     fn diagram_affordances(&self, _ctx: &BlockContext) -> Vec<DiagramAffordance> {
         Vec::new()
     }
 
-    /// Rows this block inserts into `output()` that the source-text height
-    /// *estimate* cannot see, so the off-screen estimate can add them and never
-    /// under-reserve. The only such rows today are Mermaid treatment rows (one
-    /// affordance row or fallback caption per detected diagram). Default: `0`.
+    /// Rows this block inserts into `output()` that the source-text height *estimate* cannot see.
+    /// The off-screen estimate adds them so it never under-reserves.
+    /// The only such rows today are Mermaid treatment rows (one affordance row or fallback caption per detected diagram). Default: `0`.
     fn estimate_extra_rows(&self) -> u16 {
         0
     }
@@ -261,21 +199,17 @@ pub trait BlockContent {
         0
     }
 
-    /// For media blocks on terminals without inline-graphics support, returns
-    /// `(path, is_video)` so the block can render a clickable text `[Open]`
-    /// line. `None` on graphics terminals (the overlay hosts its own buttons).
+    /// For media blocks on terminals without inline-graphics support, returns `(path, is_video)`.
+    /// The block uses it to render a clickable text `[Open]` line.
+    /// `None` on graphics terminals (the overlay hosts its own buttons).
     fn inline_open_button(&self) -> Option<(std::path::PathBuf, bool)> {
         None
     }
 }
 
-/// Prepend a bullet/icon span to the first line of a block's output.
-///
-/// Called by `RenderBlock::output()` when `has_bullet()` returns true.
-/// The bullet character comes from appearance config. The color comes from the
-/// block's `bullet()` method:
-/// - `Some(AccentStyle)` → use that color (dimming handled later by EntryRenderer)
-/// - `None` → default: gray when collapsed, primary when expanded
+/// Prepend a bullet/icon span to the first line of a block's output. Called by `RenderBlock::output()` when
+/// `has_bullet()` returns true. The bullet character comes from the appearance config. The color comes from the
+/// block's `bullet()` method. `None` defaults to gray when collapsed, primary when expanded.
 pub fn prepend_bullet(output: &mut BlockOutput, ctx: &BlockContext, bullet: Option<AccentStyle>) {
     let tool_cfg = &ctx.appearance.scrollback.blocks.tool;
     let Some(bullet_str) = tool_cfg.bullet.char() else {
@@ -310,14 +244,11 @@ pub struct StubBlock {
     pub text: String,
     pub accent_color: ratatui::style::Color,
     /// Whether this stub participates in dense group rendering.
-    /// Default: `true`. Set to `false` for stubs that simulate non-groupable blocks
-    /// (e.g., agent messages) in tests.
+    /// Default: `true`. Set to `false` for stubs that simulate non-groupable blocks (e.g., agent messages) in tests.
     pub groupable: bool,
-    /// Per-line background applied to every output line, plus its
-    /// panel-ness ([`BlockLine::background_is_panel`]). Lets renderer tests
-    /// exercise line-background handling with a FIXED injected color —
-    /// independent of `Theme::current()`, whose process-global kind /
-    /// color-level state is not stable across a parallel test run.
+    /// Per-line background applied to every output line, plus its panel flag ([`BlockLine::background_is_panel`]).
+    /// Lets renderer tests exercise line-background handling with a FIXED injected color.
+    /// It stays independent of `Theme::current()`, whose process-global kind and color-level state is not stable across a parallel test run.
     pub line_bg: Option<(ratatui::style::Color, bool)>,
 }
 
@@ -341,8 +272,7 @@ impl StubBlock {
         }
     }
 
-    /// Give every output line a background, marked panel (decorative — like a
-    /// tool preview) or not (semantic — like diff shading).
+    /// Give every output line a background, marked panel (decorative, like a tool preview) or not (semantic, like diff shading).
     pub fn with_line_bg(mut self, color: ratatui::style::Color, panel: bool) -> Self {
         self.line_bg = Some((color, panel));
         self
@@ -374,10 +304,7 @@ impl BlockContent for StubBlock {
     }
 }
 
-/// RenderBlock enum wrapping all block types.
-///
-/// BlockContent is manually implemented (not via enum_delegate) so we can
-/// intercept `output()` to conditionally prepend bullets based on `has_bullet()`.
+/// BlockContent is implemented via match-based delegation so we can intercept `output()` to conditionally prepend bullets based on `has_bullet()`.
 #[derive(Debug, Clone)]
 pub enum RenderBlock {
     /// Stub block for testing.
@@ -401,10 +328,8 @@ pub enum RenderBlock {
     Workflow(WorkflowBlock),
     /// /btw side-question response (golden accent).
     Btw(BtwBlock),
-    /// `/context` snapshot with categorical bar + breakdown.
+    /// `/context` snapshot with categorical bar and breakdown.
     ContextInfo(ContextInfoBlock),
-    /// Credit-limit card for max-tier users (red accent, single action).
-    CreditLimit(CreditLimitBlock),
 }
 
 /// Delegate a method call to the inner block variant.
@@ -423,7 +348,6 @@ macro_rules! delegate_block {
             RenderBlock::Workflow(b) => b.$method($($arg),*),
             RenderBlock::Btw(b) => b.$method($($arg),*),
             RenderBlock::ContextInfo(b) => b.$method($($arg),*),
-            RenderBlock::CreditLimit(b) => b.$method($($arg),*),
         }
     };
 }
@@ -455,11 +379,9 @@ fn plain_text_from_output(
     wrote_any.then_some(result)
 }
 
-/// Join source-text parts for full-text search, dropping `None` and empty
-/// strings so absent fields never inject blank lines or false matches.
+/// Join source-text parts for full-text search, dropping `None` and empty strings so absent fields never inject blank lines or false matches.
 ///
-/// Returns `None` when nothing remains — a block with no source text is
-/// simply left out of the index rather than indexed as an empty string.
+/// Returns `None` when nothing remains: a block with no source text is left out of the index rather than indexed as an empty string.
 pub(crate) fn join_searchable(parts: impl IntoIterator<Item = Option<String>>) -> Option<String> {
     let joined = parts
         .into_iter()
@@ -472,10 +394,13 @@ pub(crate) fn join_searchable(parts: impl IntoIterator<Item = Option<String>>) -
 
 impl RenderBlock {
     pub(crate) fn rendered_output(&self, ctx: &BlockContext) -> RenderedBlockOutput {
-        let RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) = self else {
-            return RenderedBlockOutput::from(self.output(ctx));
+        let mut rendered = match self {
+            RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) => edit.rendered_output(ctx),
+            RenderBlock::ToolCall(ToolCallBlock::SentMessage(message)) => {
+                message.rendered_output(ctx)
+            }
+            _ => return RenderedBlockOutput::from(self.output(ctx)),
         };
-        let mut rendered = edit.rendered_output(ctx);
         if self.has_bullet(ctx) {
             prepend_bullet(&mut rendered.output, ctx, self.bullet(ctx));
         }
@@ -600,23 +525,19 @@ impl RenderBlock {
         RenderBlock::Stub(StubBlock::non_groupable(text, accent_color))
     }
 
-    /// Create a user prompt block.
     pub fn user_prompt(text: impl Into<String>) -> Self {
         RenderBlock::UserPrompt(UserPromptBlock::new(text))
     }
 
-    /// Create a bash prompt block.
     pub fn bash_prompt(text: impl Into<String>) -> Self {
         RenderBlock::UserPrompt(UserPromptBlock::bash(text))
     }
 
-    /// Create a skill invocation prompt block.
     pub fn skill_prompt(text: impl Into<String>) -> Self {
         RenderBlock::UserPrompt(UserPromptBlock::skill(text))
     }
 
-    /// Create a user prompt block with recognized mid-text slash tokens
-    /// styled in the skill accent (byte ranges into `text`).
+    /// Create a user prompt block with recognized mid-text slash tokens styled in the skill accent (byte ranges into `text`).
     pub fn user_prompt_with_skill_tokens(
         text: impl Into<String>,
         ranges: Vec<std::ops::Range<usize>>,
@@ -624,26 +545,22 @@ impl RenderBlock {
         RenderBlock::UserPrompt(UserPromptBlock::with_skill_tokens(text, ranges))
     }
 
-    /// Create a scheduled (cron) prompt block.
     pub fn cron_prompt(text: impl Into<String>) -> Self {
         RenderBlock::UserPrompt(UserPromptBlock::cron(text))
     }
 
-    /// Create a mid-turn interjection prompt block (standard user prompt
-    /// rendering, excluded from shell prompt-index bookkeeping).
+    /// Create a mid-turn interjection prompt block (standard user prompt rendering, excluded from shell prompt-index bookkeeping).
     pub fn interjection_prompt(text: impl Into<String>) -> Self {
         RenderBlock::UserPrompt(UserPromptBlock::interjection(text))
     }
 
-    /// Create an agent message block.
     pub fn agent_message(text: impl Into<String>) -> Self {
         RenderBlock::AgentMessage(AgentMessageBlock::new(text))
     }
 
     /// Create an empty streaming agent message block.
     ///
-    /// Use `as_agent_message_mut()` to get the block and call `push_chunk()`
-    /// to append streaming content.
+    /// Use `as_agent_message_mut()` to get the block and call `push_chunk()` to append streaming content.
     pub fn agent_message_streaming() -> Self {
         RenderBlock::AgentMessage(AgentMessageBlock::streaming())
     }
@@ -652,7 +569,6 @@ impl RenderBlock {
     pub fn tool_call(kind: impl Into<String>, summary: impl Into<String>, success: bool) -> Self {
         let kind_str = kind.into();
         let mut block = ToolCallBlock::from_name(&kind_str, summary);
-        // Set error for Other type if not successful
         if let ToolCallBlock::Other(ref mut b) = block
             && !success
         {
@@ -675,12 +591,10 @@ impl RenderBlock {
         RenderBlock::ToolCall(ToolCallBlock::Other(block))
     }
 
-    /// Create an Execute tool block.
     pub fn execute(command: impl Into<String>) -> Self {
         RenderBlock::ToolCall(ToolCallBlock::Execute(ExecuteToolCallBlock::new(command)))
     }
 
-    /// Create an Execute tool block with output.
     /// Use `error: None` for success, `error: Some(msg)` for failure.
     pub fn execute_with_output(
         command: impl Into<String>,
@@ -694,7 +608,6 @@ impl RenderBlock {
         RenderBlock::ToolCall(ToolCallBlock::Execute(block))
     }
 
-    /// Create a Read tool block.
     pub fn read(path: impl Into<String>, line_range: Option<LineRange>) -> Self {
         let mut block = ReadToolCallBlock::new(path);
         if let Some(range) = line_range {
@@ -703,19 +616,16 @@ impl RenderBlock {
         RenderBlock::ToolCall(ToolCallBlock::Read(block))
     }
 
-    /// Create a ListDir tool block.
     pub fn list_dir(path: impl Into<String>) -> Self {
         RenderBlock::ToolCall(ToolCallBlock::ListDir(ListDirToolCallBlock::new(path)))
     }
 
-    /// Create a ListDir tool block with output.
     pub fn list_dir_with_output(path: impl Into<String>, output: impl Into<String>) -> Self {
         RenderBlock::ToolCall(ToolCallBlock::ListDir(
             ListDirToolCallBlock::new(path).with_output(output),
         ))
     }
 
-    /// Create a Search tool block with matches.
     pub fn search(
         pattern: impl Into<String>,
         match_count: usize,
@@ -726,16 +636,8 @@ impl RenderBlock {
         ))
     }
 
-    /// Create an Edit block with diff hunks.
     pub fn edit_with_hunks(path: impl Into<String>, hunks: Vec<DiffHunk>) -> Self {
         RenderBlock::ToolCall(ToolCallBlock::Edit(EditToolCallBlock::new(path, hunks)))
-    }
-
-    /// Create a failed Edit block (with error message).
-    pub fn edit_failed(path: impl Into<String>, error: impl Into<String>) -> Self {
-        RenderBlock::ToolCall(ToolCallBlock::Edit(
-            EditToolCallBlock::new(path, vec![]).with_error(error),
-        ))
     }
 
     /// Create a simple Edit block (no hunks, for legacy compatibility).
@@ -750,13 +652,10 @@ impl RenderBlock {
         RenderBlock::ToolCall(ToolCallBlock::Edit(block))
     }
 
-    /// Create a thinking block.
     pub fn thinking(text: impl Into<String>) -> Self {
         RenderBlock::Thinking(ThinkingBlock::new(text))
     }
 
-    /// Create a thinking block with thinking time set.
-    ///
     /// The time is displayed in collapsed mode as "Thought for Xs".
     pub fn thinking_with_time(text: impl Into<String>, time_ms: i64) -> Self {
         let mut block = ThinkingBlock::new(text);
@@ -766,31 +665,25 @@ impl RenderBlock {
 
     /// Create an empty streaming thinking block.
     ///
-    /// Use `as_thinking_mut()` to get the block and call `push_chunk()`
-    /// to append streaming content.
+    /// Use `as_thinking_mut()` to get the block and call `push_chunk()` to append streaming content.
     pub fn thinking_streaming() -> Self {
         RenderBlock::Thinking(ThinkingBlock::streaming())
     }
 
     /// Create an empty streaming thinking block for historical replay.
-    ///
-    /// Does not arm a local elapsed timer — the collapsed "Thought for Xs"
-    /// duration comes from the server-reported elapsed instead. See
-    /// [`ThinkingBlock::streaming_replay`].
+    /// Does not start a local elapsed timer; the collapsed "Thought for Xs" duration comes from the server-reported elapsed instead.
+    /// See [`ThinkingBlock::streaming_replay`].
     pub fn thinking_streaming_replay() -> Self {
         RenderBlock::Thinking(ThinkingBlock::streaming_replay())
     }
 
-    /// Create a system message block.
     pub fn system(text: impl Into<String>) -> Self {
         RenderBlock::System(SystemMessageBlock::new(text))
     }
 
     /// Create a `/context` snapshot block.
-    ///
-    /// The block stores the raw `ContextInfo` snapshot + model name and
-    /// rebuilds its styled output on every redraw, so theme switches take
-    /// effect without re-running `/context`.
+    /// The block stores the raw `ContextInfo` snapshot and model name and rebuilds its styled output on every redraw.
+    /// Theme switches thus take effect without re-running `/context`.
     pub fn context_info(
         snapshot: xai_grok_shell::session::ContextInfo,
         model: impl Into<String>,
@@ -798,18 +691,8 @@ impl RenderBlock {
         RenderBlock::ContextInfo(ContextInfoBlock::new(snapshot, model))
     }
 
-    /// Create a session event block.
     pub fn session_event(event: SessionEvent) -> Self {
         RenderBlock::SessionEvent(SessionEventBlock::new(event))
-    }
-
-    /// Create a credit-limit card (inline scrollback block for max-tier users).
-    pub fn credit_limit_card(
-        heading: impl Into<String>,
-        action: crate::scrollback::blocks::CreditLimitCardAction,
-        url: impl Into<String>,
-    ) -> Self {
-        RenderBlock::CreditLimit(CreditLimitBlock::new(heading, action, url))
     }
 
     /// Create a "Task started" background task block.
@@ -847,15 +730,6 @@ impl RenderBlock {
         self
     }
 
-    /// Get mutable access to a StubBlock if this is one.
-    pub fn as_stub_mut(&mut self) -> Option<&mut StubBlock> {
-        match self {
-            RenderBlock::Stub(b) => Some(b),
-            _ => None,
-        }
-    }
-
-    /// Get mutable access to a ToolCallBlock if this is one.
     pub fn as_tool_call_mut(&mut self) -> Option<&mut ToolCallBlock> {
         match self {
             RenderBlock::ToolCall(b) => Some(b),
@@ -863,10 +737,7 @@ impl RenderBlock {
         }
     }
 
-    /// Get mutable access to an AgentMessageBlock if this is one.
-    ///
-    /// This is useful for streaming: get the block, then call `push_chunk()`
-    /// to append streaming content.
+    /// This is useful for streaming: get the block, then call `push_chunk()` to append streaming content.
     pub fn as_agent_message_mut(&mut self) -> Option<&mut AgentMessageBlock> {
         match self {
             RenderBlock::AgentMessage(b) => Some(b),
@@ -874,11 +745,8 @@ impl RenderBlock {
         }
     }
 
-    /// Get shared (read-only) access to an AgentMessageBlock if this is one.
-    ///
-    /// The read-only counterpart of [`as_agent_message_mut`](Self::as_agent_message_mut),
-    /// for inspecting a message's content (e.g. its detected diagrams) without
-    /// mutating it.
+    /// The read-only counterpart of [`as_agent_message_mut`](Self::as_agent_message_mut).
+    /// Use it to inspect a message's content (e.g. its detected diagrams) without mutating it.
     pub fn as_agent_message(&self) -> Option<&AgentMessageBlock> {
         match self {
             RenderBlock::AgentMessage(b) => Some(b),
@@ -886,7 +754,6 @@ impl RenderBlock {
         }
     }
 
-    /// Get mutable access to a ThinkingBlock if this is one.
     pub fn as_thinking_mut(&mut self) -> Option<&mut ThinkingBlock> {
         match self {
             RenderBlock::Thinking(b) => Some(b),
@@ -894,45 +761,31 @@ impl RenderBlock {
         }
     }
 
-    /// Check if this block is a UserPrompt.
     pub fn is_user_prompt(&self) -> bool {
         matches!(self, RenderBlock::UserPrompt(_))
     }
 
-    /// Check if this block is a ToolCall (any variant).
-    ///
-    /// Used by the entry cache to decide whether selection state should
-    /// invalidate the cached output — tool call variants undim their
-    /// collapsed header text when selected.
+    /// Used by the entry cache to decide whether selection state should invalidate the cached output.
+    /// Tool call variants undim their collapsed header text when selected.
     pub fn is_tool_call(&self) -> bool {
         matches!(self, RenderBlock::ToolCall(_))
     }
 
-    /// Check if this block is a Thinking block.
-    ///
-    /// Used by the entry cache for the same reason as `is_tool_call`:
-    /// the thinking header text undims on selection.
+    /// Used by the entry cache for the same reason as `is_tool_call`: the thinking header text undims on selection.
     pub fn is_thinking(&self) -> bool {
         matches!(self, RenderBlock::Thinking(_))
     }
 
-    /// Check if this block is a BgTask block.
-    ///
-    /// Used by the entry cache for the same reason as `is_tool_call`:
-    /// the bold "Task" label undims on selection.
+    /// Used by the entry cache for the same reason as `is_tool_call`: the bold "Task" label undims on selection.
     pub fn is_bg_task(&self) -> bool {
         matches!(self, RenderBlock::BgTask(_))
     }
 
-    /// Check if this block is a Subagent block.
-    ///
-    /// Used by the entry cache for the same reason as `is_tool_call`:
-    /// the bold "Subagent" label undims on selection.
+    /// Used by the entry cache for the same reason as `is_tool_call`: the bold "Subagent" label undims on selection.
     pub fn is_subagent(&self) -> bool {
         matches!(self, RenderBlock::Subagent(_))
     }
 
-    /// Check if this block is an AgentMessage.
     pub fn is_agent_message(&self) -> bool {
         matches!(self, RenderBlock::AgentMessage(_))
     }
@@ -954,13 +807,14 @@ impl RenderBlock {
         matches!(self, RenderBlock::CreditLimit(_))
     }
 
-    /// Check if this block is a plan mode tool call (enter or exit).
-    ///
-    /// Exact-matches the canonical tool-name set rather than substring-matching
-    /// the human title: titles incorporate raw model/user input, so a substring
-    /// match on `"enter_plan_mode"` false-positives on ordinary tool calls.
-    /// Covers both the raw function name and the refined display titles
-    /// emitted by the shell.
+    /// A session event that closes a turn (`Worked for …`, cancelled, failed); see [`SessionEvent::is_turn_terminal`].
+    pub fn is_turn_terminal_marker(&self) -> bool {
+        matches!(self, RenderBlock::SessionEvent(b) if b.event.is_turn_terminal())
+    }
+
+    /// Check if this block is a plan mode tool call (enter or exit). Exact-matches the canonical tool-name set rather
+    /// than substring-matching the human title. Titles incorporate raw model/user input, so a substring match on
+    /// `"enter_plan_mode"` false-positives on ordinary tool calls.
     pub fn is_plan_mode_tool(&self) -> bool {
         use super::blocks::ToolCallBlock;
         const PLAN_MODE_TOOL_NAMES: &[&str] = &[
@@ -978,9 +832,8 @@ impl RenderBlock {
         )
     }
 
-    /// Absolute path of the media (image/video) this block references, if it is
-    /// a media-generation tool result. Used to resolve the short relative paths
-    /// the model prints in prose (`images/1.jpg`) to a clickable link.
+    /// Absolute path of the media (image/video) this block references, if it is a media-generation tool result.
+    /// Used to resolve the short relative paths the model prints in prose (`images/1.jpg`) to a clickable link.
     pub(crate) fn media_ref_path(&self) -> Option<std::path::PathBuf> {
         match self {
             RenderBlock::ToolCall(ToolCallBlock::Other(b)) => b.media_ref_path(),
@@ -988,13 +841,9 @@ impl RenderBlock {
         }
     }
 
-    /// Drop rebuildable render caches held inside the block.
-    ///
-    /// Currently the markdown word-wrap cache on markdown-backed blocks
-    /// (agent messages, thinking, /btw). The source text and pre-wrap render
-    /// stay; the next `output()` call rebuilds the wrap transparently. Called
-    /// by off-screen cache eviction — see
-    /// [`ScrollbackState::evict_offscreen_render_caches`](crate::scrollback::state::ScrollbackState::evict_offscreen_render_caches).
+    /// Drop rebuildable render caches held inside the block. Currently the markdown word-wrap cache on markdown-backed
+    /// blocks (agent messages, thinking, /btw). The source text and pre-wrap render stay. the next `output()` call
+    /// rebuilds the wrap transparently. Called by `ScrollbackState::evict_offscreen_render_caches`.
     pub fn evict_render_caches(&self) {
         match self {
             RenderBlock::AgentMessage(b) => b.content().evict_wrap_cache(),
@@ -1004,8 +853,6 @@ impl RenderBlock {
         }
     }
 
-    /// Get the accent color for this block.
-    ///
     /// Returns the default static accent color for the block type.
     /// Uses RGB colors from theme for proper fade blending.
     pub fn accent_color(&self) -> Option<ratatui::style::Color> {
@@ -1014,7 +861,7 @@ impl RenderBlock {
 
         match self {
             RenderBlock::UserPrompt(_) => Some(theme.text_primary),
-            RenderBlock::AgentMessage(_) => None, // No accent for agent messages
+            RenderBlock::AgentMessage(_) => None,
             RenderBlock::Workflow(_) => None,
             RenderBlock::ToolCall(block) => {
                 // Execute: Green for success, red for failure
@@ -1027,6 +874,18 @@ impl RenderBlock {
                             Some(theme.accent_error)
                         }
                     }
+                    ToolCallBlock::SentMessage(b) => Some(match &b.presentation {
+                        crate::scrollback::blocks::SentMessagePresentation::Sending
+                        | crate::scrollback::blocks::SentMessagePresentation::Sent => {
+                            theme.accent_tool
+                        }
+                        crate::scrollback::blocks::SentMessagePresentation::Rejected { .. } => {
+                            theme.accent_error
+                        }
+                        crate::scrollback::blocks::SentMessagePresentation::Unconfirmed {
+                            ..
+                        } => theme.warning,
+                    }),
                     ToolCallBlock::Other(b) => {
                         if b.is_success() {
                             Some(theme.accent_tool)
@@ -1052,16 +911,14 @@ impl RenderBlock {
                     None
                 }
             }
-            RenderBlock::System(_)
-            | RenderBlock::SessionEvent(_)
-            | RenderBlock::ContextInfo(_)
-            | RenderBlock::CreditLimit(_) => None,
+            RenderBlock::System(_) | RenderBlock::SessionEvent(_) | RenderBlock::ContextInfo(_) => {
+                None
+            }
             RenderBlock::Btw(_) => Some(theme.accent_plan),
             RenderBlock::Stub(block) => Some(block.accent_color),
         }
     }
 
-    /// Whether this block has a normal fullscreen viewer.
     pub fn has_normal_fullscreen_viewer(&self) -> bool {
         match self {
             RenderBlock::AgentMessage(_)
@@ -1086,14 +943,12 @@ impl RenderBlock {
         }
     }
 
-    /// Whether this block supports the fullscreen viewer.
     pub fn supports_fullscreen(&self) -> bool {
         self.has_normal_fullscreen_viewer()
             || !self.image_references().is_empty()
             || !self.video_references().is_empty()
     }
 
-    /// Whether this block supports copy-to-clipboard.
     pub fn supports_copy(&self) -> bool {
         matches!(
             self,
@@ -1108,21 +963,17 @@ impl RenderBlock {
         )
     }
 
-    /// Whether this block can participate in whole-block drag selection.
     pub fn is_drag_block_selectable(&self) -> bool {
         !matches!(self, RenderBlock::Stub(_))
     }
 
-    /// Get the visible text for this block in its current display state.
     pub fn copy_visible_text_in_state(&self, ctx: &BlockContext) -> Option<String> {
         let rendered = self.rendered_output(ctx);
         plain_text_from_output(&rendered.output, &rendered.boundaries)
     }
 
-    /// Get the copyable text for this block, if it supports copy.
-    ///
-    /// The `raw` parameter controls whether markdown blocks return raw source
-    /// or rendered plain text. It is ignored for non-markdown block types.
+    /// The `raw` parameter controls whether markdown blocks return raw source or rendered plain text.
+    /// It is ignored for non-markdown block types.
     pub fn copy_text(&self, raw: bool) -> Option<String> {
         match self {
             RenderBlock::UserPrompt(b) => Some(b.copy_text()),
@@ -1155,20 +1006,9 @@ impl RenderBlock {
         }
     }
 
-    /// Full searchable text of this block for full-text scrollback search.
-    ///
-    /// For markdown blocks (agent/thinking/btw) this is the **rendered** plain
-    /// text (markdown markers stripped), so in pretty (non-raw) mode the index
-    /// matches what the on-screen highlight pass sees — searching `is important`
-    /// finds the rendered `is important` rather than missing the source
-    /// `is **important**`. (In per-entry raw mode the displayed rows are the
-    /// source while the index stays rendered, so counts and highlights can
-    /// diverge there — the rare inverse case.) This reads the renderer's
-    /// last-rendered view (populated at construction for completed blocks, and on
-    /// the first render/finish for streaming ones), without laying out
-    /// (`output()` / word-wrap) or re-highlighting syntax. Non-markdown blocks
-    /// return their stored source fields verbatim. Returns `None` for blocks
-    /// with no searchable text.
+    /// Full searchable text of this block for full-text scrollback search. Searching `is important` finds the rendered
+    /// `is important` rather than missing the source `is important`. This reads the renderer's last-rendered view
+    /// without running layout (`output()` word-wrap) or re-highlighting syntax.
     pub fn searchable_text(&self) -> Option<String> {
         match self {
             RenderBlock::Stub(b) => join_searchable([Some(b.text.clone())]),
@@ -1206,9 +1046,6 @@ impl RenderBlock {
                 Some(b.content().rendered_plain_text()),
             ]),
             RenderBlock::ContextInfo(b) => join_searchable([Some(b.model.clone())]),
-            RenderBlock::CreditLimit(b) => {
-                join_searchable([Some(b.heading.clone()), Some(b.url.clone())])
-            }
             RenderBlock::ToolCall(tc) => tc.searchable_text(),
         }
     }
@@ -1229,11 +1066,8 @@ impl RenderBlock {
     }
 
     /// Access pre-wrap hyperlink targets via a closure, avoiding allocation.
-    ///
-    /// The hyperlinks are in the markdown renderer's coordinate space
-    /// (pre-wrap line index, display-cell column range). The caller is
-    /// responsible for mapping through word-wrapping and entry layout to
-    /// reach screen coordinates.
+    /// The hyperlinks are in the markdown renderer's coordinate space (pre-wrap line index, display-cell column range).
+    /// The caller is responsible for mapping through word-wrapping and entry layout to reach screen coordinates.
     pub fn with_hyperlinks<R>(
         &self,
         f: impl FnOnce(&[xai_grok_markdown::HyperlinkTarget]) -> R,
@@ -1246,8 +1080,36 @@ impl RenderBlock {
         }
     }
 
+    pub fn with_table_copy_meta<R>(
+        &self,
+        f: impl FnOnce(&[xai_grok_markdown::TableCopyMeta]) -> R,
+    ) -> R {
+        match self {
+            RenderBlock::AgentMessage(b) => b.content().with_table_copy_meta(f),
+            RenderBlock::Thinking(b) => b.content().with_table_copy_meta(f),
+            RenderBlock::Btw(b) => b.content().with_table_copy_meta(f),
+            _ => f(&[]),
+        }
+    }
+
+    pub fn markdown_body_line_offset(
+        &self,
+        mode: DisplayMode,
+        appearance: &AppearanceConfig,
+    ) -> usize {
+        match self {
+            RenderBlock::Btw(_) if mode != DisplayMode::Collapsed => 2,
+            RenderBlock::Thinking(_)
+                if mode != DisplayMode::Collapsed
+                    && appearance.scrollback.blocks.thinking.header =>
+            {
+                2
+            }
+            _ => 0,
+        }
+    }
+
     /// Set the raw mode for blocks that support it.
-    ///
     /// This should be called before `output()` when the raw mode might have changed.
     /// Only affects AgentMessage and Thinking blocks; other blocks ignore this.
     pub fn set_raw_mode(&mut self, raw: bool) {
@@ -1282,8 +1144,8 @@ mod tests {
         }
     }
 
-    /// A block with N text lines + one trailing inline image — exercises the
-    /// default `inline_media_placements` wrapper that preserves tool media.
+    /// A block with N text lines and one trailing inline image.
+    /// Exercises the default `inline_media_placements` wrapper that preserves tool media.
     struct TrailingMediaBlock {
         lines: usize,
     }
@@ -1312,9 +1174,8 @@ mod tests {
 
     #[test]
     fn default_inline_media_placements_wrap_trailing_media() {
-        // The default wrapper turns a single `inline_media()` into one trailing
-        // placement: anchored one row below the text, with the filepath line
-        // exposed — i.e. the historical tool-media geometry is preserved.
+        // The default wrapper turns a single `inline_media()` into one trailing placement
+        // The image anchors one row below the text, with the filepath line exposed, preserving the historical tool-media geometry
         let block = TrailingMediaBlock { lines: 2 };
         let c = ctx(DisplayMode::Expanded, false);
         let placements = block.inline_media_placements(&c);
@@ -1330,8 +1191,7 @@ mod tests {
 
     #[test]
     fn default_inline_media_placements_empty_without_media() {
-        // A block with no `inline_media()` yields no placements (the common case
-        // for every non-media block).
+        // A block with no `inline_media()` yields no placements (the common case for every non-media block)
         let block = StubBlock::new("hi", ratatui::style::Color::Blue);
         assert!(
             block
@@ -1502,8 +1362,8 @@ mod tests {
 
     #[test]
     fn test_copy_does_not_capture_render_only_table_padding() {
-        // Table rows are padded to the content width for rendering. Block-drag
-        // copy must not include that trailing padding.
+        // Table rows are padded to the content width for rendering
+        // Block-drag copy must not include that trailing padding
         let output = BlockOutput {
             lines: vec![
                 BlockLine::styled(Line::from(vec![
@@ -1544,8 +1404,8 @@ mod tests {
 mod searchable_text_tests {
     use super::*;
     use crate::scrollback::blocks::SearchLineMatch;
+    use crate::scrollback::blocks::tool::WebSearchToolCallBlock;
     use crate::scrollback::blocks::tool::memory_search::{MemoryResult, MemorySearchToolCallBlock};
-    use crate::scrollback::blocks::tool::{LifecycleEventBlock, WebSearchToolCallBlock};
     use std::time::Duration;
     use xai_grok_shell::session::ContextInfo;
 
@@ -1566,8 +1426,7 @@ mod searchable_text_tests {
 
     #[test]
     fn empty_only_source_field_returns_none() {
-        // join_searchable drops empty strings, so a block whose only source
-        // field is empty is left out of the index entirely.
+        // join_searchable drops empty strings, so a block whose only source field is empty is left out of the index entirely
         assert_eq!(RenderBlock::system("").searchable_text(), None);
         assert_eq!(RenderBlock::user_prompt("").searchable_text(), None);
     }
@@ -1622,9 +1481,8 @@ mod searchable_text_tests {
         let block = RenderBlock::Btw(BtwBlock::new("what is rust", "a **systems** language"));
         let text = block.searchable_text().expect("btw text");
         assert!(text.contains("what is rust"), "got: {text:?}");
-        // Rendered plain text is indexed (markers stripped), so a query that
-        // spans the emphasis — "a systems language" — matches the index just
-        // as it matches the on-screen highlight.
+        // Rendered plain text is indexed (markers stripped)
+        // A query that spans the emphasis, "a systems language", matches the index just as it matches the on-screen highlight
         assert!(text.contains("a systems language"), "got: {text:?}");
         assert!(!text.contains("**"), "markers should be stripped: {text:?}");
     }
@@ -1650,18 +1508,6 @@ mod searchable_text_tests {
         let block = RenderBlock::context_info(snapshot, "grok-4.5");
         // Only the model name is source text; the rest is a numeric breakdown.
         assert_eq!(block.searchable_text().as_deref(), Some("grok-4.5"));
-    }
-
-    #[test]
-    fn credit_limit_indexes_heading_and_url() {
-        let block = RenderBlock::credit_limit_card(
-            "credit limit reached",
-            crate::scrollback::blocks::CreditLimitCardAction::EnablePayg,
-            "https://grok.com?_s=usage",
-        );
-        let text = block.searchable_text().expect("credit limit text");
-        assert!(text.contains("credit limit reached"), "got: {text:?}");
-        assert!(text.contains("https://grok.com?_s=usage"), "got: {text:?}");
     }
 
     #[test]
@@ -1711,17 +1557,6 @@ mod searchable_text_tests {
     }
 
     #[test]
-    fn lifecycle_indexes_event_name() {
-        let block = RenderBlock::ToolCall(ToolCallBlock::Lifecycle(LifecycleEventBlock::new(
-            "user_prompt_submit",
-        )));
-        assert_eq!(
-            block.searchable_text().as_deref(),
-            Some("user_prompt_submit")
-        );
-    }
-
-    #[test]
     fn other_tool_indexes_name_summary_output_and_error() {
         let block =
             RenderBlock::tool_call_with_details("MyTool", "do something", false, "the output");
@@ -1744,8 +1579,7 @@ mod searchable_text_tests {
 
     #[test]
     fn agent_message_indexes_rendered_text() {
-        // Rendered plain text is indexed (markers stripped) so the index agrees
-        // with the on-screen highlight: a phrase spanning emphasis is found.
+        // Rendered plain text is indexed (markers stripped) so the index agrees with the on-screen highlight: a phrase spanning emphasis is found
         let block = RenderBlock::agent_message("this is **really** important");
         let text = block.searchable_text().expect("agent text");
         assert!(text.contains("is really important"), "got: {text:?}");
@@ -1756,8 +1590,7 @@ mod searchable_text_tests {
     fn thinking_indexes_rendered_text() {
         let block = RenderBlock::thinking("plan: call `_foo()` then verify");
         let text = block.searchable_text().expect("thinking text");
-        // Inline-code backticks are stripped in the rendered view; the code
-        // content itself is preserved.
+        // Inline-code backticks are stripped in the rendered view; the code content itself is preserved
         assert!(text.contains("call _foo() then verify"), "got: {text:?}");
         assert!(
             !text.contains('`'),

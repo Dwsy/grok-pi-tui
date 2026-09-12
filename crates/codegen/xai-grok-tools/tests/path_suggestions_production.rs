@@ -44,15 +44,8 @@ fn similar_names(hint: &xai_grok_tools::util::path_suggestions::PathNotFoundHint
         .collect()
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Pattern 1: Hallucinated deep paths — model guesses plausible paths where
-// the parent directory exists but the leaf file doesn't.
-//
-// Examples:
-//   path: features/billing/impl/src/.../BillingFeaturesImpl.kt
-//   path: subsystem/core/components/impl/src/test
-//   path: .github/PULL_REQUEST_TEMPLATE.md
-// ═══════════════════════════════════════════════════════════════════════════
+// Pattern 1: Hallucinated deep paths — model guesses plausible paths where the parent directory
+// exists but the leaf file doesn't.
 
 #[tokio::test]
 async fn pattern1_parent_exists_wrong_leaf_suggests_similar() {
@@ -155,15 +148,8 @@ async fn pattern1_contributing_md_guess() {
     assert!(!hint.cwd_note.is_empty());
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Pattern 2: Absolute paths to wrong locations — model uses absolute paths
-// pointing outside CWD (other user homes, worktree internals, cargo registry).
-//
-// Examples:
-//   path: /Users/alice/.cargo/registry/...        (cwd: /Users/alice/project)
-//   path: /tmp/.tool/sessions/%2F.../terminal/..  (cwd: /workspace/repo)
-//   path: /Users/bob/workspace/worktrees/app/..   (cwd: /Users/bob/workspace/app/...)
-// ═══════════════════════════════════════════════════════════════════════════
+// Pattern 2: Absolute paths to wrong locations — model uses absolute paths pointing outside CWD
+// (other user homes, worktree internals, cargo registry).
 
 #[tokio::test]
 async fn pattern2_absolute_path_completely_different_tree() {
@@ -194,13 +180,8 @@ async fn pattern2_grok_sessions_internal_path() {
     assert!(hint.similar.is_empty());
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Pattern 3: Dropped repo folder — model omits the repo directory name from
-// the path. E.g. asks for /parent/src when CWD is /parent/repo and
-// /parent/repo/src exists.
-//
-// This is the primary target of try_suggest_under_cwd().
-// ═══════════════════════════════════════════════════════════════════════════
+// Pattern 3: Dropped repo folder — model omits the repo directory name from the path. This is the
+// primary target of try_suggest_under_cwd().
 
 #[tokio::test]
 async fn pattern3_dropped_folder_with_display_remap() {
@@ -249,15 +230,8 @@ async fn pattern3_dropped_folder_relative_path_skipped() {
     );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Pattern 4: Common prefix guesses — model uses src/, app/, lib/ as first
-// component but the repo doesn't have that top-level dir, or uses a variant.
-//
-// Examples:
-//   path: src/search_engine/index.py  (repo has no top-level src/)
-//   path: lib/utils.rs                (repo uses libs/ not lib/)
-//   path: app/_components/galaxy      (wrong component dir name)
-// ═══════════════════════════════════════════════════════════════════════════
+// Pattern 4: Common prefix guesses — model uses src/, app/, lib/ as first component but the repo
+// doesn't have that top-level dir, or uses a variant.
 
 #[tokio::test]
 async fn pattern4_lib_vs_libs() {
@@ -293,10 +267,8 @@ async fn pattern4_src_does_not_exist_no_misleading_suggestion() {
     );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Pattern 5: Root-level file guesses — model guesses a file exists at the
-// repo root when it doesn't (CONTRIBUTING.md, .github, etc).
-// ═══════════════════════════════════════════════════════════════════════════
+// Pattern 5: Root-level file guesses — model guesses a file exists at the repo root when it doesn't
+// (CONTRIBUTING.md, .github, etc).
 
 #[tokio::test]
 async fn pattern5_root_file_with_close_match() {
@@ -332,10 +304,8 @@ async fn pattern5_root_file_no_match() {
     );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// format_not_found_error — integration tests verifying the full formatted
-// output string for each major pattern.
-// ═══════════════════════════════════════════════════════════════════════════
+// format_not_found_error — integration tests verifying the full formatted output string for each
+// major pattern.
 
 #[tokio::test]
 async fn format_hallucinated_deep_path_with_similar() {

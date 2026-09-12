@@ -7,9 +7,9 @@ authors = ["xAI"]
 description = "Shared PTY harness + scenario library for xai-grok-pager e2e tests and benchmarks."
 publish = false
 
-# Not imported into the production pager binary — the pager's Cargo.toml
-# only references this crate via [dev-dependencies], so `cargo build -p
-# xai-grok-pager` never compiles any of this.
+# Not imported into the production pager binary. Spawn-only pager tests live
+# here so `cargo test -p xai-grok-pager` / `cargo test -p xai-grok-pager-bin`
+# never compile this crate, and the spawn tests never link the pager library.
 
 [dependencies]
 # Headless PTY controller with alacritty_terminal-based terminal emulation,
@@ -47,6 +47,7 @@ anyhow = { workspace = true }
 base64 = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+strum = { workspace = true }
 serde_yaml = { workspace = true }
 image = { workspace = true, features = ["png"] }
 tempfile = { workspace = true }
@@ -58,14 +59,72 @@ clap = { workspace = true, features = ["derive"] }
 reqwest = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing = { workspace = true }
+# Fixture helpers for the spawn tests. All of these are already in the pager
+# binary's graph the tests exec, so they add no crate compiles.
+git2 = { workspace = true }
+serial_test = { workspace = true }
+toml = { workspace = true }
+unicode-width = { workspace = true }
 
 [[test]]
 name = "env_op_compile"
 path = "tests/env_op_compile.rs"
 
+# Spawn-only pager families. Each root is its own Cargo/Bazel process so CI
+# can schedule them independently. Cases stay #[ignore]d for ordinary cargo.
+[[test]]
+name = "pty_e2e_smoke"
+path = "tests/pty_e2e_smoke.rs"
+
+[[test]]
+name = "pty_e2e_queue"
+path = "tests/pty_e2e_queue.rs"
+
+[[test]]
+name = "pty_e2e_scroll_selection"
+path = "tests/pty_e2e_scroll_selection.rs"
+
+[[test]]
+name = "pty_e2e_minimal"
+path = "tests/pty_e2e_minimal.rs"
+
+[[test]]
+name = "pty_e2e_config_ui"
+path = "tests/pty_e2e_config_ui.rs"
+
+[[test]]
+name = "pty_e2e_shell_tools"
+path = "tests/pty_e2e_shell_tools.rs"
+
+[[test]]
+name = "pty_e2e_persistence"
+path = "tests/pty_e2e_persistence.rs"
+
+[[test]]
+name = "pty_e2e_clipboard"
+path = "tests/pty_e2e_clipboard.rs"
+
+[[test]]
+name = "leader_pty_e2e"
+path = "tests/leader_pty_e2e/mod.rs"
+
+[[test]]
+name = "scripted_scenarios"
+path = "tests/scripted_scenarios.rs"
+
+[[test]]
+name = "pty_auto_mode"
+path = "tests/pty_auto_mode.rs"
+
 [[bin]]
 name = "pty-scenario"
 path = "src/bin/pty_scenario.rs"
+
+# Fixture for tests/orphan_reap.rs: holds a PtyController child and blocks so
+# the test can kill it ungracefully and assert the child does not survive.
+[[bin]]
+name = "pty_orphan_holder"
+path = "src/bin/pty_orphan_holder.rs"
 
 # scroll-matrix — scroll validation matrix sweep. The curated tier also runs
 # in CI (tests/scroll_matrix_curated.rs); this binary is the local full-sweep
@@ -73,6 +132,10 @@ path = "src/bin/pty_scenario.rs"
 [[bin]]
 name = "scroll-matrix"
 path = "src/bin/scroll_matrix.rs"
+
+[[bin]]
+name = "startup-tui-probe"
+path = "src/bin/startup_tui_probe.rs"
 
 # pty_bench scenario runner — produces a standalone binary the CI pipeline
 # pre-compiles and executes directly against a release pager artifact.

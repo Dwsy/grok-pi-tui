@@ -26,9 +26,9 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
-/// Init Sentry + apply the process-wide scope tags. Call once at process
-/// start; the returned guard must outlive the process. No-op guard when
-/// `config.disabled`.
+/// Init Sentry and apply the process-wide scope tags.
+/// Call once at process start; the returned guard must outlive the process.
+/// Returns a no-op guard when `config.disabled`.
 pub fn init(config: Config) -> ClientInitGuard {
     let config = CONFIG.get_or_init(|| config);
 
@@ -69,9 +69,17 @@ pub fn init(config: Config) -> ClientInitGuard {
 
 /// Flush in-flight events. Call before `std::process::exit` in signal handlers.
 pub fn flush_on_shutdown() {
+    let flush_span = crate::region::Region::from_span(tracing::info_span!(
+        "teardown.sentry_flush",
+        elapsed_ms = tracing::field::Empty,
+    ));
+    let started = std::time::Instant::now();
     if let Some(client) = sentry::Hub::current().client() {
         client.flush(Some(FLUSH_TIMEOUT));
     }
+    flush_span
+        .span()
+        .record("elapsed_ms", started.elapsed().as_millis() as i64);
 }
 
 // ─── Internals ─────────────────────────────────────────────────────────────
@@ -85,7 +93,7 @@ struct Scrubber {
 impl Scrubber {
     fn from_env() -> Self {
         Self {
-            home_dir: dirs::home_dir().map(|p| p.to_string_lossy().to_string()),
+            home_dir: xai_dirs::home_dir().map(|p| p.to_string_lossy().to_string()),
             usernames: collect_usernames_from_env(),
         }
     }
@@ -106,7 +114,7 @@ impl Scrubber {
 
 const REDACTED_USER: &str = "<user>";
 
-/// `$USERNAME` then `$USER`, deduped, 3-char floor to avoid over-matching.
+/// Reads `$USERNAME` then `$USER`, deduped; the 3-char floor avoids over-matching.
 fn collect_usernames_from_env() -> Vec<String> {
     let mut usernames: Vec<String> = Vec::new();
     for var in ["USERNAME", "USER"] {
@@ -120,9 +128,9 @@ fn collect_usernames_from_env() -> Vec<String> {
     usernames
 }
 
-/// Replace whole `/`- or `\`-delimited segments matching any entry in
-/// `usernames` with `<user>`. Substrings inside a segment are untouched.
-/// Case-insensitive on Windows (NTFS), case-sensitive elsewhere (POSIX).
+/// Replace whole `/`- or `\`-delimited segments matching any entry in `usernames` with `<user>`.
+/// Substrings inside a segment are untouched.
+/// Matching is case-insensitive on Windows (NTFS), case-sensitive elsewhere (POSIX).
 fn redact_username_segments(value: &str, usernames: &[String]) -> String {
     if usernames.is_empty() {
         return value.to_owned();

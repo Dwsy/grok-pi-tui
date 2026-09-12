@@ -10,10 +10,8 @@ use image::DynamicImage;
 use image::codecs::jpeg::JpegEncoder;
 pub use image::imageops::FilterType;
 
-/// Parameters that control the re-encode loop.
-///
-/// Each call-site provides its own set of limits so the shared encoder can
-/// serve callers with different size/quality trade-offs.
+/// Parameters that control the re-encode loop. Each call-site provides its own set of limits so the
+/// shared encoder can serve callers with different size/quality trade-offs.
 #[derive(Debug, Clone, Copy)]
 pub struct ReEncodeParams {
     /// Maximum output size in **raw bytes** (not base64).
@@ -58,18 +56,15 @@ pub enum ReEncodeError {
     CouldNotFit { max_bytes: usize, last_side: u32 },
 }
 
-/// Try PNG and JPEG encodings at descending dimensions, returning whichever
-/// is smallest and fits under `params.max_bytes`.
-///
-/// On success returns `(bytes, width, height, mime_type)`.
+/// Try PNG and JPEG encodings at descending dimensions, returning whichever is smallest and fits
+/// under `params.max_bytes`. On success returns `(bytes, width, height, mime_type)`.
 pub fn re_encode_under_limit(
     decoded: &DynamicImage,
     params: &ReEncodeParams,
 ) -> Result<(Vec<u8>, u32, u32, &'static str), ReEncodeError> {
-    // Never upscale: a small-but-heavy image is re-encoded at its own
-    // resolution, not enlarged to `max_side_px`. `image::resize` scales *up* to
-    // fill the target box, so starting at `max_side_px` would enlarge anything
-    // smaller — adding no detail and wasting request bytes / cache headroom.
+    // Never upscale: a small-but-heavy image is re-encoded at its own resolution, not enlarged to `max_side_px`.
+    // `image::resize` scales *up* to fill the target box, so starting at `max_side_px` would enlarge anything smaller —
+    // adding no detail and wasting request bytes / cache headroom.
     let original_max_side = decoded.width().max(decoded.height());
     let mut max_side = params.max_side_px.min(original_max_side);
     let original_pixels = u64::from(decoded.width()) * u64::from(decoded.height());
@@ -138,22 +133,18 @@ pub fn re_encode_under_limit(
 fn area_capped_side(long: u32, short: u32, max_pixels: u64) -> u32 {
     let scale = (max_pixels as f64 / (u64::from(long) * u64::from(short)) as f64).sqrt();
     let mut side = ((f64::from(long) * scale).floor() as u32).clamp(1, long);
-    // Nearest-rounding of the short side can overshoot the budget by ~side/2
-    // pixels, so step down until the predicted output fits: a decrement removes
-    // ~2*area/side pixels, giving ~2 iterations for ordinary aspect ratios;
-    // only degenerate strips whose short side pins at the 1px floor walk
-    // O(side), bounded by the callers' decode-pixel limits.
+    // Nearest-rounding of the short side can overshoot the budget by ~side/2 pixels, so step down until the predicted
+    // output fits: a decrement removes ~2*area/side pixels, giving ~2 iterations for ordinary aspect ratios; only
+    // degenerate strips whose short side pins at the 1px floor walk O(side), bounded by the callers' decode-pixel limits.
     while side > 1 && predicted_resize_area(long, short, side) > max_pixels {
         side -= 1;
     }
     side
 }
 
-/// Output area `image::resize` produces for a `side`×`side` bounding box,
-/// mirroring `resize_dimensions` (image-0.25.9, `src/math/utils.rs`)
-/// expression-for-expression; the `area_cap_exact_fit_across_aspect_ratios`
-/// sweep pins the equivalence through the real resize, so a crate bump that
-/// changes the rounding shows up as a test failure pointing here.
+/// Output area `image::resize` produces for a `side`×`side` bounding box, mirroring `resize_dimensions` (image-0.25.9, `src/math/utils.rs`)
+/// expression-for-expression; the `area_cap_exact_fit_across_aspect_ratios` sweep pins the equivalence through the real resize, so a crate bump
+/// that changes the rounding shows up as a test failure pointing here.
 fn predicted_resize_area(long: u32, short: u32, side: u32) -> u64 {
     let ratio = f64::from(side) / f64::from(long);
     let scaled_long = (f64::from(long) * ratio).round().max(1.0) as u64;
@@ -191,10 +182,9 @@ mod tests {
 
     #[test]
     fn does_not_upscale_images_smaller_than_the_side_cap() {
-        // 1280x960 is already under the test's 1568px side cap. Re-encoding
-        // must NOT enlarge it — output dimensions must never exceed the input.
-        // (Regression: the resize previously scaled small images up to
-        // `max_side_px`.)
+        // 1280x960 is already under the test's 1568px side cap. Re-encoding must NOT enlarge it —
+        // output dimensions must never exceed the input. (Regression: the resize previously scaled
+        // small images up to `max_side_px`.)
         let img = noise(1280, 960);
         let (_bytes, w, h, _mime) =
             re_encode_under_limit(&img, &params(5_000_000, 1568, u64::MAX)).unwrap();

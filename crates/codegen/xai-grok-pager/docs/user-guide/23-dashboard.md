@@ -7,7 +7,7 @@ listed; they run under their parent, which already shows when work is in
 flight.
 
 Not the agents modal (`/config-agents` / `/agents` — definitions and
-personas), the session picker (`/resume` / `F3`, past conversations on
+personas), the session picker (`/resume` / `Ctrl+R`, past conversations on
 disk), or the workflows run UI (`/workflow runs`).
 
 ---
@@ -27,7 +27,10 @@ Hidden in minimal mode. Set `GROK_AGENT_DASHBOARD=0` or
 ## What you see
 
 ```
- Grok Build · Dashboard — 4 agents · 2 awaiting
+  main ~/xai [Choose Ctrl+l]                    ◆ 2 awaiting │ ⋮ 1 working │ ◇ 1 idle
+
+  + New Agent                                Open Previous /resume │ Worktree Ctrl+w
+
 ▌● reviewer · audit token flow    Awaiting your input            2m
  ● implementer · fix login bug    Running: cargo test           12m
  ⋅ refactor · feat/login          Responding…                   24m
@@ -38,6 +41,23 @@ Hidden in minimal mode. Set `GROK_AGENT_DASHBOARD=0` or
 ╰─ dispatch ──────────────────────────────────────────────────────╯
  ↑/↓ select (peek) · Enter open · Ctrl+R rename · Ctrl+T pin · Ctrl+X stop · ? help · Esc new
 ```
+
+The **header** shows where a new agent will run — the git branch and the
+working directory — with state-count chips on the right (the same glyph
+and colour as the rows, plus a label). Click the location
+(or press `Ctrl+L`) to **choose** another directory; `/cd <path>` does the
+same from the dispatch box.
+
+The **actions row** below it holds `+ New Agent` (the default cursor target
+when no row is selected) and, on the right, `Open Previous` (the session
+picker; workspace dashboard only) and the **worktree toggle**. With the list
+focused (`Tab`), `→` / `←` (or `l` / `h` in vim mode) move the cursor along
+the row in that order, stopping at either end; `Enter` acts like a click on
+the focused item — create, open the picker, or toggle worktree mode — and
+`Esc` steps back to `+ New Agent`. The same actions are always a click or
+`/resume` / `Ctrl+W` away. With worktree mode on inside a git repo, the row
+reads `+ New Agent in Worktree` / `Disable Worktree`, and the next dispatch
+creates the agent in a fresh git worktree.
 
 Each row is a top-level agent. Sort by state (Needs input → Working → Idle →
 Inactive → Completed → Failed) so same-state rows sit together, or by working
@@ -153,7 +173,13 @@ navigation cursor, not a reply target — open an agent to talk to it.
   filtering is `Ctrl+/` search mode. A leading `/` runs a pager-global slash
   command.
 - Empty input → open the selected row, or create a new agent when
-  `[+ New Agent]` is focused.
+  `+ New Agent` is focused.
+
+`/usage` opens the usage modal over the dashboard. The dashboard has no
+session, so the **Usage limit** tab shows your account allowance while the
+two session tabs read "No active session"; open an agent for its context and
+token totals (`/context` and `/session-info` only work inside a session).
+`Esc` or `[✗]` closes it.
 
 `Ctrl+S` after typing dispatches **and** attaches; plain `Enter` stays on the
 dashboard so you can dispatch several sessions. `Shift+Enter` / `Alt+Enter`
@@ -170,15 +196,15 @@ toggles between them; the inactive input dims its border and hides its caret.
 On open, focus defaults to the **overview list** when at least one agent
 exists (so `↑`/`↓` / vim `j`/`k` navigate immediately). With **no** agents,
 focus stays on the **dispatch input**. Either way, the cursor starts on
-`[+ New Agent]` (no agent row pre-selected).
+`+ New Agent` (no agent row pre-selected).
 
 - **Input focused**: type a new-session prompt. Empty prompt: `↑`/`↓`
   navigate rows; non-empty: move the caret. `Esc` unfocuses to the list
   (draft kept).
 - **Overview focused**: `↑`/`↓` (and vim `j`/`k`) move between rows. `Enter`
-  opens the highlighted agent (on `[+ New Agent]`, sends a typed draft or
+  opens the highlighted agent (on `+ New Agent`, sends a typed draft or
   creates a new session). `Esc` stays on the list and steps back — clear
-  filter, then unselect (→ `[+ New Agent]`), then exit. `Tab`, `i` (vim), or
+  filter, then unselect (→ `+ New Agent`), then exit. `Tab`, `i` (vim), or
   any printable key returns to the input.
 
 ---
@@ -186,7 +212,7 @@ focus stays on the **dispatch input**. Either way, the cursor starts on
 ## Peek panel
 
 Selecting an agent row shows the **peek panel** in place of the dispatch box.
-With no row selected (`[+ New Agent]`, or after `Esc`), the dispatch box
+With no row selected (`+ New Agent`, or after `Esc`), the dispatch box
 returns. Select a row to talk to an existing agent; deselect to start a new
 one.
 
@@ -217,7 +243,7 @@ agent**:
   follows, and a half-typed draft is cleared so it cannot land on the wrong
   agent. (`Tab` to the list to navigate while a draft is in the reply.)
 - **`Esc` unselects**: clear a typed reply first, then deselect and focus
-  `[+ New Agent]`.
+  `+ New Agent`.
 - **`Tab`** toggles focus between reply and row list; a printable key
   re-focuses the reply.
 - Full prompt editor (same as dispatch / agent prompt): multi-line paste

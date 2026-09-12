@@ -1,8 +1,15 @@
-//! Memory subsystem telemetry. Routes through `log_event` (product tier,
-//! `Enabled` mode only). No PII or user content -- only counts, scores,
-//! durations, and config values.
+//! Memory subsystem telemetry routes through `log_event` (product tier, `Enabled` mode only).
+//! Events carry no PII or user content, only counts, scores, durations, and config values.
 
 use serde::Serialize;
+
+#[derive(Debug, Default, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryMode {
+    #[default]
+    Legacy,
+    V2,
+}
 
 #[derive(Debug, Default, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -53,6 +60,7 @@ pub enum MemoryInjectionOutcome {
 pub struct MemorySessionInit {
     pub session_id: String,
     pub memory_enabled: bool,
+    pub memory_mode: MemoryMode,
     pub watcher_config_enabled: bool,
     pub watcher_started: bool,
     pub temporal_decay_enabled: bool,
@@ -141,6 +149,7 @@ pub struct MemoryWatcherSync {
 pub struct MemorySessionSummary {
     pub session_id: String,
     pub memory_enabled: bool,
+    pub memory_mode: MemoryMode,
     pub session_duration_secs: u64,
     pub flush_count: u64,
     pub flush_success_count: u64,
@@ -177,6 +186,7 @@ mod tests {
             serde_json::to_value(MemoryInjectionOutcome::Skipped).unwrap(),
             "skipped"
         );
+        assert_eq!(serde_json::to_value(MemoryMode::V2).unwrap(), "v2");
         let events = [
             serde_json::to_value(MemorySessionInit::default()).unwrap(),
             search,
@@ -189,6 +199,7 @@ mod tests {
         ];
         const STRING_KEYS: &[&str] = &[
             "session_id",
+            "memory_mode",
             "source",
             "search_mode",
             "outcome",

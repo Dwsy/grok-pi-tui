@@ -1,9 +1,5 @@
-//! Mouse input handling for [`AgentView`]: the `handle_mouse` event handler
-//! (click-to-focus, hit-testing of cached click rects, per-pane click
-//! dispatch) and the scrollbar click helper.
-//!
-//! Extracted from `agent_view.rs` as a sibling `impl AgentView` block (same
-//! pattern as `queue_edit.rs`).
+//! Mouse input handling for [`AgentView`]: the `handle_mouse` event handler and the scrollbar click helper.
+//! `handle_mouse` covers click-to-focus, hit-testing of cached click rects, and per-pane click dispatch.
 //!
 //! Hit-tests here assume the cached rects come from the last rendered frame.
 use super::actions::Action;
@@ -18,8 +14,7 @@ use crate::views::prompt_widget::PromptEvent;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use std::time::Instant;
 impl AgentView {
-    /// Time-paired multi-click check for the prompt textarea. Pairing is
-    /// time-only (no coordinates); a mispaired action is one undo step.
+    /// Multi-click check for the prompt textarea, paired by time only (no coordinates); a mispaired action is one undo step.
     /// Records the click for the next pairing.
     pub(super) fn prompt_click_is_double(&mut self) -> bool {
         let now = std::time::Instant::now();
@@ -31,7 +26,7 @@ impl AgentView {
     }
     /// Handle mouse events: click-to-focus, forward to prompt textarea.
     ///
-    /// Scroll events are handled at app level (not here).
+    /// Scroll events are handled at app level.
     pub(super) fn handle_mouse(&mut self, mouse: &MouseEvent) -> InputOutcome {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -205,22 +200,12 @@ impl AgentView {
                     .plugin_cta
                     .hit_dismiss
                     .contains(mouse.column, mouse.row)
-                    && let CtaPhase::Matched { name, .. } | CtaPhase::Error { name, .. } =
-                        &self.plugin_cta.phase
+                    && matches!(
+                        self.plugin_cta.phase,
+                        CtaPhase::Matched { .. } | CtaPhase::Error { .. }
+                    )
                 {
-                    let plugin_id = name.clone();
-                    if let Err(e) = xai_grok_shell::config::add_dismissed_plugin_cta(&plugin_id) {
-                        tracing::warn!(error = %e, "couldn't persist plugin CTA dismissal");
-                    }
-                    self.plugin_cta.dismissed.insert(plugin_id.clone());
-                    xai_grok_telemetry::session_ctx::log_event(
-                        xai_grok_telemetry::events::PluginCtaDismissed {
-                            plugin_name: plugin_id,
-                        },
-                    );
-                    self.plugin_cta.phase = CtaPhase::Hidden;
-                    self.plugin_cta.hit_connect.clear();
-                    self.plugin_cta.hit_dismiss.clear();
+                    self.dismiss_matched_plugin();
                     return InputOutcome::Changed;
                 }
                 if self
@@ -428,6 +413,45 @@ impl AgentView {
                     return InputOutcome::Unchanged;
                 }
                 match self.pane_areas.hit_test(mouse.column, mouse.row) {
+                    Some(AgentPane::Dock) => {
+                        let item = self.dock_item_at(self.pane_areas.dock, mouse.row);
+                        if let Some(hit) = self
+                            .dock_stop_button
+                            .clone()
+                            .filter(|hit| hit.rect.contains((mouse.column, mouse.row).into()))
+                        {
+                            if self.pos_occluded(mouse.column, mouse.row) {
+                                return InputOutcome::Changed;
+                            }
+                            let Some(item) = item else {
+                                return InputOutcome::Changed;
+                            };
+                            let Some(action) = self.dock_stop_action(item) else {
+                                return InputOutcome::Changed;
+                            };
+                            if super::agent_view::DockKillId::from_action(&action).as_ref()
+                                != Some(&hit.id)
+                            {
+                                return InputOutcome::Changed;
+                            }
+                            return InputOutcome::Action(action);
+                        }
+                        self.set_active_pane(AgentPane::Dock, false);
+                        match item {
+                            Some(item) => {
+                                let items = self.dock_items();
+                                if let Some(idx) = items.iter().position(|it| *it == item) {
+                                    self.dock_cursor = idx;
+                                }
+                                self.activate_dock_item(item);
+                                self.dock_hovered =
+                                    self.dock_item_at(self.pane_areas.dock, mouse.row);
+                                self.cache_dock_stop_button();
+                                InputOutcome::Changed
+                            }
+                            None => InputOutcome::Changed,
+                        }
+                    }
                     Some(AgentPane::Todo) => {
                         self.set_active_pane(AgentPane::Todo, false);
                         self.todo.handle_mouse(
@@ -441,6 +465,13 @@ impl AgentView {
                     Some(AgentPane::Queue) => {
                         if let Some(id) = self.queue.delete_click(mouse.column, mouse.row) {
                             let (is_server, row) = self.resolve_queue_row(id);
+                            if row.as_ref().is_some_and(|row| {
+                                !self
+                                    .server_row_capabilities(row)
+                                    .is_some_and(|capabilities| capabilities.can_delete())
+                            }) {
+                                return InputOutcome::Changed;
+                            }
                             if is_server {
                                 if let (Some(_sid), Some(row)) =
                                     (self.session.session_id.as_ref(), row)
@@ -465,7 +496,6 @@ impl AgentView {
                             return InputOutcome::Changed;
                         }
                         if let Some(id) = self.queue.send_now_click(mouse.column, mouse.row)
-                            && self.session.state.is_turn_running()
                             && let InputOutcome::Action(action) = self.force_interject_queue_row(id)
                         {
                             return InputOutcome::Action(action);
@@ -475,6 +505,13 @@ impl AgentView {
                                 || self.set_active_pane(AgentPane::Queue, false))
                         {
                             let (is_server, row) = self.resolve_queue_row(id);
+                            if row.as_ref().is_some_and(|row| {
+                                !self
+                                    .server_row_capabilities(row)
+                                    .is_some_and(|capabilities| capabilities.can_edit())
+                            }) {
+                                return InputOutcome::Changed;
+                            }
                             self.enter_queue_edit(id, is_server, row);
                             return InputOutcome::Changed;
                         }
@@ -564,24 +601,11 @@ impl AgentView {
                                         .and_then(|v| v.bg_task_id.as_deref())
                                         == Some(tid.as_str());
                                     if already_open {
-                                        self.block_viewer = None;
+                                    if already_open {
+                                        self.dismiss_block_viewer();
                                         return InputOutcome::Changed;
                                     }
-                                    if let Some(task) = self.session.bg_tasks.get(tid) {
-                                        let entry_id = task.scrollback_entry_id.unwrap_or_else(|| {
-                                            crate::scrollback::entry::EntryId::new(0)
-                                        });
-                                        let is_running =
-                                            task.status == crate::app::agent::BgTaskStatus::Running;
-                                        self.block_viewer = Some(
-                                            crate::views::block_viewer::BlockViewerPane::for_bg_task(
-                                                entry_id,
-                                                tid,
-                                                &task.stdout,
-                                                is_running,
-                                            ),
-                                        );
-                                        self.set_active_pane(AgentPane::Scrollback, true);
+                                    if self.show_bg_task_viewer(&tid) {
                                         return InputOutcome::Changed;
                                     }
                                 }
@@ -627,21 +651,8 @@ impl AgentView {
                         {
                             if let Some(task_id) =
                                 self.tasks.selected_task_id().map(|s| s.to_string())
-                                && let Some(task) = self.session.bg_tasks.get(&task_id)
+                                && self.show_bg_task_viewer(&task_id)
                             {
-                                let entry_id = task
-                                    .scrollback_entry_id
-                                    .unwrap_or_else(|| crate::scrollback::entry::EntryId::new(0));
-                                let is_running =
-                                    task.status == crate::app::agent::BgTaskStatus::Running;
-                                self.block_viewer =
-                                    Some(crate::views::block_viewer::BlockViewerPane::for_bg_task(
-                                        entry_id,
-                                        &task_id,
-                                        &task.stdout,
-                                        is_running,
-                                    ));
-                                self.set_active_pane(AgentPane::Scrollback, true);
                                 self.last_bg_click = None;
                                 return InputOutcome::Changed;
                             }
@@ -848,46 +859,6 @@ impl AgentView {
                             .scrollback
                             .entry_index_at_screen_row(click_row, self.pane_areas.scrollback);
                         if let Some(idx) = hit_idx {
-                            let credit_click = self
-                                .scrollback
-                                .entry(idx)
-                                .and_then(|entry| {
-                                    if let crate::scrollback::block::RenderBlock::CreditLimit(
-                                        ref blk,
-                                    ) = entry.block
-                                    {
-                                        use crate::scrollback::blocks::CreditLimitCardAction;
-                                        let choice = match blk.action {
-                                            CreditLimitCardAction::PurchaseCredits => {
-                                                xai_grok_telemetry::events::CreditLimitChoice::PurchaseCredits
-                                            }
-                                            CreditLimitCardAction::EnablePayg
-                                            | CreditLimitCardAction::IncreasePaygLimit => {
-                                                xai_grok_telemetry::events::CreditLimitChoice::PayAsYouGo
-                                            }
-                                        };
-                                        Some((blk.url.clone(), choice))
-                                    } else {
-                                        None
-                                    }
-                                });
-                            if let Some((url, choice)) = credit_click
-                                && let Some((area, _, _)) = self
-                                    .scrollback
-                                    .entry_screen_area(idx, self.pane_areas.scrollback)
-                            {
-                                let url_row = area.y + area.height.saturating_sub(2);
-                                if click_row >= url_row {
-                                    self.scrollback.set_selected(Some(idx));
-                                    xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::CreditLimitUpsellClicked {
-                                        surface: xai_grok_telemetry::events::CreditLimitUpsellSurface::InlineCard,
-                                        choice,
-                                    });
-                                    self.open_url_or_show(&url);
-                                    self.last_click = None;
-                                    return InputOutcome::Changed;
-                                }
-                            }
                             let selectable = self
                                 .scrollback
                                 .get(idx)
@@ -1000,7 +971,8 @@ impl AgentView {
                         | AgentPane::Queue
                         | AgentPane::Prompt
                         | AgentPane::Tasks
-                        | AgentPane::Catalog => None,
+                        | AgentPane::Catalog
+                        | AgentPane::Dock => None,
                     })
                 };
                 let new_prompt_hover = hit == Some(AgentPane::Prompt)
@@ -1021,8 +993,7 @@ impl AgentView {
                             entry.block,
                             crate::scrollback::block::RenderBlock::AgentMessage(_)
                                 | crate::scrollback::block::RenderBlock::Btw(_)
-                        )
-                        || entry.hook_data.as_ref().is_some_and(|hd| hd.has_content()))
+                        ))
                 {
                     changed = true;
                 }
@@ -1036,6 +1007,15 @@ impl AgentView {
                 if new_timeline_hover != self.timeline_hover {
                     self.timeline_hover = new_timeline_hover;
                     self.sync_timeline_hover_preview();
+                    changed = true;
+                }
+                if hit == Some(AgentPane::Dock) {
+                    let new = self.dock_item_at(self.pane_areas.dock, mouse.row);
+                    if new != self.dock_hovered {
+                        self.dock_hovered = new;
+                        changed = true;
+                    }
+                } else if self.dock_hovered.take().is_some() {
                     changed = true;
                 }
                 changed |= self
@@ -1218,11 +1198,20 @@ impl AgentView {
             _ => InputOutcome::Unchanged,
         }
     }
-    /// Apply a scrollbar click/drag at the given screen row.
-    ///
-    /// Uses [`scrollbar_click_to_offset`] (same math as the thumb renderer)
-    /// so the resulting scroll position is the exact inverse of where the
-    /// thumb would be drawn for that offset.
+    /// Forget every pointer-derived highlight by replaying the hover pass at an off-screen position.
+    /// Used on screen-mode switches: minimal mode turns mouse capture off, so no motion event arrives to refresh hover state and the pre-switch highlight (hovered entry row, buttons, dropdown rows) would stick on the next fullscreen frame until the pointer moves.
+    /// Routing through [`Self::handle_mouse`] keeps this in lockstep with the real hover pass.
+    pub(crate) fn clear_pointer_hover(&mut self) {
+        let _ = self.handle_mouse(&MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: u16::MAX,
+            row: u16::MAX,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        });
+    }
+    /// Apply a scrollbar click or drag at the given screen row.
+    /// Uses [`scrollbar_click_to_offset`], the same math as the thumb renderer.
+    /// The resulting scroll position is the exact inverse of where the thumb would be drawn for that offset.
     pub(super) fn apply_scrollbar_click(&mut self, screen_y: u16) -> bool {
         use crate::render::scrollbar::{ScrollbarClickResult, scrollbar_click_to_offset};
         let Some(sb) = self.hit_scrollbar.rect else {
@@ -1267,8 +1256,7 @@ mod tests {
     use crossterm::event::KeyModifiers;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    /// Render the queue, locate the action-button cell where `hit` resolves
-    /// to `selected_id`, and dispatch a left-click on it; returns the outcome.
+    /// Render the queue, locate the action-button cell where `hit` resolves to `selected_id`, and dispatch a left-click on it; returns the outcome.
     fn click_queue_button(
         agent: &mut AgentView,
         selected_id: u64,
@@ -1278,10 +1266,14 @@ mod tests {
         let area = Rect::new(0, 0, 80, 6);
         let mut buf = Buffer::empty(area);
         let layout_cfg = crate::appearance::LayoutConfig::default();
-        let running = agent.session.state.is_turn_running();
-        agent
-            .queue
-            .render(area, &mut buf, true, &layout_cfg, None, running);
+        agent.queue.render(
+            area,
+            &mut buf,
+            true,
+            &layout_cfg,
+            None,
+            agent.can_send_now(),
+        );
         agent.pane_areas.queue = area;
         let mut found = None;
         'find: for row in area.y..area.y + area.height {
@@ -1312,8 +1304,46 @@ mod tests {
     fn click_edit(agent: &mut AgentView, selected_id: u64) -> InputOutcome {
         click_queue_button(agent, selected_id, |a, c, r| a.queue.edit_click(c, r))
     }
-    /// Mouse "Send now" (interject) on the last local row keeps the pane open
-    /// when a server row remains — the third sibling site of the same fix.
+    #[test]
+    fn mouse_send_now_tracks_automatic_wake_cancellation() {
+        let mut active = running_agent_local_only();
+        active.session.state = AgentState::Idle;
+        active.running_wake_turn = Some(crate::app::agent_view::RunningWakeTurn {
+            prompt_id: "task-completed-bg1".into(),
+            cancel_sent: false,
+        });
+        let id = active.queue.entry_ids()[0];
+        assert!(matches!(
+            click_send_now(&mut active, id),
+            InputOutcome::Action(Action::SendPromptNow { .. })
+        ));
+        let mut cancelling = running_agent_local_only();
+        cancelling.session.state = AgentState::Idle;
+        cancelling.running_wake_turn = Some(crate::app::agent_view::RunningWakeTurn {
+            prompt_id: "task-completed-bg1".into(),
+            cancel_sent: true,
+        });
+        cancelling
+            .queue
+            .list_state
+            .select_by_id(cancelling.queue.entry_ids()[0]);
+        let area = Rect::new(0, 0, 80, 6);
+        let mut buf = Buffer::empty(area);
+        cancelling.queue.render(
+            area,
+            &mut buf,
+            true,
+            &crate::appearance::LayoutConfig::default(),
+            None,
+            cancelling.can_send_now(),
+        );
+        for row in area.y..area.y + area.height {
+            for col in area.x..area.x + area.width {
+                assert_eq!(cancelling.queue.send_now_click(col, row), None);
+            }
+        }
+    }
+    /// Mouse "Send now" (interject) on the last local row keeps the pane open when a server row remains.
     #[test]
     fn mouse_send_now_last_local_row_keeps_pane_open_when_server_remains() {
         let mut agent = make_running_agent();
@@ -1336,8 +1366,7 @@ mod tests {
         assert!(agent.queue.overlay.focused);
         assert_eq!(agent.active_pane, AgentPane::Queue);
     }
-    /// Hide via the mouse "Send now" path (site 3): with no server rows left,
-    /// interjecting the last local row empties the merged view → hide.
+    /// With no server rows left, interjecting the last local row via the mouse "Send now" path empties the merged view, so the pane hides.
     #[test]
     fn mouse_send_now_last_local_row_hides_pane_when_shared_queue_empty() {
         let mut agent = running_agent_local_only();
@@ -1355,10 +1384,8 @@ mod tests {
         assert!(!agent.queue.overlay.focused);
         assert_eq!(agent.active_pane, AgentPane::Scrollback);
     }
-    /// Send-now `[Interject]` on the lone local row while it is being
-    /// DIRTY-edited: the removal must discard the edit via the canonical
-    /// helper — the old inline removal stranded `EditingQueued` and armed
-    /// the invisible modal.
+    /// Send-now `[Interject]` on the lone local row while it is being dirty-edited: the removal must discard the edit via the canonical helper.
+    /// The old inline removal stranded `EditingQueued` and left an invisible modal active.
     #[test]
     fn mouse_send_now_edited_lone_local_row_discards_edit_without_orphaned_modal() {
         let mut agent = running_agent_local_only();
@@ -1394,10 +1421,8 @@ mod tests {
         assert_eq!(agent.prompt.text(), "draft");
         assert!(!agent.queue.overlay.visible);
     }
-    /// Mouse `[cancel]` of the FRONT local row being edited while idle:
-    /// discarding the edit releases the drain block, so the click must kick
-    /// `DrainQueue` like the modal Delete arm (the row behind must not sit
-    /// stuck until an unrelated trigger).
+    /// Mouse `[cancel]` of the front local row being edited while idle: discarding the edit releases the drain block.
+    /// The click must kick `DrainQueue` like the modal Delete arm, so the row behind does not sit stuck until an unrelated trigger.
     #[test]
     fn mouse_delete_edited_front_row_while_idle_kicks_drain() {
         let mut agent = running_agent_local_only();
@@ -1437,10 +1462,8 @@ mod tests {
         assert!(agent.active_modal.is_none());
         assert_eq!(agent.prompt.text(), "draft");
     }
-    /// Mouse `[edit]` on a queued row enters the same queued-edit flow as the
-    /// keyboard `e` (`QueueEvent::EditSelected` → `enter_queue_edit`): the
-    /// composer loads the row text and the prompt pane takes focus in
-    /// `EditingQueued` mode, leaving the row itself queued.
+    /// Mouse `[edit]` on a queued row enters the same queued-edit flow as the keyboard `e` (`QueueEvent::EditSelected`, then `enter_queue_edit`).
+    /// The composer loads the row text and the prompt pane takes focus in `EditingQueued` mode, leaving the row itself queued.
     #[test]
     fn mouse_edit_click_enters_queued_edit_mode() {
         let mut agent = running_agent_local_only();
@@ -1470,11 +1493,9 @@ mod tests {
         assert_eq!(agent.active_pane, AgentPane::Prompt);
         assert_eq!(agent.session.pending_prompts.len(), 1);
     }
-    /// Clicking another row's `[edit]` while a DIRTY queued edit is active
-    /// must not re-enter `enter_queue_edit` — that would bypass the
-    /// dirty-edit lock and overwrite `stashed_prompt`, so Esc would restore
-    /// the edit text instead of the user's original draft. The click falls
-    /// through to the pane switch, which the lock blocks.
+    /// Clicking another row's `[edit]` while a dirty queued edit is active must not re-enter `enter_queue_edit`.
+    /// That would bypass the dirty-edit lock and overwrite `stashed_prompt`, so Esc would restore the edit text instead of the user's original draft.
+    /// The click falls through to the pane switch, which the lock blocks.
     #[test]
     fn mouse_edit_click_during_dirty_edit_preserves_first_edit_and_stash() {
         let mut agent = make_running_agent();
@@ -1515,9 +1536,8 @@ mod tests {
             "no hold effect may be emitted for the clicked row"
         );
     }
-    /// Same guard for a dirty SERVER-row edit: clicking another row's
-    /// `[edit]` must not replace the edit (which would strand the first
-    /// row's combine hold) nor emit a second `QueueHoldEdit`.
+    /// Same guard for a dirty server-row edit: clicking another row's `[edit]` must not replace the edit nor emit a second `QueueHoldEdit`.
+    /// Replacing it would strand the first row's combine hold.
     #[test]
     fn mouse_edit_click_during_dirty_server_edit_keeps_hold_target() {
         let mut agent = make_running_agent();
@@ -1545,11 +1565,9 @@ mod tests {
             "no second QueueHoldEdit may be emitted while one row is held"
         );
     }
-    /// Clicking another row's `[edit]` while a CLEAN (unchanged) edit is
-    /// active must open the clicked row's edit on the SAME click: the
-    /// canonical pane switch exits the clean edit — releasing its server
-    /// combine hold — and the arm then enters the clicked row instead of
-    /// letting the click die on the pane switch.
+    /// Clicking another row's `[edit]` while a clean (unchanged) edit is active must open the clicked row's edit on the same click.
+    /// The canonical pane switch exits the clean edit and releases its server combine hold.
+    /// The arm then enters the clicked row instead of letting the click die on the pane switch.
     #[test]
     fn mouse_edit_click_during_clean_edit_switches_to_clicked_row() {
         let mut agent = make_running_agent();
@@ -1622,8 +1640,7 @@ mod tests {
             "no QueueHoldEdit may be emitted for a row the shell doesn't have"
         );
     }
-    /// A synthetic left-click on a rendered follow-up chip yields the LITERAL
-    /// `SubmitFollowUp` action (never a slash-command path).
+    /// A synthetic left-click on a rendered follow-up chip yields the literal `SubmitFollowUp` action (never a slash-command path).
     #[test]
     fn follow_up_chip_click_yields_literal_submit_action() {
         use crate::app::agent_view::test_fixtures::make_agent;
@@ -1649,8 +1666,7 @@ mod tests {
             other => panic!("expected SubmitFollowUp, got {other:?}"),
         }
     }
-    /// Double-click on a `[Pasted: N lines]` chip expands it into plain
-    /// editable text; the first click only places the cursor on the chip.
+    /// Double-click on a `[Pasted: N lines]` chip expands it into plain editable text; the first click only places the cursor on the chip.
     #[test]
     fn double_click_on_paste_chip_expands_it() {
         use crate::app::agent_view::test_fixtures::make_agent;
@@ -1688,5 +1704,61 @@ mod tests {
             "double-click must expand the chip"
         );
         assert_eq!(agent.prompt.textarea.text(), text);
+    }
+    #[test]
+    fn tasks_view_toggle_snapshots_resume() {
+        use crate::app::agent_view::test_fixtures::make_agent;
+        use crate::scrollback::block::RenderBlock;
+        use crate::views::tasks_pane::TaskEntryId;
+        let mut agent = make_agent();
+        let entry_id = agent
+            .scrollback
+            .push_block(RenderBlock::agent_message("one\ntwo\nthree"));
+        let mut task = crate::app::agent::BgTaskState {
+            task_id: "task-1".into(),
+            tool_call_id: "call-task-1".into(),
+            command: "echo".into(),
+            description: None,
+            cwd: "/tmp".into(),
+            output_file: "/tmp/out".into(),
+            status: crate::app::agent::BgTaskStatus::Done,
+            start_time: std::time::SystemTime::now(),
+            end_time: None,
+            exit_code: Some(0),
+            signal: None,
+            stdout: String::new(),
+            stdout_line_count: 0,
+            truncated: false,
+            pending_kill: false,
+            kill_requested_at: None,
+            scrollback_entry_id: Some(entry_id),
+            is_monitor: false,
+            restored_from_replay: false,
+        };
+        task.set_stdout("one\ntwo\nthree".into());
+        agent.session.bg_tasks.insert("task-1".into(), task);
+        assert!(agent.show_bg_task_viewer("task-1"));
+        let selected_id = {
+            let viewer = agent.block_viewer.as_mut().expect("opened");
+            viewer.prepare_for_test(Rect::new(0, 0, 80, 24));
+            viewer.select_body_line_for_test(1);
+            viewer.list_state.selected_id()
+        };
+        agent.pane_areas.tasks = Rect::new(0, 0, 20, 5);
+        agent
+            .tasks
+            .view_button_rects
+            .push((TaskEntryId::BgTask("task-1".into()), Rect::new(0, 0, 4, 1)));
+        let outcome = agent.handle_mouse(&MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        });
+        assert!(matches!(outcome, InputOutcome::Changed));
+        assert!(agent.block_viewer.is_none());
+        let resume = agent.block_viewer_resume.expect("resume");
+        assert_eq!(resume.entry_id, entry_id);
+        assert_eq!(resume.selected_id, selected_id);
     }
 }

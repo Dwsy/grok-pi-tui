@@ -1,25 +1,21 @@
-//! Provisioned-repo listing (`workspace.repos_list`) and the on-disk
-//! in-sandbox manifest contract (`{workspace}/.grok/repos.json`).
+//! Provisioned-repo listing (`workspace.repos_list`) and the on-disk in-sandbox manifest contract (`{workspace}/.grok/repos.json`).
 //!
-//! The sandbox provisioner writes this manifest; the workspace list op
-//! reads it. Field names are the frontend/integration API — add optional
-//! fields with `#[serde(default)]` rather than renaming existing ones.
+//! The sandbox provisioner writes this manifest; the workspace list op reads it.
+//! Field names are the frontend/integration API: add optional fields with `#[serde(default)]` rather than renaming existing ones.
 
 use serde::{Deserialize, Serialize};
 
 use super::{RpcActivityClass, WorkspaceRpc};
 
-/// Relative path of the provisioner manifest from the **sandbox**
-/// `workspace_directory` (pre-grove-rewrite init root, usually `/workspace`).
-/// Not relative to agent / workspace-server `--cwd` after a single-repo grove
-/// rewrite (`/workspace/app`). Writers and `workspace.repos_list` must join
-/// this to that sandbox root.
+/// Relative path of the provisioner manifest from the **sandbox** `workspace_directory` (pre-grove-rewrite init root, usually `/workspace`).
+/// It is not relative to the agent / workspace-server `--cwd` after a single-repo grove rewrite (`/workspace/app`).
+/// Writers and `workspace.repos_list` must join this to that sandbox root.
 pub const REPOS_MANIFEST_RELATIVE_PATH: &str = ".grok/repos.json";
 
 /// Current on-disk / wire manifest version.
 pub const REPOS_MANIFEST_VERSION: u32 = 1;
 
-/// `workspace.repos_list` — list repos materialized into this workspace.
+/// `workspace.repos_list`: list repos materialized into this workspace.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReposListReq {}
 
@@ -37,6 +33,17 @@ pub struct ReposListResponse {
     pub repos: Vec<ProvisionedRepo>,
 }
 
+/// How a provisioned repo was materialized into the sandbox.
+/// Absent on older manifests; unknown values must not fail parse of a snapshot-preserved `repos.json`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RepoBackend {
+    Grove,
+    CloneScript,
+    #[serde(other)]
+    Unknown,
+}
+
 /// One provisioned repository as exposed to frontend / workspace callers.
 ///
 /// Expandable: new optional fields should use `#[serde(default, skip_serializing_if = "Option::is_none")]`.
@@ -48,11 +55,14 @@ pub struct ProvisionedRepo {
     pub repository: String,
     /// Absolute in-sandbox (or workspace-relative absolute) mount path.
     pub mount_path: String,
-    /// Fork-from ref. Empty = unset (missing session branch is fatal).
-    /// `"HEAD"` = remote default. Do not treat empty as HEAD.
+    /// Fork-from ref. Empty means unset (missing session branch is fatal).
+    /// `"HEAD"` means the remote default. Do not treat empty as HEAD.
     pub base_branch: String,
     /// Session working branch created at provision time.
     pub session_branch: String,
+    /// Materialization backend. `None` on manifests written before this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_backend: Option<RepoBackend>,
 }
 
 /// On-disk manifest written by the sandbox provisioner.
@@ -79,9 +89,8 @@ impl RepoManifest {
         serde_json::to_vec_pretty(self)
     }
 
-    /// Every distinct provisioned mount, or `[workspace_root]` when the
-    /// manifest is empty (single-tree / no repos.json). Prompt, graph, and
-    /// fs-notify walk this list so multi-repo workspaces are not primary-only.
+    /// Every distinct provisioned mount, or `[workspace_root]` when the manifest is empty (single-tree / no repos.json).
+    /// Prompt, graph, and fs-notify walk this list so multi-repo workspaces are not limited to the primary repo.
     pub fn materialized_mounts(&self, workspace_root: &std::path::Path) -> Vec<std::path::PathBuf> {
         let mut out: Vec<std::path::PathBuf> = Vec::new();
         for repo in &self.repos {
@@ -90,11 +99,8 @@ impl RepoManifest {
                 continue;
             }
             let mount = std::path::PathBuf::from(raw);
-            // Confine to the workspace: a compromised/malicious `.grok/repos.json`
-            // must not point prompt/graph/fs-notify walks at paths outside the
-            // sandbox workspace. Reject `..` traversal and any mount that is not
-            // under `workspace_root` (mirrors the confinement `unnamed_cwd` /
-            // `confine_mount_under_workspace` already apply on the other paths).
+            // Confine to the workspace: a malicious `.grok/repos.json` must not point walks outside it
+            // Reject `..` and any mount not under `workspace_root`, matching `unnamed_cwd` / `confine_mount_under_workspace`
             if mount
                 .components()
                 .any(|c| matches!(c, std::path::Component::ParentDir))
@@ -134,6 +140,7 @@ mod tests {
                 mount_path: "/workspace/app".into(),
                 base_branch: "main".into(),
                 session_branch: "grok/s1".into(),
+                repo_backend: Some(RepoBackend::Grove),
             },
             ProvisionedRepo {
                 name: "lib".into(),
@@ -141,11 +148,57 @@ mod tests {
                 mount_path: "/workspace/lib".into(),
                 base_branch: "HEAD".into(),
                 session_branch: "feat/x".into(),
+                repo_backend: Some(RepoBackend::CloneScript),
             },
         ]);
         let bytes = manifest.to_json_bytes().expect("serialize");
         let recovered = RepoManifest::from_json_bytes(&bytes).expect("parse");
         assert_eq!(manifest, recovered);
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(text.contains("\"repo_backend\": \"grove\""), "{text}");
+        assert!(
+            text.contains("\"repo_backend\": \"clone_script\""),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn legacy_manifest_without_repo_backend_deserializes() {
+        let json = r#"{
+            "version": 1,
+            "repos": [{
+                "name": "app",
+                "repository": "acme/app",
+                "mount_path": "/workspace/app",
+                "base_branch": "main",
+                "session_branch": "grok/s1"
+            }]
+        }"#;
+        let recovered = RepoManifest::from_json_bytes(json.as_bytes()).expect("parse");
+        assert_eq!(recovered.repos[0].name, "app");
+        assert_eq!(recovered.repos[0].repo_backend, None);
+        let out = String::from_utf8(recovered.to_json_bytes().expect("serialize")).expect("utf8");
+        assert!(
+            !out.contains("repo_backend"),
+            "None must omit the field: {out}"
+        );
+    }
+
+    #[test]
+    fn unknown_repo_backend_does_not_fail_parse() {
+        let json = r#"{
+            "version": 1,
+            "repos": [{
+                "name": "app",
+                "repository": "acme/app",
+                "mount_path": "/workspace",
+                "base_branch": "main",
+                "session_branch": "grok/s1",
+                "repo_backend": "future_backend"
+            }]
+        }"#;
+        let recovered = RepoManifest::from_json_bytes(json.as_bytes()).expect("parse");
+        assert_eq!(recovered.repos[0].repo_backend, Some(RepoBackend::Unknown));
     }
 
     #[test]
@@ -170,8 +223,7 @@ mod tests {
 
     #[test]
     fn materialized_mounts_rejects_out_of_workspace_and_traversal() {
-        // A compromised repos.json must not escape the workspace; unsafe mounts
-        // are dropped and the safe workspace-root fallback is used.
+        // A compromised repos.json must not escape the workspace; unsafe mounts are dropped and the safe workspace-root fallback is used
         let manifest = RepoManifest::new(vec![
             ProvisionedRepo {
                 name: "evil".into(),
@@ -179,6 +231,7 @@ mod tests {
                 mount_path: "/etc".into(),
                 base_branch: "main".into(),
                 session_branch: "conv/1".into(),
+                repo_backend: None,
             },
             ProvisionedRepo {
                 name: "traverse".into(),
@@ -186,6 +239,7 @@ mod tests {
                 mount_path: "/workspace/../etc".into(),
                 base_branch: "main".into(),
                 session_branch: "conv/1".into(),
+                repo_backend: None,
             },
         ]);
         let mounts = manifest.materialized_mounts(std::path::Path::new("/workspace"));
@@ -201,6 +255,7 @@ mod tests {
                 mount_path: "/workspace/app".into(),
                 base_branch: "main".into(),
                 session_branch: "conv/1".into(),
+                repo_backend: None,
             },
             ProvisionedRepo {
                 name: "evil".into(),
@@ -208,6 +263,7 @@ mod tests {
                 mount_path: "/tmp/evil".into(),
                 base_branch: "main".into(),
                 session_branch: "conv/1".into(),
+                repo_backend: None,
             },
         ]);
         let mounts = manifest.materialized_mounts(std::path::Path::new("/workspace"));
@@ -222,6 +278,7 @@ mod tests {
                 mount_path: "/workspace/app".into(),
                 base_branch: "main".into(),
                 session_branch: "conv/1".into(),
+                repo_backend: None,
             },
             ProvisionedRepo {
                 name: "lib".into(),
@@ -229,6 +286,7 @@ mod tests {
                 mount_path: "/workspace/lib".into(),
                 base_branch: "main".into(),
                 session_branch: "feat/x".into(),
+                repo_backend: None,
             },
         ])
     }

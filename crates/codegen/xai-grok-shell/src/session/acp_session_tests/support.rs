@@ -1,17 +1,21 @@
 #![allow(dead_code)]
 use super::*;
-/// Wrap `id` in a shared auth-method handle for `SessionActor` test literals
-/// (the field is now a shared live handle, not an owned id).
+use xai_grok_tools::implementations::grok_build::task::types::{
+    SubagentCompletionSummary, SubagentSnapshot, SubagentSnapshotStatus,
+};
+pub(crate) fn completion_identity(actor: &SessionActor) -> std::rc::Rc<()> {
+    actor
+        .state
+        .try_lock()
+        .expect("uncontended test state")
+        .running_task
+        .as_ref()
+        .map(|task| task.identity.clone())
+        .unwrap_or_else(|| std::rc::Rc::new(()))
+}
 pub(crate) fn test_auth_method_id(id: &str) -> crate::agent::auth_method::SharedAuthMethodId {
     crate::agent::auth_method::new_shared_auth_method_id(Some(acp::AuthMethodId::new(id)))
 }
-/// Harness contract sentence — both halves ("verifies what's complete" AND
-/// "tells you what's missing").
-pub(crate) const HARNESS_VERIFIES_SENTENCE: &str =
-    "verifies what's complete and tells you what's missing on the next nudge";
-/// Plan-aware seed-todos instruction (`goal_plan_block.md`).
-pub(crate) const PLAN_SEED_TODOS_PHRASE: &str =
-    "Seed todos from the plan's acceptance criteria via";
 #[cfg(test)]
 pub(crate) fn noop_observability_bridge() -> xai_computer_hub_sdk::ObservabilityBridge {
     xai_computer_hub_sdk::ObservabilityBridge::new(
@@ -39,27 +43,29 @@ pub(crate) async fn test_agent_backend_search(
         true,
     )
 }
-/// Like [`test_agent_default`] but registers the `update_goal` tool so
-/// `command_availability().goal` is satisfied and `/goal …` slash commands
-/// resolve to their builtins when a turn is driven through `handle_prompt`.
 #[cfg(test)]
 pub(crate) async fn test_agent_with_goal_tool() -> xai_grok_agent::Agent {
     use xai_grok_tools::implementations::grok_build::update_goal::UpdateGoalTool;
     use xai_grok_tools::registry::types::ToolConfig;
     test_agent_with_tools(vec![ToolConfig::for_tool::<UpdateGoalTool>()]).await
 }
-/// Grok-build agent with the real `TodoWriteTool` (id `todo_write`, kind
-/// `Plan`) registered, so `tool_for_kind(ToolKind::Plan)` resolves through the
-/// live toolset instead of the literal fallback.
 #[cfg(test)]
 pub(crate) async fn test_grok_build_agent_with_todo() -> xai_grok_agent::Agent {
     use xai_grok_tools::implementations::grok_build::todo::TodoWriteTool;
     use xai_grok_tools::registry::types::ToolConfig;
     test_agent_with_tools(vec![ToolConfig::for_tool::<TodoWriteTool>()]).await
 }
-/// Agent with the real `enter_plan_mode` + `exit_plan_mode` tools registered so
-/// `prepare_tool_call` can parse a genuine `exit_plan_mode` call.
-/// `exit_plan_mode` only finalizes when `enter_plan_mode` is also present.
+#[cfg(test)]
+pub(crate) async fn test_agent_with_active_message_tool() -> xai_grok_agent::Agent {
+    use xai_grok_tools::implementations::grok_build::send_subagent_message::SendSubagentMessageTool;
+    use xai_grok_tools::implementations::grok_build::todo::TodoWriteTool;
+    use xai_grok_tools::registry::types::ToolConfig;
+    test_agent_with_tools(vec![
+        ToolConfig::for_tool::<SendSubagentMessageTool>(),
+        ToolConfig::for_tool::<TodoWriteTool>(),
+    ])
+    .await
+}
 #[cfg(test)]
 pub(crate) async fn test_agent_with_plan_tools() -> xai_grok_agent::Agent {
     use xai_grok_tools::implementations::grok_build::enter_plan_mode::EnterPlanModeTool;
@@ -180,13 +186,36 @@ pub(crate) async fn create_test_actor_ex(
     SessionActor,
     tokio::sync::mpsc::UnboundedReceiver<SessionEvent>,
 ) {
-    create_test_actor_with_terminal(
+    create_test_actor_with_chat_persistence(
+        total_tokens,
+        context_window,
+        threshold_percent,
+        gateway_tx,
+        persistence_tx,
+        Box::new(xai_chat_state::NullChatPersistence),
+    )
+    .await
+}
+#[cfg(test)]
+pub(crate) async fn create_test_actor_with_chat_persistence(
+    total_tokens: u64,
+    context_window: u64,
+    threshold_percent: u8,
+    gateway_tx: tokio::sync::mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
+    persistence_tx: tokio::sync::mpsc::UnboundedSender<PersistenceMsg>,
+    chat_persistence: Box<dyn xai_chat_state::ChatPersistence>,
+) -> (
+    SessionActor,
+    tokio::sync::mpsc::UnboundedReceiver<SessionEvent>,
+) {
+    create_test_actor_inner(
         total_tokens,
         context_window,
         threshold_percent,
         gateway_tx,
         persistence_tx,
         Arc::new(DummyTerminal {}),
+        chat_persistence,
     )
     .await
 }
@@ -198,6 +227,30 @@ pub(crate) async fn create_test_actor_with_terminal(
     gateway_tx: tokio::sync::mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
     persistence_tx: tokio::sync::mpsc::UnboundedSender<PersistenceMsg>,
     terminal: Arc<dyn crate::terminal::AsyncTerminalRunner>,
+) -> (
+    SessionActor,
+    tokio::sync::mpsc::UnboundedReceiver<SessionEvent>,
+) {
+    create_test_actor_inner(
+        total_tokens,
+        context_window,
+        threshold_percent,
+        gateway_tx,
+        persistence_tx,
+        terminal,
+        Box::new(xai_chat_state::NullChatPersistence),
+    )
+    .await
+}
+#[cfg(test)]
+async fn create_test_actor_inner(
+    total_tokens: u64,
+    context_window: u64,
+    threshold_percent: u8,
+    gateway_tx: tokio::sync::mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
+    persistence_tx: tokio::sync::mpsc::UnboundedSender<PersistenceMsg>,
+    terminal: Arc<dyn crate::terminal::AsyncTerminalRunner>,
+    chat_persistence: Box<dyn xai_chat_state::ChatPersistence>,
 ) -> (
     SessionActor,
     tokio::sync::mpsc::UnboundedReceiver<SessionEvent>,
@@ -222,12 +275,15 @@ pub(crate) async fn create_test_actor_with_terminal(
         Some(xai_grok_tools::reminders::task_completion::TaskWakeSuppressed::default());
     let state = TokioMutex::new(State {
         running_task: None,
+        finalization_gate: Default::default(),
+        message_delivery: Default::default(),
         pending_inputs: VecDeque::new(),
         edit_holds: HashMap::new(),
         pending_notifications: Vec::new(),
         notifications_suppressed: false,
         rewindable: false,
         front_message_committed: false,
+        hook_block_hold: Default::default(),
         nudges_used_this_session: 0,
     });
     let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -236,12 +292,16 @@ pub(crate) async fn create_test_actor_with_terminal(
         vec![],
         xai_grok_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
+            mtls_cert_dir: None,
             model: "test".to_string(),
             max_completion_tokens: None,
             temperature: None,
             top_p: None,
+            max_retries: None,
+            rate_limit_retry_threshold: None,
             api_backend: Default::default(),
             extra_headers: Default::default(),
+            conversation_group_id: None,
             query_params: Default::default(),
             env_http_headers: Default::default(),
             context_window: std::num::NonZeroU64::new(context_window)
@@ -249,12 +309,17 @@ pub(crate) async fn create_test_actor_with_terminal(
             reasoning_effort: None,
             stream_tool_calls: None,
         },
-        Box::new(xai_chat_state::NullChatPersistence),
+        chat_persistence,
         chat_event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
     chat_state_handle.record_token_usage(total_tokens);
     let actor = SessionActor {
+        repo_status_prefetch: crate::session::repo_status_prefix::RepoStatusPrefetchState::default(
+        ),
+        transient_retry_enabled: true,
+        transient_retries_prompt_total: std::cell::Cell::new(0),
+        transient_episode_start: std::cell::Cell::new(None),
         status_wake: Default::default(),
         session_info: SessionInfo {
             id: acp::SessionId::new("test-actor"),
@@ -266,12 +331,10 @@ pub(crate) async fn create_test_actor_with_terminal(
         auth_manager: None,
         is_chat_kind: false,
         state,
-        notifications: NotificationSender {
-            gateway: GatewaySender::new(gateway_tx),
-            gateway_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        notifications: NotificationSender::for_tests(
+            GatewaySender::new(gateway_tx),
             persistence_tx,
-            disk_full: crate::session::notifications::idle_disk_full_rx(),
-        },
+        ),
         permissions: xai_grok_workspace::permission::PermissionHandle::allow_all(),
         tool_context,
         deny_read_globs: Vec::new(),
@@ -282,6 +345,7 @@ pub(crate) async fn create_test_actor_with_terminal(
         chat_state_handle,
         unattributed_background_usage: std::sync::atomic::AtomicBool::new(false),
         current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        active_work: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -312,6 +376,8 @@ pub(crate) async fn create_test_actor_with_terminal(
             cancel: Default::default(),
         },
         memory: crate::session::memory_state::SessionMemory {
+            configured_mode: None,
+            configured_storage: None,
             flush_config: crate::config::MemoryFlushConfig::default(),
             is_flushing: std::sync::atomic::AtomicBool::new(false),
             last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
@@ -328,6 +394,7 @@ pub(crate) async fn create_test_actor_with_terminal(
             injection_count: std::sync::atomic::AtomicU64::new(0),
             compaction_recovery_count: std::sync::atomic::AtomicU64::new(0),
             chunks_added: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            init_reindex_handle: std::cell::RefCell::new(None),
             dream_config: Default::default(),
             dream_count: std::sync::atomic::AtomicU64::new(0),
             dream_success_count: std::sync::atomic::AtomicU64::new(0),
@@ -335,6 +402,7 @@ pub(crate) async fn create_test_actor_with_terminal(
         },
         session_start: std::time::Instant::now(),
         inference_idle_timeout: Duration::from_secs(300),
+        uncharged_401_park_enabled: true,
         max_retries: 3,
         rate_limit_waits: crate::session::acp_session::RateLimitWaitConfig::default(),
         max_turns: None,
@@ -358,6 +426,7 @@ pub(crate) async fn create_test_actor_with_terminal(
         display_cwd: std::sync::OnceLock::new(),
         active_agent_type: parking_lot::Mutex::new(None),
         queue_exit_reminder_on_approved_exit: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        emit_local_background_tasks: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         active_skill: parking_lot::Mutex::new(None),
         current_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
         turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
@@ -386,6 +455,7 @@ pub(crate) async fn create_test_actor_with_terminal(
         goal_classifier_enabled: false,
         goal_planner_enabled: false,
         goal_summary_enabled: false,
+        length_salvage_remote_budget: None,
         goal_verifier_skeptic_count: 1,
         goal_role_models: Default::default(),
         goal_use_current_model_only: false,
@@ -398,21 +468,26 @@ pub(crate) async fn create_test_actor_with_terminal(
         managed_mcp_handle: Default::default(),
         initial_client_mcp_servers: vec![],
         tool_metadata_snapshot: Arc::new(std::sync::Mutex::new(Default::default())),
-        mcp_announced_servers: Mutex::new(HashMap::new()),
+        mcp_announcements: Default::default(),
         mcp_reminder_mode: McpReminderMode::Delta,
         mcp_reminder_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         mcp_connecting_reminder_injected: std::cell::Cell::new(false),
-        mcp_handshakes_done: Arc::new(tokio::sync::Notify::new()),
+        mcp_refresh_gate: Arc::new(tokio::sync::Mutex::new(())),
         user_input_generation: std::sync::atomic::AtomicU64::new(0),
         laziness_debug_log: None,
         last_live_orphan_reconcile: std::cell::Cell::new(None),
-        deferred_prefix: TaskSlot::new(),
+        deferred_prefix: DeferredPrefix::new(),
+        mcp_startup_waits: Default::default(),
+        mcp_init_tasks: Default::default(),
+        weak_self: std::sync::Weak::new(),
+        startup_tasks: Default::default(),
         extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
         last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
         prefix_carries_fallback_date: std::cell::Cell::new(false),
         last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
         last_api_request_at: std::sync::atomic::AtomicI64::new(0),
         hook_registry: std::cell::RefCell::new(None),
+        hook_disabled: Default::default(),
         turn_report: Default::default(),
         turn_abort: Default::default(),
         turn_end_tx: Default::default(),
@@ -425,6 +500,7 @@ pub(crate) async fn create_test_actor_with_terminal(
         events: crate::session::events::EventTracker::new(std::path::Path::new("/tmp")),
         observability_bridge: noop_observability_bridge(),
         current_turn_number: std::cell::Cell::new(0),
+        turn_phases: std::sync::Arc::default(),
         last_recap_main_turn: std::cell::Cell::new(0),
         recap_in_flight: std::cell::Cell::new(false),
         recap_epoch: std::cell::Cell::new(0),
@@ -437,9 +513,13 @@ pub(crate) async fn create_test_actor_with_terminal(
         title_refresh_enabled: false,
         session_turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         streaming_turn_capture: parking_lot::Mutex::new(StreamingTurnCapture::default()),
-        turn_stream_drained: parking_lot::Mutex::new(None),
-        pending_image_strip: parking_lot::Mutex::new(None),
+        stream_apply_span: parking_lot::Mutex::new(None),
+        current_turn_span_id: parking_lot::Mutex::new(None),
+        turn_stream_drained: parking_lot::Mutex::new(std::collections::HashMap::new()),
+        pending_image_strip: parking_lot::Mutex::new(HashMap::new()),
+        image_strip_rewrite_barrier: ImageStripRewriteBarrier::new(),
         sampler_handle: xai_grok_sampler::SamplerHandle::noop(),
+        sampling_gate: None,
         rebuild_spec: crate::session::agent_rebuild::test_rebuild_spec_default(),
         image_description_model: crate::test_support::TEST_MODEL.to_owned(),
         image_describe_cache: Arc::new(crate::session::image_describe::ImageDescribeCache::new()),
@@ -483,9 +563,6 @@ pub(crate) async fn create_test_actor(
     .await
     .0
 }
-/// Build a user-originated `InputItem` carrying queue metadata, returning the
-/// completion receiver so a test can assert the prompt's in-flight RPC is
-/// resolved (not dropped) when the prompt is removed/cleared.
 #[cfg(test)]
 pub(crate) fn user_item_with_rx(
     id: &str,
@@ -509,6 +586,7 @@ pub(crate) fn user_item_with_rx(
         respond_to,
         persist_ack: None,
         parsed_prompt_tx: None,
+        initial_child_prompt_ready: None,
         queue_meta: Some(crate::session::prompt_queue::QueueEntryMeta {
             id: id.to_string(),
             version: 0,
@@ -520,11 +598,10 @@ pub(crate) fn user_item_with_rx(
         }),
         queue_mutation_policy: QueueMutationPolicy::editable(),
         send_now: false,
+        traceparent: None,
     };
     (item, rx)
 }
-/// Build a user-originated `InputItem` carrying queue metadata (dropping the
-/// completion receiver — for tests that don't assert on the RPC result).
 #[cfg(test)]
 pub(crate) fn user_item(id: &str, owner: &str) -> InputItem {
     user_item_with_rx(id, owner).0
@@ -553,13 +630,14 @@ pub(crate) fn input_with_origin_rx(
         respond_to,
         persist_ack: None,
         parsed_prompt_tx: None,
+        initial_child_prompt_ready: None,
         queue_meta: None,
         queue_mutation_policy: QueueMutationPolicy::hidden(),
         send_now: false,
+        traceparent: None,
     };
     (item, rx)
 }
-/// A plain Agent-mode `queue_input` request with every optional field defaulted.
 #[cfg(test)]
 pub(crate) fn queue_input_request(
     prompt_blocks: Vec<acp::ContentBlock>,
@@ -573,18 +651,15 @@ pub(crate) fn queue_input_request(
         respond_to,
     )
 }
-/// A running-turn `AgentTask` stub: a 60s sleeper that keeps the turn "in
-/// flight" until aborted. Assign to `state.running_task`; requires a
-/// `LocalSet` (`spawn_local`).
 #[cfg(test)]
 pub(crate) fn running_task_stub(prompt_id: &str) -> AgentTask {
-    AgentTask {
-        prompt_id: prompt_id.to_string(),
-        handle: tokio::task::spawn_local(async {
+    AgentTask::new(
+        prompt_id,
+        tokio::task::spawn_local(async {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         })
         .abort_handle(),
-    }
+    )
 }
 #[cfg(test)]
 pub(crate) async fn build_actor() -> (
@@ -593,13 +668,19 @@ pub(crate) async fn build_actor() -> (
 ) {
     let (gateway_tx, gateway_rx) =
         tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
-    let (persistence_tx, _prx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+    let (persistence_tx, mut persistence_rx) =
+        tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+    tokio::spawn(async move {
+        while let Some(message) = persistence_rx.recv().await {
+            if let PersistenceMsg::FlushAndAck { respond_to } = message {
+                let _ = respond_to.send(Ok(()));
+            }
+        }
+    });
     let actor =
         std::sync::Arc::new(create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await);
     (actor, gateway_rx)
 }
-/// A small valid inline PNG content block (survives normalization —
-/// 32×32 = 1024 px clears the API's 512-total-pixel floor).
 #[cfg(test)]
 pub(crate) fn test_image_content() -> acp::ImageContent {
     use base64::Engine as _;
@@ -621,44 +702,408 @@ pub(crate) fn set_goal_harness_for_tests(actor: &SessionActor) {
         .store(true, std::sync::atomic::Ordering::Relaxed);
 }
 #[cfg(test)]
-pub(crate) fn assert_goal_discipline_in_reminder(reminder: &str, site: &str) {
-    let discipline_idx = reminder
-        .find("<task_completion_discipline>")
-        .unwrap_or_else(|| panic!("{site} must include <task_completion_discipline>:\n{reminder}"));
-    let tracking_idx = reminder
-        .find("TRACKING:")
-        .unwrap_or_else(|| panic!("{site} must include TRACKING:\n{reminder}"));
-    assert!(
-        discipline_idx < tracking_idx,
-        "{site} must place discipline before TRACKING (discipline={discipline_idx} tracking={tracking_idx}):\n{reminder}"
-    );
-    assert!(
-        reminder.contains("</task_completion_discipline>\nTRACKING:"),
-        "{site} must glue discipline directly before TRACKING:\n{reminder}"
-    );
-    for phrase in [
-        "Tool-call first",
-        "Don't ask permission to continue a task in flight",
-        "Track multi-step work with a",
-        "Don't stop with easy work left undone",
-    ] {
-        assert!(
-            reminder.contains(phrase),
-            "{site} must include discipline phrase `{phrase}`:\n{reminder}"
-        );
+pub(crate) async fn drain_gateway_turns() {
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
     }
-    assert_eq!(
-        reminder.matches("</task_completion_discipline>").count(),
-        1,
-        "{site} must contain exactly one discipline closing tag:\n{reminder}"
-    );
-    assert!(
-        !reminder.contains("{DISCIPLINE_BLOCK}"),
-        "{site} must not leave {{DISCIPLINE_BLOCK}} unsubstituted:\n{reminder}"
-    );
 }
-/// An actor whose persistence channel answers the `FlushAndAck` barrier, so a
-/// turn driven with a `persist_ack` resolves (bare `build_actor` never acks).
+#[cfg(test)]
+pub(crate) async fn prepare_call(
+    actor: &SessionActor,
+    call: ToolCallResponse,
+) -> Result<PreparedToolCall, ToolLoop> {
+    let mut deferred = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        actor.prepare_tool_call(call, &mut deferred),
+    )
+    .await
+    .expect("prepare_tool_call must not hang")
+    .expect("prepare_tool_call must not error")
+}
+#[cfg(test)]
+pub(crate) fn install_permission_manager(
+    actor: &mut SessionActor,
+    yolo: bool,
+    gateway: xai_acp_lib::AcpAgentGatewaySender,
+) {
+    use xai_grok_paths::AbsPathBuf;
+    use xai_grok_workspace::permission::{ClientType, spawn_permission_manager};
+    let cwd = AbsPathBuf::new(std::path::PathBuf::from(actor.session_info.cwd.clone()))
+        .unwrap_or_else(|_| AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap());
+    let (handle, _ev) = spawn_permission_manager(
+        actor.session_info.id.clone(),
+        gateway,
+        cwd,
+        ClientType::Generic,
+        None,
+        vec![],
+        vec![],
+        yolo,
+        None,
+    );
+    actor.permissions = handle;
+}
+#[cfg(test)]
+pub(crate) fn read_file_call(id: &str) -> ToolCallResponse {
+    ToolCallResponse {
+        id: id.to_string(),
+        kind: "function".to_string(),
+        function: crate::sampling::types::ToolCallFunction::new(
+            "read_file",
+            serde_json::json!({ "target_file": "/tmp/permission-hook.txt" }).to_string(),
+        ),
+    }
+}
+#[cfg(test)]
+pub(crate) fn search_replace_call(id: &str) -> ToolCallResponse {
+    search_replace_call_at(id, "/tmp/permission-hook.txt")
+}
+#[cfg(test)]
+pub(crate) fn search_replace_call_at(id: &str, path: &str) -> ToolCallResponse {
+    ToolCallResponse {
+        id: id.to_string(),
+        kind: "function".to_string(),
+        function: crate::sampling::types::ToolCallFunction::new(
+            "search_replace",
+            serde_json::json!({
+                "file_path": path,
+                "old_string": "a",
+                "new_string": "b",
+            })
+            .to_string(),
+        ),
+    }
+}
+#[cfg(test)]
+pub(crate) fn read_and_edit_toolset() -> Vec<xai_grok_tools::registry::types::ToolConfig> {
+    use xai_grok_tools::registry::types::ToolConfig;
+    vec![
+        ToolConfig::from_id("GrokBuild:read_file"),
+        ToolConfig {
+            id: "GrokBuild:search_replace".into(),
+            params: Some(
+                serde_json::from_value(serde_json::json!({
+                    "skip_read_before_edit": true
+                }))
+                .unwrap(),
+            ),
+            name_override: None,
+            params_name_overrides: None,
+            description_override: None,
+            behavior_version: None,
+            kind: None,
+        },
+    ]
+}
+#[cfg(test)]
+pub(crate) fn pre_tool_use_spec(
+    name: &str,
+    matcher: Option<&str>,
+    script: &str,
+) -> xai_grok_hooks::config::HookSpec {
+    xai_grok_hooks::config::HookSpec {
+        name: name.into(),
+        event: xai_grok_hooks::event::HookEventName::PreToolUse,
+        handler_type: xai_grok_hooks::config::HandlerType::Command,
+        configured_matcher: matcher.map(str::to_string),
+        matcher: matcher.map(|m| xai_grok_hooks::matcher::HookMatcher::new(m).unwrap()),
+        enabled: true,
+        command: Some(std::path::PathBuf::from(script)),
+        command_raw: Some(script.to_string()),
+        url: None,
+        url_raw: None,
+        timeout_ms: 5000,
+        source_dir: std::path::PathBuf::from("/tmp"),
+        extra_env: std::collections::HashMap::new(),
+        layer: xai_grok_hooks::config::HookProvenance::File,
+    }
+}
+#[cfg(test)]
+pub(crate) fn post_tool_use_spec(
+    name: &str,
+    matcher: Option<&str>,
+    script: &str,
+) -> xai_grok_hooks::config::HookSpec {
+    xai_grok_hooks::config::HookSpec {
+        event: xai_grok_hooks::event::HookEventName::PostToolUse,
+        ..pre_tool_use_spec(name, matcher, script)
+    }
+}
+#[cfg(test)]
+pub(crate) fn post_tool_use_failure_spec(
+    name: &str,
+    matcher: Option<&str>,
+    script: &str,
+) -> xai_grok_hooks::config::HookSpec {
+    xai_grok_hooks::config::HookSpec {
+        event: xai_grok_hooks::event::HookEventName::PostToolUseFailure,
+        ..pre_tool_use_spec(name, matcher, script)
+    }
+}
+#[cfg(test)]
+pub(crate) fn install_pre_tool_use_hooks(
+    actor: &mut SessionActor,
+    specs: Vec<xai_grok_hooks::config::HookSpec>,
+) {
+    let (mut registry, _) = xai_grok_hooks::discovery::load_hooks(None, None);
+    registry.append_specs(specs);
+    actor.hook_resolved_workspace_root = "/tmp".to_string();
+    *actor.hook_registry.borrow_mut() = Some(Arc::new(registry));
+}
+#[cfg(test)]
+pub(crate) fn activate_plan_mode(actor: &SessionActor) {
+    let mut tracker = actor.plan_mode.lock();
+    assert!(tracker.enter_pending());
+    assert!(tracker.activate());
+}
+#[cfg(test)]
+pub(crate) async fn tool_result_text(actor: &SessionActor, call_id: &str) -> String {
+    let conversation = actor.chat_state_handle.get_conversation().await;
+    conversation
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            xai_grok_sampling_types::ConversationItem::ToolResult(result)
+                if result.tool_call_id == call_id =>
+            {
+                Some(result.content.to_string())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no tool_result for {call_id} in {conversation:?}"))
+}
+#[cfg(test)]
+pub(crate) fn spawn_gateway_loop(
+    gateway_rx: tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+) -> Arc<std::sync::Mutex<Vec<serde_json::Value>>> {
+    spawn_gateway_loop_counting_prompt_hooks(
+        gateway_rx,
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        false,
+    )
+}
+#[cfg(test)]
+pub(crate) fn spawn_gateway_loop_counting_prompt_hooks(
+    gateway_rx: tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+    permission_prompt_hooks: Arc<std::sync::atomic::AtomicUsize>,
+    park_until_hook: bool,
+) -> Arc<std::sync::Mutex<Vec<serde_json::Value>>> {
+    use std::sync::atomic::Ordering;
+    let updates: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Arc::default();
+    let captured = updates.clone();
+    let mut gateway_rx = gateway_rx;
+    tokio::task::spawn_local(async move {
+        while let Some(msg) = gateway_rx.recv().await {
+            match msg {
+                xai_acp_lib::AcpClientMessage::RequestPermission(args) => {
+                    let hooks = permission_prompt_hooks.clone();
+                    tokio::task::spawn_local(async move {
+                        if park_until_hook {
+                            let start = std::time::Instant::now();
+                            while hooks.load(Ordering::SeqCst) == 0 {
+                                assert!(
+                                    start.elapsed() < std::time::Duration::from_secs(3),
+                                    "permission_prompt hook must fire before the user answers"
+                                );
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                        let _ = args
+                            .response_tx
+                            .send(Ok(acp::RequestPermissionResponse::new(
+                                acp::RequestPermissionOutcome::Selected(
+                                    acp::SelectedPermissionOutcome::new(
+                                        acp::PermissionOptionId::new("allow-once"),
+                                    ),
+                                ),
+                            )));
+                    });
+                }
+                xai_acp_lib::AcpClientMessage::ExtNotification(args) => {
+                    let params: serde_json::Value =
+                        serde_json::from_str(args.request.params.get()).unwrap_or_default();
+                    match args.request.method.as_ref() {
+                        "x.ai/hooks/event" => {
+                            if params["notificationType"] == "permission_prompt" {
+                                permission_prompt_hooks.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+                        "x.ai/session_notification" => {
+                            captured.lock().unwrap().push(params["update"].clone());
+                        }
+                        _ => {}
+                    }
+                }
+                xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                    let _ = args.response_tx.send(Ok(()));
+                }
+                _ => {}
+            }
+        }
+    });
+    updates
+}
+/// Ack every gateway `SessionNotification` so a driven turn never blocks on the client.
+/// Spawned on the current `LocalSet`.
+pub(crate) fn drain_gateway(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+) {
+    tokio::task::spawn_local(async move {
+        while let Some(msg) = rx.recv().await {
+            if let xai_acp_lib::AcpClientMessage::SessionNotification(args) = msg {
+                let _ = args.response_tx.send(Ok(()));
+            }
+        }
+    });
+}
+/// Answer every `FlushAndAck` persistence barrier with `Ok` so a driven turn's `persist_ack` resolves.
+/// Spawned on the current `LocalSet`.
+pub(crate) fn drain_persistence(mut rx: tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg>) {
+    tokio::task::spawn_local(async move {
+        while let Some(msg) = rx.recv().await {
+            if let PersistenceMsg::FlushAndAck { respond_to } = msg {
+                let _ = respond_to.send(Ok(()));
+            }
+        }
+    });
+}
+/// An actor whose latched disk-full probe refuses every turn before its prompt commits.
+pub(crate) async fn disk_full_actor() -> SessionActor {
+    let (gateway_tx, gateway_rx) =
+        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+    drain_gateway(gateway_rx);
+    let (persistence_tx, mut persistence_rx) =
+        tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+    tokio::task::spawn_local(async move {
+        while let Some(msg) = persistence_rx.recv().await {
+            if let PersistenceMsg::ProbeWritable { respond_to } = msg {
+                let _ = respond_to.send(Err(std::io::Error::from(std::io::ErrorKind::StorageFull)));
+            }
+        }
+    });
+    let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+    actor.notifications.disk_full = tokio::sync::watch::channel(true).1;
+    actor
+}
+pub(crate) fn subagent_summary(id: &str) -> SubagentCompletionSummary {
+    SubagentCompletionSummary {
+        snapshot: SubagentSnapshot {
+            subagent_id: id.into(),
+            description: format!("desc {id}"),
+            subagent_type: "general-purpose".into(),
+            status: SubagentSnapshotStatus::Completed {
+                output: String::new(),
+                tool_calls: 3,
+                turns: 1,
+                worktree_path: None,
+            },
+            started_at_epoch_ms: 0,
+            duration_ms: 1000,
+            persona: None,
+        },
+        loop_task_id: None,
+        tool_calls: 3,
+        output: std::sync::Arc::from("done"),
+        full_output_bytes: "done".len(),
+    }
+}
+pub(crate) struct FakeCoordinator {
+    suppress_seen: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+    returned: Arc<std::sync::Mutex<Vec<String>>>,
+    peeks: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl FakeCoordinator {
+    pub(crate) fn suppress_seen(&self) -> Vec<Vec<String>> {
+        self.suppress_seen.lock().unwrap().clone()
+    }
+    pub(crate) fn returned(&self) -> Vec<String> {
+        self.returned.lock().unwrap().clone()
+    }
+    pub(crate) fn peeks(&self) -> usize {
+        self.peeks.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+/// Fakes the coordinator's `Completions` (destructive, honours `suppress_ids`) and `PeekCompletions` (clones) arms.
+/// Spawns on the current `LocalSet`; call before the actor is shared.
+pub(crate) fn spawn_fake_coordinator(
+    actor: &mut SessionActor,
+    buffer: Vec<SubagentCompletionSummary>,
+) -> FakeCoordinator {
+    use xai_grok_tools::implementations::grok_build::task::types::SubagentEvent;
+    let fake = FakeCoordinator {
+        suppress_seen: Arc::default(),
+        returned: Arc::default(),
+        peeks: Arc::default(),
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SubagentEvent>();
+    actor.tool_context.subagent_event_tx = Some(tx);
+    let suppress_seen = Arc::clone(&fake.suppress_seen);
+    let returned = Arc::clone(&fake.returned);
+    let peeks = Arc::clone(&fake.peeks);
+    tokio::task::spawn_local(async move {
+        let mut buffer = buffer;
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                SubagentEvent::Completions(req) => {
+                    suppress_seen.lock().unwrap().push(req.suppress_ids.clone());
+                    let (drained, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut buffer)
+                        .into_iter()
+                        .partition(|c| !req.suppress_ids.iter().any(|id| id == c.subagent_id()));
+                    buffer = kept;
+                    returned
+                        .lock()
+                        .unwrap()
+                        .extend(drained.iter().map(|c| c.subagent_id().to_owned()));
+                    let _ = req.respond_to.send(drained);
+                }
+                SubagentEvent::PeekCompletions(req) => {
+                    peeks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let _ = req.respond_to.send(buffer.clone());
+                }
+                _ => {}
+            }
+        }
+    });
+    fake
+}
+/// An actor whose persistence channel answers the `FlushAndAck` barrier, so a turn driven with a `persist_ack` resolves.
+/// Bare `build_actor` never acks.
+#[cfg(test)]
+#[allow(clippy::type_complexity)]
+pub(crate) fn spawn_capturing_gateway_loop(
+    gateway_rx: tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+) -> (
+    Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+) {
+    let acp_updates: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Arc::default();
+    let xai_updates: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Arc::default();
+    let acp_captured = acp_updates.clone();
+    let xai_captured = xai_updates.clone();
+    let mut gateway_rx = gateway_rx;
+    tokio::task::spawn_local(async move {
+        while let Some(msg) = gateway_rx.recv().await {
+            match msg {
+                xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                    if let Ok(v) = serde_json::to_value(&args.request) {
+                        acp_captured.lock().unwrap().push(v);
+                    }
+                    let _ = args.response_tx.send(Ok(()));
+                }
+                xai_acp_lib::AcpClientMessage::ExtNotification(args) => {
+                    if args.request.method.as_ref() == "x.ai/session_notification" {
+                        let params: serde_json::Value =
+                            serde_json::from_str(args.request.params.get()).unwrap_or_default();
+                        xai_captured.lock().unwrap().push(params["update"].clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    (acp_updates, xai_updates)
+}
 #[cfg(test)]
 pub(crate) async fn actor_with_persistence_drain() -> std::sync::Arc<SessionActor> {
     let (gateway_tx, mut gateway_rx) =
@@ -683,4 +1128,114 @@ pub(crate) async fn actor_with_persistence_drain() -> std::sync::Arc<SessionActo
     )
     .await;
     std::sync::Arc::new(actor)
+}
+/// Fresh per-step transient-retry state for direct `handle_sampling_failure` calls: `step_attempts` used, full turn budget, no open episode.
+pub(crate) fn transient_state(step_attempts: u32, enabled: bool) -> TransientRetryState {
+    TransientRetryState {
+        step_attempts,
+        prompt_attempts: 0,
+        episode_start: None,
+        enabled,
+    }
+}
+pub(crate) fn ms(n: u64) -> std::time::Duration {
+    std::time::Duration::from_millis(n)
+}
+pub(crate) async fn plain_actor() -> SessionActor {
+    let (gw_tx, _gw_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (persist_tx, _persist_rx) = tokio::sync::mpsc::unbounded_channel();
+    create_test_actor(100, 256_000, 80, gw_tx, persist_tx).await
+}
+pub(crate) async fn actor_with_mcp(
+    configs: Vec<acp::McpServer>,
+    initialized: bool,
+    initializing: Vec<String>,
+) -> SessionActor {
+    let a = plain_actor().await;
+    {
+        let mut st = a.mcp_state.lock().await;
+        st.configs = configs;
+        st.cancel_any_init();
+        if initialized || !initializing.is_empty() {
+            std::mem::forget(st.try_start_init().expect("fixture claims init"));
+            let handshakes_pending = !initializing.is_empty();
+            st.mark_servers_initializing(initializing);
+            if initialized {
+                st.finish_init();
+                if !handshakes_pending {
+                    st.complete_init();
+                }
+            }
+        }
+    }
+    a
+}
+pub(crate) fn stdio(name: &str, cmd: &str) -> acp::McpServer {
+    let args = if cmd == "sleep" {
+        vec!["300".to_string()]
+    } else {
+        vec![]
+    };
+    acp::McpServer::Stdio(
+        acp::McpServerStdio::new(name.to_string(), cmd)
+            .args(args)
+            .env(vec![]),
+    )
+}
+pub(crate) async fn register_stub(bridge: &crate::tools::bridge::ToolBridge, name: &'static str) {
+    bridge
+        .register_mcp_tools(
+            name.to_string(),
+            StubMcpTool(name),
+            Some(serde_json::json!({"type": "object"})),
+        )
+        .expect("stub registration");
+}
+#[derive(Debug, Clone)]
+pub(crate) struct StubMcpTool(pub(crate) &'static str);
+impl xai_grok_tools::types::tool_metadata::ToolMetadata for StubMcpTool {
+    fn kind(&self) -> xai_grok_tools::types::tool::ToolKind {
+        xai_grok_tools::types::tool::ToolKind::Other
+    }
+    fn tool_namespace(&self) -> xai_grok_tools::types::tool::ToolNamespace {
+        xai_grok_tools::types::tool::ToolNamespace::MCP
+    }
+    fn description_template(&self) -> &str {
+        "stub MCP tool"
+    }
+}
+impl xai_tool_runtime::Tool for StubMcpTool {
+    type Args = serde_json::Value;
+    type Output = xai_grok_tools::types::output::ToolOutput;
+    fn id(&self) -> xai_tool_protocol::ToolId {
+        xai_tool_protocol::ToolId::new(self.0).expect("valid tool id")
+    }
+    fn description(
+        &self,
+        _ctx: &xai_tool_runtime::ListToolsContext,
+    ) -> xai_tool_types::ToolDescription {
+        xai_tool_types::ToolDescription::new(self.0, "stub MCP tool")
+    }
+    async fn run(
+        &self,
+        _ctx: xai_tool_runtime::ToolCallContext,
+        _args: serde_json::Value,
+    ) -> Result<Self::Output, xai_tool_runtime::ToolError> {
+        Ok(xai_grok_tools::types::output::ToolOutput::MCP(
+            xai_grok_tools::types::output::MCPOutput::errored(
+                self.0.into(),
+                "stub".into(),
+                "unused".into(),
+            ),
+        ))
+    }
+}
+/// The returned set plays the run loop: startup tasks live while it does.
+pub(crate) fn with_run_loop(mut actor: SessionActor) -> (Arc<SessionActor>, StartupTaskSet) {
+    let startup_tasks = StartupTaskSet::install(&actor);
+    let actor = Arc::new_cyclic(|weak: &std::sync::Weak<SessionActor>| {
+        actor.weak_self = weak.clone();
+        actor
+    });
+    (actor, startup_tasks)
 }

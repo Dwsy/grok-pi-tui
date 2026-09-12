@@ -154,10 +154,9 @@ impl XSearchOptions {
 /// The public web-search API caps each domain list at 5 entries.
 pub const MAX_WEB_SEARCH_DOMAINS: usize = 5;
 
-/// `web_search` override: a domain allowlist and/or blocklist (empty or absent is unbounded).
-///
-/// The two lists are mutually exclusive and each is capped at [`MAX_WEB_SEARCH_DOMAINS`];
-/// both rules are enforced by [`WebSearchOptions::validate`] on every deserialize ingress.
+/// `web_search` override: a domain allowlist and/or blocklist (empty or absent is unbounded). The two lists are mutually
+/// exclusive and each is capped at [`MAX_WEB_SEARCH_DOMAINS`]; both rules are enforced by [`WebSearchOptions::validate`]
+/// on every deserialize ingress.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", try_from = "WebSearchOptionsWire")]
 #[schemars(deny_unknown_fields)]
@@ -245,7 +244,6 @@ impl WebSearchOptions {
     }
 }
 
-/// Validation error for [`WebSearchOptions`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WebSearchOptionsError {
     #[error("web_search cannot set both allowed_domains and excluded_domains")]
@@ -307,8 +305,8 @@ impl ToolOverrides {
     }
 }
 
-/// A tri-state per-turn patch field: absent leaves, `null` clears, a value sets. Pair with
-/// [`crate::serde_helpers::double_option`].
+/// A tri-state per-turn patch field: absent leaves, `null` clears, a value sets.
+/// Pair with [`crate::serde_helpers::double_option`].
 pub type ClearableField<T> = Option<Option<T>>;
 
 /// The ingress-only per-turn patch: each tool is a tri-state [`ClearableField`] applied by
@@ -343,8 +341,8 @@ impl ToolOverridesUpdate {
     }
 }
 
-/// Normalize an override option: empty carries no constraint, so it reads as absent. The one home
-/// for this rule, shared by `merge_field` and `apply_tool_overrides`.
+/// Normalize an override option: empty carries no constraint, so it reads as absent.
+/// `merge_field` and `apply_tool_overrides` both call this, so the rule lives in one place.
 pub(crate) fn drop_empty<T>(opt: Option<T>, is_empty: impl Fn(&T) -> bool) -> Option<T> {
     opt.filter(|value| !is_empty(value))
 }

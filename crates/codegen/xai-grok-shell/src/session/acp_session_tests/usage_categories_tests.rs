@@ -1,6 +1,5 @@
-//! Actor-level tests for the `/context` usage categories: populated rows
-//! with counts, compat-harness suppression of the MCP row, and parity
-//! between the MCP snapshot and the injected reminder.
+//! Actor-level tests for the `/context` usage categories.
+//! They cover populated rows with counts, the compat harness suppressing the MCP row, and parity between the MCP snapshot and the injected reminder.
 use super::support::*;
 use super::*;
 use crate::session::tool_index::{ServerMetadata, ToolMetadata};
@@ -67,6 +66,52 @@ async fn usage_categories_include_skills_and_mcp_with_counts() {
         .await;
 }
 #[tokio::test(flavor = "current_thread")]
+async fn usage_categories_include_agents_md_with_count() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            let def = actor.agent.borrow().definition().clone();
+            let bridge = actor.tool_bridge_handle();
+            let ctx = xai_grok_agent::PromptContext {
+                agents_md_files: vec![
+                    xai_grok_agent::prompt::agents_md::AgentConfigFile {
+                        file_name: "AGENTS.md".into(),
+                        file_path: "/repo/AGENTS.md".into(),
+                        content: "# Root\nUse rustfmt.".into(),
+                    },
+                    xai_grok_agent::prompt::agents_md::AgentConfigFile {
+                        file_name: "AGENTS.md".into(),
+                        file_path: "/repo/crates/AGENTS.md".into(),
+                        content: "# Crate\nPrefer unit tests.".into(),
+                    },
+                ],
+                ..Default::default()
+            };
+            *actor.agent.borrow_mut() = xai_grok_agent::Agent::new(
+                def,
+                ctx,
+                String::new(),
+                bridge,
+                xai_grok_agent::ReminderPolicy::default(),
+                xai_grok_agent::CompactionPolicy::default(),
+                vec![],
+                false,
+            );
+            let rows = actor.usage_categories().await;
+            let agents = rows
+                .iter()
+                .find(|row| row.label == "AGENTS.md")
+                .expect("AGENTS.md row");
+            assert_eq!(agents.detail.as_deref(), Some("2 files"));
+            assert!(agents.tokens > 0, "{agents:?}");
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
 async fn usage_categories_include_workflows_when_enabled() {
     let local = tokio::task::LocalSet::new();
     local
@@ -121,18 +166,16 @@ async fn baseline_reminder_lists_workflows_under_skills() {
                     .then(|| item.text_content())
                 })
                 .expect("baseline reminder");
-            let skills_at = reminder
-                .find("The following skills are available")
-                .expect("skills header");
+            let commit_at = reminder
+                .find("commit")
+                .expect("skill name must appear in reminder");
             let workflows_at = reminder
-                .find("The following workflows are available")
-                .expect("workflows header");
+                .find("deep-research")
+                .expect("workflow name must appear in reminder");
             assert!(
-                skills_at < workflows_at,
+                commit_at < workflows_at,
                 "workflows must sit under skills:\n{reminder}"
             );
-            assert!(reminder.contains("commit"), "{reminder}");
-            assert!(reminder.contains("deep-research"), "{reminder}");
         })
         .await;
 }
@@ -162,15 +205,7 @@ async fn baseline_reminder_lists_workflows_when_there_are_no_skills() {
                     .then(|| item.text_content())
                 })
                 .expect("workflow-only reminder");
-            assert!(
-                reminder.contains("The following workflows are available"),
-                "{reminder}"
-            );
             assert!(reminder.contains("deep-research"), "{reminder}");
-            assert!(
-                !reminder.contains("The following skills are available"),
-                "{reminder}"
-            );
         })
         .await;
 }
@@ -202,22 +237,18 @@ async fn subagent_session_does_not_list_workflows() {
                     .then(|| item.text_content())
                 })
                 .expect("skill reminder");
+            assert!(reminder.contains("commit"), "{reminder}");
             assert!(
-                reminder.contains("The following skills are available"),
-                "{reminder}"
-            );
-            assert!(
-                !reminder.contains("The following workflows are available"),
+                !reminder.contains("deep-research"),
                 "subagents cannot launch workflows:\n{reminder}"
             );
             assert!(actor.workflow_listing_for_prompt().is_none());
         })
         .await;
 }
-/// Anti-drift pin for the MCP row: the estimated snapshot must equal the body
-/// `maybe_inject_mcp_reminder` injects in `Full` mode, minus the
-/// `<system-reminder>` wrapper. Composing the two texts differently (for
-/// example, dropping the tool usage hint from one side) fails this test.
+/// This test pins the MCP row against drift.
+/// The estimated snapshot must equal the body `maybe_inject_mcp_reminder` injects in `Full` mode, minus the `<system-reminder>` wrapper.
+/// Composing the two texts differently (for example, dropping the tool usage hint from one side) fails this test.
 #[tokio::test(flavor = "current_thread")]
 async fn mcp_snapshot_matches_full_mode_injected_reminder() {
     let local = tokio::task::LocalSet::new();

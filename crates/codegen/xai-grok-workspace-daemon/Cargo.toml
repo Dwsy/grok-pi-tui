@@ -12,6 +12,7 @@ prometheus = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+strum = { workspace = true }
 tokio = { workspace = true, features = ["macros", "process", "rt", "sync", "time"] }
 tracing = { workspace = true }
 # Metric donation sink for the preview-proxy metrics scraper.

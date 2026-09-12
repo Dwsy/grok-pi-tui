@@ -4,7 +4,7 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::path::{Path, PathBuf};
 
 pub fn build_gitignore(repo_root: Option<&Path>) -> Option<Gitignore> {
-    // No repo root → no gitignore rules to apply.
+    // No repo root means no gitignore rules to apply
     let root = repo_root?;
     let mut builder = GitignoreBuilder::new(root);
 
@@ -33,5 +33,5 @@ fn get_global_gitignore_path() -> Option<PathBuf> {
     git2::Config::open_default()
         .ok()
         .and_then(|cfg| cfg.get_path("core.excludesFile").ok())
-        .or_else(|| dirs::home_dir().map(|h| h.join(".gitignore")))
+        .or_else(|| xai_dirs::home_dir().map(|home| home.join(".gitignore")))
 }

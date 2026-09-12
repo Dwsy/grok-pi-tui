@@ -1,4 +1,5 @@
 //! Canonical, extensible tool types.
+pub mod definition;
 mod ext;
 mod schema_utils;
 pub mod serde_lenient;
@@ -8,7 +9,9 @@ mod types;
 pub use ext::Extensions;
 pub use schema_utils::parse_arguments_from_schema_lossy;
 pub use serde_lenient::{
-    deserialize_lenient_bool, deserialize_lenient_option_bool, lenient_bool_from_json,
+    deserialize_lenient_bool, deserialize_lenient_i64, deserialize_lenient_option_bool,
+    deserialize_lenient_required_i64, deserialize_lenient_required_u64, deserialize_lenient_u64,
+    lenient_bool_from_json, parse_lenient_i64_value, parse_lenient_u64_value,
 };
 pub use task::{
     BACKGROUND_SUBAGENT_CONTINUE_PARENT_WORK, BUILTIN_SUBAGENTS, BackgroundNoticeNaming,

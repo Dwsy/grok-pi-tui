@@ -1,6 +1,6 @@
 # Status Line
 
-An optional row at the bottom of the full-screen pager, above the shortcuts bar and disabled by default. It shows live session context, such as the model, context-window usage, cost, directory, and git worktree, or the output of any script you configure. Opt in with `[ui.status_line]` in `~/.grok/config.toml`.
+An optional row at the bottom of the pager — above the shortcuts bar in the full screen, under the prompt's info row in minimal mode — and disabled by default. It shows live session context, such as the model, context-window usage, cost, directory, and git worktree, or the output of any script you configure. Opt in with `[ui.status_line]` in `~/.grok/config.toml`.
 
 ## Set up
 
@@ -134,7 +134,7 @@ printf '%b\n' "${DIR##*/} │ $MODEL │ ${PCT}% ctx │ \033[32m$BRANCH\033[0m 
 
 ## Troubleshooting
 
-- **Nothing shows.** Grok reads `[ui.status_line]` at startup, so restart it after editing `config.toml`. Restarting is enough: when the new client attaches, the agent switches the row on for a session that is still running. The row only renders in the full-screen pager once the agent view is active, so not on the welcome screen, in minimal mode, or while a subagent view is open full screen. Check that `type` is not `disabled`, and that a command script is executable and writes to stdout.
+- **Nothing shows.** Grok reads `[ui.status_line]` at startup, so restart it after editing `config.toml`. Restarting is enough: when the new client attaches, the agent switches the row on for a session that is still running. The row only renders once the agent view is active, so not on the welcome screen or while a subagent view is open full screen. Check that `type` is not `disabled`, and that a command script is executable and writes to stdout.
 - **A message in the row.** A row beginning `[ui.status_line]` means Grok could not use that section as written: it either names the key it could not read, or names what the mode you chose still needs. `grok inspect` lists the same problems, including keys this version does not know, which is where to look when the row is switched off. Everything it could read still applies, and Grok leaves the section as you wrote it rather than rewriting one it cannot read. Setting `type = "disabled"` removes the row and the message.
 - **A blank row that never fills.** The agent is not sending status updates, which usually means a `grok` or leader process older than this client. Restart the leader or update Grok.
 - **Only your own config can set this.** A `command` row runs a program, so it is read from your `~/.grok/config.toml` and from configuration your administrator manages. A repository cannot set one: a repo-local `.grok/config.toml` is read for MCP servers only, and `[ui.status_line]` is not among the keys any project-scoped layer can supply, so cloning a repo cannot make Grok run its script.

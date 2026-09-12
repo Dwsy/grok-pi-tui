@@ -43,13 +43,7 @@ impl crate::types::tool_metadata::ToolMetadata for SchedulerListTool {
     }
 
     fn requires_expr(&self) -> Expr<ToolRequirement> {
-        use super::create::SchedulerCreateTool;
-        use crate::types::tool_metadata::ToolMetadata as TM;
-        Expr::Value(ToolRequirement::Tool {
-            namespace: TM::tool_namespace(&SchedulerCreateTool).to_string(),
-            id: xai_tool_runtime::Tool::id(&SchedulerCreateTool).to_string(),
-            if_params: None,
-        })
+        super::scheduler_bundle_requires_expr()
     }
 }
 

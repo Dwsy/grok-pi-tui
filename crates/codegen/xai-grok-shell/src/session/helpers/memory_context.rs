@@ -8,13 +8,11 @@ use xai_chat_state::{MEMORY_CONTEXT_CLOSE_TAG, MEMORY_CONTEXT_OPEN_TAG};
 use xai_grok_sampling_types::ConversationItem;
 use xai_grok_tools::types::memory_backend::{MemorySearchResult, format_staleness_note};
 
-/// Maximum characters to include per snippet in the injection.
 const SNIPPET_MAX_CHARS: usize = 500;
 
-/// Returns `true` if a memory-context block is already persisted in the
-/// leading system message. Callers reuse a persisted block verbatim instead
-/// of re-searching: a re-scored block would mutate the system-prompt prefix
-/// and bust the KV cache for the whole downstream conversation.
+/// Returns `true` if a memory-context block is already persisted in the leading system message.
+/// Callers reuse a persisted block verbatim instead of re-searching.
+/// A re-scored block would mutate the system-prompt prefix and bust the KV cache for the whole downstream conversation.
 pub fn conversation_has_memory_context(items: &[ConversationItem]) -> bool {
     matches!(
         items.first(),
@@ -23,19 +21,20 @@ pub fn conversation_has_memory_context(items: &[ConversationItem]) -> bool {
 }
 
 /// Format memory search results as a markdown section for system-reminder injection.
-///
-/// Each result is formatted with score, source, file path, line range,
-/// and the snippet in a fenced code block (preserving newlines/markdown).
-/// This matches the output format of the `memory_search` tool for consistency.
-///
+/// Each result is formatted with score, source, file path, line range, and the snippet in a fenced code block (preserving newlines/markdown).
 /// Returns `None` if results are empty.
 pub fn format_memory_reminder(results: &[MemorySearchResult]) -> Option<String> {
     if results.is_empty() {
         return None;
     }
 
-    let mut section =
-        format!("{MEMORY_CONTEXT_OPEN_TAG}\n## Relevant Memory from Past Sessions\n\n");
+    let mut section = format!(
+        "{MEMORY_CONTEXT_OPEN_TAG}\n## Relevant Memory from Past Sessions\n\n\
+         Treat memory as historical context, not automatically as the current plan. \
+         Verify recalled paths, commands, \
+         repository state, and external facts with live tools before relying on them; \
+         prefer current evidence when it conflicts with memory.\n\n"
+    );
 
     for (i, r) in results.iter().enumerate() {
         let truncated = r.snippet.chars().count() > SNIPPET_MAX_CHARS;
@@ -63,10 +62,39 @@ pub fn format_memory_reminder(results: &[MemorySearchResult]) -> Option<String> 
     Some(section)
 }
 
+/// Regenerate and format both bounded v2 manifests for model context.
+pub fn format_v2_memory_context(
+    storage: &crate::session::memory::MemoryStorage,
+) -> Result<String, String> {
+    let global = crate::session::memory::regenerate_scope_manifest(
+        storage.global_dir(),
+        crate::session::memory::V2MemoryScope::Global,
+        crate::session::memory::V2ManifestBudget::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    let workspace = crate::session::memory::regenerate_scope_manifest(
+        storage.workspace_dir(),
+        crate::session::memory::V2MemoryScope::Workspace,
+        crate::session::memory::V2ManifestBudget::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(format!(
+        "{MEMORY_CONTEXT_OPEN_TAG}\n\
+         ## Global memory manifest\n\
+         **Scope root:** `{}`\n\n{}\n\
+         ## Workspace memory manifest\n\
+         **Scope root:** `{}`\n\n{}\n\
+         {MEMORY_CONTEXT_CLOSE_TAG}",
+        storage.global_dir().display(),
+        global.content,
+        storage.workspace_dir().display(),
+        workspace.content,
+    ))
+}
+
 /// Check if a message looks like a greeting or generic opener.
 ///
-/// Used to detect vague first messages that won't produce useful memory
-/// search results, so we can fall back to a broader project-context query.
+/// Used to detect vague first messages that won't produce useful memory search results, so we can fall back to a broader project-context query.
 pub fn is_greeting(text: &str) -> bool {
     const GREETINGS: &[&str] = &[
         "hi",
@@ -92,6 +120,46 @@ pub fn is_greeting(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_v2_context_always_contains_both_manifests_and_refreshes() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let cwd = temp.path().join("workspace");
+        let root = temp.path().join("memory-v2");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let storage = crate::session::memory::MemoryStorage::new_for_mode(
+            &cwd,
+            Some(&root),
+            crate::config::MemoryMode::V2,
+        );
+        crate::session::memory::v2::ensure_scope_initialized(
+            &root,
+            storage.global_dir(),
+            crate::session::memory::V2MemoryScope::Global,
+        )
+        .unwrap();
+        crate::session::memory::v2::ensure_scope_initialized(
+            &root,
+            storage.workspace_dir(),
+            crate::session::memory::V2MemoryScope::Workspace,
+        )
+        .unwrap();
+
+        let empty = format_v2_memory_context(&storage).unwrap();
+        assert!(empty.contains("## Global memory manifest"));
+        assert!(empty.contains("## Workspace memory manifest"));
+        assert!(empty.contains(&storage.global_dir().display().to_string()));
+        assert!(empty.contains(&storage.workspace_dir().display().to_string()));
+
+        std::fs::write(
+            storage.workspace_dir().join("topics/new.md"),
+            "# New\n\nCurrent.",
+        )
+        .unwrap();
+        let refreshed = format_v2_memory_context(&storage).unwrap();
+        assert!(refreshed.contains("topics/new.md"));
+        assert_ne!(empty, refreshed);
+    }
 
     #[test]
     fn test_format_empty() {
@@ -150,7 +218,7 @@ mod tests {
             created_at: None,
         }];
         let output = format_memory_reminder(&results).unwrap();
-        // Snippet should be truncated to SNIPPET_MAX_CHARS (500) + "..."
+        // The snippet is truncated to SNIPPET_MAX_CHARS (500) with a "..." suffix
         assert!(!output.contains(&"x".repeat(501)));
         assert!(output.contains(&format!("{}...", "x".repeat(500))));
     }
@@ -313,13 +381,7 @@ mod tests {
     // Injection counter semantics tests
     // -----------------------------------------------------------------------
 
-    /// `format_memory_reminder` returns `None` for an empty result list.
-    ///
-    /// This is the key invariant for the `memory_injection_count` contract:
-    /// the counter must only be incremented when `memory_reminder.is_some()`,
-    /// which is only true when `format_memory_reminder` returns `Some(_)`.
-    /// An empty result set must produce `None`, preventing the counter from
-    /// overcounting attempts where memory search found nothing to inject.
+    /// Empty results must return `None`: `memory_injection_count` is only incremented when `memory_reminder.is_some()`.
     #[test]
     fn test_format_memory_reminder_empty_results_is_none() {
         use xai_grok_tools::types::memory_backend::MemorySearchResult;
@@ -331,10 +393,7 @@ mod tests {
         );
     }
 
-    /// `format_memory_reminder` returns `Some(_)` for a non-empty result list.
-    ///
-    /// Confirms that `memory_injection_count` correctly increments when there
-    /// are actual results to inject.
+    /// Confirms that `memory_injection_count` increments when there are actual results to inject.
     #[test]
     fn test_format_memory_reminder_with_results_is_some() {
         use xai_grok_tools::types::memory_backend::MemorySearchResult;

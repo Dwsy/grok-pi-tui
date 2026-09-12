@@ -61,11 +61,9 @@ pub fn send(
     }
 }
 
-/// Resolve a configured path against the workspace root and turn it into a URI.
-///
-/// A path that does not exist is still sent — the server may create or find it
-/// — but it is by far the most likely reason for "I configured this and got no
-/// diagnostics", so it is worth saying out loud.
+/// Resolve a configured path against the workspace root and turn it into a URI. A path that does
+/// not exist is still sent — the server may create or find it — but it is by far the most likely
+/// reason for "I configured this and got no diagnostics", so it is worth saying out loud.
 fn resolve(server_name: &str, workspace_root: &Path, raw: &str) -> Option<String> {
     let path = Path::new(raw);
     let absolute = if path.is_absolute() {

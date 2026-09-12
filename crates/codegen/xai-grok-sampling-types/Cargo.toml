@@ -13,11 +13,12 @@ reqwest = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
+strum = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 xai-circuit-breaker = { workspace = true }
 xai-grok-compaction = { path = "../../common/xai-grok-compaction" }
-xai-grok-tools = { path = "../xai-grok-tools" }
+xai-tool-types = { workspace = true }
 
 [dev-dependencies]
 assert_matches = { workspace = true }

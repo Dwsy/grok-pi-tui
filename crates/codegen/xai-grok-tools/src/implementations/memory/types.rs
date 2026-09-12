@@ -10,17 +10,13 @@ pub struct MemorySearchInput {
     /// conversational language. Good: "authentication middleware patterns".
     /// Bad: "that thing we discussed about auth".
     pub query: String,
-    /// Maximum number of results to return.
-    ///
-    /// When omitted the backend-configured value is used (typically 6 from
-    /// `[memory.search].max_results`), so leaving this unset is preferred
-    /// for normal queries.
+    /// Maximum number of results to return. When omitted the backend-configured value is used
+    /// (typically 6 from `[memory.search].max_results`), so leaving this unset is preferred for
+    /// normal queries.
     #[serde(default)]
     pub max_results: Option<usize>,
-    /// Minimum relevance score threshold.
-    ///
-    /// When omitted the backend-configured value is used (typically 0.0 from
-    /// `[memory.search].min_score`).
+    /// Minimum relevance score threshold. When omitted the backend-configured value is used
+    /// (typically 0.0 from `[memory.search].min_score`).
     #[serde(default)]
     pub min_score: Option<f64>,
 }

@@ -1,13 +1,11 @@
-//! grok.com chat-product model catalog (`POST /rest/modes`) — the models
-//! grok-web's chat picker shows, distinct from the CLI `/v1/models` build
-//! catalog. Transport only; cache + ACP mapping live in
-//! [`crate::agent::chat_modes`].
+//! The grok.com chat model catalog (`POST /rest/modes`): the models grok-web's chat picker shows, distinct from the CLI `/v1/models` build catalog.
+//! Transport only; the cache and the ACP mapping live in [`crate::agent::chat_modes`].
 
 use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::auth::AuthManager;
+use xai_grok_login::AuthManager;
 
 const GROK_WEB_URL: &str = "https://grok.com";
 
@@ -73,8 +71,7 @@ pub enum ChatModelsError {
     Parse(#[from] serde_json::Error),
 }
 
-/// Stateless transport for `POST /rest/modes`; caching lives in
-/// [`crate::agent::chat_modes::ChatModesManager`].
+/// Stateless transport for `POST /rest/modes`; caching lives in [`crate::agent::chat_modes::ChatModesManager`].
 pub struct ChatModelsClient {
     http: reqwest::Client,
     base_url: String,
@@ -104,9 +101,8 @@ impl ChatModelsClient {
         }
     }
 
-    /// Gated only on a valid grok.com bearer — deliberately NOT `is_xai_auth()`
-    /// (unlike workspaces/conversations), since `/rest/modes` is the public chat
-    /// endpoint and that gate would exclude API-key / cached-token chat users.
+    /// Gated only on a valid grok.com bearer, not `is_xai_auth()` like workspaces/conversations.
+    /// `/rest/modes` is the public chat endpoint, and that gate would exclude API-key and cached-token chat users.
     pub(crate) async fn list_modes(
         &self,
         locale: &str,
@@ -142,7 +138,7 @@ impl ChatModelsClient {
         if let Some(email) = &auth.email {
             builder = builder.header("x-email", email);
         }
-        let builder = xai_file_utils::trace_context::inject_trace_context_into_request(builder);
+        let builder = xai_grok_otel::inject_trace_context_into_request(builder);
 
         let response = builder.send().await?;
         let status = response.status();
@@ -202,7 +198,7 @@ mod tests {
         assert!(m.title.is_empty());
         assert!(m.description.is_empty());
         assert!(m.badge_text.is_none());
-        // No availability field on the wire → not selectable.
+        // With no availability field on the wire, the mode is not selectable
         assert!(!m.is_available());
         assert!(resp.default_mode_id.is_empty());
     }

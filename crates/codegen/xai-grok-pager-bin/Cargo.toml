@@ -1,6 +1,6 @@
 [package]
 name = "xai-grok-pager-bin"
-version = "1.0.8"
+version = "1.0.24"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["xAI"]
@@ -29,6 +29,7 @@ xai-grok-pager-minimal = { path = "../xai-grok-pager-minimal" }
 pi-grok-adapter = { path = "../pi-grok-adapter" }
 
 # Agent runtime + leader/stdio/headless entry points.
+xai-grok-login = { workspace = true }
 xai-grok-shell = { workspace = true }
 xai-grok-update = { path = "../xai-grok-update" }
 xai-grok-version = { workspace = true }
@@ -74,6 +75,8 @@ xai-grok-extra-ca = { workspace = true }
 obfstr = { workspace = true }
 cryptify = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 # Default allocator on Unix; gated by the `jemalloc` feature (see main.rs
@@ -96,7 +99,6 @@ serial_test = { workspace = true }
 # `PagerArgs::try_parse_from` in the CLI-parsing unit tests (needs the
 # `clap::Parser` trait in scope).
 clap = { workspace = true, features = ["derive"] }
-tempfile = { workspace = true }
 
 [features]
 default = [
@@ -109,7 +111,8 @@ default-bazel = [
     "local-workspace",
     ]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]
-sandbox-enforce = ["xai-grok-pager/sandbox-enforce"]
+# xai-grok-workspace no longer enables sandbox-enforce by default, so enable it here.
+sandbox-enforce = ["xai-grok-pager/sandbox-enforce", "xai-grok-workspace/sandbox-enforce"]
 local-workspace = ["xai-grok-pager/local-workspace"]
 release-dist = [
     "xai-grok-pager/release-dist",

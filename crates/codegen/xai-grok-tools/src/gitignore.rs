@@ -8,13 +8,9 @@
 use ignore::gitignore::Gitignore;
 use std::path::Path;
 
-/// Check if a path is ignored by the given gitignore rules.
-///
-/// Strips `git_root` prefix before matching — gitignore patterns are
-/// repo-relative, so `/repo/build/out.o` becomes `build/out.o` when
-/// `git_root` is `/repo`.
-///
-/// This is a pure function — no filesystem access, just `Gitignore::matched()`.
+/// Check if a path is ignored by the given gitignore rules. Strips `git_root` prefix before matching — gitignore
+/// patterns are repo-relative, so `/repo/build/out.o` becomes `build/out.o` when `git_root` is `/repo`. This is a pure
+/// function — no filesystem access, just `Gitignore::matched()`.
 pub fn is_ignored(gitignore: &Gitignore, path: &Path, git_root: Option<&Path>) -> bool {
     let check_path = match git_root {
         Some(root) => match path.strip_prefix(root) {

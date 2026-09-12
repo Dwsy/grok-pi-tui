@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr, strum::IntoStaticStr,
+)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum PauseKind {
     User,
     BackOff,
@@ -9,19 +12,6 @@ pub enum PauseKind {
     Verification,
     Infra,
 }
-
-impl PauseKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::User => "user",
-            Self::BackOff => "back_off",
-            Self::NoProgress => "no_progress",
-            Self::Verification => "verification",
-            Self::Infra => "infra",
-        }
-    }
-}
-
 impl std::str::FromStr for PauseKind {
     type Err = String;
 

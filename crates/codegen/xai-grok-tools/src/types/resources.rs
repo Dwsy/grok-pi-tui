@@ -22,13 +22,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-/// Marker trait for types that can be stored in `Resources`.
-///
-/// Each implementor must provide a unique `ID` string of the form
-/// `"namespace.Name"` (e.g., `"grok_build.ReadFile"`). The ID is used as
-/// the serialization key when persisting resources.
-///
-/// Use the `register_resource!` macro to implement this.
+/// Marker trait for types that can be stored in `Resources`. Each implementor must provide a unique `ID` string of the
+/// form `"namespace.Name"` (e.g., `"grok_build.ReadFile"`). The ID is used as the serialization key when persisting
+/// resources. Use the `register_resource!` macro to implement this.
 pub trait ResourceType: Any + 'static {
     /// Unique identifier, e.g. `"grok_build.ReadFile"`.
     const ID: &'static str;
@@ -45,17 +41,6 @@ impl ResourceType for () {
     const ID: &'static str = "";
 }
 /// Implement `ResourceType` for a type with an explicit namespace and name.
-///
-/// ```ignore
-/// register_resource!("grok_build", "ReadFile", ReadHistory);
-/// ```
-///
-/// This generates:
-/// ```ignore
-/// impl ResourceType for ReadHistory {
-///     const ID: &'static str = "grok_build.ReadFile";
-/// }
-/// ```
 #[macro_export]
 macro_rules! register_resource {
     ($namespace:literal, $name:literal, $ty:ty) => {
@@ -64,10 +49,9 @@ macro_rules! register_resource {
         }
     };
 }
-/// Wrapper for tool *configuration* / *parameters* stored in Resources.
-///
-/// `Params<T>` and `State<T>` have distinct `TypeId`s even for the same `T`,
-/// so a tool's config and runtime state can coexist without collision.
+/// Wrapper for tool *configuration* / *parameters* stored in Resources. `Params<T>` and `State<T>`
+/// have distinct `TypeId`s even for the same `T`, so a tool's config and runtime state can coexist
+/// without collision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Params<T>(pub T);
 impl<T: Default> Default for Params<T> {
@@ -96,10 +80,9 @@ impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Params<T> {
         T::deserialize(deserializer).map(Params)
     }
 }
-/// Wrapper for tool *runtime state* stored in Resources.
-///
-/// `State<T>` has a distinct `TypeId` from `Params<T>`, enabling both to
-/// coexist in the same `Resources` container for the same inner type `T`.
+/// Wrapper for tool *runtime state* stored in Resources. `State<T>` has a distinct `TypeId` from
+/// `Params<T>`, enabling both to coexist in the same `Resources` container for the same inner type
+/// `T`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State<T>(pub T);
 impl<T: Default> Default for State<T> {
@@ -130,28 +113,19 @@ impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for State<T> {
 }
 /// Category for a registered resource — determines the top-level key in
 /// serialized output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum ResourceCategory {
     Params,
     State,
-}
-impl ResourceCategory {
-    fn as_str(&self) -> &'static str {
-        match self {
-            ResourceCategory::Params => "params",
-            ResourceCategory::State => "state",
-        }
-    }
 }
 /// Type-erased serialize closure for a registered resource.
 type SerializeFn = Box<dyn Fn(&(dyn Any + Send + Sync)) -> Option<serde_json::Value> + Send + Sync>;
 /// Type-erased deserialize closure for a registered resource.
 type DeserializeFn =
     Box<dyn Fn(serde_json::Value, &mut HashMap<TypeId, Box<dyn Any + Send + Sync>>) + Send + Sync>;
-/// Metadata for a registered (serializable) resource.
-///
-/// Stores the `TypeId`, string key, category, and type-erased
-/// serialize/deserialize closures so `Resources` can round-trip through JSON.
+/// Metadata for a registered (serializable) resource. Stores the `TypeId`, string key, category,
+/// and type-erased serialize/deserialize closures so `Resources` can round-trip through JSON.
 struct ResourceEntry {
     type_id: TypeId,
     /// The `ResourceType::ID` string (e.g., `"grok_build.ReadFile"`).
@@ -162,16 +136,9 @@ struct ResourceEntry {
     /// Deserialize a JSON value and insert it into the `data` map.
     deserialize_fn: DeserializeFn,
 }
-/// Type-safe heterogeneous container for tool resources.
-///
-/// Stores typed values indexed by `TypeId`. Registered types are serializable;
-/// ephemeral types (inserted directly without registration) are skipped during
-/// serialization.
-///
-/// All stored values must be `Send + Sync` so `Resources` itself is
-/// `Send + Sync`. This is required because `ToolRegistry` (which owns
-/// `Resources`) may be wrapped in a `RwLock` or `Mutex` by multi-threaded
-/// hosts.
+/// Type-safe heterogeneous container for tool resources. Stores typed values indexed by `TypeId`. Registered types are
+/// serializable; ephemeral types (inserted directly without registration) are skipped during serialization. All stored
+/// values must be `Send + Sync` so `Resources` itself is `Send + Sync`.
 pub struct Resources {
     /// The actual storage: `TypeId` → `Box<dyn Any + Send + Sync>`.
     data: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
@@ -241,10 +208,9 @@ impl Resources {
     pub fn contains<T: Send + Sync + 'static>(&self) -> bool {
         self.data.contains_key(&TypeId::of::<T>())
     }
-    /// Register a `Params<T>` type for serialization under the `"params"` category.
-    ///
-    /// After registration, `Params<T>` values will be included in `serialize()`
-    /// output and can be restored via `load_from()`.
+    /// Register a `Params<T>` type for serialization under the `"params"` category. After
+    /// registration, `Params<T>` values will be included in `serialize()` output and can be
+    /// restored via `load_from()`.
     pub fn register_params<T>(&mut self)
     where
         T: ResourceType
@@ -277,10 +243,9 @@ impl Resources {
             ),
         });
     }
-    /// Register a `State<T>` type for serialization under the `"state"` category.
-    ///
-    /// After registration, `State<T>` values will be included in `serialize()`
-    /// output and can be restored via `load_from()`.
+    /// Register a `State<T>` type for serialization under the `"state"` category. After
+    /// registration, `State<T>` values will be included in `serialize()` output and can be restored
+    /// via `load_from()`.
     pub fn register_state<T>(&mut self)
     where
         T: ResourceType
@@ -313,22 +278,8 @@ impl Resources {
             ),
         });
     }
-    /// Serialize all registered resources to a nested JSON structure.
-    ///
-    /// Output shape:
-    /// ```json
-    /// {
-    ///   "params": {
-    ///     "grok_build.Edit": { ... },
-    ///   },
-    ///   "state": {
-    ///     "grok_build.ReadFile": { ... },
-    ///     "grok_build.Todo": { ... },
-    ///   }
-    /// }
-    /// ```
-    ///
-    /// Ephemeral types (not registered) are silently skipped.
+    /// Serialize all registered resources to a nested JSON structure. Ephemeral types (not
+    /// registered) are silently skipped.
     pub fn serialize(&self) -> serde_json::Value {
         let mut categories: HashMap<&str, serde_json::Map<String, serde_json::Value>> =
             HashMap::new();
@@ -337,7 +288,7 @@ impl Resources {
                 && let Some(val) = (entry.serialize_fn)(boxed.as_ref())
             {
                 categories
-                    .entry(entry.category.as_str())
+                    .entry(entry.category.as_ref())
                     .or_default()
                     .insert(entry.id.clone(), val);
             }
@@ -348,16 +299,12 @@ impl Resources {
         }
         serde_json::Value::Object(top)
     }
-    /// Load registered resources from a previously serialized JSON structure.
-    ///
-    /// Expects the same shape as `serialize()` output:
-    /// `{ "params": { ... }, "state": { ... } }`.
-    ///
-    /// Unknown keys are silently ignored. Missing keys leave the resource
-    /// at its current value (or absent).
+    /// Load registered resources from a previously serialized JSON structure. Expects the same
+    /// shape as `serialize()` output: `{ "params": { ... }, "state": { ... } }`. Unknown keys are
+    /// silently ignored. Missing keys leave the resource at its current value (or absent).
     pub fn load_from(&mut self, data: HashMap<String, HashMap<String, serde_json::Value>>) {
         for entry in &self.entries {
-            let category_key = entry.category.as_str();
+            let category_key = entry.category.as_ref();
             if let Some(cat_map) = data.get(category_key)
                 && let Some(val) = cat_map.get(&entry.id)
             {
@@ -370,7 +317,7 @@ impl Resources {
     /// Used by the gRPC `GetToolOptions` RPC for dynamic access.
     pub fn get_json(&self, category: &str, key: &str) -> Option<serde_json::Value> {
         for entry in &self.entries {
-            if entry.category.as_str() == category && entry.id == key {
+            if entry.category.as_ref() == category && entry.id == key {
                 if let Some(boxed) = self.data.get(&entry.type_id) {
                     return (entry.serialize_fn)(boxed.as_ref());
                 }
@@ -379,13 +326,12 @@ impl Resources {
         }
         None
     }
-    /// Set a registered resource's value from JSON, by category and key.
-    ///
-    /// Used by the gRPC `SetToolOptions` RPC for dynamic access.
-    /// Returns `true` if a matching registration was found and the value was set.
+    /// Set a registered resource's value from JSON, by category and key. Used by the gRPC
+    /// `SetToolOptions` RPC for dynamic access. Returns `true` if a matching registration was found
+    /// and the value was set.
     pub fn set_json(&mut self, category: &str, key: &str, val: serde_json::Value) -> bool {
         for entry in &self.entries {
-            if entry.category.as_str() == category && entry.id == key {
+            if entry.category.as_ref() == category && entry.id == key {
                 (entry.deserialize_fn)(val, &mut self.data);
                 return true;
             }
@@ -404,23 +350,17 @@ impl std::fmt::Debug for Resources {
 /// Current working directory for the session.
 #[derive(Debug, Clone)]
 pub struct Cwd(pub PathBuf);
-/// Absolute path to the plan file for this session.
-///
-/// Set by the session layer (from `PlanModeTracker::plan_file_path()`);
-/// read by `ExitPlanMode` to locate the plan on disk. When absent the
-/// tool falls back to `Cwd/.grok/plan.md`.
+/// Absolute path to the plan file for this session. Set by the session layer (from
+/// `PlanModeTracker::plan_file_path()`); read by `ExitPlanMode` to locate the plan on disk. When
+/// absent the tool falls back to `Cwd/.grok/plan.md`.
 #[derive(Debug, Clone)]
 pub struct PlanFilePath(pub PathBuf);
 /// Default plan-file path (relative to the workspace root) used when no
 /// explicit [`PlanFilePath`] is set. Shared by the plan-mode tools.
 pub const PLAN_FILE_RELATIVE_PATH: &str = ".grok/plan.md";
-/// Resolve the session plan-file path from resources as `(absolute_target, display)`.
-///
-/// `absolute_target` is `Some` ONLY when the resolved path is absolute, so
-/// callers that write/seed never create a file under the process CWD; it is
-/// `None` for the display-only relative fallback. `display` is the
-/// model-facing path string. Resolution: [`PlanFilePath`] (as-is), else
-/// [`Cwd`]`/.grok/plan.md`, else the bare relative `.grok/plan.md`.
+/// Resolve the session plan-file path from resources as `(absolute_target, display)`. `absolute_target` is `Some` ONLY
+/// when the resolved path is absolute, so callers that write/seed never create a file under the process CWD; it is
+/// `None` for the display-only relative fallback. `display` is the model-facing path string.
 pub(crate) fn resolve_plan_file_path(res: &Resources) -> (Option<PathBuf>, String) {
     let path = if let Some(configured) = res.get::<PlanFilePath>() {
         configured.0.clone()
@@ -446,36 +386,19 @@ pub(crate) fn require_plan_file_path(
     })?;
     Ok((target, display))
 }
-/// Stable display path for forked sessions.
-///
-/// When set, [`resolve_model_path`] rewrites absolute paths that start with
-/// this prefix to the real [`Cwd`] (the on-disk worktree backing the fork).
-/// This lets models keep using the original project path from conversation
-/// history while all I/O hits the correct path on disk.
-///
-/// Inserted for forked sessions whose tool execution path differs from the
-/// path the model should see.
+/// Stable display path for forked sessions. When set, [`resolve_model_path`] rewrites absolute paths that start with this prefix to the real
+/// [`Cwd`] (the on-disk worktree backing the fork). This lets models keep using the original project path from conversation history while all
+/// I/O hits the correct path on disk. Inserted for forked sessions whose tool execution path differs from the path the model should see.
 #[derive(Debug, Clone)]
 pub struct DisplayCwd(pub PathBuf);
-/// Managed `Read`-deny glob patterns (e.g. `**/.env`, `**/*.pem`) from the
-/// permission policy. The Grep tool passes these to ripgrep as `--glob '!<p>'`
-/// excludes so a search never reads a path the policy forbids reading — whether
+/// Managed `Read`-deny glob patterns (e.g. `**/.env`, `**/*.pem`) from the permission policy. The Grep tool passes
+/// these to ripgrep as `--glob '!<p>'` excludes so a search never reads a path the policy forbids reading — whether
 /// reached by a recursive walk or a `glob` arg that targets a denied file.
-/// (An explicitly-passed denied `path` is blocked earlier by the permission
-/// manager, since ripgrep searches explicit paths even against excludes.)
-/// Empty when no managed Read denies apply.
 #[derive(Debug, Clone, Default)]
 pub struct DenyReadGlobs(pub Vec<String>);
-/// Resolve a model-provided path, rewriting absolute paths from conversation
-/// history when [`DisplayCwd`] is set.
-///
-/// - If `display_cwd` is `None`, falls back to `cwd.join(input)`.
-/// - If `input` starts with the `display_cwd` prefix, strips it and joins
-///   the suffix onto `cwd` (the real worktree path).
-/// - If `input` is absolute but doesn't match, returns it as-is.
-/// - Leading `~`/`~/` is expanded to the current user's home directory
-///   before applying the above rules. `~username` is not expanded.
-/// - Relative paths are always joined onto `cwd`.
+/// Resolve a model-provided path, rewriting absolute paths from conversation history when [`DisplayCwd`] is set. If `display_cwd` is `None`,
+/// falls back to `cwd.join(input)`. If `input` starts with the `display_cwd` prefix, strips it and joins the suffix onto `cwd` (the real
+/// worktree path). If `input` is absolute but doesn't match, returns it as-is.
 pub fn resolve_model_path(
     cwd: &std::path::Path,
     display_cwd: Option<&std::path::Path>,
@@ -503,19 +426,9 @@ pub fn resolve_model_path(
     }
     cwd.join(input_path)
 }
-/// Strip surrounding whitespace (e.g. a trailing newline from block-form
-/// tool args) and quotes that models occasionally emit around path args.
-///
-/// When the arg was quote-wrapped, the model emitted a *string literal* (e.g.
-/// a JSON-style `"/path/file.ts\n"` pasted into a block-form arg where no
-/// JSON unescaping ever runs). In that case also strip trailing **literal**
-/// escape sequences (`\n`, `\r`, `\t` as two characters) left at the end of
-/// the unquoted value — `str::trim` only removes real whitespace, so the
-/// resolved path would otherwise end in a literal backslash-n and miss the
-/// file. Escape stripping requires the trimmed arg to both *start and end*
-/// with a quote character (true quote-wrapping): a stray unbalanced quote is
-/// still stripped, but does not enable escape stripping, so backslashes in
-/// otherwise-unquoted real paths (e.g. Windows `dir\n ame`) are never eaten.
+/// Strip surrounding whitespace (e.g. a trailing newline from block-form tool args) and quotes that models occasionally emit around path args.
+/// In that case also strip trailing **literal** escape sequences (`\n`, `\r`, `\t` as two characters) left at the end of the unquoted value —
+/// `str::trim` only removes real whitespace, so the resolved path would otherwise end in a literal backslash-n and miss the file.
 fn sanitize_model_path_arg(input: &str) -> &str {
     let trimmed = input.trim();
     let quote_wrapped =
@@ -538,10 +451,9 @@ fn sanitize_model_path_arg(input: &str) -> &str {
 pub fn display_cwd_or_cwd(cwd: &std::path::Path, display_cwd: Option<&std::path::Path>) -> PathBuf {
     display_cwd.unwrap_or(cwd).to_path_buf()
 }
-/// Newtype wrapper for `Arc<dyn xai_tool_runtime::ToolDispatch>` so it can
-/// be stored in `ToolCallContext::extensions`. Used by `use_tool` and the
-/// external MCP-call tool, which dispatch to target tools without going
-/// through the outer `ToolBridge` (which would deadlock).
+/// Newtype wrapper for `Arc<dyn xai_tool_runtime::ToolDispatch>` so it can be stored in
+/// `ToolCallContext::extensions`. Used by `use_tool` and the external MCP-call tool, which dispatch
+/// to target tools without going through the outer `ToolBridge` (which would deadlock).
 #[derive(Clone)]
 pub struct InnerDispatch(pub std::sync::Arc<dyn xai_tool_runtime::ToolDispatch>);
 #[derive(Debug, Clone)]
@@ -592,10 +504,9 @@ pub struct SessionEnv(pub Arc<HashMap<String, String>>);
 /// Whether system reminders are enabled globally.
 #[derive(Debug, Clone, Copy)]
 pub struct SystemRemindersEnabled(pub bool);
-/// Enforces `.gitignore` patterns on file-access tools (`read_file`, `search_replace`).
-///
-/// Seeded at session start from the same rules used by AGENTS.md discovery.
-/// When absent (no git repo), tools allow all files.
+/// Enforces `.gitignore` patterns on file-access tools (`read_file`, `search_replace`). Seeded at
+/// session start from the same rules used by AGENTS.md discovery. When absent (no git repo), tools
+/// allow all files.
 #[derive(Clone)]
 pub struct GitignoreFilter {
     gitignore: ignore::gitignore::Gitignore,
@@ -608,10 +519,8 @@ impl GitignoreFilter {
             git_root,
         }
     }
-    /// Check whether a path is gitignored.
-    ///
-    /// For non-existent files (new file creation), canonicalizes the parent
-    /// directory to handle symlinks (e.g., macOS `/var` → `/private/var`).
+    /// Check whether a path is gitignored. For non-existent files (new file creation),
+    /// canonicalizes the parent directory to handle symlinks (e.g., macOS `/var` → `/private/var`).
     pub fn is_ignored(&self, path: &std::path::Path) -> bool {
         let normalized = dunce::canonicalize(path).unwrap_or_else(|_| {
             path.parent()
@@ -632,13 +541,9 @@ impl std::fmt::Debug for GitignoreFilter {
             .finish()
     }
 }
-/// Controls whether tools respect `.gitignore` patterns.
-///
-/// Always seeded by `agent_rebuild`. When `true`, all tools block gitignored
-/// files. When `false`, `read_file` allows via `is_some_and` while
-/// `grep`/`list_dir`/`search_replace` also allow via `is_none_or`.
-///
-/// Configured via `[tools] respect_gitignore = true` in `config.toml`.
+/// Controls whether tools respect `.gitignore` patterns. Always seeded by `agent_rebuild`. When `true`, all tools block
+/// gitignored files. When `false`, `read_file` allows via `is_some_and` while `grep`/`list_dir`/`search_replace` also
+/// allow via `is_none_or`. Configured via `[tools] respect_gitignore = true` in `config.toml`.
 #[derive(Debug, Clone, Copy)]
 pub struct RespectGitignore(pub bool);
 impl Default for RespectGitignore {
@@ -646,25 +551,11 @@ impl Default for RespectGitignore {
         Self(true)
     }
 }
-/// Whether to enrich path-not-found errors with CWD reminders, "dropped repo
-/// folder" correction, and similar-name suggestions.
-///
-/// Default `false`. Hosts may enable this via remote config or local settings.
+/// Whether to enrich path-not-found errors with CWD reminders, "dropped repo folder" correction,
+/// and similar-name suggestions. Default `false`. Hosts may enable this via remote config or local
+/// settings.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PathNotFoundHints(pub bool);
-/// Whether scheduled task fires execute in background loop subagents.
-///
-/// `false` forces every fire onto the legacy main-conversation path.
-/// Configured via `[scheduler] background_loops` in `config.toml`, the
-/// `GROK_SCHEDULER_BACKGROUND_LOOPS` env var, or the
-/// `scheduler_background_loops` remote setting.
-#[derive(Debug, Clone, Copy)]
-pub struct SchedulerBackgroundLoops(pub bool);
-impl Default for SchedulerBackgroundLoops {
-    fn default() -> Self {
-        Self(true)
-    }
-}
 /// Map of canonical tool names → model-facing tool names.
 #[derive(Debug, Clone, Default)]
 pub struct ToolNameMapping(pub HashMap<String, String>);
@@ -678,20 +569,14 @@ impl ToolNameMapping {
             .unwrap_or(canonical)
     }
 }
-/// Set of client-facing names of all enabled **native** (non-MCP) tools.
-///
-/// Populated once at `finalize()` from the finalized tool list (every tool
-/// whose client-facing name does not contain the `__` MCP delimiter). Used by
-/// `use_tool` to detect when the model wrongly routes a native tool call
-/// (e.g. `scheduler_create`) through `use_tool`. Without this, such calls hit
-/// the generic "not a valid MCP tool name" error and the model gets stuck,
-/// because `search_tool` only indexes MCP tools.
-///
-/// Detected at runtime by `use_tool::run()` to return a corrective error
-/// ("call it directly") instead of the generic "not a valid MCP tool name"
-/// message that left the model stuck.
+/// Set of client-facing names of all enabled **native** (non-MCP) tools. Populated once at `finalize()` from the finalized tool list (every
+/// tool whose client-facing name does not contain the `__` MCP delimiter). Without this, such calls hit the generic "not a valid MCP tool name"
+/// error and the model gets stuck, because `search_tool` only indexes MCP tools.
 #[derive(Debug, Clone, Default)]
 pub struct EnabledNativeToolNames(pub std::collections::HashSet<String>);
+/// Enabled native tools keyed by canonical registry ID with client-facing names.
+#[derive(Debug, Clone, Default)]
+pub struct NativeToolClientNames(pub std::collections::HashMap<String, String>);
 impl EnabledNativeToolNames {
     /// Whether `name` is an enabled native (non-MCP) tool.
     pub fn contains(&self, name: &str) -> bool {
@@ -712,14 +597,9 @@ impl ParamNameMapping {
             .unwrap_or(canonical)
     }
 }
-/// Canonical → client-facing param names for the tool currently executing.
-///
-/// Stamped onto [`xai_tool_runtime::ToolCallContext::extensions`] by
-/// `prepare_dispatch` / `call_raw` from that tool's own
-/// `params_name_overrides`. Prefer this over kind-wide
-/// [`crate::types::template_renderer::TemplateRenderer::param_for_kind`] when
-/// naming params in that tool's own errors — multiple tools can share a
-/// `ToolKind` with different renames, and the kind map is first/last-wins.
+/// Canonical → client-facing param names for the tool currently executing. Stamped onto
+/// [`xai_tool_runtime::ToolCallContext::extensions`] by `prepare_dispatch` / `call_raw` from that
+/// tool's own `params_name_overrides`.
 #[derive(Debug, Clone, Default)]
 pub struct InvokingToolParamNames(pub HashMap<String, String>);
 impl InvokingToolParamNames {
@@ -741,21 +621,14 @@ impl InvokingToolParamNames {
             .unwrap_or(canonical)
     }
 }
-/// Map of `ToolKind` → client-facing tool name.
-///
-/// Built at finalize time from the enabled tools and client name overrides.
-/// Used at runtime by tools that reference other tools in error messages
-/// (e.g., search_replace saying "use the Read tool first").
-///
-/// This is the **kind-based** counterpart to `ToolNameMapping`. Tools query
-/// by semantic role (`ToolKind::Read`), not canonical name (`"read_file"`).
+/// Map of `ToolKind` → client-facing tool name. Built at finalize time from the enabled tools and client name overrides. Used at runtime by
+/// tools that reference other tools in error messages (e.g., search_replace saying "use the Read tool first"). This is the **kind-based**
+/// counterpart to `ToolNameMapping`. Tools query by semantic role (`ToolKind::Read`), not canonical name (`"read_file"`).
 #[derive(Debug, Clone, Default)]
 pub struct ToolKindNames(pub HashMap<crate::types::tool::ToolKind, String>);
-/// Map of `ToolKind` → { canonical param name → client-facing param name }.
-///
-/// Built at finalize time from client param overrides. Used at runtime by
-/// tools that reference their own (or other tools') param names in error
-/// messages (e.g., "use `replaceAll` to replace all occurrences").
+/// Map of `ToolKind` → { canonical param name → client-facing param name }. Built at finalize time
+/// from client param overrides. Used at runtime by tools that reference their own (or other tools')
+/// param names in error messages (e.g., "use `replaceAll` to replace all occurrences").
 #[derive(Debug, Clone, Default)]
 pub struct ParamKindNames(pub HashMap<crate::types::tool::ToolKind, HashMap<String, String>>);
 impl ParamKindNames {
@@ -773,18 +646,14 @@ impl ParamKindNames {
             .unwrap_or(canonical)
     }
 }
-/// Available skills for description template rendering.
-///
-/// Stored in Resources so `build_description_context()` can populate the
-/// `skills` field of `DescriptionContext`. Inserted by `with_backend()`
-/// before any tools are registered.
+/// Available skills for description template rendering. Stored in Resources so
+/// `build_description_context()` can populate the `skills` field of `DescriptionContext`. Inserted
+/// by `with_backend()` before any tools are registered.
 #[derive(Debug, Clone)]
 pub struct AvailableSkills(pub Vec<crate::implementations::skills::types::SkillInfo>);
 impl AvailableSkills {
-    /// Check if a skill with the given name is available for model invocation.
-    ///
-    /// Returns `false` for skills with `disable_model_invocation = true` (model
-    /// cannot auto-invoke) or `user_invocable = false` (not shown in skill tool),
+    /// Check if a skill with the given name is available for model invocation. Returns `false` for skills with
+    /// `disable_model_invocation = true` (model cannot auto-invoke) or `user_invocable = false` (not shown in skill tool),
     /// since the model would be unable to successfully invoke them.
     pub fn has_skill(&self, name: &str) -> bool {
         self.0
@@ -795,22 +664,9 @@ impl AvailableSkills {
 /// Session folder for logs and output files.
 #[derive(Debug, Clone)]
 pub struct SessionFolder(pub PathBuf);
-/// Per-turn registry mapping each attached image's `[Image #N]` display
-/// number to a reference `image_edit` can resolve.
-///
-/// The model sees attachments inline (as pixels) and only the `[Image #N]`
-/// token in text — never a path — so this lets `image_edit` resolve that
-/// token instead of fabricating a filesystem path it can't know.
-///
-/// Keyed by display **number**, not list position: numbers are not
-/// renumbered when a chip is removed mid-compose (`#1` and `#3` survive
-/// after `#2`) and images may be dropped during normalization, so the two
-/// diverge. Each reference is a bare filesystem path (the durable
-/// `session_image_path`) or a `data:<mime>;base64,<data>` URL fallback.
-///
-/// Replaced wholesale each turn (empty when there are no attachments) so a
-/// stale registry never resolves to a prior turn's image. Ephemeral — not
-/// persisted, not serde-registered.
+/// Per-turn registry mapping each attached image's `[Image #N]` display number to a reference `image_edit` can resolve. The model sees
+/// attachments inline (as pixels) and only the `[Image #N]` token in text — never a path — so this lets `image_edit` resolve that token instead
+/// of fabricating a filesystem path it can't know. Ephemeral — not persisted, not serde-registered.
 #[derive(Debug, Clone, Default)]
 pub struct AttachedImages(pub Vec<(usize, String)>);
 impl AttachedImages {
@@ -844,10 +700,9 @@ pub struct Terminal(pub Arc<dyn TerminalBackend>);
 /// the subagent's own tasks on a shared terminal backend.
 #[derive(Debug, Clone)]
 pub struct OwnerSessionId(pub String);
-/// Shared citation counter for `[web:N]` numbering across web tools.
-///
-/// Stored as `State<WebCitationCounter>` in Resources so web tools that emit
-/// citations share the same monotonically increasing counter within a session.
+/// Shared citation counter for `[web:N]` numbering across web tools. Stored as
+/// `State<WebCitationCounter>` in Resources so web tools that emit citations share the same
+/// monotonically increasing counter within a session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WebCitationCounter {
     pub counter: u32,
@@ -866,10 +721,8 @@ impl std::fmt::Debug for Terminal {
         f.debug_struct("Terminal").finish()
     }
 }
-/// Per-tool retry/backoff configurations.
-/// Set by the agent builder, consumed by the bridge's retry loop.
-///
-/// NOT persisted — ephemeral runtime state that's re-set on each session.
+/// Per-tool retry/backoff configurations. Set by the agent builder, consumed by the bridge's retry
+/// loop. NOT persisted — ephemeral runtime state that's re-set on each session.
 #[derive(Debug, Clone, Default)]
 pub struct ToolRetries(pub HashMap<String, crate::retry::BackoffConfig>);
 impl ToolRetries {
@@ -886,12 +739,8 @@ impl ToolRetries {
         self.0.clear();
     }
 }
-/// Tracks whether a required "completion" tool has been called this turn.
-///
-/// Used by agent definitions that require a specific tool to be called
-/// before the agent can be considered "done" (e.g. a workflow's
-/// `complete_task` tool).
-///
+/// Tracks whether a required "completion" tool has been called this turn. Used by agent definitions that require a
+/// specific tool to be called before the agent can be considered "done" (e.g. a workflow's `complete_task` tool).
 /// Ephemeral — NOT persisted. Stored in Resources, not serde-registered.
 #[derive(Debug, Clone)]
 pub struct CompletionTracker {
@@ -929,12 +778,9 @@ pub struct McpResourceReadResult {
     pub mime_type: Option<String>,
     pub content: Option<McpResourceContent>,
 }
-/// Provider trait for MCP resource operations.
-///
-/// Injected into `SharedResources` by the shell layer so tools
-/// (`ListMcpResources`, `FetchMcpResource`) can access MCP servers without
-/// depending on `xai-grok-mcp` directly.  Follows the same pattern as
-/// [`FileSystem`] (`Arc<dyn AsyncFileSystem>`).
+/// Provider trait for MCP resource operations. Injected into `SharedResources` by the shell layer so tools
+/// (`ListMcpResources`, `FetchMcpResource`) can access MCP servers without depending on `xai-grok-mcp` directly.
+/// Follows the same pattern as [`FileSystem`] (`Arc<dyn AsyncFileSystem>`).
 #[async_trait::async_trait]
 pub trait McpResourceProvider: Send + Sync {
     /// List resources from one or all MCP servers.
@@ -973,57 +819,6 @@ mod tests {
         items: Vec<String>,
     }
     register_resource!("grok_build", "Todo", TodoData);
-    #[test]
-    fn insert_and_get_typed_values() {
-        let mut res = Resources::new();
-        res.insert(42u32);
-        res.insert("hello".to_string());
-        assert_eq!(res.get::<u32>(), Some(&42));
-        assert_eq!(res.get::<String>(), Some(&"hello".to_string()));
-        assert_eq!(res.get::<bool>(), None);
-    }
-    #[test]
-    fn get_mut_modifies_in_place() {
-        let mut res = Resources::new();
-        res.insert(10i32);
-        *res.get_mut::<i32>().unwrap() += 5;
-        assert_eq!(res.get::<i32>(), Some(&15));
-    }
-    #[test]
-    fn get_or_default_inserts_when_missing() {
-        let mut res = Resources::new();
-        let val = res.get_or_default::<Vec<i32>>();
-        val.push(1);
-        val.push(2);
-        assert_eq!(res.get::<Vec<i32>>(), Some(&vec![1, 2]));
-    }
-    #[test]
-    fn get_or_default_returns_existing() {
-        let mut res = Resources::new();
-        res.insert(vec![42i32]);
-        let val = res.get_or_default::<Vec<i32>>();
-        assert_eq!(val, &vec![42]);
-    }
-    #[test]
-    fn remove_returns_value() {
-        let mut res = Resources::new();
-        res.insert("test".to_string());
-        let removed = res.remove::<String>();
-        assert_eq!(removed, Some("test".to_string()));
-        assert_eq!(res.get::<String>(), None);
-    }
-    #[test]
-    fn remove_returns_none_when_missing() {
-        let mut res = Resources::new();
-        assert_eq!(res.remove::<String>(), None);
-    }
-    #[test]
-    fn contains_checks_presence() {
-        let mut res = Resources::new();
-        assert!(!res.contains::<u32>());
-        res.insert(42u32);
-        assert!(res.contains::<u32>());
-    }
     #[test]
     fn params_and_state_coexist_without_collision() {
         let mut res = Resources::new();
@@ -1241,21 +1036,6 @@ mod tests {
         assert_eq!(names.resolve("path"), "path");
     }
     #[test]
-    fn params_deref() {
-        let p = Params(EditConfig {
-            skip_read_before_edit: true,
-            max_file_size: Some(42),
-        });
-        assert!(p.skip_read_before_edit);
-        assert_eq!(p.max_file_size, Some(42));
-    }
-    #[test]
-    fn state_deref_mut() {
-        let mut s = State(ReadHistory { files_read: vec![] });
-        s.files_read.push("new.rs".to_string());
-        assert_eq!(s.files_read, vec!["new.rs".to_string()]);
-    }
-    #[test]
     fn resolve_model_path_relative_no_display() {
         let cwd = std::path::Path::new("/worktree/abc");
         let result = super::resolve_model_path(cwd, None, "src/main.rs");
@@ -1432,10 +1212,9 @@ mod tests {
         let result = super::resolve_model_path(cwd, None, "  \n");
         assert_eq!(result, std::path::PathBuf::from("/worktree/abc"));
     }
-    /// A quote-wrapped arg carrying a *literal* `\n` escape sequence (two
-    /// characters, backslash + n) — a JSON string literal pasted into a
-    /// block-form arg with no unescaping — must resolve to the real file,
-    /// not one whose name ends in a literal backslash-n.
+    /// A quote-wrapped arg carrying a *literal* `\n` escape sequence (two characters, backslash +
+    /// n) — a JSON string literal pasted into a block-form arg with no unescaping — must resolve to
+    /// the real file, not one whose name ends in a literal backslash-n.
     #[test]
     fn resolve_model_path_quoted_literal_backslash_n() {
         let cwd = std::path::Path::new("/workspace");
@@ -1532,20 +1311,24 @@ mod tests {
     }
     #[test]
     fn resolve_model_path_tilde_expands_to_home() {
-        let home = dirs::home_dir().expect("test requires home_dir");
+        let home = xai_dirs::home_dir().expect("test requires home_dir");
         let cwd = std::path::Path::new("/worktree/abc");
         let result = super::resolve_model_path(cwd, None, "~/foo/bar.rs");
         assert_eq!(result, home.join("foo/bar.rs"));
     }
     #[test]
     fn resolve_model_path_tilde_alone() {
-        let Some(home) = dirs::home_dir() else { return };
+        let Some(home) = xai_dirs::home_dir() else {
+            return;
+        };
         let cwd = std::path::Path::new("/worktree/abc");
         assert_eq!(super::resolve_model_path(cwd, None, "~"), home);
     }
     #[test]
     fn resolve_model_path_tilde_slash_only() {
-        let Some(home) = dirs::home_dir() else { return };
+        let Some(home) = xai_dirs::home_dir() else {
+            return;
+        };
         let cwd = std::path::Path::new("/worktree/abc");
         assert_eq!(super::resolve_model_path(cwd, None, "~/"), home);
     }
@@ -1572,7 +1355,9 @@ mod tests {
     }
     #[test]
     fn resolve_model_path_tilde_with_display_cwd() {
-        let Some(home) = dirs::home_dir() else { return };
+        let Some(home) = xai_dirs::home_dir() else {
+            return;
+        };
         let cwd = std::path::Path::new("/worktree/abc");
         let display = home.join("project");
         let result = super::resolve_model_path(cwd, Some(&display), "~/project/src/main.rs");

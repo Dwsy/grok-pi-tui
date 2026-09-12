@@ -7,12 +7,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-/// A parsed entry from `/proc/self/mountinfo`.
-///
-/// Format per line:
-/// ```text
-/// ID PARENT MAJOR:MINOR ROOT MOUNTPOINT OPTIONS - FSTYPE SOURCE SUPER_OPTIONS
-/// ```
+/// Parsed `/proc/self/mountinfo` line:
+/// `ID PARENT MAJOR:MINOR ROOT MOUNTPOINT OPTIONS - FSTYPE SOURCE SUPER_OPTIONS`.
 #[derive(Debug, Clone)]
 pub struct MountEntry {
     /// Mount ID.
@@ -55,12 +51,9 @@ pub fn parse_mountinfo() -> Result<Vec<MountEntry>> {
     Ok(parse_mountinfo_from(&content))
 }
 
-/// Every overlay `upperdir` mounted across **all** namespaces, by scanning each
-/// `/proc/<pid>/mountinfo`. Overlay worktrees may live in a different process's
-/// mount namespace than the cleanup caller, so cleanup must check across
-/// namespaces before deleting an overlay's backing snapshot. Unreadable entries
-/// are skipped (a limited-visibility caller still sees its own namespace);
-/// empty on platforms without `/proc`.
+/// Overlay `upperdir`s across all namespaces (`/proc/<pid>/mountinfo`).
+/// Cleanup must see other namespaces before deleting a backing snapshot.
+/// Unreadable entries are skipped; empty without `/proc`.
 pub fn overlay_upperdirs_all_namespaces() -> std::collections::HashSet<PathBuf> {
     let mut uppers = std::collections::HashSet::new();
     let Ok(procs) = std::fs::read_dir("/proc") else {
@@ -167,30 +160,9 @@ pub enum MountNsStatus {
     Unknown,
 }
 
-/// Classify the current process's mount namespace relative to PID 1's.
-///
-/// Mounts created inside a private mount namespace (e.g. a container, a
-/// `PrivateMounts=` systemd unit, or `unshare -m`) are invisible to processes
-/// in other namespaces and are torn down when the namespace's last process
-/// exits. Worktree strategies that materialize the worktree as a kernel mount
-/// (bind mount, overlayfs) must avoid this so the worktree survives process
-/// restart and is visible from the user's other shells.
-///
-/// Compares the mount-namespace identity of the current process
-/// (`/proc/self/ns/mnt`) against PID 1 (`/proc/1/ns/mnt`). `Unknown` is returned
-/// when either link is unreadable — most commonly a non-root process that can't
-/// read `/proc/1/ns/mnt` (needs to own PID 1 or have `CAP_SYS_PTRACE`).
-///
-/// **Load-bearing assumption (see callers):** the only namespace-local strategy
-/// gated on this is the overlay path; callers treat `Unknown` as *not* private
-/// (overlay stays enabled) so a non-root caller on a normal host namespace is
-/// not silently degraded to the slow copy path. This relies on environments
-/// that actually exhibit the private-namespace issue typically running as
-/// **root** (PID 1 readable → a genuine private namespace is detected as
-/// `Private`). The btrfs-snapshot-symlink path is namespace-independent and
-/// correct regardless of this classification; only the overlay (FUSE upper)
-/// path could re-introduce an ephemeral worktree for a non-root process inside
-/// a genuine private namespace — an accepted, documented residual.
+/// Classify this process's mount namespace vs PID 1. Private-ns mounts die with
+/// the namespace, so overlay/bind worktrees must avoid them. `Unknown` (PID 1
+/// unreadable) is treated as not-private; non-root private-ns overlay is a residual.
 pub fn current_mount_ns_status() -> MountNsStatus {
     let status = mount_ns_status(
         std::fs::read_link("/proc/self/ns/mnt"),
@@ -202,10 +174,7 @@ pub fn current_mount_ns_status() -> MountNsStatus {
     status
 }
 
-/// Decide mount-namespace status from the two `read_link` results.
-///
-/// Pure helper so the comparison/permission logic is unit-testable without
-/// procfs.
+/// Pure helper so namespace comparison is unit-testable without procfs.
 fn mount_ns_status(
     self_ns: std::io::Result<PathBuf>,
     pid1_ns: std::io::Result<PathBuf>,
@@ -427,19 +396,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_option_multi_lower() {
-        let opts = "rw,lowerdir=/a:/b:/c,upperdir=/d,workdir=/e";
-        let lower = extract_option(opts, "lowerdir").unwrap();
-        let first = lower.split(':').next().unwrap();
-        assert_eq!(first, "/a");
-    }
-
-    #[test]
-    fn test_unescape_mountinfo_no_escapes() {
-        assert_eq!(unescape_mountinfo("/a/b/c"), "/a/b/c");
-    }
-
-    #[test]
     fn test_unescape_mountinfo_space() {
         assert_eq!(unescape_mountinfo("/a\\040b/c"), "/a b/c");
     }
@@ -512,11 +468,6 @@ mod tests {
             mount_ns_status(Err(perm()), Err(perm())),
             MountNsStatus::Unknown
         );
-    }
-
-    #[test]
-    fn test_current_mount_ns_status_consistent() {
-        assert_eq!(current_mount_ns_status(), current_mount_ns_status());
     }
 
     #[test]

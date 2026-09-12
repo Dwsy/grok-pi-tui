@@ -156,6 +156,10 @@ New-Item -ItemType Directory -Path $DownloadDir -Force | Out-Null
 New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 
 $Channel = if ($env:GROK_CHANNEL) { $env:GROK_CHANNEL } else { 'stable' }
+if ($Channel -cnotmatch '^(stable|alpha|enterprise)$') {
+    Write-Error "Invalid GROK_CHANNEL: '$Channel' (expected stable, alpha, or enterprise)"
+    exit 1
+}
 
 # Pick a working BaseUrl: try Cloudflare-fronted x.ai first, fall back to
 # direct GCS if it's unreachable. The probe doubles as the channel-pointer
@@ -244,8 +248,10 @@ try {
 
 $ConfigFile = Join-Path $GrokDir 'config.toml'
 $cliLines = @('installer = "internal"')
-if ($Channel -ne 'stable') {
-    $cliLines += "channel = `"$Channel`""
+if ($Channel -ceq 'alpha') {
+    $cliLines += 'channel = "alpha"'
+} elseif ($Channel -ceq 'enterprise') {
+    $cliLines += 'channel = "enterprise"'
 }
 
 if (-not (Test-Path $ConfigFile)) {
@@ -282,10 +288,22 @@ if (-not (Test-Path $ConfigFile)) {
 
 if ($env:GROK_DEPLOYMENT_KEY) {
     $ProxyUrl = if ($env:GROK_PROXY_URL) { $env:GROK_PROXY_URL } else { 'https://cli-chat-proxy.grok.com/v1' }
+    # Refuse cleartext / userinfo / empty-host proxies before attaching the key.
+    try {
+        $proxyUri = [Uri]$ProxyUrl
+    } catch {
+        Write-Error "GROK_PROXY_URL must be an https:// URL."
+        exit 1
+    }
+    if (-not $proxyUri.IsAbsoluteUri -or $proxyUri.Scheme -ne 'https' -or -not $proxyUri.Host -or $proxyUri.UserInfo) {
+        Write-Error "GROK_PROXY_URL must be an https:// URL."
+        exit 1
+    }
     Write-Host '  Fetching deployment config...' -ForegroundColor DarkGray
     try {
         $headers = @{ 'Authorization' = "Bearer $($env:GROK_DEPLOYMENT_KEY)" }
-        $deployResponse = Invoke-RestMethod -Uri "$ProxyUrl/deployment/config" -Headers $headers -UseBasicParsing
+        # IRM follows redirects and would resend the Bearer token.
+        $deployResponse = Invoke-RestMethod -Uri "$ProxyUrl/deployment/config" -Headers $headers -UseBasicParsing -MaximumRedirection 0
     } catch {
         Write-Host "  Warning: failed to fetch deployment config from $ProxyUrl/deployment/config" -ForegroundColor Yellow
         $deployResponse = $null

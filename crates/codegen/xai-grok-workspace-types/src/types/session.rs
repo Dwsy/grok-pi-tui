@@ -1,17 +1,13 @@
-//! Session-related shapes referenced from `SessionChunk` and
-//! `WorkspaceEvent`.
+//! Session-related shapes referenced from `SessionChunk` and `WorkspaceEvent`.
 //!
-//! TODO(workspace): align with the canonical session types when the
+//! TODO: align with the canonical session types when the
 //! session subsystem moves into the workspace crate. The fields below
 //! are minimal placeholders sufficient for the wire surface to compile.
 //!
-//! Notably absent: `SessionEndReason`, `PromptMode`, `StopReason`,
-//! `CancelReason`, and `SubagentStatus`. Those existed only to support
-//! the `SessionEvent` enum, which has been removed entirely -- session
-//! lifecycle, prompt boundaries, tool-call lifecycle, plan mode, and
-//! subagent state are all sampler-caused and flow back to the sampler
-//! via direct call returns or stream chunks. They never belonged on
-//! the EventBus.
+//! Notably absent: `SessionEndReason`, `PromptMode`, `StopReason`, `CancelReason`, and `SubagentStatus`.
+//! Those existed only to support the `SessionEvent` enum, which has been removed entirely.
+//! Session lifecycle, prompt boundaries, tool-call lifecycle, plan mode, and subagent state are all caused by the sampler.
+//! They flow back to the sampler via direct call returns or stream chunks and never belonged on the EventBus.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -19,11 +15,9 @@ use serde::{Deserialize, Serialize};
 use crate::identity::SessionId;
 use crate::types::config::IsolationMode;
 
-/// Snapshot of a session emitted by `SessionChunk::SessionInfo` (one
-/// per session in the response stream of `SessionLifecycleRequest::List`).
+/// Snapshot of a session emitted by `SessionChunk::SessionInfo` (one per session in the response stream of `SessionLifecycleRequest::List`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSessionInfo {
-    /// Session id.
     pub id: SessionId,
     /// Optional parent session id (set on subagents).
     #[serde(default)]
@@ -35,10 +29,7 @@ pub struct AgentSessionInfo {
     #[serde(default)]
     pub isolation: IsolationMode,
     /// Wall-clock creation time.
-    ///
-    /// Default is `DateTime::default()` (Unix epoch); we deliberately
-    /// avoid `Utc::now()` so that a missing field doesn't
-    /// silently impersonate the receiver's wall clock.
+    /// Default is Unix epoch, not `Utc::now()`, so a missing field does not impersonate the receiver's clock.
     #[serde(default)]
     pub created_at: DateTime<Utc>,
 }
@@ -62,10 +53,7 @@ pub struct RewindPoint {
     /// Prompt index (monotonically increasing per session).
     pub prompt_index: u64,
     /// Wall-clock time the prompt was started.
-    ///
-    /// Default is `DateTime::default()` (Unix epoch); we deliberately
-    /// avoid `Utc::now()` so that a missing field doesn't
-    /// silently impersonate the receiver's wall clock.
+    /// Default is Unix epoch, not `Utc::now()`, so a missing field does not impersonate the receiver's clock.
     #[serde(default)]
     pub at: DateTime<Utc>,
     /// Optional summary of the prompt that occurred at this index.
@@ -104,17 +92,9 @@ pub enum ServerStatus {
 }
 
 /// MCP server status reported by `WorkspaceEvent::McpServerStateChanged`.
-///
-/// TODO(workspace): split into its own enum if the MCP and LSP server
-/// state machines need to diverge. Currently both share the same shape
-/// (`Starting / Running / Stopped / Failed`), so [`ServerStatus`] is
-/// reused as a type alias to avoid duplicate maintenance. The trade-off
-/// is that the type system will not stop a caller from passing an
-/// `LspServerStatus` where an `McpServerStatus` is expected.
+/// TODO: alias of [`ServerStatus`] while MCP and LSP share a shape; the type system will not stop a cross-use.
 pub type McpServerStatus = ServerStatus;
 
 /// LSP server status reported by `WorkspaceEvent::LspServerStateChanged`.
-///
-/// TODO(workspace): see the `McpServerStatus` doc-comment for the
-/// alias-vs-distinct-enum trade-off.
+/// TODO: see `McpServerStatus` for the alias-vs-distinct-enum trade-off.
 pub type LspServerStatus = ServerStatus;

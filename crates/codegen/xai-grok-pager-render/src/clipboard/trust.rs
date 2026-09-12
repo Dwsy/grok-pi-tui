@@ -1,7 +1,6 @@
 //! Environment-based delivery and toast policy for clipboard writes.
 //!
-//! Writes still multi-fire every backend; this module classifies whether a
-//! successful leg is known to reach the destination named by the UI.
+//! A copy still writes to every backend at once; this module classifies whether a successful leg is known to reach the destination named by the UI.
 
 use crate::host::{DisplayServer, HostOs};
 use crate::terminal::TerminalName;
@@ -9,7 +8,7 @@ use crate::terminal::TerminalName;
 use super::{ClipboardFeedback, ClipboardWriteLegs};
 
 /// Grok's evidence that a clipboard write reached its intended destination.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, strum::IntoStaticStr)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, strum::AsRefStr, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum ClipboardDelivery {
     /// A successful write leg has a destination trusted by the environment policy.

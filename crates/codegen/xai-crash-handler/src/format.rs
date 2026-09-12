@@ -16,17 +16,8 @@ pub const MAX_FRAMES: usize = 64;
 pub const VERSION_STRING_LEN: usize = 32;
 
 /// Fixed header size (before the variable-length frames array).
-///
-/// Layout:
-/// - magic:        4 bytes
-/// - version:      1 byte
-/// - signal:       1 byte
-/// - si_code:      4 bytes (i32, little-endian)
-/// - si_addr:      8 bytes (u64, little-endian)
-/// - pid:          4 bytes (u32, little-endian)
-/// - timestamp:    8 bytes (u64, little-endian)
-/// - n_frames:     2 bytes (u16, little-endian)
-/// - app_version: 32 bytes (null-padded UTF-8)
+/// magic(4) version(1) signal(1) si_code(4) si_addr(8) pid(4) timestamp(8) n_frames(2) app_version(32).
+/// All multi-byte integers are little-endian.
 pub const HEADER_SIZE: usize = 4 + 1 + 1 + 4 + 8 + 4 + 8 + 2 + VERSION_STRING_LEN;
 
 /// Total maximum file size: header + 64 frames * 8 bytes each.
@@ -117,12 +108,9 @@ impl CrashBlob {
 pub mod writer {
     use super::{MAGIC, VERSION, VERSION_STRING_LEN};
 
-    /// Write the crash blob header into `buf`, returning the number of bytes written.
-    /// The caller must ensure `buf` is at least `HEADER_SIZE` bytes.
-    ///
+    /// Write the crash blob header into `buf`, returning bytes written. `buf` must be at least `HEADER_SIZE`.
     /// # Safety
-    ///
-    /// This is called from a signal handler. The buffer must be valid and large enough.
+    /// Called from a signal handler. The buffer must be valid and large enough.
     pub unsafe fn write_header(
         buf: &mut [u8],
         signal: u8,
@@ -151,11 +139,8 @@ pub mod writer {
         32 + VERSION_STRING_LEN
     }
 
-    /// Write a single frame pointer into `buf` at the given offset.
-    /// Returns the new offset.
-    ///
+    /// Write a single frame pointer into `buf` at the given offset. Returns the new offset.
     /// # Safety
-    ///
     /// The caller must ensure `buf[offset..offset+8]` is valid.
     pub unsafe fn write_frame(buf: &mut [u8], offset: usize, addr: usize) -> usize {
         buf[offset..offset + 8].copy_from_slice(&(addr as u64).to_le_bytes());

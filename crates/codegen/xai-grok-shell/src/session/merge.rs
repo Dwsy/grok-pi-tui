@@ -1,12 +1,11 @@
-//! Merged session listing — combines local and remote session data.
+//! Merged session listing: combines local and remote session data.
 //!
-//! Used by both the ACP `x.ai/session/list` handler and the `grok sessions`
-//! CLI command. Deduplicates by session ID (remote wins), filters local
-//! results by query, and sorts by the same key the picker UI displays
-//! (`last_active_at` falling back to `updated_at`) descending.
+//! Used by both the ACP `x.ai/session/list` handler and the `grok sessions` CLI command.
+//! Deduplicates by session ID (remote wins) and filters local results by query.
+//! Sorts by the same key the picker UI displays (`last_active_at` falling back to `updated_at`) descending.
 
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -23,7 +22,6 @@ pub(crate) fn over_fetch(limit: usize) -> usize {
     (limit * 3).max(100)
 }
 
-/// Unified session entry returned by the merge.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergedSession {
@@ -59,19 +57,24 @@ pub struct MergedSession {
     /// Per-turn dashboard summary from `summary.json` (local sessions only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_turn_summary: Option<String>,
-    /// Latest session recap from `summary.json` (local sessions only). Distinct
-    /// from `last_turn_summary`; shown on `/resume` / `/session-info`.
+    /// Latest session recap from `summary.json` (local sessions only).
+    /// Distinct from `last_turn_summary`; shown on `/resume` / `/session-info`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_recap: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_kind: Option<String>,
 }
-/// Inputs to [`merge`]. The registry page is cwd-independent, so a widen reuses
-/// it without a second RPC.
+
+use crate::session::visibility::HeadlessPolicy;
+
+/// Inputs to [`merge`].
+/// The registry page is cwd-independent, so a widen reuses it without a second RPC.
 pub(crate) struct SessionLanes {
     pub local: Vec<Summary>,
     pub remote: Vec<SessionRecord>,
     pub repo_urls: Vec<String>,
+    /// The visibility policy dropped a local row proven relevant to this cwd/repo, so an empty page must not widen past it.
+    pub rows_dropped_by_policy: bool,
 }
 
 /// Which directories a cwd-scoped listing draws from.
@@ -79,16 +82,14 @@ pub(crate) struct SessionLanes {
 pub enum CwdScope {
     /// The requested directory only.
     Only,
-    /// Sibling worktrees of the same repo, plus remote sessions sharing its
-    /// git remote.
+    /// Sibling worktrees of the same repo, plus remote sessions sharing its git remote.
     #[default]
     WithSiblings,
     /// `WithSiblings`, widening past the cwd when it holds no messaged session.
     RelaxIfEmpty,
 }
 
-/// Spellings a session may be stored under, since clients supply their own
-/// path: as given and canonicalized, each without a trailing separator.
+/// Spellings a session may be stored under, since clients supply their own path: as given and canonicalized, each without a trailing separator.
 pub(crate) fn cwd_match_keys(cwd: &str) -> Vec<String> {
     let trimmed = cwd.trim_end_matches('/');
     let mut keys = vec![trimmed.to_owned()];
@@ -101,25 +102,25 @@ pub(crate) fn cwd_match_keys(cwd: &str) -> Vec<String> {
     keys
 }
 
-/// Registry rows recorded under any other directory.
 pub(crate) fn retain_matching_cwd(remote: &mut Vec<SessionRecord>, keys: &[String]) {
     remote.retain(|r| keys.iter().any(|k| r.cwd.trim_end_matches('/') == k));
 }
 
-/// Fetch sessions from both local storage and the remote registry,
-/// merge, dedup, and return a sorted list.
+/// Fetch sessions from both local storage and the remote registry, merge, dedup, and return a sorted list.
 pub async fn fetch_merged(
     client: Option<&SessionRegistryClient>,
     cwd: Option<&str>,
     scope: CwdScope,
     query: Option<&str>,
     limit: usize,
+    headless: HeadlessPolicy,
 ) -> Vec<MergedSession> {
     let SessionLanes {
         local,
         remote,
         repo_urls,
-    } = fetch_lanes(client, cwd, scope, query, limit).await;
+        ..
+    } = fetch_lanes(client, cwd, scope, query, limit, headless).await;
     merge(remote, local, query, &repo_urls, limit)
 }
 
@@ -148,6 +149,7 @@ pub(crate) async fn fetch_lanes(
     scope: CwdScope,
     query: Option<&str>,
     limit: usize,
+    headless: HeadlessPolicy,
 ) -> SessionLanes {
     let cwd_owned = cwd.map(String::from);
     // `merge` truncates before any caller-side filter runs.
@@ -173,7 +175,7 @@ pub(crate) async fn fetch_lanes(
         };
         let mut all = Vec::new();
         if cwds.is_empty() {
-            // No CWD or worktree lookup failed — list all
+            // No CWD or worktree lookup failed: list all
             if let Ok(v) = list_summaries(cwd_owned.as_deref()).await {
                 all.extend(v);
             }
@@ -191,8 +193,7 @@ pub(crate) async fn fetch_lanes(
         let Some(client) = client else {
             return Vec::new();
         };
-        // Fetch more than the user-facing limit from the remote source to
-        // avoid premature truncation before merging with local results.
+        // Fetch more than the user-facing limit from the remote source to avoid premature truncation before merging with local results
         let remote_limit = over_fetch(limit) as i64;
         tokio::time::timeout(REMOTE_TIMEOUT, client.search(query, remote_limit))
             .await
@@ -219,8 +220,8 @@ pub(crate) async fn fetch_lanes(
     };
 
     let (mut local, mut remote, repo_urls) = tokio::join!(local_fut, remote_fut, repo_urls_fut);
-    // Every narrowing happens before `merge`, which truncates, and before the
-    // caller paginates: a row dropped later would leave a hole in a sized page.
+    // Every narrowing happens before `merge`, which truncates, and before the caller paginates
+    // A row dropped later would leave a hole in a sized page
     if matches!(scope, CwdScope::Only) {
         if exact_keys.is_empty() {
             remote.retain(|r| Path::new(&r.cwd).is_absolute());
@@ -229,9 +230,8 @@ pub(crate) async fn fetch_lanes(
         }
         local.retain(|s| Path::new(&s.info.cwd).is_absolute());
     }
-    // `grok --resume <uuid>` resolves across every cwd. `/resume` search was
-    // cwd-scoped, so pasting that same id showed nothing. Promote an exact
-    // UUID hit from any local directory into the lane before merge filters.
+    // `grok --resume <uuid>` resolves across every cwd
+    // Promote an exact UUID hit from any local directory into the lane before merge filters
     if let Some(id) = query
         .map(str::trim)
         .filter(|q| uuid::Uuid::try_parse(q).is_ok())
@@ -246,19 +246,20 @@ pub(crate) async fn fetch_lanes(
             local.push(summary);
         }
     }
+    // This runs after the uuid promotion so a pasted headless id still obeys the page's policy
+    let rows_dropped_by_policy =
+        crate::session::visibility::retain_session_lanes(&mut local, &mut remote, headless);
     SessionLanes {
         local,
         remote,
         repo_urls,
+        rows_dropped_by_policy,
     }
 }
 
-/// Merge remote and local results. Local entries are inserted first so
-/// remote entries win on collision (same session_id). Local results are
-/// optionally filtered by `query` (case-insensitive substring on summary,
-/// display title, and session ID). Remote results are filtered by
-/// normalized repo URL when `local_repo_urls` is non-empty. Results are
-/// sorted by [`effective_sort_time`] descending and truncated to `limit`.
+/// Local results are optionally filtered by `query` (case-insensitive substring on summary, display title, and session ID).
+/// Remote results are filtered by normalized repo URL when `local_repo_urls` is non-empty.
+/// Results are sorted by [`effective_sort_time`] descending and truncated to `limit`.
 pub fn merge(
     remote: Vec<SessionRecord>,
     local: Vec<Summary>,
@@ -286,9 +287,6 @@ pub fn merge(
             .and_then(|p| std::path::Path::new(p).file_name())
             .and_then(|n| n.to_str())
             .map(String::from);
-        let worktree_label = s
-            .worktree_label
-            .or_else(|| crate::session::worktree::lookup_worktree_label(&s.info.cwd));
         by_id.insert(
             id.clone(),
             MergedSession {
@@ -305,7 +303,7 @@ pub fn merge(
                 last_active_at: s.last_active_at.map(|t| t.to_rfc3339()),
                 branch: s.head_branch,
                 repo_name,
-                worktree_label,
+                worktree_label: s.worktree_label,
                 git_root_dir: s.git_root_dir,
                 git_remotes: s.git_remotes,
                 source_workspace_dir: s.source_workspace_dir,
@@ -317,9 +315,8 @@ pub fn merge(
     }
 
     for r in remote {
-        // Filter remote sessions by normalized repo URL — transport-agnostic
-        // (SSH and HTTPS for the same repo match). CWD is irrelevant for
-        // remotes since paths differ across machines.
+        // Filter remote sessions by normalized repo URL (SSH and HTTPS for the same repo match)
+        // CWD is irrelevant for remotes since paths differ across machines
         if !local_repo_urls.is_empty() {
             let matches = r.repo_remote_url.as_deref().is_some_and(|remote_url| {
                 normalize_repo_url(remote_url).is_some_and(|n| local_repo_urls.contains(&n))
@@ -328,8 +325,7 @@ pub fn merge(
                 continue;
             }
         }
-        // A local row (if any) supplies the workspace-derived fields (branch,
-        // repo, worktree, git); `default()` covers the remote-only case.
+        // A local row (if any) supplies the workspace-derived fields (branch, repo, worktree, git); `default()` covers the remote-only case
         let (source, local) = match by_id.remove(&r.session_id) {
             Some(ex) => ("both", ex),
             None => ("remote", MergedSession::default()),
@@ -377,11 +373,9 @@ pub fn merge(
     }
 
     let mut merged: Vec<MergedSession> = by_id.into_values().collect();
-    // Sort newest-first by the same key the picker UI shows, so the visible
-    // "time ago" column is monotonic with the list order. `sort_by_cached_key`
-    // parses each timestamp once instead of on every comparison. Sessions with
-    // an unparseable timestamp sort to the bottom; equal times tie-break on
-    // `session_id` ascending.
+    // Sort newest-first by the same key the picker UI shows, so the visible "time ago" column is monotonic with the list order
+    // `sort_by_cached_key` parses each timestamp once instead of on every comparison
+    // Sessions with an unparseable timestamp sort to the bottom; equal times tie-break on `session_id` ascending
     merged.sort_by_cached_key(|s| (Reverse(effective_sort_time(s)), s.session_id.clone()));
     // Dedup empty sessions BEFORE truncating so the final list has `limit` entries.
     dedup_empty_sessions(&mut merged);
@@ -389,14 +383,9 @@ pub fn merge(
     merged
 }
 
-/// Effective timestamp used to order the merged session list.
-///
-/// Mirrors the key the session picker UI displays — `last_active_at` with a
-/// fallback to `updated_at` — so the rendered "time ago" column stays in sync
-/// with the sort order. The UI treats an unparseable `last_active_at` as
-/// absent and falls back to `updated_at` (`session_picker.rs`), so this does
-/// the same: it only returns `None` (sorting the entry to the bottom) when
-/// neither timestamp parses.
+/// Mirrors the key the session picker UI displays (`last_active_at`, falling back to `updated_at`) so the "time ago" column matches the sort order.
+/// Like the UI (`session_picker.rs`), an unparseable `last_active_at` counts as absent.
+/// `None` means neither timestamp parses; that entry sorts to the bottom.
 fn effective_sort_time(s: &MergedSession) -> Option<chrono::DateTime<chrono::FixedOffset>> {
     s.last_active_at
         .as_deref()
@@ -404,30 +393,25 @@ fn effective_sort_time(s: &MergedSession) -> Option<chrono::DateTime<chrono::Fix
         .or_else(|| chrono::DateTime::parse_from_rfc3339(&s.updated_at).ok())
 }
 
-/// For each cwd, keep only the most recent session with 0 messages.
-/// Relies on the caller having already sorted newest-first (see `merge`): the
-/// first empty session seen per cwd is retained and later (older) ones dropped.
+/// Drop unused optimistic-home husks (TUI open, never sent). Named empties
+/// (`/rename` before send) and explicit worktree/fork sessions stay visible.
 fn dedup_empty_sessions(sessions: &mut Vec<MergedSession>) {
-    let mut seen_empty_cwds: HashSet<String> = HashSet::new();
-    sessions.retain(|s| {
-        if s.num_messages == 0 {
-            let key = normalize_cwd(&s.cwd);
-            seen_empty_cwds.insert(key)
-        } else {
-            true
-        }
-    });
+    sessions.retain(|s| !is_unnamed_empty_session(s));
 }
 
-/// Normalize a cwd string for dedup comparison.
-/// Strips trailing slashes and resolves `/./` sequences.
-fn normalize_cwd(cwd: &str) -> String {
-    let trimmed = cwd.trim_end_matches('/');
-    if trimmed.is_empty() {
-        "/".to_owned()
-    } else {
-        trimmed.replace("/./", "/")
+fn is_unnamed_empty_session(s: &MergedSession) -> bool {
+    // Remote-only rows can have stale zero counts; only drop local husks.
+    if s.source == "remote" || s.source == "both" {
+        return false;
     }
+    if matches!(s.session_kind.as_deref(), Some("worktree" | "fork"))
+        || s.worktree_label
+            .as_deref()
+            .is_some_and(|label| !label.is_empty())
+    {
+        return false;
+    }
+    s.num_messages == 0 && s.summary.trim().is_empty()
 }
 
 /// Convert a `MergedSession` to a `SessionRecord` for CLI display compatibility.
@@ -466,6 +450,8 @@ mod tests {
                 id: acp::SessionId::new(id),
                 cwd: "/test".into(),
             },
+            agent_id: None,
+            attempt_id: None,
             cwd_generation: 0,
             previous_cwd: None,
             pending_cwd_switch_reminder: None,
@@ -553,6 +539,83 @@ mod tests {
         }
     }
 
+    fn headless_lanes() -> (Vec<Summary>, Vec<SessionRecord>) {
+        let mut headless = make_summary("h1", "one-shot", "2026-03-01T00:00:00Z");
+        headless.session_kind = Some("headless".into());
+        let local = vec![
+            make_summary("s1", "interactive", "2026-03-01T00:00:00Z"),
+            headless,
+        ];
+        let remote = vec![
+            make_remote("h1", "one-shot", "2026-03-01T00:00:00Z"),
+            make_remote("r1", "remote legacy", "2026-03-01T00:00:00Z"),
+        ];
+        (local, remote)
+    }
+
+    #[test]
+    fn headless_exclude_drops_local_row_and_its_remote_twin() {
+        let (mut local, mut remote) = headless_lanes();
+        let dropped = crate::session::visibility::retain_session_lanes(
+            &mut local,
+            &mut remote,
+            HeadlessPolicy::Exclude,
+        );
+        assert!(dropped, "a dropped local row must be reported");
+        let local_ids: Vec<&str> = local.iter().map(|s| s.info.id.0.as_ref()).collect();
+        let remote_ids: Vec<&str> = remote.iter().map(|r| r.session_id.as_str()).collect();
+        assert_eq!(local_ids, ["s1"]);
+        assert_eq!(
+            remote_ids,
+            ["r1"],
+            "legacy remote-only rows preserve their pre-migration Exclude behavior"
+        );
+    }
+
+    #[test]
+    fn headless_only_keeps_only_headless_rows() {
+        let (mut local, mut remote) = headless_lanes();
+        crate::session::visibility::retain_session_lanes(
+            &mut local,
+            &mut remote,
+            HeadlessPolicy::Only,
+        );
+        let local_ids: Vec<&str> = local.iter().map(|s| s.info.id.0.as_ref()).collect();
+        let remote_ids: Vec<&str> = remote.iter().map(|r| r.session_id.as_str()).collect();
+        assert_eq!(local_ids, ["h1"]);
+        assert_eq!(remote_ids, ["h1"], "the local twin supplies its kind");
+    }
+
+    #[test]
+    fn unrelated_remote_only_drop_does_not_block_relax() {
+        let mut local = Vec::new();
+        let mut remote = vec![make_remote(
+            "legacy",
+            "remote legacy",
+            "2026-03-01T00:00:00Z",
+        )];
+        let dropped = crate::session::visibility::retain_session_lanes(
+            &mut local,
+            &mut remote,
+            HeadlessPolicy::Only,
+        );
+        assert!(!dropped);
+        assert!(remote.is_empty());
+    }
+
+    #[test]
+    fn headless_include_keeps_everything() {
+        let (mut local, mut remote) = headless_lanes();
+        let dropped = crate::session::visibility::retain_session_lanes(
+            &mut local,
+            &mut remote,
+            HeadlessPolicy::Include,
+        );
+        assert!(!dropped);
+        assert_eq!(local.len(), 2);
+        assert_eq!(remote.len(), 2);
+    }
+
     #[test]
     fn remote_overwrites_local_on_same_id() {
         let local = vec![make_summary("s1", "local title", "2026-03-01T00:00:00Z")];
@@ -565,11 +628,9 @@ mod tests {
 
     #[test]
     fn stale_remote_turn_counter_does_not_demote_local_sessions_to_empty() {
-        // The registry's last_turn_number is updated fire-and-forget and can
-        // stay at 0 for sessions with real local turns. The merged row must
-        // keep the local num_messages, or dedup_empty_sessions collapses every
-        // such same-cwd session into a single "empty draft" row — hiding real
-        // sessions (and their unread indicators) from every list surface.
+        // The registry's last_turn_number is updated fire-and-forget and can stay at 0 for sessions with real local turns
+        // Otherwise dedup_empty_sessions collapses every such same-cwd session into a single "empty draft" row
+        // That hides real sessions (and their unread indicators) from every list
         let local = vec![
             make_summary("s1", "first real session", "2026-03-01T00:00:00Z"),
             make_summary("s2", "second real session", "2026-03-01T01:00:00Z"),
@@ -618,8 +679,8 @@ mod tests {
         assert_eq!(merged[0].branch.as_deref(), Some("feature/branch"));
         assert_eq!(merged[0].repo_name.as_deref(), Some("repo"));
         assert_eq!(merged[0].worktree_label.as_deref(), Some("my-label"));
-        // Local-only git enrichment is inherited onto the merged "both" row —
-        // this is the path SSH/remote agents rely on for repo grouping.
+        // Local-only git enrichment is inherited onto the merged "both" row
+        // This is the path SSH/remote agents rely on for repo grouping
         assert_eq!(merged[0].git_root_dir.as_deref(), Some("/home/user/repo"));
         assert_eq!(
             merged[0].git_remotes,
@@ -640,9 +701,7 @@ mod tests {
         assert_eq!(merged[0].source, "local");
     }
 
-    /// `last_turn_summary` rides the session-list wire from local
-    /// `summary.json`, both for local-only rows and inherited onto a merged
-    /// "both" row (the registry has no copy of it).
+    /// `last_turn_summary` is carried into the session list from local `summary.json` (the registry has no copy of it).
     #[test]
     fn last_turn_summary_carried_from_local_summary() {
         let mut s = make_summary("s1", "title", "2026-03-01T00:00:00Z");
@@ -664,8 +723,6 @@ mod tests {
         );
     }
 
-    /// `last_recap` rides the session-list wire from local `summary.json`,
-    /// both for local-only rows and inherited onto a merged "both" row.
     #[test]
     fn last_recap_carried_from_local_summary() {
         let mut s = make_summary("s1", "title", "2026-03-01T00:00:00Z");
@@ -702,12 +759,8 @@ mod tests {
 
     #[test]
     fn sorted_by_last_active_at_over_updated_at() {
-        // The picker displays `last_active_at` (falling back to `updated_at`),
-        // and the sort must match that key. A session with an OLDER
-        // `updated_at` but NEWER `last_active_at` must sort above one with a
-        // newer `updated_at` but older `last_active_at`. This guards against
-        // the regression where `updated_at`-only sorting made the visible
-        // "time ago" column look unordered.
+        // The picker displays `last_active_at` (falling back to `updated_at`), and the sort must match that key
+        // This guards against the regression where `updated_at`-only sorting made the visible "time ago" column look unordered
         let local = vec![
             make_summary_with_last_active(
                 "stale_activity",
@@ -729,9 +782,7 @@ mod tests {
 
     #[test]
     fn sort_falls_back_to_updated_at_when_last_active_absent() {
-        // When `last_active_at` is None, ordering uses `updated_at`, matching
-        // the UI fallback. Mixed presence must still order purely by the
-        // effective key.
+        // When `last_active_at` is None, ordering uses `updated_at`, matching the UI fallback
         let local = vec![
             make_summary_with_last_active("a", "a", "2026-01-01T00:00:00Z", None),
             make_summary_with_last_active(
@@ -751,23 +802,19 @@ mod tests {
 
     #[test]
     fn unparseable_last_active_falls_back_to_updated_at() {
-        // A present-but-unparseable `last_active_at` must not sink the session;
-        // the UI ignores a bad value and shows `updated_at`, so the sort must
-        // too. Remote records carry `last_active_at`/`updated_at` as raw
-        // strings, so this path is reachable.
+        // The UI ignores a bad value and shows `updated_at`, so the sort must too
+        // Remote records carry `last_active_at`/`updated_at` as raw strings, so this path is reachable
         let mut bad_active = make_remote("bad_active", "b", "2026-07-01T00:00:00Z");
         bad_active.last_active_at = Some("garbage".into());
         let good = make_remote("good", "g", "2026-06-01T00:00:00Z");
         let merged = merge(vec![bad_active, good], Vec::new(), None, &[], 20);
-        // bad_active falls back to updated_at 2026-07 (newest) → sorts first.
+        // bad_active falls back to updated_at 2026-07 (newest), so it sorts first
         assert_eq!(merged[0].session_id, "bad_active");
         assert_eq!(merged[1].session_id, "good");
     }
 
     #[test]
     fn unparseable_timestamps_sort_to_bottom() {
-        // When neither timestamp parses, the entry has no effective sort time
-        // and sinks below sessions with valid timestamps.
         let good = make_remote("good", "g", "2026-05-01T00:00:00Z");
         let bad = make_remote("bad", "b", "not-a-timestamp");
         let merged = merge(vec![bad, good], Vec::new(), None, &[], 20);
@@ -1171,7 +1218,7 @@ mod tests {
             None,
         )];
         let merged = merge(Vec::new(), local, None, &[], 20);
-        // On Unix, Path::file_name("/x/y/") returns Some("y"), so trailing slashes are handled correctly.
+        // On Unix, Path::file_name("/x/y/") returns Some("y")
         assert_eq!(merged[0].repo_name.as_deref(), Some("repo"));
     }
 
@@ -1259,8 +1306,7 @@ mod tests {
                 None,
             ),
         ];
-        // Query filters on display_title (which prefers generated_title), session_summary, and
-        // session_id. "hi" matches "hi there" but not "kubernetes".
+        // Query filters on display_title (which prefers generated_title), session_summary, and session_id
         let merged = merge(Vec::new(), local, Some("hi"), &[], 20);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].session_id, "s1");
@@ -1278,7 +1324,7 @@ mod tests {
             None,
             None,
         )];
-        // "kubernetes" appears in generated_title — query should match via display_title()
+        // "kubernetes" appears in generated_title, so the query matches via display_title()
         let merged = merge(Vec::new(), local, Some("kubernetes"), &[], 20);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].summary, "Kubernetes deployment fix");
@@ -1312,37 +1358,59 @@ mod tests {
     }
 
     #[test]
-    fn dedup_empty_same_cwd_keeps_newest() {
+    fn dedup_empty_drops_unnamed_empty_sessions() {
         let mut sessions = vec![
             make_merged("newest", "/repo", "2026-04-01T00:00:00Z", 0),
             make_merged("middle", "/repo", "2026-03-01T00:00:00Z", 0),
             make_merged("oldest", "/repo", "2026-02-01T00:00:00Z", 0),
         ];
         dedup_empty_sessions(&mut sessions);
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].session_id, "newest");
+        assert!(sessions.is_empty());
     }
 
     #[test]
-    fn dedup_empty_preserves_nonempty_same_cwd() {
+    fn dedup_empty_preserves_nonempty_and_drops_unnamed_empty() {
         let mut sessions = vec![
             make_merged("nonempty", "/repo", "2026-04-01T00:00:00Z", 5),
             make_merged("empty", "/repo", "2026-03-01T00:00:00Z", 0),
         ];
         dedup_empty_sessions(&mut sessions);
-        assert_eq!(sessions.len(), 2);
-        assert!(sessions.iter().any(|s| s.session_id == "nonempty"));
-        assert!(sessions.iter().any(|s| s.session_id == "empty"));
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "nonempty");
     }
 
     #[test]
-    fn dedup_empty_different_cwds_keeps_both() {
+    fn dedup_empty_keeps_unnamed_empty_worktree() {
+        let mut wt = make_merged("wt", "/repo", "2026-04-01T00:00:00Z", 0);
+        wt.session_kind = Some("worktree".into());
+        wt.worktree_label = Some("fix-bug".into());
+        let mut sessions = vec![wt, make_merged("home", "/repo", "2026-03-01T00:00:00Z", 0)];
+        dedup_empty_sessions(&mut sessions);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "wt");
+    }
+
+    #[test]
+    fn dedup_empty_keeps_named_empty_session() {
+        let mut named = make_merged("renamed", "/repo", "2026-04-01T00:00:00Z", 0);
+        named.summary = "my title".into();
+        let mut sessions = vec![
+            named,
+            make_merged("blank", "/repo", "2026-03-01T00:00:00Z", 0),
+        ];
+        dedup_empty_sessions(&mut sessions);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "renamed");
+    }
+
+    #[test]
+    fn dedup_empty_different_cwds_drops_unnamed() {
         let mut sessions = vec![
             make_merged("e1", "/repo-a", "2026-04-01T00:00:00Z", 0),
             make_merged("e2", "/repo-b", "2026-03-01T00:00:00Z", 0),
         ];
         dedup_empty_sessions(&mut sessions);
-        assert_eq!(sessions.len(), 2);
+        assert!(sessions.is_empty());
     }
 
     #[test]
@@ -1353,37 +1421,31 @@ mod tests {
     }
 
     #[test]
-    fn dedup_empty_multi_cwd_mixed() {
-        // 2 cwds, each with 2 empty + 1 non-empty session.
+    fn dedup_empty_multi_cwd_keeps_only_nonempty() {
         let mut sessions = vec![
-            // /repo-a: non-empty (newest), empty, empty
             make_merged("a-nonempty", "/repo-a", "2026-04-03T00:00:00Z", 3),
             make_merged("a-empty1", "/repo-a", "2026-04-02T00:00:00Z", 0),
             make_merged("a-empty2", "/repo-a", "2026-04-01T00:00:00Z", 0),
-            // /repo-b: empty (newest), non-empty, empty
             make_merged("b-empty1", "/repo-b", "2026-03-03T00:00:00Z", 0),
             make_merged("b-nonempty", "/repo-b", "2026-03-02T00:00:00Z", 7),
             make_merged("b-empty2", "/repo-b", "2026-03-01T00:00:00Z", 0),
         ];
         dedup_empty_sessions(&mut sessions);
-        // Non-empty sessions always survive.
         assert!(sessions.iter().any(|s| s.session_id == "a-nonempty"));
         assert!(sessions.iter().any(|s| s.session_id == "b-nonempty"));
-        // Exactly 1 empty per cwd survives (the first/newest one).
-        assert!(sessions.iter().any(|s| s.session_id == "a-empty1"));
-        assert!(sessions.iter().any(|s| s.session_id == "b-empty1"));
-        // The older duplicate empties are removed.
-        assert!(!sessions.iter().any(|s| s.session_id == "a-empty2"));
-        assert!(!sessions.iter().any(|s| s.session_id == "b-empty2"));
-        assert_eq!(sessions.len(), 4);
+        assert!(
+            !sessions
+                .iter()
+                .any(|s| s.session_id.ends_with("empty1") || s.session_id.ends_with("empty2"))
+        );
+        assert_eq!(sessions.len(), 2);
     }
 
     // ── limit applied after merge tests ─────────────────────────────────
 
     #[test]
     fn limit_applied_after_merge_not_per_source() {
-        // 5 local + 5 remote sessions, limit = 4.
-        // All 10 should be merged, then truncated to 4 by updated_at.
+        // 5 local and 5 remote sessions, limit 4
         let local: Vec<Summary> = (0..5)
             .map(|i| {
                 make_summary(
@@ -1404,15 +1466,13 @@ mod tests {
             .collect();
         let merged = merge(remote, local, None, &[], 4);
         assert_eq!(merged.len(), 4);
-        // All top-4 should be remote (2026-02-xx > 2026-01-xx)
+        // The remote timestamps (2026-02-xx) are newer than the local ones (2026-01-xx), so all four survivors are remote
         assert!(merged.iter().all(|s| s.session_id.starts_with("remote-")));
     }
 
     #[test]
     fn limit_preserves_sessions_from_multiple_cwds() {
-        // Simulates the scenario where sessions come from multiple cwds.
-        // Even though each cwd has fewer sessions than the limit, the total
-        // across cwds may exceed it — limit should be applied to the merged set.
+        // Even though each cwd has fewer sessions than the limit, the total across cwds may exceed it; the limit is applied to the merged set
         let mut local = Vec::new();
         for cwd_idx in 0..3 {
             for sess_idx in 0..3 {
@@ -1425,7 +1485,7 @@ mod tests {
                 local.push(s);
             }
         }
-        // 9 local sessions across 3 cwds, limit = 5
+        // 9 local sessions across 3 cwds, limit 5
         let merged = merge(Vec::new(), local, None, &[], 5);
         assert_eq!(merged.len(), 5);
     }

@@ -31,10 +31,7 @@ pub const MAX_WORKER_THREADS: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 /// Maximum Tokio blocking threads per runtime. Tokio's default is 512.
 pub const MAX_BLOCKING_THREADS: usize = 16;
 
-/// Never reap idle blocking threads.
-///
-/// Tokio 1.52's condvar uses `Instant::now().checked_add(timeout)`; overflow
-/// is `None` (wait forever).
+/// Tokio 1.52's condvar uses `Instant::now().checked_add(timeout)`; overflow is `None` (wait forever).
 pub const BLOCKING_THREAD_KEEP_ALIVE: Duration = Duration::MAX;
 
 const PREWARM_THREAD_WAIT: Duration = Duration::from_secs(5);
@@ -56,14 +53,8 @@ pub fn apply_blocking_pool(builder: &mut tokio::runtime::Builder) -> &mut tokio:
         .thread_keep_alive(BLOCKING_THREAD_KEEP_ALIVE)
 }
 
-/// Apply the blocking-pool policy, build, and pre-warm the full pool.
-///
-/// Process-lifetime runtimes only. Per-session runtimes should
-/// [`apply_blocking_pool`] — a 16-wide pre-warm races `pthread_create`
-/// across a subagent wave.
-///
-/// # Errors
-///
+/// Apply the blocking-pool policy, build, and pre-warm the full pool. Process-lifetime runtimes only. Per-session
+/// runtimes should [`apply_blocking_pool`] — a 16-wide pre-warm races `pthread_create` across a subagent wave.
 /// `Builder::build` failed, or pre-warm timed out waiting for workers.
 pub fn build_with_blocking_pool(
     builder: &mut tokio::runtime::Builder,
@@ -78,12 +69,8 @@ pub fn prewarm_blocking_pool(handle: &tokio::runtime::Handle) -> io::Result<()> 
     prewarm_blocking_pool_n(handle, MAX_BLOCKING_THREADS, PREWARM_THREAD_WAIT)
 }
 
-/// Create `n` overlapping blocking workers, waiting at most `wait` in total.
-///
-/// # Errors
-///
-/// Timed out before `n` workers started. Already-started workers are released
-/// so `Runtime` drop does not hang.
+/// Create `n` overlapping blocking workers, waiting at most `wait` in total. Timed out before `n` workers started.
+/// Already-started workers are released so `Runtime` drop does not hang.
 pub fn prewarm_blocking_pool_n(
     handle: &tokio::runtime::Handle,
     n: usize,
@@ -95,10 +82,8 @@ pub fn prewarm_blocking_pool_n(
     Ok(())
 }
 
-/// Park `n` overlapping `spawn_blocking` workers until [`release_parked_workers`].
-///
-/// `wait` overflow (`checked_add` is `None`) waits forever. On timeout,
-/// already-started workers are released so `Runtime` drop does not hang.
+/// Park `n` overlapping `spawn_blocking` workers until [`release_parked_workers`]. `wait` overflow (`checked_add` is
+/// `None`) waits forever. On timeout, already-started workers are released so `Runtime` drop does not hang.
 fn park_blocking_workers(
     handle: &tokio::runtime::Handle,
     n: usize,

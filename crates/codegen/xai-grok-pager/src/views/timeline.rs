@@ -11,16 +11,25 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Widget};
 use crate::theme::Theme;
 
 pub const RAIL_WIDTH: u16 = 2;
+
+/// Terminals narrower than this hide the rail (the transcript needs the columns more than the navigator).
+
 pub const MIN_TERMINAL_WIDTH: u16 = 60;
 pub const MIN_MARKERS: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimelineRail {
     pub rect: Rect,
+    /// Turn indices currently shown as ticks (windowed around the active turn when the conversation has more turns than rows).
     pub window: Range<usize>,
     pub ticks_y: u16,
     pub active: Option<usize>,
+    /// The ▲ target: the nearest turn strictly above the viewport top
+    /// ([`ScrollbackState::turn_above_viewport_top`]), NOT `active - 1`.
     pub up_target: Option<usize>,
+    /// The ▼ target: the nearest turn below the viewport top
+    /// ([`ScrollbackState::turn_below_viewport_top`]). Both go through `jump_to_turn`, which
+    /// over-scrolls trailing turns rather than dimming.
     pub down_target: Option<usize>,
     pub up_y: u16,
     pub down_y: u16,
@@ -58,6 +67,8 @@ pub fn rail_width(
     }
 }
 
+/// Compute rail geometry for this frame, or `None` when the rail should not render.
+
 pub fn compute_rail(
     scrollback_area: Rect,
     rail_x: u16,
@@ -89,6 +100,7 @@ pub fn compute_rail(
         start..start + max_ticks
     };
     let top = scrollback_area.y + ((scrollback_area.height as usize - window.len() - 2) / 2) as u16;
+
     let ticks_y = top + 1;
     Some(TimelineRail {
         rect: Rect::new(
@@ -106,6 +118,9 @@ pub fn compute_rail(
         down_y: ticks_y + window.len() as u16,
     })
 }
+
+/// Display and action therefore cannot disagree; `None` means an end stop (dim chevron, click is a
+/// no-op). The chevron therefore matches the click instead of doing nothing.
 
 pub fn chevron_target(rail: &TimelineRail, hit: TimelineHit) -> Option<usize> {
     match hit {
@@ -219,6 +234,9 @@ pub fn render_tick_hover_popup(
     }
 }
 
+/// Render the rail: chevrons and one tick row per windowed turn.
+/// The rail draws directly on the scrollback background; a dark track strip read as an awkward empty band, especially with few ticks.
+
 pub fn render_rail(
     buf: &mut Buffer,
     rail: &TimelineRail,
@@ -230,8 +248,10 @@ pub fn render_rail(
     let normal = Style::default().fg(theme.gray);
     let bright = Style::default().fg(theme.text_primary);
     let compaction = Style::default().fg(theme.accent_assistant);
-    let up_enabled = rail.up_target.is_some();
-    let down_enabled = rail.down_target.is_some();
+    // Chevron dim state derives from the same function the click handler uses.
+    let up_enabled = chevron_target(rail, TimelineHit::Up).is_some();
+    let down_enabled = chevron_target(rail, TimelineHit::Down).is_some();
+
     let up_style = if hovered == Some(TimelineHit::Up) && up_enabled {
         bright
     } else if up_enabled {
@@ -284,6 +304,8 @@ pub fn render_rail(
         } else if is_hovered {
             (crate::glyphs::timeline_tick_hover(), bright)
         } else {
+            // Short dim tick in the rightmost cell: a pad space precomposed with the light horizontal glyph
+
             (" \u{2500}", dim)
         };
         buf.set_span(rail.rect.x, y, &Span::styled(text, style), RAIL_WIDTH);
@@ -333,5 +355,138 @@ mod tests {
             buf[(1, 1)].symbol(),
             "compaction and prompt markers stay distinct without color"
         );
+    }
+    #[test]
+    fn overflow_windows_around_active() {
+        // 50 turns, 18 tick rows (20 - 2 chevrons).
+        let rail = rail(50, Some(25)).unwrap();
+        assert_eq!(rail.window.len(), 18);
+        assert!(rail.window.contains(&25));
+        // Window is roughly centered on the active turn, and tick rows map to window-relative turn indices
+        assert_eq!(rail.window.start, 25 - 9);
+
+        // Active at the end clamps the window to the tail.
+        let rail = self::rail(50, Some(49)).unwrap();
+        assert_eq!(rail.window, 32..50);
+
+        // No active turn anchors to the newest.
+        let rail = self::rail(50, None).unwrap();
+        assert_eq!(rail.window, 32..50);
+
+        // At the bottom the window prefers the tail, but still includes the viewport-top (active) turn so a tick stays highlighted
+        let rail = compute_rail(
+            area(),
+            76,
+            50,
+            RailViewport {
+                active: Some(25),
+                up_target: Some(24),
+                down_target: Some(26),
+                at_bottom: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(rail.window, 25..43);
+        assert!(rail.window.contains(&25));
+
+        // Active already in the tail pins to the newest ticks
+        let rail = compute_rail(
+            area(),
+            76,
+            50,
+            RailViewport {
+                active: Some(40),
+                up_target: Some(39),
+                down_target: Some(41),
+                at_bottom: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(rail.window, 32..50);
+        assert!(rail.window.contains(&40));
+    }
+
+    #[test]
+    fn hit_maps_chevrons_and_ticks() {
+        let rail = rail(4, Some(1)).unwrap();
+        // Outside the rail columns (width 2: cols 76-77).
+        assert_eq!(rail.hit(75, rail.ticks_y), None);
+        assert_eq!(rail.hit(78, rail.ticks_y), None);
+        // Chevrons.
+        assert_eq!(rail.hit(77, rail.up_y), Some(TimelineHit::Up));
+        assert_eq!(rail.hit(77, rail.down_y), Some(TimelineHit::Down));
+        // Ticks map window-relative rows to turn indices.
+        assert_eq!(rail.hit(76, rail.ticks_y), Some(TimelineHit::Tick(0)));
+        assert_eq!(rail.hit(77, rail.ticks_y + 3), Some(TimelineHit::Tick(3)));
+        // Rows between chevrons/ticks and rail edges miss.
+        assert_eq!(rail.hit(76, rail.up_y - 1), None);
+    }
+
+    #[test]
+    fn chevron_targets_follow_the_rail_state() {
+        use TimelineHit::{Down, Tick, Up};
+        let mid = rail(10, Some(3)).unwrap();
+        // Ticks jump to themselves.
+        assert_eq!(chevron_target(&mid, Tick(7)), Some(7));
+        // Chevrons take the rail's viewport-derived targets verbatim.
+        assert_eq!(chevron_target(&mid, Up), Some(2));
+        assert_eq!(chevron_target(&mid, Down), Some(4));
+        // End stops are no-ops (the dim chevrons).
+        assert_eq!(chevron_target(&rail(10, Some(0)).unwrap(), Up), None);
+        assert_eq!(chevron_target(&rail(10, Some(9)).unwrap(), Down), None);
+        // Pre-turn content focuses the first tick, but Down still enters that first turn rather than skipping to the second
+        let pre = compute_rail(
+            area(),
+            76,
+            10,
+            RailViewport {
+                active: Some(0),
+                down_target: Some(0),
+                ..RailViewport::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(chevron_target(&pre, Down), Some(0));
+        assert_eq!(chevron_target(&pre, Up), None);
+        // At the bottom ▼ still steps to the next turn (jump_to_turn over-scrolls it to the top, matching a tick click); ▲ steps up
+        let bottom = compute_rail(
+            area(),
+            76,
+            10,
+            RailViewport {
+                active: Some(4),
+                up_target: Some(3),
+                down_target: Some(5),
+                at_bottom: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(chevron_target(&bottom, Up), Some(3));
+        assert_eq!(chevron_target(&bottom, Down), Some(5));
+        // ▼ dims only when the last turn already owns the top.
+        let last = compute_rail(
+            area(),
+            76,
+            10,
+            RailViewport {
+                active: Some(9),
+                up_target: Some(8),
+                down_target: None,
+                at_bottom: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(chevron_target(&last, Down), None);
+    }
+
+    #[test]
+    fn rail_width_gates_eligibility() {
+        // All conditions met reserves the rail columns
+        assert_eq!(rail_width(true, false, 80, 5), RAIL_WIDTH);
+        // Setting off / subagent view / narrow terminal / too few turns.
+        assert_eq!(rail_width(false, false, 80, 5), 0);
+        assert_eq!(rail_width(true, true, 80, 5), 0);
+        assert_eq!(rail_width(true, false, MIN_TERMINAL_WIDTH - 1, 5), 0);
+        assert_eq!(rail_width(true, false, 80, 1), 0);
     }
 }

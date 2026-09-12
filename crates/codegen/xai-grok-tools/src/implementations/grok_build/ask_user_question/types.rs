@@ -21,11 +21,9 @@ use crate::register_resource;
 
 // ── ACP wire-format types ────────────────────────────────────────────────
 
-/// Annotation on a single question's answer.
-///
-/// Carried inside the `accepted` response alongside the selected label.
-/// - `preview`: verbatim `Option.preview` of the selected option (single-select only).
-/// - `notes`: free-text the user typed in the freeform input.
+/// Annotation on a single question's answer. Carried inside the `accepted` response alongside the
+/// selected label. `preview`: verbatim `Option.preview` of the selected option (single-select
+/// only). `notes`: free-text the user typed in the freeform input.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QuestionAnnotation {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -34,10 +32,8 @@ pub struct QuestionAnnotation {
     pub notes: Option<String>,
 }
 
-/// Mode context for the question UI.
-///
-/// Sent as part of the ACP `ext_method` request so the pager knows whether
-/// to show plan-mode-only actions (Chat about this / Skip interview).
+/// Mode context for the question UI. Sent as part of the ACP `ext_method` request so the pager
+/// knows whether to show plan-mode-only actions (Chat about this / Skip interview).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AskUserQuestionMode {
@@ -85,10 +81,9 @@ where
         .collect())
 }
 
-/// ACP `ext_method` response payload (client/pager returns to shell coordinator).
-///
-/// Internally tagged on `"outcome"` with `snake_case` variant names so the
-/// JSON looks like `{ "outcome": "accepted", "answers": { ... } }`.
+/// ACP `ext_method` response payload (client/pager returns to shell coordinator). Internally tagged
+/// on `"outcome"` with `snake_case` variant names so the JSON looks like `{ "outcome": "accepted",
+/// "answers": { ... } }`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum AskUserQuestionExtResponse {
@@ -122,18 +117,13 @@ pub enum AskUserQuestionExtResponse {
 
 // ── In-process types (coordinator <-> tool) ──────────────────────────────
 
-/// In-process result: coordinator -> tool.
-///
-/// Uses `Result` so the tool can distinguish user actions from infrastructure
-/// failures:
-/// - `Ok(UserQuestionResponse)` for all 4 user paths (accepted, chat, skip, cancel).
-/// - `Err(UserQuestionError)` for transport failures or malformed responses.
+/// In-process result: coordinator -> tool. `Ok(UserQuestionResponse)` for all 4 user paths
+/// (accepted, chat, skip, cancel). `Err(UserQuestionError)` for transport failures or malformed
+/// responses.
 pub type UserQuestionResult = Result<UserQuestionResponse, UserQuestionError>;
 
-/// Successful user response (all 4 user paths).
-///
-/// Every variant here produces `Ok(UserAnswered { message })` at the tool
-/// level with `ToolCall` status `Completed`.
+/// Successful user response (all 4 user paths). Every variant here produces `Ok(UserAnswered {
+/// message })` at the tool level with `ToolCall` status `Completed`.
 #[derive(Debug, Clone)]
 pub enum UserQuestionResponse {
     /// User accepted and submitted answers (Path A).
@@ -158,10 +148,8 @@ pub enum UserQuestionResponse {
     Cancelled,
 }
 
-/// Infrastructure failure (NOT a user action).
-///
-/// These produce `Err(ToolError::ExecutionError { .. })` at the tool level
-/// with `ToolCall` status `Failed`.
+/// Infrastructure failure (NOT a user action). These produce `Err(ToolError::ExecutionError { ..
+/// })` at the tool level with `ToolCall` status `Failed`.
 #[derive(Debug, Clone)]
 pub enum UserQuestionError {
     /// ACP `ext_method` call failed (client disconnect, timeout, etc.).
@@ -171,10 +159,9 @@ pub enum UserQuestionError {
     MalformedResponse(String),
 }
 
-/// In-process request: tool -> coordinator (carries oneshot for reply).
-///
-/// Sent over the `mpsc` channel. The coordinator receives this, performs the
-/// ACP `ext_method` round-trip, and sends the result back on `result_tx`.
+/// In-process request: tool -> coordinator (carries oneshot for reply). Sent over the `mpsc`
+/// channel. The coordinator receives this, performs the ACP `ext_method` round-trip, and sends the
+/// result back on `result_tx`.
 #[derive(Educe)]
 #[educe(Debug)]
 pub struct UserQuestionRequest {
@@ -186,11 +173,9 @@ pub struct UserQuestionRequest {
 
 // ── Resource type ────────────────────────────────────────────────────────
 
-/// Resource: `mpsc` sender injected into `SharedResources`.
-///
-/// Same injection pattern as `SubagentEventSender`. Cloned into each
-/// session so that any `AskUserQuestionTool` invocation can emit a
-/// `UserQuestionRequest` to the session's coordinator.
+/// Resource: `mpsc` sender injected into `SharedResources`. Same injection pattern as
+/// `SubagentEventSender`. Cloned into each session so that any `AskUserQuestionTool` invocation can
+/// emit a `UserQuestionRequest` to the session's coordinator.
 #[derive(Clone, Educe)]
 #[educe(Debug)]
 pub struct UserQuestionSender(
@@ -202,12 +187,9 @@ register_resource!("grok_build", "UserQuestionSender", UserQuestionSender);
 // ── Conversion helper ────────────────────────────────────────────────────
 
 impl AskUserQuestionExtResponse {
-    /// Convert the wire-format ACP response into the in-process response type.
-    ///
-    /// Called by the shell coordinator after deserializing the client's JSON.
-    /// The `questions` parameter carries the original question list so that
-    /// `ChatAboutThis` and `SkipInterview` responses can iterate all questions
-    /// (answered and unanswered) when formatting the tool result.
+    /// Convert the wire-format ACP response into the in-process response type. Called by the shell coordinator after deserializing the client's
+    /// JSON. The `questions` parameter carries the original question list so that `ChatAboutThis` and `SkipInterview` responses can iterate all
+    /// questions (answered and unanswered) when formatting the tool result.
     pub fn into_response(self, questions: Vec<Question>) -> UserQuestionResponse {
         match self {
             Self::Accepted {

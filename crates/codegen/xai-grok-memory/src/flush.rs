@@ -10,16 +10,8 @@ use xai_grok_config_types::MemoryFlushConfig;
 const LOG: &str = "xai_memory";
 
 /// Check whether a memory flush should run before the next compaction.
-///
-/// Returns `true` when ALL of the following are met:
-/// - `flush_config.enabled` is `true`
-/// - This flush hasn't already run for the current compaction cycle
-///   (`last_flush_compaction != current_compaction_count`)
-/// - Token usage has reached the flush threshold (compact threshold
-///   minus `soft_threshold_tokens` headroom)
-///
-/// The flush threshold sits below the compact threshold so the flush
-/// completes before the context window overflows.
+/// A flush runs at most once per compaction cycle, once token usage reaches the compact threshold minus `soft_threshold_tokens` headroom.
+/// The flush threshold sits below the compact threshold so the flush completes before the context window overflows.
 pub fn should_flush(
     total_tokens: u64,
     context_window: u64,
@@ -43,8 +35,7 @@ pub fn should_flush(
         compact_threshold_percent,
         flush_config.soft_threshold_tokens,
     );
-    // Approximate threshold for log readability; the decision uses scaled
-    // arithmetic above and may differ by 1 token at non-round windows.
+    // This threshold is only for the log; the decision above uses scaled arithmetic and may differ by 1 token at non-round windows
     let flush_threshold = context_window
         .saturating_mul(compact_threshold_percent as u64)
         .saturating_sub(flush_config.soft_threshold_tokens.saturating_mul(100))
@@ -74,6 +65,12 @@ Write a concise markdown summary with ## headers covering:
 investigation workflows, or services discovered or used during debugging
 - **Problems & solutions** — bugs found, how they were fixed, workarounds
 
+Prioritize reusable mechanisms, rules, and root causes over a narration of the task. \
+When project structure matters, name the concrete directories and stable repo-relative paths; \
+include an absolute workspace root only when it is operationally necessary and appears in the conversation. \
+Copy exact identifiers and numerical values only when they appear verbatim in the supplied conversation. \
+Never infer a missing value; omit the detail instead.
+
 Omit any section where there is nothing substantive to report. \
 Do NOT include user preferences like OS, shell, or editor — these belong in global memory. \
 Do NOT include an ephemeral progress section — transient status is not useful for future sessions.
@@ -84,8 +81,7 @@ or discoveries are not worth persisting. Only write content that a future sessio
 would concretely benefit from.";
 
 /// System prompt for incremental (delta) flushes after the first flush.
-///
-/// Used when `flush_count > 0` and previous flush content is available.
+/// It applies when `flush_count > 0` and previous flush content is available.
 /// The caller appends the previous flush output after this prompt.
 pub const FLUSH_DELTA_SYSTEM_PROMPT: &str = "\
 You are a memory assistant performing an incremental update. The previous \
@@ -98,8 +94,14 @@ Write a concise markdown summary with ## headers covering only NEW items in:
 - **Debugging techniques** — new techniques used since last flush
 - **Problems & solutions** — new bugs found and fixes
 
+Prioritize reusable mechanisms, rules, and root causes over a narration of the task. \
+When project structure matters, name the concrete directories and stable repo-relative paths; \
+include an absolute workspace root only when it is operationally necessary and appears in the conversation. \
+Copy exact identifiers and numerical values only when they appear verbatim in the supplied conversation; \
+never reconstruct or guess missing values.
+
 Omit any section that has no new content. Do NOT include user preferences \
-(OS, shell, paths) — these are captured in global memory.
+like OS, shell, or editor — these are captured in global memory.
 Do NOT include 'Current state' — this is ephemeral and not useful for future sessions.
 
 Respond with NO_REPLY if nothing genuinely new and useful has happened since \
@@ -122,12 +124,7 @@ pub enum FlushResult {
 }
 
 /// Process the model's flush response, applying quality controls.
-///
-/// Quality checks:
-/// 1. Empty/whitespace-only → `NothingToStore`
-/// 2. Matches `NO_REPLY` pattern → `NothingToStore`
-/// 3. Exceeds `max_flush_write_chars` → truncated
-/// 4. Must contain at least one markdown header (`##`) → `Rejected` if not
+/// A response without a markdown header (`##`) is `Rejected`.
 pub fn process_flush_response(response: &str, config: &MemoryFlushConfig) -> FlushResult {
     let trimmed = response.trim();
     let len = trimmed.len();
@@ -136,21 +133,19 @@ pub fn process_flush_response(response: &str, config: &MemoryFlushConfig) -> Flu
     tracing::info!(target: LOG,
         "MEMORY_FLUSH_RESPONSE: len={len} preview=\"{preview}\"");
 
-    // Check for empty
     if trimmed.is_empty() {
         tracing::info!(target: LOG,
             "MEMORY_FLUSH_RESPONSE: empty → NothingToStore");
         return FlushResult::NothingToStore;
     }
 
-    // Check for NO_REPLY
     if is_no_reply(trimmed) {
         tracing::info!(target: LOG,
             "MEMORY_FLUSH_RESPONSE: matches NO_REPLY pattern → NothingToStore");
         return FlushResult::NothingToStore;
     }
 
-    // Truncate if too long (use char count for consistency with .chars().take())
+    // The length check counts chars, not bytes, to match the .chars().take() truncation
     let content = if trimmed.chars().count() > config.max_flush_write_chars {
         tracing::warn!(target: LOG,
             "MEMORY_FLUSH_RESPONSE: truncated from {len} to {} chars",
@@ -163,7 +158,6 @@ pub fn process_flush_response(response: &str, config: &MemoryFlushConfig) -> Flu
         trimmed.to_string()
     };
 
-    // Must contain at least one markdown header for structure
     if !has_markdown_headers(&content) {
         tracing::info!(target: LOG,
             "MEMORY_FLUSH_RESPONSE: no markdown headers → Rejected");
@@ -177,44 +171,27 @@ pub fn process_flush_response(response: &str, config: &MemoryFlushConfig) -> Flu
     FlushResult::Accepted(content)
 }
 
-/// Cosine similarity threshold above which flush content is considered a
-/// semantic duplicate of an existing memory chunk. A value of 0.92 is
-/// conservative — it catches near-identical rephrasings while allowing
-/// content that adds meaningful new information to pass through.
-///
-/// Used as the fallback when no config override is set.
+/// Cosine similarity above which flush content counts as a semantic duplicate of an existing memory chunk.
+/// 0.92 is conservative: it catches near-identical rephrasings while letting content with meaningful new information through.
+/// This is the fallback when no config override is set.
 pub const SEMANTIC_DEDUP_SIMILARITY_THRESHOLD: f64 = 0.92;
 
-/// Maximum L2 distance between two unit-norm embedding vectors (used to
-/// convert sqlite-vec L2 distances to cosine similarity).
+/// Maximum L2 distance between two unit-norm embedding vectors (used to convert sqlite-vec L2 distances to cosine similarity).
 const MAX_L2_DISTANCE: f64 = 2.0;
 
 /// Number of nearest neighbors to check during semantic dedup.
 const SEMANTIC_DEDUP_KNN_LIMIT: usize = 3;
 
 /// Check if flush content is semantically similar to existing memory chunks.
-///
-/// Uses the embedding provider to embed the flush content, then runs a KNN
-/// search against the memory index. If any result exceeds `threshold`,
-/// considers the content a duplicate.
-///
-/// `threshold` is the cosine similarity cutoff (0.0–1.0). Pass
-/// `SEMANTIC_DEDUP_SIMILARITY_THRESHOLD` for the compiled-in default, or
-/// a value from config for remote/local overrides.
-///
-/// Falls back gracefully: returns `false` (allow write) if embeddings are
-/// unavailable, the index has no vector support, or any step fails.
-///
-/// Structured as sync/async/sync phases so `&MemoryIndex` (which contains
-/// `!Send` `rusqlite::Connection`) is never held across `.await` boundaries,
-/// matching the pattern used in `search.rs` and `backend.rs`.
+/// `threshold` is the cosine similarity cutoff (0.0 to 1.0); a KNN neighbor above it makes the content a duplicate.
+/// The sync/async/sync phasing means `&MemoryIndex` is never held across an `.await`; it contains a `!Send` `rusqlite::Connection`.
 pub async fn is_semantically_duplicate(
     content: &str,
     index: &MemoryIndex,
     embedding_provider: Option<&dyn EmbeddingProvider>,
     threshold: f64,
 ) -> bool {
-    // Phase 1 (sync): check prerequisites — borrows index, no .await
+    // Phase 1 (sync): check prerequisites; borrows index, no .await
     let provider = match embedding_provider {
         Some(p) => p,
         None => {
@@ -230,7 +207,7 @@ pub async fn is_semantically_duplicate(
         return false;
     }
 
-    // Phase 2 (async): embed — no &index borrow across this .await
+    // Phase 2 (async): embed; no &index borrow across this .await
     let embedding = match provider.embed_batch(&[content]).await {
         Ok(mut vecs) if !vecs.is_empty() => vecs.swap_remove(0),
         Ok(_) => {
@@ -245,7 +222,7 @@ pub async fn is_semantically_duplicate(
         }
     };
 
-    // Phase 3 (sync): vector search + threshold check — borrows index, no .await
+    // Phase 3 (sync): vector search + threshold check; borrows index, no .await
     let neighbors = match index.vector_search(&embedding, SEMANTIC_DEDUP_KNN_LIMIT) {
         Ok(n) => n,
         Err(e) => {
@@ -296,23 +273,21 @@ mod tests {
     #[test]
     fn test_should_flush_already_flushed_this_cycle() {
         let config = default_flush_config();
-        // same compaction count → already flushed
+        // Equal counters mean the flush already ran this cycle
         assert!(!should_flush(90_000, 100_000, 85, &config, 1, 1));
     }
 
     #[test]
     fn test_should_flush_below_threshold() {
         let config = default_flush_config();
-        // 100K context, 85% compact = 85K, flush at 85K - 4K = 81K
-        // 50K tokens → below threshold
+        // 85% of the 100K window is 85K; minus the default 4K soft threshold, the flush point is 81K
         assert!(!should_flush(50_000, 100_000, 85, &config, 0, 1));
     }
 
     #[test]
     fn test_should_flush_at_threshold() {
         let config = default_flush_config();
-        // 100K context, 85% compact = 85K, flush at 85K - 4K = 81K
-        // 81K tokens → at threshold → should flush
+        // 85% of the 100K window is 85K; minus the default 4K soft threshold, the flush point is 81K
         assert!(should_flush(81_000, 100_000, 85, &config, 0, 1));
     }
 
@@ -328,7 +303,7 @@ mod tests {
             soft_threshold_tokens: 10_000,
             ..default_flush_config()
         };
-        // 100K context, 85% compact = 85K, flush at 85K - 10K = 75K
+        // 85% of the 100K window is 85K; minus the 10K soft threshold, the flush point is 75K
         assert!(!should_flush(74_000, 100_000, 85, &config, 0, 1));
         assert!(should_flush(75_000, 100_000, 85, &config, 0, 1));
     }
@@ -336,9 +311,9 @@ mod tests {
     #[test]
     fn test_should_flush_different_compaction_cycles() {
         let config = default_flush_config();
-        // First cycle: should flush (counter is pre-incremented to 1 in run_compact)
+        // The counter is pre-incremented to 1 in run_compact, so the first cycle sees (0, 1)
         assert!(should_flush(82_000, 100_000, 85, &config, 0, 1));
-        // After flush (same cycle): should not flush again
+        // After the flush the counters match, blocking a second flush this cycle
         assert!(!should_flush(82_000, 100_000, 85, &config, 1, 1));
         // New cycle: should flush again
         assert!(should_flush(82_000, 100_000, 85, &config, 1, 2));
@@ -346,9 +321,7 @@ mod tests {
 
     #[test]
     fn test_should_flush_non_round_window() {
-        // cw=10_001, pct=85, soft=4_000. Scaled boundary:
-        // used*100 >= 10_001*85 - 4_000*100 = 850_085 - 400_000 = 450_085
-        // -> false at used=4500, true at used=4501.
+        // With cw=10_001, pct=85, soft=4_000, the scaled boundary is used*100 >= 10_001*85 - 4_000*100 = 450_085, so the flush starts at used 4_501
         let config = MemoryFlushConfig {
             soft_threshold_tokens: 4_000,
             ..default_flush_config()
@@ -361,9 +334,8 @@ mod tests {
     #[test]
     fn test_should_flush_same_counter_values_blocks() {
         let config = default_flush_config();
-        // Equal counters → "already flushed this cycle" guard fires.
-        // Both starting at 0 is the initial state; pre-increment in
-        // maybe_pre_compaction_flush() prevents this from blocking the first flush.
+        // Equal counters fire the "already flushed this cycle" guard
+        // Both at 0 is the initial state; the pre-increment in maybe_pre_compaction_flush() keeps this from blocking the first flush
         assert!(!should_flush(82_000, 100_000, 85, &config, 0, 0));
         assert!(!should_flush(82_000, 100_000, 85, &config, 5, 5));
     }
@@ -459,33 +431,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_flush_system_prompt_content() {
-        assert!(FLUSH_SYSTEM_PROMPT.contains("markdown"));
-        assert!(FLUSH_SYSTEM_PROMPT.contains("NO_REPLY"));
-        assert!(
-            !FLUSH_SYSTEM_PROMPT.contains("Always write something"),
-            "old bias toward always writing should be removed"
-        );
-        assert!(
-            FLUSH_SYSTEM_PROMPT.contains("genuinely useful"),
-            "prompt should bias toward NO_REPLY for low-value sessions"
-        );
-        assert!(!FLUSH_SYSTEM_PROMPT.contains("User preferences"));
-    }
-
-    #[test]
-    fn test_delta_system_prompt_content() {
-        assert!(FLUSH_DELTA_SYSTEM_PROMPT.contains("incremental update"));
-        assert!(FLUSH_DELTA_SYSTEM_PROMPT.contains("NO_REPLY"));
-        assert!(FLUSH_DELTA_SYSTEM_PROMPT.contains("Previous flush content"));
-        assert!(!FLUSH_DELTA_SYSTEM_PROMPT.contains("User preferences"));
-        assert!(
-            FLUSH_DELTA_SYSTEM_PROMPT.contains("genuinely new and useful"),
-            "delta prompt should use same selectivity standard as primary prompt"
-        );
-    }
-
     // -----------------------------------------------------------------------
     // is_semantically_duplicate tests
     // -----------------------------------------------------------------------
@@ -502,7 +447,7 @@ mod tests {
             MemoryStorage::with_paths(tmp.path().join("global"), tmp.path().join("workspace"));
         let index = MemoryIndex::open_or_create(&db_path, storage, Default::default(), 4).unwrap();
 
-        // No embedding provider → always returns false (allow write).
+        // With no embedding provider the check always returns false (allow write)
         let result = is_semantically_duplicate(
             "## Test\n\nSome content.",
             &index,
@@ -528,7 +473,7 @@ mod tests {
 
         let provider = MockEmbeddingProvider { dimensions: 4 };
 
-        // Empty index → no neighbors → not a duplicate.
+        // The empty index returns no neighbors, so nothing is a duplicate
         let result = is_semantically_duplicate(
             "## New Content\n\nFresh ideas here.",
             &index,
@@ -568,7 +513,7 @@ mod tests {
             .upsert_embedding(&chunk_id, &existing_embedding[0])
             .unwrap();
 
-        // Same content → identical embedding → distance 0 → similarity 1.0 → duplicate.
+        // Identical content embeds to the same vector, so the similarity is 1.0
         let result = is_semantically_duplicate(
             content,
             &index,

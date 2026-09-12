@@ -29,11 +29,9 @@ pub const TOOL_META_KEY: &str = "x.ai/tool";
 /// to keys or value shapes so consumers can adapt.
 pub const TOOL_META_VERSION: u32 = 1;
 impl ToolKind {
-    /// Unified, harness-independent display label for this semantic kind. A pure
-    /// function of the kind, so equivalent tools across toolsets share it
-    /// (`read_file` and `Read` → `Read`; `run_terminal_cmd` and `Shell` →
-    /// `Run Command`). Display only; the model's tool name is `name` in
-    /// `x.ai/tool`. Exhaustive, so a new `ToolKind` must add a label to compile.
+    /// Unified, harness-independent display label for this semantic kind. A pure function of the kind, so equivalent tools
+    /// across toolsets share it (`read_file` and `Read` → `Read`; `run_terminal_cmd` and `Shell` → `Run Command`). Display
+    /// only; the model's tool name is `name` in `x.ai/tool`. Exhaustive, so a new `ToolKind` must add a label to compile.
     pub fn presentation_name(self) -> &'static str {
         match self {
             ToolKind::Read => "Read",
@@ -56,6 +54,7 @@ impl ToolKind {
             ToolKind::MemorySearch => "Memory Search",
             ToolKind::MemoryGet => "Memory Read",
             ToolKind::Task => "Subagent",
+            ToolKind::ActiveAgentMessage => "Send Subagent Message",
             ToolKind::EnterPlan => "Enter Plan Mode",
             ToolKind::ExitPlan => "Exit Plan Mode",
             ToolKind::AskUser => "Ask User",
@@ -70,13 +69,13 @@ impl ToolKind {
             ToolKind::Monitor => "Monitor",
             ToolKind::GoalUpdate => "Update Goal",
             ToolKind::Workflow => "Workflow",
+            ToolKind::Feedback => "Feedback",
             ToolKind::Other => "Tool",
         }
     }
-    /// Whether this kind only reads (no workspace or external mutation) by
-    /// default. The kind-level default for `ToolMetadata::is_read_only`, which
-    /// individual tools may override. Exhaustive (no `_`) so a new kind must
-    /// classify itself rather than silently defaulting to "mutating".
+    /// Whether this kind only reads (no workspace or external mutation) by default. The kind-level
+    /// default for `ToolMetadata::is_read_only`, which individual tools may override. Exhaustive
+    /// (no `_`) so a new kind must classify itself rather than silently defaulting to "mutating".
     pub fn is_read_only(self) -> bool {
         match self {
             ToolKind::Read
@@ -102,6 +101,7 @@ impl ToolKind {
             | ToolKind::KillTaskAction
             | ToolKind::Skill
             | ToolKind::Task
+            | ToolKind::ActiveAgentMessage
             | ToolKind::ImageGen
             | ToolKind::VideoGen
             | ToolKind::ImageToVideo
@@ -113,17 +113,14 @@ impl ToolKind {
             | ToolKind::Monitor
             | ToolKind::GoalUpdate
             | ToolKind::Workflow
+            | ToolKind::Feedback
             | ToolKind::Other => false,
         }
     }
 }
-/// First-party tool wire names whose argument streams are long enough for a
-/// writing-phase spinner label to be visible (file bodies, edit strings,
-/// shell scripts, prompts), paired with their [`ToolKind`].
-///
-/// Public so clients can pin that every entry gets non-fallback display copy
-/// — a spelling added here without client copy would otherwise silently keep
-/// the raw-name fallback.
+/// First-party tool wire names whose argument streams are long enough for a writing-phase spinner label to be visible (file bodies, edit
+/// strings, shell scripts, prompts), paired with their [`ToolKind`]. Public so clients can pin that every entry gets non-fallback display copy
+/// — a spelling added here without client copy would otherwise silently keep the raw-name fallback.
 pub const WRITING_TOOL_WIRE_NAMES: &[(&str, ToolKind)] = &[
     ("write", ToolKind::Write),
     ("search_replace", ToolKind::Edit),
@@ -136,21 +133,16 @@ pub const WRITING_TOOL_WIRE_NAMES: &[(&str, ToolKind)] = &[
     ("todo_write", ToolKind::Plan),
     ("todowrite", ToolKind::Plan),
     ("workflow", ToolKind::Workflow),
+    ("send_feedback", ToolKind::Feedback),
     ("image_gen", ToolKind::ImageGen),
     ("image_edit", ToolKind::ImageGen),
     ("image_to_video", ToolKind::ImageToVideo),
     ("reference_to_video", ToolKind::ReferenceToVideo),
     ("ask_user_question", ToolKind::AskUser),
 ];
-/// [`ToolKind`] of a wire name in [`WRITING_TOOL_WIRE_NAMES`].
-///
-/// Keyed by wire name because that is all a client has while
-/// `tool_call_delta_chunk`s stream. Best-effort by design: wire names are
-/// client-renameable, so unknown names return `None` and callers fall back to
-/// showing the raw name. Not a general name→kind resolver — read-style tools
-/// with tiny argument payloads are deliberately absent, as are the MCP
-/// dispatch tools (`use_tool`/`search_tool`), which clients special-case by
-/// name constant.
+/// [`ToolKind`] of a wire name in [`WRITING_TOOL_WIRE_NAMES`]. Keyed by wire name because that is
+/// all a client has while `tool_call_delta_chunk`s stream. Best-effort by design: wire names are
+/// client-renameable, so unknown names return `None` and callers fall back to showing the raw name.
 pub fn writing_tool_kind(wire_name: &str) -> Option<ToolKind> {
     WRITING_TOOL_WIRE_NAMES
         .iter()
@@ -178,10 +170,9 @@ impl schemars::JsonSchema for ToolKind {
         })
     }
 }
-/// Canonical identity for a tool call, resolved from a tool's registered
-/// metadata by its client-facing wire name.
-///
-/// Harness-independent. `tool_kind` is the authoritative `metadata.kind()`.
+/// Canonical identity for a tool call, resolved from a tool's registered metadata by its
+/// client-facing wire name. Harness-independent. `tool_kind` is the authoritative
+/// `metadata.kind()`.
 #[derive(Debug, Clone, Copy)]
 pub struct ToolIdentity {
     pub tool_kind: ToolKind,
@@ -189,49 +180,9 @@ pub struct ToolIdentity {
     pub presentation_name: &'static str,
     pub read_only: bool,
 }
-/// The canonical tool-identity envelope, attached to a tool-call event `_meta`
-/// as one nested object under [`TOOL_META_KEY`].
-///
-/// ```json
-/// "x.ai/tool": {
-///   "version": 1,
-///   "name": "read_file",
-///   "kind": "read",
-///   "namespace": "grok_build",
-///   "label": "Read",
-///   "read_only": true,
-///   "input": { "path": "..." }
-/// }
-/// ```
-///
-/// Consumer contract:
-/// - **`label`** is the cross-harness grouping/display key: equivalent tools
-///   share it (grok `read_file` → `"Read"`).
-/// - **`kind`** is a finer discriminator (`metadata.kind()`), *not* guaranteed
-///   equal for equivalent ops across harnesses (listing is `list` in one
-///   toolset, `list_dir` in another); prefer `label` to join, tolerate unknowns.
-/// - **`name`** is the harness-specific model-facing name; for diagnostics.
-///   For harness-initiated events (e.g. the `bash_mode` marker), `raw_input`
-///   is not guaranteed to match `name`'s schema.
-/// - **`input`** is a canonical *projection*, not a mirror: cross-harness keys
-///   only, so some raw fields are intentionally dropped (e.g. grep flags,
-///   `replace_all`), and bulky payload
-///   fields (edit `old_string`/`new_string`, full write contents) are never
-///   projected — read them from `raw_input`. It is omitted entirely
-///   when no stable shape exists (MCP / dynamic / out-of-scope). When a field or
-///   the whole dict is absent, fall back to `raw_input` on this or an earlier
-///   update for the same `tool_call_id` (some updates, e.g. a parse failure,
-///   carry neither and rely on the merge below).
-/// - **Lifecycle:** updates for one call share a `tool_call_id` — merge across
-///   them (last write wins); `input` may arrive on a later update.
-/// - **Versioning:** additive changes (new object fields, new `kind` / `label`
-///   values) don't bump `version`. Unknown `kind` degrades to `"other"`;
-///   `namespace` is a closed enum (no `other` sink), so a new toolset fails
-///   strict typed deserialization of the whole envelope — intentional, to force
-///   typed consumers with exhaustive matches to update. Out-of-tree consumers
-///   should read `namespace` loosely (as a string) and, on any `x.ai/tool`
-///   parse failure, treat it as absent and fall back to `raw_input` + the ACP
-///   `kind`. `version` bumps only on removal or meaning change.
+/// Tool-identity envelope under [`TOOL_META_KEY`]. `label` joins equivalent tools; `input` is a
+/// projection (bulky edit/write fields stay on `raw_input`). `version` bumps only on removal or
+/// meaning change; a new `namespace` fails strict decode so typed consumers must update.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CanonicalToolMeta {
     pub version: u32,
@@ -379,10 +330,9 @@ mod tests {
         let k: ToolKind = serde_json::from_value(serde_json::json!("teleport")).unwrap();
         assert_eq!(k, ToolKind::Other);
     }
-    /// The published `kind` schema must stay an open string (codegen'd
-    /// consumers would otherwise hard-fail on new kinds, contradicting the
-    /// `#[serde(other)]` contract above). `namespace` stays intentionally
-    /// closed — see the versioning contract on [`CanonicalToolMeta`].
+    /// The published `kind` schema must stay an open string (codegen'd consumers would otherwise
+    /// hard-fail on new kinds, contradicting the `#[serde(other)]` contract above). `namespace`
+    /// stays intentionally closed — see the versioning contract on [`CanonicalToolMeta`].
     #[test]
     fn kind_schema_is_open_string_namespace_stays_closed() {
         let kind = serde_json::to_value(schemars::schema_for!(ToolKind)).unwrap();

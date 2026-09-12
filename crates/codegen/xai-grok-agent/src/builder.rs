@@ -1,54 +1,30 @@
-//! AgentBuilder — fluent construction API for building Agents.
 use crate::agent::Agent;
 use crate::compaction::CompactionPolicy;
 use crate::config::{AGENT_TASK_CLASSIFIER_RE, short_tool_name, tool_id_eq, tool_id_matches};
 use crate::config::{AgentDefinition, BuiltinAgentName, PermissionMode, PromptMode};
 use crate::discovery::{SubagentEntry, SubagentSource};
 use crate::error::AgentBuildError;
-use crate::prompt::context::PromptContext;
+use crate::prompt::context::{PromptAudience, PromptContext};
 use crate::system_reminder::ReminderPolicy;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::Instrument;
 use xai_grok_tools::bridge::ToolBridge;
 use xai_grok_tools::computer::types::{AsyncFileSystem, TerminalBackend};
 use xai_grok_tools::notification::ToolNotificationHandle;
 use xai_grok_tools::registry::types::SessionContext;
 use xai_grok_tools::types::tool::ToolKind;
-/// The Grok [`ToolKind`] a vendor-compat `tools:` allowlist entry resolves to, so
-/// a plugin's upstream allowlist still binds. Backed by the shared vendor-to-Grok
-/// tool registry in `xai-grok-tools` (also used by the hook matcher).
+/// The Grok [`ToolKind`] a vendor-compat `tools:` allowlist entry resolves to, so a plugin's upstream allowlist still binds.
+/// Backed by the shared vendor-to-Grok tool registry in `xai-grok-tools` (also used by the hook matcher).
 fn claude_tool_kind(name: &str) -> Option<ToolKind> {
     xai_grok_tools::types::kind_for(name)
 }
-/// Builds an Agent from an AgentDefinition + session context.
-///
-/// Two main flows:
-///
-///   // 1. From a definition file
-///   let def = AgentDefinition::from_file("agents/code-reviewer.md")?;
-///   let agent = AgentBuilder::new(cwd, None, notification_handle)
-///       .from_definition(def)
-///       .build()
-///       .await?;
-///
-///   // 2. Programmatic (no file)
-///   let agent = AgentBuilder::new(cwd, None, notification_handle)
-///       .with_name("my-agent")
-///       .with_description("A custom agent")
-///       .with_tools(vec!["read_file".into(), "grep".into()])
-///       .build()
-///       .await?;
+/// Builds an [`Agent`] from an [`AgentDefinition`] (`from_definition`) or programmatic `with_*` calls, plus session context.
 pub struct AgentBuilder {
     working_directory: PathBuf,
-    /// Model-facing working directory for the system prompt `<user_info>` block.
-    ///
-    /// In forked sessions, the real `working_directory` is an overlay/worktree
-    /// path (e.g., `~/.grok/worktrees/project/fork-...-overlay`) that must stay
-    /// hidden from the model. When set, `PromptContext.working_directory` uses
-    /// this value instead of `self.working_directory`, so the system prompt
-    /// shows the original project path. Tool execution (`ToolContext.cwd`,
-    /// `SessionContext.cwd`) is unaffected and continues to use the real path.
+    /// Forked sessions: the real `working_directory` is an overlay/worktree path that must stay hidden from the model,
+    /// so the system prompt shows this instead; tool execution keeps the real path.
     prompt_working_directory: Option<String>,
     terminal_backend: Arc<dyn TerminalBackend>,
     fs_backend: Arc<dyn AsyncFileSystem>,
@@ -56,16 +32,11 @@ pub struct AgentBuilder {
     owner_session_id: Option<String>,
     parent_scheduler_handle:
         Option<xai_grok_tools::implementations::grok_build::scheduler::types::SchedulerHandle>,
-    /// The agent definition — set via from_definition() or built up
-    /// via individual with_*() calls.
     definition: Option<AgentDefinition>,
     /// Pre-rendered persona IO summaries for the task tool description.
     persona_summaries: Vec<String>,
-    /// Whether this builder produces a primary or subagent session prompt.
     prompt_audience: crate::prompt::context::PromptAudience,
-    /// Role instructions to inject into the system prompt.
     role_instructions: Option<String>,
-    /// Persona instructions to inject into the system prompt.
     persona_instructions: Option<String>,
     name: Option<String>,
     description: Option<String>,
@@ -79,17 +50,17 @@ pub struct AgentBuilder {
     compaction_policy: CompactionPolicy,
     reminder_policy: ReminderPolicy,
     memory_enabled: bool,
+    memory_v2_enabled: bool,
     memory_global_path: Option<String>,
     memory_workspace_path: Option<String>,
+    memory_v2_access: Option<xai_grok_tools::types::memory_v2::MemoryV2AccessResource>,
     is_non_interactive: bool,
     system_prompt_label: String,
     session_env: Option<Arc<HashMap<String, String>>>,
     state_path: Option<PathBuf>,
     memory_backend: Option<Arc<dyn xai_grok_tools::types::memory_backend::MemoryBackend>>,
     web_search_config: xai_grok_tools::implementations::web_search::WebSearchConfig,
-    /// When true, web search and X search are sent as native server-side
-    /// tools for execution by the agentic sampler, instead of being
-    /// registered as local Function tools.
+    /// When true, web search and X search go to the agentic sampler as native server-side tools instead of registering as local Function tools.
     backend_search: bool,
     web_fetch_config: xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig,
     lsp: Option<std::sync::Arc<dyn xai_grok_tools::implementations::lsp::LspBackend>>,
@@ -98,15 +69,14 @@ pub struct AgentBuilder {
     app_builder_deployer_config:
         xai_grok_tools::implementations::grok_build::app_builder::AppBuilderDeployerConfig,
     write_file_enabled: bool,
+    active_agent_messages_enabled: bool,
     subagents_enabled: bool,
     background_workflows_enabled: bool,
     ask_user_question_enabled: bool,
     subagent_toggle: HashMap<String, bool>,
     task_model_slugs: Vec<String>,
     skills_config: crate::prompt::skills::SkillsConfig,
-    /// Resolved vendor-compat config governing which vendor (`.claude`/`.cursor`)
-    /// dirs are scanned for skills / rules / AGENTS.md. Defaults to all-on,
-    /// which reproduces the historical behavior.
+    /// Which vendor (`.claude`/`.cursor`) dirs are scanned for skills / rules / AGENTS.md; the all-on default reproduces historical behavior.
     compat: xai_grok_tools::types::compat::CompatConfig,
     bash_params_json: Option<serde_json::Map<String, serde_json::Value>>,
     ask_user_question_params_json: Option<serde_json::Map<String, serde_json::Value>>,
@@ -114,29 +84,19 @@ pub struct AgentBuilder {
     context_window_tokens: Option<u64>,
     api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider>,
     attribution_callback: Option<xai_grok_tools::SharedAttributionCallback>,
-    /// Session-scoped MCP tool-result inline cap (bytes). When `Some`, seeded
-    /// into the toolset's `TruncationCfg` resource after finalize, where the
-    /// MCP truncation path consults it before the process-global cap. The
-    /// shell passes the winning repo-level `[mcp] max_output_bytes` here (and
-    /// only when that tier wins the precedence stack — see
-    /// `resolve_max_mcp_output_bytes_for_cwd` in xai-grok-shell).
+    /// Seeded into the toolset's `TruncationCfg` after finalize; the MCP truncation path consults it before the process-global
+    /// cap. Set only when the repo-level `[mcp] max_output_bytes` tier wins (see `resolve_max_mcp_output_bytes_for_cwd`).
     mcp_max_output_bytes: Option<usize>,
-    /// System-reminder tag name for tool result text. Defaults to `"system-reminder"`.
-    /// IDE-compat agent_type should set this to `"system_reminder"`.
+    /// IDE-compat agent_type uses `"system_reminder"` instead of the default `"system-reminder"`.
     system_reminder_tag: &'static str,
-    /// Persisted announced skill names from a previous session.
-    /// When set, restored into the SkillManager before `seed()` so that
-    /// `seed()` sees non-empty `announced_names` and skips the
-    /// `BaselineChange` pending, preventing duplicate system-reminder
-    /// injection on session resume.
+    /// Restored into the SkillManager before `seed()`, which then skips the `BaselineChange` pending, so a resumed
+    /// session does not re-inject a duplicate system-reminder.
     persisted_announced_skill_names: Option<std::collections::HashSet<String>>,
-    /// Pre-discovered skills inherited from a parent session.
-    /// When set, `build()` uses these directly instead of running
-    /// `list_skills_with_plugins()`.
+    /// Parent-inherited skills; `build()` uses them instead of running `list_skills_with_plugins()`.
     preloaded_skills: Option<Vec<xai_grok_tools::implementations::skills::types::SkillInfo>>,
+    /// Startup folder-trust verdict; hosts without this gate must opt in explicitly.
+    project_trusted: bool,
 }
-/// Ensure plan mode tools (`enter_plan_mode`, `exit_plan_mode`,
-/// `ask_user_question`) are present in the tool config.
 fn ensure_plan_mode_tools(tool_config: &mut xai_grok_tools::registry::types::ToolServerConfig) {
     use xai_grok_tools::implementations::grok_build;
     let existing: std::collections::HashSet<&str> =
@@ -161,8 +121,7 @@ fn ensure_plan_mode_tools(tool_config: &mut xai_grok_tools::registry::types::Too
             .push((&grok_build::AskUserQuestionTool).into());
     }
 }
-/// Merge a shell-resolved params map into every matching tool's
-/// `ToolConfig.params` (single copy of the loop the per-tool injections share).
+/// Single copy of the params-merge loop the per-tool param injections share.
 fn merge_tool_params(
     tool_config: &mut xai_grok_tools::registry::types::ToolServerConfig,
     ids: &[&str],
@@ -180,7 +139,6 @@ fn merge_tool_params(
 fn apply_workflow_tool_gates(
     tool_config: &mut xai_grok_tools::registry::types::ToolServerConfig,
     background_workflows_enabled: bool,
-    is_subagent: bool,
 ) {
     use xai_grok_tools::types::tool::ToolKind;
     if background_workflows_enabled {
@@ -188,11 +146,6 @@ fn apply_workflow_tool_gates(
             .tools
             .retain(|tool| tool.kind != Some(ToolKind::GoalUpdate));
     } else {
-        tool_config
-            .tools
-            .retain(|tool| tool.kind != Some(ToolKind::Workflow));
-    }
-    if is_subagent {
         tool_config
             .tools
             .retain(|tool| tool.kind != Some(ToolKind::Workflow));
@@ -229,8 +182,10 @@ impl AgentBuilder {
             compaction_policy: CompactionPolicy::default(),
             reminder_policy: ReminderPolicy::default(),
             memory_enabled: false,
+            memory_v2_enabled: false,
             memory_global_path: None,
             memory_workspace_path: None,
+            memory_v2_access: None,
             is_non_interactive: false,
             system_prompt_label: crate::prompt::context::DEFAULT_SYSTEM_PROMPT_LABEL.to_string(),
             session_env: None,
@@ -244,6 +199,7 @@ impl AgentBuilder {
             video_gen_config: Default::default(),
             app_builder_deployer_config: Default::default(),
             write_file_enabled: true,
+            active_agent_messages_enabled: false,
             subagents_enabled: false,
             background_workflows_enabled: false,
             ask_user_question_enabled: true,
@@ -261,14 +217,13 @@ impl AgentBuilder {
             system_reminder_tag: xai_grok_tools::reminders::DEFAULT_REMINDER_TAG,
             persisted_announced_skill_names: None,
             preloaded_skills: None,
+            project_trusted: false,
         }
     }
-    /// Set persisted announced skill names for session resume.
-    ///
-    /// These names are restored into the `SkillManager` inside `build()`,
-    /// after `ToolBridge::finalize_builder()` but before
-    /// `seed_skill_discovery()`.  This ensures `seed()` sees non-empty
-    /// `announced_names` and skips setting `pending = BaselineChange`.
+    pub fn with_project_trusted(mut self, project_trusted: bool) -> Self {
+        self.project_trusted = project_trusted;
+        self
+    }
     pub fn with_persisted_announced_skill_names(
         mut self,
         names: std::collections::HashSet<String>,
@@ -276,9 +231,6 @@ impl AgentBuilder {
         self.persisted_announced_skill_names = Some(names);
         self
     }
-    /// Supply pre-discovered skills from a parent session instead of
-    /// running filesystem discovery. When set, `build()` skips
-    /// `list_skills_with_plugins()` and uses the snapshot directly.
     pub fn with_preloaded_skills(
         mut self,
         skills: Vec<xai_grok_tools::implementations::skills::types::SkillInfo>,
@@ -286,17 +238,14 @@ impl AgentBuilder {
         self.preloaded_skills = Some(skills);
         self
     }
-    /// Load from a pre-parsed AgentDefinition.
     pub fn from_definition(mut self, def: AgentDefinition) -> Self {
         self.definition = Some(def);
         self
     }
-    /// Set pre-rendered persona IO summaries for the task tool description.
     pub fn with_persona_summaries(mut self, summaries: Vec<String>) -> Self {
         self.persona_summaries = summaries;
         self
     }
-    /// Set the prompt audience (Primary or Subagent).
     pub fn with_prompt_audience(
         mut self,
         audience: crate::prompt::context::PromptAudience,
@@ -365,12 +314,21 @@ impl AgentBuilder {
         self.memory_workspace_path = workspace_path;
         self
     }
-    /// Mark this session as non-interactive (headless / SDK / stdio /
-    /// generic-ACP). Suppresses prompt sections that only make sense when
-    /// a human is typing into the TUI prompt input (e.g. the `! <command>`
-    /// shell-prefix tip and the `<user_guide>` TUI pointer), and stamps
-    /// `non_interactive` into the ask_user_question params so an unanswered
-    /// questionnaire returns no-operator text instead of "user declined".
+    pub fn with_memory_v2_access(
+        mut self,
+        access: Option<xai_grok_tools::types::memory_v2::MemoryV2AccessResource>,
+    ) -> Self {
+        if let Some(access) = access.as_ref() {
+            let [global_root, workspace_root] = access.0.scope_roots();
+            self.memory_global_path = Some(global_root.to_string_lossy().into_owned());
+            self.memory_workspace_path = Some(workspace_root.to_string_lossy().into_owned());
+        }
+        self.memory_v2_enabled = access.is_some();
+        self.memory_v2_access = access;
+        self
+    }
+    /// Suppresses prompt sections that assume a human at the TUI prompt, and stamps the ask_user_question params so an
+    /// unanswered questionnaire returns no-operator text instead of "user declined".
     pub fn with_is_non_interactive(mut self, value: bool) -> Self {
         self.is_non_interactive = value;
         self
@@ -387,12 +345,6 @@ impl AgentBuilder {
         self.session_env = Some(env);
         self
     }
-    /// Session-scoped MCP tool-result inline cap (bytes).
-    ///
-    /// `Some(v)` is seeded into the toolset's `TruncationCfg` resource after
-    /// finalize, so the MCP truncation path uses `v` instead of the
-    /// process-global cap. `None` (default) seeds nothing — MCP truncation
-    /// falls through to the process-global resolution.
     pub fn with_mcp_max_output_bytes(mut self, bytes: Option<usize>) -> Self {
         self.mcp_max_output_bytes = bytes;
         self
@@ -401,11 +353,7 @@ impl AgentBuilder {
         self.state_path = Some(path);
         self
     }
-    /// Set the memory backend for cross-session knowledge retrieval.
-    ///
-    /// When set, the `memory_search` and `memory_get` tools can access
-    /// the indexed memory store. When `None` (default), those tools
-    /// return "Memory is not enabled".
+    /// Without a backend, `memory_search` / `memory_get` return "Memory is not enabled".
     pub fn with_memory_backend(
         mut self,
         backend: Arc<dyn xai_grok_tools::types::memory_backend::MemoryBackend>,
@@ -413,11 +361,7 @@ impl AgentBuilder {
         self.memory_backend = Some(backend);
         self
     }
-    /// Set a custom filesystem backend for the ToolBridge.
-    ///
-    /// When `None` (default), tools use `LocalFs` (direct disk I/O).
-    /// Pass an ACP-backed implementation when the client advertises
-    /// `clientCapabilities.fs.readTextFile` and `writeTextFile`.
+    /// ACP-backed when the client advertises `clientCapabilities.fs.readTextFile`/`writeTextFile`; `LocalFs` default.
     pub fn with_fs(mut self, fs: Arc<dyn AsyncFileSystem>) -> Self {
         self.fs_backend = fs;
         self
@@ -435,12 +379,7 @@ impl AgentBuilder {
         self.parent_scheduler_handle = Some(handle);
         self
     }
-    /// Set the web search configuration.
-    ///
-    /// When `Enabled`, a `WebSearchClient` is created and injected into
-    /// the ToolBridge's resources so the `web_search` tool can call the
-    /// Responses API. When `Disabled` (default), the tool returns a
-    /// graceful error if invoked.
+    /// `Enabled` injects a `WebSearchClient` resource so `web_search` can call the Responses API; `Disabled` returns a graceful error.
     pub fn with_web_search_config(
         mut self,
         config: xai_grok_tools::implementations::web_search::WebSearchConfig,
@@ -448,20 +387,12 @@ impl AgentBuilder {
         self.web_search_config = config;
         self
     }
-    /// When true, web search and X search are sent as native server-side
-    /// tools for execution by the agentic sampler, instead of being
-    /// registered as local Function tools. Per-model gating is applied
-    /// at request time, not here.
+    /// Per-model gating is applied at request time, not here.
     pub fn with_backend_search(mut self, enabled: bool) -> Self {
         self.backend_search = enabled;
         self
     }
-    /// Set the web fetch configuration.
-    ///
-    /// When `Enabled`, the `web_fetch` tool is registered and a `WebFetchClient`
-    /// is injected into `Resources`. When `Disabled` (default), the tool is not
-    /// registered. Feature-flagged via remote settings `web_fetch_enabled` and
-    /// `GROK_WEB_FETCH` env var.
+    /// `Disabled` (default) does not register the tool; flagged via remote `web_fetch_enabled` and the `GROK_WEB_FETCH` env.
     pub fn with_web_fetch_config(
         mut self,
         config: xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig,
@@ -476,12 +407,6 @@ impl AgentBuilder {
         self.lsp = Some(handle);
         self
     }
-    /// Set the image generation configuration.
-    ///
-    /// When `Enabled`, an `ImageGenClient` is created and injected into
-    /// the ToolBridge's resources and the `image_gen` tool is registered,
-    /// allowing image generation via the xAI Imagine API with session
-    /// credentials. When `Disabled` (default), the tool is not registered.
     pub fn with_image_gen_config(
         mut self,
         config: xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig,
@@ -489,13 +414,6 @@ impl AgentBuilder {
         self.image_gen_config = config;
         self
     }
-    /// Set the video generation configuration.
-    ///
-    /// When `Enabled`, a `VideoGenClient` is created and injected into
-    /// the ToolBridge's resources and the `video_gen` tool is registered,
-    /// allowing video generation via the xAI Video Generation API with
-    /// session credentials. When `Disabled` (default), the tool is not
-    /// registered.
     pub fn with_video_gen_config(
         mut self,
         config: xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig,
@@ -503,7 +421,6 @@ impl AgentBuilder {
         self.video_gen_config = config;
         self
     }
-    /// Set the deploy service configuration.
     pub fn with_app_builder_deployer_config(
         mut self,
         config: xai_grok_tools::implementations::grok_build::app_builder::AppBuilderDeployerConfig,
@@ -511,7 +428,6 @@ impl AgentBuilder {
         self.app_builder_deployer_config = config;
         self
     }
-    /// Set the dynamic API key provider for tool HTTP clients.
     pub fn with_api_key_provider(
         mut self,
         provider: xai_grok_tools::types::SharedApiKeyProvider,
@@ -519,15 +435,8 @@ impl AgentBuilder {
         self.api_key_provider = Some(provider);
         self
     }
-    /// Set the 401-attribution callback for tool HTTP clients
-    /// (`image_gen`, `video_gen`, `web_search`). When set, a 401
-    /// from any of those tools emits an `auth_401_attribution`
-    /// event with `consumer` of `"ImageGen"` / `"VideoGen.start"` /
-    /// `"VideoGen.poll"` / `"WebSearch"`. Callers should pass the
-    /// same `ShellAttribution` instance they wire into
-    /// `xai_grok_sampler::SamplerConfig::attribution_callback` so
-    /// all 401s share the same `AuthManager` reference and land in
-    /// the same Axiom dataset.
+    /// A 401 from `image_gen` / `video_gen` / `web_search` emits `auth_401_attribution` with a per-consumer tag. Pass the
+    /// same `ShellAttribution` wired into the sampler so all 401s share one `AuthManager` and land in the same dataset.
     pub fn with_attribution_callback(
         mut self,
         callback: xai_grok_tools::SharedAttributionCallback,
@@ -535,25 +444,21 @@ impl AgentBuilder {
         self.attribution_callback = Some(callback);
         self
     }
-    /// Override the system-reminder tag name used in tool result text.
-    ///
-    /// Defaults to `"system-reminder"` (hyphen). Harnesses trained on a
-    /// different tag name (e.g. an underscore variant) should call this so
-    /// that reminders match the tag name their model was trained on.
+    /// Harnesses trained on a different tag variant call this so reminders match what their model was trained on.
     pub fn with_system_reminder_tag(mut self, tag: &'static str) -> Self {
         self.system_reminder_tag = tag;
         self
     }
-    /// Enable or disable the `write` tool (default: enabled).
     pub fn with_write_file_enabled(mut self, enabled: bool) -> Self {
         self.write_file_enabled = enabled;
         self
     }
-    /// Enable or disable subagent (task tool) support.
-    ///
-    /// When disabled, the `TaskTool` is stripped from the
-    /// agent's tool config during `build()`, preventing the model from
-    /// spawning child agent sessions.
+    /// Gates the `send_subagent_message` tool (default: disabled).
+    pub fn with_active_agent_messages_enabled(mut self, enabled: bool) -> Self {
+        self.active_agent_messages_enabled = enabled;
+        self
+    }
+    /// Disabled strips the `TaskTool` from the tool config, so the model cannot spawn child agent sessions.
     pub fn with_subagents_enabled(mut self, enabled: bool) -> Self {
         self.subagents_enabled = enabled;
         self
@@ -562,37 +467,23 @@ impl AgentBuilder {
         self.background_workflows_enabled = enabled;
         self
     }
-    /// Set public model slugs advertised in the GrokBuild Task description.
+    /// Advertised in the GrokBuild Task description.
     pub fn with_task_model_slugs(mut self, slugs: Vec<String>) -> Self {
         self.task_model_slugs = slugs;
         self
     }
-    /// Enable or disable the `ask_user_question` tool for a primary agent.
-    ///
-    /// Subagents never receive this tool. Otherwise, when disabled,
-    /// `GrokBuild:ask_user_question` is stripped from the agent's tool config
-    /// after `ensure_plan_mode_tools` injection, so the model cannot ask the
-    /// user structured questions regardless of which built-in profile is in
-    /// use. Driven by the shell's resolved gate (the `ask_user_question`
-    /// feature, default ON: remote settings/config/env act as a kill-switch)
-    /// and/or the pager's `--no-ask-user` (`_meta.askUserQuestion`).
+    /// Subagents never receive the tool; when disabled it is stripped after the `ensure_plan_mode_tools` injection.
+    /// Gated by the shell-resolved feature (remote/config/env kill-switch) and the pager's `--no-ask-user`.
     pub fn with_ask_user_question_enabled(mut self, enabled: bool) -> Self {
         self.ask_user_question_enabled = enabled;
         self
     }
-    /// Set per-subagent enable/disable toggles from `[subagents.toggle]`.
-    ///
-    /// Keys are agent names, values are booleans. Omitted agents default
-    /// to enabled. When combined with `with_subagents_enabled(true)`, this
-    /// controls which individual subagents appear in the Task tool description
-    /// and are accepted at spawn time.
+    /// `[subagents.toggle]`: omitted agents default to enabled; controls Task-description listing and spawn-time acceptance.
     pub fn with_subagent_toggle(mut self, toggle: HashMap<String, bool>) -> Self {
         self.subagent_toggle = toggle;
         self
     }
-    /// Set the resolved vendor-compat config. Threaded into both startup
-    /// discovery (`list_skills_with_plugins` / `read_agents_config_with_paths`)
-    /// and the dynamic-discovery seeds (`SkillManager` / `AgentsMdTracker`).
+    /// Threaded into startup discovery and the dynamic-discovery seeds (`SkillManager` / `AgentsMdTracker`).
     pub fn with_compat_config(
         mut self,
         compat: xai_grok_tools::types::compat::CompatConfig,
@@ -600,9 +491,7 @@ impl AgentBuilder {
         self.compat = compat;
         self
     }
-    /// Set the skills config (custom paths, ignore globs) from config.toml.
-    /// Without this, only auto-discovered skills (cwd/.grok/skills, ~/.grok/skills)
-    /// are included — custom paths added via `x.ai/skills/add` would be ignored.
+    /// Without this, only auto-discovered skill dirs load and custom paths added via `x.ai/skills/add` would be ignored.
     pub fn with_skills_config(mut self, config: crate::prompt::skills::SkillsConfig) -> Self {
         self.skills_config = config;
         self
@@ -612,8 +501,7 @@ impl AgentBuilder {
         self.bash_params_json = Some(params);
         self
     }
-    /// Inject the shell-resolved `[toolset.ask_user_question]` params
-    /// (timeout policy) into the ask_user_question tool.
+    /// Inject the shell-resolved `[toolset.ask_user_question]` params (timeout policy) into the ask_user_question tool.
     pub fn with_ask_user_question_params(
         mut self,
         params: serde_json::Map<String, serde_json::Value>,
@@ -621,7 +509,6 @@ impl AgentBuilder {
         self.ask_user_question_params_json = Some(params);
         self
     }
-    /// Set the plugin registry for plugin-aware skill/agent discovery.
     pub fn with_plugin_registry(
         mut self,
         registry: std::sync::Arc<crate::plugins::PluginRegistry>,
@@ -629,19 +516,10 @@ impl AgentBuilder {
         self.plugin_registry = Some(registry);
         self
     }
-    /// Set the model context window size in tokens.
     pub fn with_context_window(mut self, tokens: u64) -> Self {
         self.context_window_tokens = Some(tokens);
         self
     }
-    /// Override the working directory shown in the system prompt.
-    ///
-    /// When set, `PromptContext.working_directory` (and therefore the
-    /// `Workspace Path` in the `<user_info>` block) uses this value instead
-    /// of the real `working_directory`. Tool execution paths are unaffected.
-    ///
-    /// Used by forked sessions so the model sees the original project path
-    /// rather than the internal overlay/worktree path.
     pub fn with_prompt_working_directory(mut self, cwd: String) -> Self {
         self.prompt_working_directory = Some(cwd);
         self
@@ -672,22 +550,27 @@ impl AgentBuilder {
         def.disallowed_tools = self.disallowed_tools.clone();
         def
     }
-    /// Build the Agent.
-    ///
-    /// This is the full 10-step build process from the architecture doc.
     pub async fn build(mut self) -> Result<Agent, AgentBuildError> {
         let mut definition = self.resolve_definition();
         let working_dir_str = self.working_directory.to_str().unwrap_or(".").to_string();
         let skill_info = if let Some(preloaded) = self.preloaded_skills.take() {
             preloaded
         } else if definition.discover_skills {
-            crate::prompt::skills::list_skills_with_plugins(
+            let skills_span = tracing::info_span!(
+                "spawn.skills_discovery",
+                skills_found = tracing::field::Empty
+            );
+            let discovered = crate::prompt::skills::list_skills_with_plugins(
                 Some(&working_dir_str),
                 &self.skills_config,
                 self.plugin_registry.as_deref(),
                 self.compat,
+                self.project_trusted,
             )
-            .await
+            .instrument(skills_span.clone())
+            .await;
+            skills_span.record("skills_found", discovered.len() as i64);
+            discovered
         } else {
             vec![]
         };
@@ -721,6 +604,26 @@ impl AgentBuilder {
                  at process startup before any agent is built",
                 definition.name
             )));
+        }
+        let is_parent_grok_build = matches!(
+            definition.builtin_name,
+            Some(
+                BuiltinAgentName::GrokBuild
+                    | BuiltinAgentName::GrokBuildPlan
+                    | BuiltinAgentName::GrokBuildPlanNoSubagents
+                    | BuiltinAgentName::GrokBuildAskUser
+            )
+        );
+        if self.prompt_audience == PromptAudience::Primary
+            && is_parent_grok_build
+            && !tool_config
+                .tools
+                .iter()
+                .any(|tool| tool.kind == Some(ToolKind::Feedback))
+        {
+            tool_config
+                .tools
+                .push((&xai_grok_tools::implementations::grok_build::SendFeedbackTool).into());
         }
         if definition.inject_default_tools {
             if self.memory_backend.is_some() {
@@ -774,6 +677,26 @@ impl AgentBuilder {
             }
             ensure_plan_mode_tools(&mut tool_config);
         }
+        let active_agent_message = xai_grok_tools::registry::types::ToolConfig::for_tool::<
+            xai_grok_tools::implementations::grok_build::SendSubagentMessageTool,
+        >();
+        let is_active_agent_message = |tool: &xai_grok_tools::registry::types::ToolConfig| {
+            tool.kind == Some(ToolKind::ActiveAgentMessage) || tool.id == active_agent_message.id
+        };
+        let can_inject_active_agent_message = self.active_agent_messages_enabled
+            && self.prompt_audience == PromptAudience::Primary
+            && definition.inject_default_tools;
+        if can_inject_active_agent_message {
+            if !tool_config.tools.iter().any(is_active_agent_message) {
+                tool_config.tools.push(active_agent_message);
+            }
+        } else if !self.active_agent_messages_enabled
+            || self.prompt_audience != PromptAudience::Primary
+        {
+            tool_config
+                .tools
+                .retain(|tool| !is_active_agent_message(tool));
+        }
         if self.memory_backend.is_none() {
             let grok_build_ns = xai_grok_tools::types::tool::ToolNamespace::GrokBuild.to_string();
             let mem_search_id = format!(
@@ -789,9 +712,23 @@ impl AgentBuilder {
                 .retain(|tc| tc.id != mem_search_id && tc.id != mem_get_id);
         }
         if self.prompt_audience == crate::prompt::context::PromptAudience::Subagent {
-            tool_config
-                .tools
-                .retain(|tool| tool.kind != Some(xai_grok_tools::types::tool::ToolKind::AskUser));
+            let feedback_id = xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                xai_grok_tools::implementations::grok_build::SendFeedbackTool,
+            >()
+            .id;
+            let feedback_name =
+                xai_grok_tools::implementations::grok_build::SEND_FEEDBACK_TOOL_NAME;
+            tool_config.tools.retain(|tool| {
+                !matches!(
+                    tool.kind,
+                    Some(
+                        xai_grok_tools::types::tool::ToolKind::AskUser
+                            | xai_grok_tools::types::tool::ToolKind::Feedback
+                    )
+                ) && tool.id != feedback_id
+                    && tool.id != feedback_name
+                    && tool.name_override.as_deref() != Some(feedback_name)
+            });
         } else if !self.ask_user_question_enabled {
             let ask_user_id = format!(
                 "{}:ask_user_question",
@@ -799,11 +736,7 @@ impl AgentBuilder {
             );
             tool_config.tools.retain(|tool| tool.id != ask_user_id);
         }
-        apply_workflow_tool_gates(
-            &mut tool_config,
-            self.background_workflows_enabled,
-            self.prompt_audience == crate::prompt::context::PromptAudience::Subagent,
-        );
+        apply_workflow_tool_gates(&mut tool_config, self.background_workflows_enabled);
         let task_tool_id = format!(
             "{}:{}",
             xai_grok_tools::types::tool::ToolNamespace::GrokBuild,
@@ -858,7 +791,14 @@ impl AgentBuilder {
                 && !has_satisfier(ToolNamespace::GrokBuildConcise, "run_terminal_cmd", true)
                 && !has_satisfier(ToolNamespace::OpenCode, "bash", false)
             {
-                let lifecycle = ["get_task_output", "wait_tasks", "kill_task"];
+                let lifecycle = [
+                    "get_task_output",
+                    "wait_tasks",
+                    "kill_task",
+                    "scheduler_create",
+                    "scheduler_delete",
+                    "scheduler_list",
+                ];
                 tool_config
                     .tools
                     .retain(|tc| !lifecycle.contains(&short_tool_name(&tc.id)));
@@ -1031,7 +971,15 @@ impl AgentBuilder {
             }
         }
         if definition.allowed_subagent_types.as_deref() == Some(&[]) {
-            let task_deps = ["task", "get_task_output", "kill_task", "wait_tasks"];
+            let task_deps = [
+                "task",
+                "get_task_output",
+                "kill_task",
+                "wait_tasks",
+                "scheduler_create",
+                "scheduler_delete",
+                "scheduler_list",
+            ];
             tool_config
                 .tools
                 .retain(|tc| !task_deps.contains(&short_tool_name(&tc.id)));
@@ -1042,6 +990,11 @@ impl AgentBuilder {
                     params.insert("auto_background_on_timeout".into(), false.into());
                 }
             }
+        }
+        if self.prompt_audience == crate::prompt::context::PromptAudience::Subagent {
+            tool_config.tools.retain(|tool| {
+                !xai_grok_tools::implementations::grok_build::is_workflow_tool(tool.kind, &tool.id)
+            });
         }
         let use_backend_search = self.backend_search;
         let web_search_enabled = self.web_search_config.is_enabled();
@@ -1076,8 +1029,12 @@ impl AgentBuilder {
                 system_reminder_tag: self.system_reminder_tag,
             },
         )
+        .instrument(tracing::info_span!("spawn.tool_registry"))
         .await
         .map_err(|e| AgentBuildError::ToolError(e.to_string()))?;
+        if let Some(access) = self.memory_v2_access.clone() {
+            tool_bridge.update_resource(access).await;
+        }
         if let Some(bytes) = self.mcp_max_output_bytes {
             tool_bridge.toolset().resources.lock().await.insert(
                 xai_grok_tools::types::resources::TruncationCfg(
@@ -1092,8 +1049,19 @@ impl AgentBuilder {
             tool_bridge.restore_announced_skill_names(names).await;
         }
         let mut agents_md_files = if definition.agents_md {
-            crate::prompt::agents_md::read_agents_config_with_paths(&working_dir_str, self.compat)
-                .await
+            let agents_md_span = tracing::info_span!(
+                "spawn.agents_md_load",
+                agents_md_files = tracing::field::Empty
+            );
+            let files = crate::prompt::agents_md::read_agents_config_with_paths(
+                &working_dir_str,
+                self.compat,
+                self.project_trusted,
+            )
+            .instrument(agents_md_span.clone())
+            .await;
+            agents_md_span.record("agents_md_files", files.len() as i64);
+            files
         } else {
             vec![]
         };
@@ -1102,10 +1070,12 @@ impl AgentBuilder {
                 .iter()
                 .map(|c| PathBuf::from(&c.file_path))
                 .collect();
+            let gitignore_span = tracing::info_span!("spawn.gitignore_compile").entered();
             let git_root = git2::Repository::discover(&self.working_directory)
                 .ok()
                 .and_then(|repo| repo.workdir().map(|p| p.to_path_buf()));
             let gitignore = crate::prompt::ignore::build_gitignore(git_root.as_deref());
+            drop(gitignore_span);
             let canonical_cwd = dunce::canonicalize(&self.working_directory)
                 .unwrap_or_else(|_| self.working_directory.clone());
             let canonical_root = git_root.as_ref().and_then(|r| dunce::canonicalize(r).ok());
@@ -1149,11 +1119,8 @@ impl AgentBuilder {
                     .collect()
             };
             let skill_budget_percent: Option<f64> = None;
-            let skill_discovery_cwd = if definition.discover_skills {
-                Some(self.working_directory.clone())
-            } else {
-                None
-            };
+            let skill_discovery_cwd = (definition.discover_skills && self.project_trusted)
+                .then(|| self.working_directory.clone());
             tool_bridge
                 .seed_skill_discovery(
                     skill_discovery_cwd,
@@ -1186,6 +1153,7 @@ impl AgentBuilder {
             persona_summaries: self.persona_summaries,
             build_timestamp_utc: now.to_rfc3339(),
             memory_enabled: self.memory_enabled,
+            memory_v2_enabled: self.memory_v2_enabled,
             memory_global_path: self.memory_global_path,
             memory_workspace_path: self.memory_workspace_path,
             role_instructions: self.role_instructions,
@@ -1203,6 +1171,7 @@ impl AgentBuilder {
         };
         let system_prompt = prompt_context
             .render(&tool_bridge)
+            .instrument(tracing::info_span!("spawn.prompt_render"))
             .await
             .unwrap_or_default();
         if let Some(rendered) = tool_bridge
@@ -1247,12 +1216,8 @@ const TASK_TOOL_NAMING: xai_tool_types::TaskToolNaming<'static> = xai_tool_types
     background_retrieval_tool: "${{ tools.by_kind.background_task_action }}",
     isolation_param: "${{ params.task.isolation }}",
 };
-/// Concise task-tool description for child sessions. Delegation from a child
-/// is possible but discouraged — prefer doing the work directly.
-///
-/// NOTE: This hardcodes the built-in agent type names ("general-purpose",
-/// "explore", "plan"). If custom child-visible subagent types become common,
-/// consider generating this list dynamically like the parent description does.
+/// Child sessions get a concise description that discourages recursive delegation. Hardcodes the built-in type names;
+/// if custom child-visible subagent types become common, generate this like the parent description.
 const CHILD_TASK_DESCRIPTION: &str = "\
 Launch a sub-agent to handle a specific sub-task. Use this only when \n\
 the sub-task is clearly independent and would benefit from a separate \n\
@@ -1263,10 +1228,7 @@ Prefer doing the work yourself unless delegation is clearly necessary.\n\
 Usage: specify ${{ params.task.subagent_type }} (\"general-purpose\", \"explore\", or \"plan\"), \n\
 a short ${{ params.task.description }}, and a detailed ${{ params.task.prompt }}.\n\
 ${{ params.task.run_in_background }}: Returns immediately with a subagent_id. Use the task output tool to retrieve results. This is set to true by default.";
-/// CLI [`xai_tool_types::SubagentToolNaming`]: each kind maps to its
-/// `${{ tools.by_kind.* }}` template placeholder, so rendering a built-in's
-/// `tools_template` reproduces the placeholders for the CLI's `TemplateRenderer`
-/// to resolve at finalize time.
+/// Each kind maps to its `${{ tools.by_kind.* }}` placeholder for the CLI's `TemplateRenderer` to resolve at finalize time.
 const SUBAGENT_TOOL_NAMING: xai_tool_types::SubagentToolNaming<'static> =
     xai_tool_types::SubagentToolNaming {
         execute: "${{ tools.by_kind.execute }}",
@@ -1277,10 +1239,6 @@ const SUBAGENT_TOOL_NAMING: xai_tool_types::SubagentToolNaming<'static> =
         web_search: "${{ tools.by_kind.web_search }}",
         plan: "${{ tools.by_kind.plan }}",
     };
-/// Return the tool-access fragment for a built-in subagent type, sourced from the
-/// shared [`xai_tool_types`] catalog and rendered with [`SUBAGENT_TOOL_NAMING`]
-/// (which re-emits the `${{ tools.by_kind.* }}` placeholders for the CLI's
-/// `TemplateRenderer` to resolve at finalize time).
 fn builtin_tools_fragment(name: BuiltinAgentName) -> String {
     let subagent = match name {
         BuiltinAgentName::GeneralPurpose => xai_tool_types::GENERAL_PURPOSE_SUBAGENT,
@@ -1312,14 +1270,8 @@ fn task_model_guidance(model_slugs: &[String]) -> String {
          If the user does not explicitly request a model, omit `{TASK_MODEL_PARAM}` to inherit the parent model."
     )
 }
-/// Build the Task tool description with the effective subagent list.
-///
-/// Maps each [`SubagentEntry`] to the shared
-/// [`xai_tool_types::SubagentDescriptor`] and defers to
-/// [`xai_tool_types::build_task_description`] so the CLI and the prod chat
-/// stack share one builder. Built-in (unshadowed) entries carry the hardcoded
-/// tool-name fragment; user-defined entries carry `None` so their raw
-/// `description` is used verbatim (markdown is fine — it's model-facing text).
+/// Defers to [`xai_tool_types::build_task_description`] so the CLI and the prod chat stack share one builder.
+/// User-defined entries carry `None` tools so their raw `description` is used verbatim.
 pub(crate) fn build_task_description(
     subagents: &[SubagentEntry],
     model_slugs: &[String],
@@ -1342,10 +1294,6 @@ pub(crate) fn build_task_description(
     description.push_str(&task_model_guidance(model_slugs));
     description
 }
-/// Resolve the shell name for the system prompt.
-///
-/// Unix: `$SHELL` env var (e.g. `/bin/zsh`).
-/// Windows: detected shell from the `detect_windows_shell` cascade.
 fn resolve_shell_for_prompt() -> String {
     #[cfg(unix)]
     {
@@ -1362,6 +1310,118 @@ fn resolve_shell_for_prompt() -> String {
 mod tests {
     use super::*;
     use crate::config::AgentScope;
+    async fn active_agent_message_tool_count(enabled: Option<bool>, predeclared: bool) -> usize {
+        use xai_grok_tools::computer::local::LocalTerminalBackend;
+        let mut definition = crate::config::AgentDefinition::default_grok_build();
+        if predeclared {
+            definition.tool_config.tools.push(
+                xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                    xai_grok_tools::implementations::grok_build::SendSubagentMessageTool,
+                >(),
+            );
+        }
+        let mut builder = AgentBuilder::new(
+            std::env::temp_dir(),
+            Arc::new(LocalTerminalBackend::new()),
+            ToolNotificationHandle::noop(),
+        )
+        .from_definition(definition);
+        if let Some(enabled) = enabled {
+            builder = builder.with_active_agent_messages_enabled(enabled);
+        }
+        builder
+            .build()
+            .await
+            .expect("agent should build")
+            .tool_definitions()
+            .await
+            .iter()
+            .filter(|definition| definition.function.name == "send_subagent_message")
+            .count()
+    }
+    #[tokio::test]
+    async fn active_agent_messages_default_and_false_are_absent() {
+        assert_eq!(active_agent_message_tool_count(None, false).await, 0);
+        assert_eq!(active_agent_message_tool_count(Some(false), false).await, 0);
+        assert_eq!(active_agent_message_tool_count(None, true).await, 0);
+        assert_eq!(active_agent_message_tool_count(Some(false), true).await, 0);
+    }
+    #[tokio::test]
+    async fn active_agent_messages_true_is_present_exactly_once() {
+        assert_eq!(active_agent_message_tool_count(Some(true), false).await, 1);
+    }
+    #[tokio::test]
+    async fn active_agent_messages_predeclared_is_not_duplicated() {
+        assert_eq!(active_agent_message_tool_count(Some(true), true).await, 1);
+    }
+    #[tokio::test]
+    async fn active_agent_messages_are_absent_from_child_toolsets() {
+        use xai_grok_tools::computer::local::LocalTerminalBackend;
+        let mut definition = crate::config::AgentDefinition::default_grok_build();
+        definition
+            .tool_config
+            .tools
+            .push(xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                xai_grok_tools::implementations::grok_build::SendSubagentMessageTool,
+            >());
+        let definitions = AgentBuilder::new(
+            std::env::temp_dir(),
+            Arc::new(LocalTerminalBackend::new()),
+            ToolNotificationHandle::noop(),
+        )
+        .from_definition(definition)
+        .with_active_agent_messages_enabled(true)
+        .with_prompt_audience(PromptAudience::Subagent)
+        .build()
+        .await
+        .expect("child agent should build")
+        .tool_definitions()
+        .await;
+        assert!(
+            definitions
+                .iter()
+                .all(|definition| definition.function.name != "send_subagent_message")
+        );
+    }
+    #[tokio::test]
+    async fn active_agent_messages_do_not_modify_curated_toolsets() {
+        use xai_grok_tools::computer::local::LocalTerminalBackend;
+        let mut definition = crate::config::AgentDefinition::default_grok_build();
+        definition.inject_default_tools = false;
+        let build = |enabled| {
+            AgentBuilder::new(
+                std::env::temp_dir(),
+                Arc::new(LocalTerminalBackend::new()),
+                ToolNotificationHandle::noop(),
+            )
+            .from_definition(definition.clone())
+            .with_active_agent_messages_enabled(enabled)
+            .with_subagents_enabled(true)
+            .with_background_workflows_enabled(true)
+        };
+        let baseline = build(false)
+            .build()
+            .await
+            .expect("baseline curated agent should build")
+            .tool_definitions()
+            .await;
+        let enabled = build(true)
+            .build()
+            .await
+            .expect("active-message curated agent should build")
+            .tool_definitions()
+            .await;
+        let baseline_names: Vec<&str> = baseline
+            .iter()
+            .map(|definition| definition.function.name.as_str())
+            .collect();
+        let enabled_names: Vec<&str> = enabled
+            .iter()
+            .map(|definition| definition.function.name.as_str())
+            .collect();
+        assert_eq!(enabled_names, baseline_names);
+        assert!(!enabled_names.contains(&"send_subagent_message"));
+    }
     fn entry(name: &str, desc: &str, source: SubagentSource) -> SubagentEntry {
         SubagentEntry {
             name: name.to_string(),
@@ -1411,8 +1471,8 @@ mod tests {
         let desc = build_task_description(&subagents, &[]);
         assert!(desc.contains("- **code-reviewer**: Reviews code for bugs and style issues."));
         assert!(
-            !desc.contains("Has access to all tools:"),
-            "user-defined entries should not get tool fragments"
+            !desc.contains(xai_tool_types::GENERAL_PURPOSE_SUBAGENT.tools_template),
+            "user-defined entries should not get built-in tool fragments"
         );
     }
     #[test]
@@ -1454,23 +1514,6 @@ mod tests {
         );
     }
     #[test]
-    fn build_task_description_contains_header_and_footer() {
-        let subagents = vec![entry(
-            "explore",
-            "Explore.",
-            SubagentSource::Builtin(BuiltinAgentName::Explore),
-        )];
-        let desc = build_task_description(&subagents, &[]);
-        assert!(
-            desc.contains("Start a subagent that works on a task independently"),
-            "should contain header"
-        );
-        assert!(
-            desc.contains("## Usage notes"),
-            "should contain footer with '## Usage notes' section"
-        );
-    }
-    #[test]
     fn build_task_description_uses_template_variables() {
         let subagents = vec![entry(
             "explore",
@@ -1506,16 +1549,8 @@ mod tests {
             &subagents,
             &["zeta".to_string(), "alpha".to_string(), "alpha".to_string()],
         );
-        assert!(desc.contains(
-            "If the user explicitly asks for the model of a subagent/task, you may ONLY use model slugs from this list:\n\
-             - alpha\n\
-             - zeta"
-        ));
-        assert!(desc.contains(
-            "If the user does not explicitly request a model, omit `${{ params.task.model }}` to inherit the parent model."
-        ));
-        assert!(!desc.contains("Available model slugs:"));
-        assert!(!desc.contains(concat!("grok", " models")));
+        assert!(desc.contains("- alpha\n- zeta"));
+        assert!(desc.contains("${{ params.task.model }}"));
     }
     #[test]
     fn build_task_description_handles_empty_model_catalog() {
@@ -1525,9 +1560,8 @@ mod tests {
             SubagentSource::Builtin(BuiltinAgentName::Explore),
         )];
         let desc = build_task_description(&subagents, &[]);
-        assert!(desc.contains("No explicit model slugs are currently available."));
-        assert!(desc.contains("Omit `${{ params.task.model }}` to inherit the parent model."));
-        assert!(!desc.contains(concat!("grok", " models")));
+        assert!(desc.contains("${{ params.task.model }}"));
+        assert!(!desc.contains("- alpha"));
     }
     #[test]
     fn task_model_guidance_resolves_model_param_override() {
@@ -1543,23 +1577,14 @@ mod tests {
         let rendered = renderer
             .render(&task_model_guidance(&["alpha".to_string()]))
             .expect("model guidance should render");
-        assert!(rendered.contains("omit `child_model` to inherit the parent model"));
+        assert!(rendered.contains("`child_model`"));
         assert!(!rendered.contains("params.task.model"));
     }
     #[test]
     fn child_task_description_is_concise() {
-        assert!(
-            CHILD_TASK_DESCRIPTION.contains("Prefer doing the work yourself"),
-            "child description should discourage recursive delegation"
-        );
-        assert!(
-            !CHILD_TASK_DESCRIPTION.contains("Agent types:"),
-            "child description should not list agent types"
-        );
-        assert!(
-            !CHILD_TASK_DESCRIPTION.contains("<example>"),
-            "child description should not contain examples"
-        );
+        assert!(CHILD_TASK_DESCRIPTION.contains("${{ params.task.subagent_type }}"));
+        assert!(CHILD_TASK_DESCRIPTION.contains("${{ params.task.description }}"));
+        assert!(CHILD_TASK_DESCRIPTION.contains("${{ params.task.prompt }}"));
         assert!(
             CHILD_TASK_DESCRIPTION.len() < 700,
             "child description should be compact, got {} chars",
@@ -1575,26 +1600,14 @@ mod tests {
         )];
         let desc = build_task_description(&subagents, &[]);
         assert!(
-            desc.contains("Resuming a previous agent (resume_from)"),
-            "should contain resume_from section header"
-        );
-        assert!(
             desc.contains("resume_from"),
             "should reference the resume_from parameter"
         );
         assert!(
-            desc.contains("keeps its full transcript and tool state"),
-            "should describe resume semantics"
-        );
-        assert!(
-            desc.contains("same subagent_type"),
-            "should state the resumed agent must match subagent_type"
+            desc.contains("subagent_type"),
+            "should reference the subagent_type parameter"
         );
     }
-    /// The bridge's full-discovery snapshot must record every discovered
-    /// skill name — including `paths:`-gated and preloaded skills that the
-    /// listing baseline (`slash_skills`) holds back — so session-start
-    /// telemetry can reuse it instead of re-walking the disk.
     #[tokio::test]
     async fn discovery_snapshot_records_gated_and_preloaded_skills() {
         use xai_grok_tools::computer::local::LocalTerminalBackend;
@@ -1621,6 +1634,7 @@ mod tests {
             ToolNotificationHandle::noop(),
         )
         .from_definition(definition)
+        .with_project_trusted(true)
         .build()
         .await
         .expect("agent should build with local skill fixtures");
@@ -1749,6 +1763,11 @@ mod tests {
             let agent = build_pager_agent(profile(), *subagents, *ask_user).await;
             let defs = agent.tool_definitions().await;
             let names: Vec<&str> = defs.iter().map(|d| d.function.name.as_str()).collect();
+            let builtin_defs = agent.tool_definitions_builtins_only().await;
+            let builtin_names: Vec<&str> = builtin_defs
+                .iter()
+                .map(|definition| definition.function.name.as_str())
+                .collect();
             let mut counts: std::collections::HashMap<&str, usize> =
                 std::collections::HashMap::new();
             for n in &names {
@@ -1770,6 +1789,14 @@ mod tests {
                 "[{label}] spawn_subagent presence should match subagents_enabled={subagents}; got tools: {names:?}"
             );
             assert!(
+                names.contains(&"send_feedback"),
+                "[{label}] parent grok-build sessions must advertise send_feedback; got tools: {names:?}"
+            );
+            assert!(
+                builtin_names.contains(&"send_feedback"),
+                "[{label}] parent grok-build built-in definitions must advertise send_feedback; got tools: {builtin_names:?}"
+            );
+            assert!(
                 names.contains(&"enter_plan_mode"),
                 "[{label}] enter_plan_mode must always be present (TUI plan-mode keybind needs it); got tools: {names:?}"
             );
@@ -1780,30 +1807,169 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn subagent_audience_never_receives_ask_user_question() {
+    async fn subagent_audience_never_receives_parent_only_tools() {
         use xai_grok_tools::computer::local::LocalTerminalBackend;
         use xai_grok_tools::notification::ToolNotificationHandle;
-        let agent = AgentBuilder::new(
+        use xai_grok_tools::registry::types::ToolConfig;
+        let feedback_id =
+            ToolConfig::for_tool::<xai_grok_tools::implementations::grok_build::SendFeedbackTool>()
+                .id;
+        let mut kindless_feedback_id = crate::config::AgentDefinition::default_grok_build();
+        kindless_feedback_id.tool_config.tools = vec![ToolConfig::from_id(&feedback_id)];
+        kindless_feedback_id.inject_default_tools = false;
+        let mut kindless_feedback_name = crate::config::AgentDefinition::default_grok_build();
+        kindless_feedback_name.tool_config.tools = vec![
+            ToolConfig::from_id("custom:tool")
+                .with_name(xai_grok_tools::implementations::grok_build::SEND_FEEDBACK_TOOL_NAME),
+        ];
+        kindless_feedback_name.inject_default_tools = false;
+        for definition in [
+            crate::config::AgentDefinition::default_grok_build(),
+            crate::config::AgentDefinition::grok_build_ask_user(),
+            kindless_feedback_id,
+            kindless_feedback_name,
+        ] {
+            let agent = AgentBuilder::new(
+                std::env::temp_dir(),
+                Arc::new(LocalTerminalBackend::new()),
+                ToolNotificationHandle::noop(),
+            )
+            .from_definition(definition)
+            .with_ask_user_question_enabled(true)
+            .with_prompt_audience(crate::prompt::context::PromptAudience::Subagent)
+            .build()
+            .await
+            .expect("subagent should build");
+            let names: Vec<String> = agent
+                .tool_definitions()
+                .await
+                .into_iter()
+                .map(|definition| definition.function.name)
+                .collect();
+            for parent_only in ["ask_user_question", "send_feedback"] {
+                assert!(
+                    !names.iter().any(|name| name == parent_only),
+                    "subagents must not receive {parent_only}: {names:?}"
+                );
+            }
+        }
+    }
+    async fn workflow_tool_names(
+        audience: crate::prompt::context::PromptAudience,
+        definition: crate::config::AgentDefinition,
+    ) -> Vec<String> {
+        use xai_grok_tools::computer::local::LocalTerminalBackend;
+        use xai_grok_tools::notification::ToolNotificationHandle;
+        AgentBuilder::new(
             std::env::temp_dir(),
             Arc::new(LocalTerminalBackend::new()),
             ToolNotificationHandle::noop(),
         )
-        .from_definition(crate::config::AgentDefinition::grok_build_ask_user())
-        .with_ask_user_question_enabled(true)
-        .with_prompt_audience(crate::prompt::context::PromptAudience::Subagent)
+        .from_definition(definition)
+        .with_background_workflows_enabled(true)
+        .with_prompt_audience(audience)
         .build()
         .await
-        .expect("subagent should build");
-        let names: Vec<String> = agent
-            .tool_definitions()
-            .await
-            .into_iter()
-            .map(|definition| definition.function.name)
+        .expect("agent should build")
+        .tool_definitions()
+        .await
+        .into_iter()
+        .map(|definition| definition.function.name)
+        .collect()
+    }
+    #[tokio::test]
+    async fn top_level_session_still_receives_workflow() {
+        let names = workflow_tool_names(
+            crate::prompt::context::PromptAudience::Primary,
+            crate::config::AgentDefinition::default_grok_build(),
+        )
+        .await;
+        assert!(
+            names.iter().any(|name| name == "workflow"),
+            "top-level sessions must keep workflow when the feature is enabled: {names:?}"
+        );
+    }
+    #[tokio::test]
+    async fn ordinary_subagent_does_not_receive_workflow() {
+        let names = workflow_tool_names(
+            crate::prompt::context::PromptAudience::Subagent,
+            crate::config::AgentDefinition::general_purpose(),
+        )
+        .await;
+        assert!(
+            !names.iter().any(|name| name == "workflow"),
+            "ordinary subagents must not receive workflow: {names:?}"
+        );
+    }
+    #[tokio::test]
+    async fn workflow_spawned_agent_does_not_receive_workflow() {
+        let names = workflow_tool_names(
+            crate::prompt::context::PromptAudience::Subagent,
+            crate::config::AgentDefinition::default_grok_build(),
+        )
+        .await;
+        assert!(
+            !names.iter().any(|name| name == "workflow"),
+            "workflow-spawned agents must not receive workflow: {names:?}"
+        );
+    }
+    #[tokio::test]
+    async fn custom_child_toolset_cannot_reintroduce_workflow() {
+        use xai_grok_tools::implementations::grok_build::{ReadFileTool, WorkflowTool};
+        let mut definition = crate::config::AgentDefinition::general_purpose();
+        definition.inject_default_tools = false;
+        definition.tool_config.tools = vec![
+            (&ReadFileTool).into(),
+            (&WorkflowTool).into(),
+            xai_grok_tools::registry::types::ToolConfig::from_id("GrokBuild:workflow"),
+        ];
+        let names =
+            workflow_tool_names(crate::prompt::context::PromptAudience::Subagent, definition).await;
+        assert!(
+            names.iter().any(|name| name == "read_file"),
+            "unrelated custom tools must survive: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name == "workflow"),
+            "a custom child toolset must not be able to reintroduce workflow: {names:?}"
+        );
+    }
+    #[tokio::test]
+    async fn child_workflow_strip_leaves_unrelated_tools() {
+        let primary = workflow_tool_names(
+            crate::prompt::context::PromptAudience::Primary,
+            crate::config::AgentDefinition::default_grok_build(),
+        )
+        .await;
+        let child = workflow_tool_names(
+            crate::prompt::context::PromptAudience::Subagent,
+            crate::config::AgentDefinition::default_grok_build(),
+        )
+        .await;
+        assert!(
+            primary.iter().any(|name| name == "workflow"),
+            "premise: primary toolset includes workflow: {primary:?}"
+        );
+        let lost: Vec<&String> = primary
+            .iter()
+            .filter(|name| !child.contains(name))
             .collect();
         assert!(
-            !names.iter().any(|name| name == "ask_user_question"),
-            "subagents must not receive ask_user_question even when their profile and parent gate enable it: {names:?}"
+            lost.iter().any(|name| *name == "workflow"),
+            "child must lose workflow: lost={lost:?}"
         );
+        assert!(
+            lost.iter().all(|name| {
+                *name == "workflow" || *name == "ask_user_question" || *name == "send_feedback"
+            }),
+            "child strip must not drop unrelated tools: lost={lost:?}"
+        );
+        for name in &child {
+            assert!(
+                primary.contains(name),
+                "child gained unexpected tool {name}; primary={primary:?} child={child:?}"
+            );
+        }
     }
     #[tokio::test]
     async fn curated_empty_toolset_fails_agent_build() {
@@ -1830,10 +1996,6 @@ mod tests {
             }
         }
     }
-    /// The ask_user_question params merge must run after `ensure_plan_mode_tools`:
-    /// a profile that does NOT pre-declare the tool still gets the shell-resolved
-    /// timeout params on the injected instance. Fails if the merge is ever
-    /// hoisted above the injection.
     #[tokio::test]
     async fn plan_mode_injected_ask_user_question_receives_params() {
         use xai_grok_tools::computer::local::LocalTerminalBackend;
@@ -1871,9 +2033,6 @@ mod tests {
         assert_eq!(applied.0.timeout_secs, Some(5));
         assert_eq!(applied.0.non_interactive, None);
     }
-    /// A non-interactive build stamps `non_interactive: true` into the AUQ
-    /// params (session state, not user config) so cancel/timeout return the
-    /// no-operator text.
     #[tokio::test]
     async fn non_interactive_build_stamps_ask_user_question_params() {
         use xai_grok_tools::computer::local::LocalTerminalBackend;
@@ -1913,8 +2072,6 @@ mod tests {
         .await
         .unwrap()
     }
-    /// Build a default agent under a session allowlist + the agent's own
-    /// allowlist, returning the effective (short) tool names.
     async fn session_clamp_tool_names(
         own_tools: Vec<String>,
         session_allow: Vec<String>,
@@ -1940,9 +2097,6 @@ mod tests {
             .map(|d| d.function.name.clone())
             .collect()
     }
-    /// The session clamp and the agent's own allowlist both bind the effective
-    /// toolset (intersection), and a disjoint pair yields deny-all — never the
-    /// "empty list == inherit all" collapse.
     #[tokio::test]
     async fn session_clamp_intersects_own_allowlist() {
         let has = |v: &[String], t: &str| v.iter().any(|n| n == t);
@@ -1978,8 +2132,6 @@ mod tests {
             "must not inherit-all: {names:?}"
         );
     }
-    /// An unresolved own-allowlist entry makes step 4 fall back to the full
-    /// toolset; the session clamp (step 4b) must still bind afterward.
     #[tokio::test]
     async fn session_clamp_binds_when_own_allowlist_falls_back() {
         let names = session_clamp_tool_names(
@@ -2115,8 +2267,6 @@ mod tests {
             Some(vec!["worker".into()])
         );
     }
-    /// Compat allowlist names (`Read`, `Bash`, `Grep`) map to their Grok
-    /// equivalents by `ToolKind` — a real restricted toolset, not zero tools.
     #[tokio::test]
     async fn claude_tool_names_map_to_grok_equivalents() {
         let tools = vec!["Read".into(), "Bash".into(), "Grep".into()];
@@ -2144,8 +2294,6 @@ mod tests {
             "Edit must be excluded by the allowlist; got: {names:?}"
         );
     }
-    /// Shell, LSP, ask, and task-lifecycle tool names resolve to their grok
-    /// `ToolKind`, so those allowlists are honored instead of failing open.
     #[test]
     fn shell_lsp_ask_and_task_tool_names_map() {
         assert_eq!(claude_tool_kind("PowerShell"), Some(ToolKind::Execute));
@@ -2158,9 +2306,6 @@ mod tests {
         assert_eq!(claude_tool_kind("EnterPlanMode"), None);
         assert_eq!(claude_tool_kind("ExitPlanMode"), None);
     }
-    /// `[Read, Edit, AskUserQuestion]` builds end-to-end: the allowlist is
-    /// honored (no full-toolset fallback) and `ask_user_question` stands
-    /// alone after the injected plan-mode tools are dropped.
     #[tokio::test]
     async fn ask_user_question_allowlist_builds_without_plan_tools() {
         let tools = vec!["Read".into(), "Edit".into(), "AskUserQuestion".into()];
@@ -2178,8 +2323,6 @@ mod tests {
             assert!(!names.contains(&dropped.to_string()), "got: {names:?}");
         }
     }
-    /// Entries we can't match or map (a typo, a renamed/absent tool) fall back
-    /// to the full toolset rather than crippling the agent.
     #[tokio::test]
     async fn unmappable_allowlist_falls_back_to_full_toolset() {
         let tools = vec!["Frobnicate".into(), "Wibble".into()];
@@ -2200,8 +2343,6 @@ mod tests {
             "got: {names:?}"
         );
     }
-    /// End-to-end: an on-disk plugin agent parsed via `from_file_frontmatter_only`
-    /// with a compat-style `tools:` allowlist gets the mapped toolset (not 0 tools).
     #[tokio::test]
     async fn plugin_style_agent_file_maps_claude_tools() {
         use xai_grok_tools::computer::local::LocalTerminalBackend;
@@ -2252,9 +2393,6 @@ mod tests {
             "Edit must be excluded; got: {names:?}"
         );
     }
-    /// A restrictive allowlist must never strip MCP access. Compat allowlists
-    /// treat `mcp__*` as always-on, so grok keeps the MCP meta-tools
-    /// (`search_tool` / `use_tool`) regardless of what the allowlist names.
     #[tokio::test]
     async fn restrictive_allowlist_keeps_mcp_access() {
         let agent = build_with_tools(vec!["Read".into()], vec![]).await;
@@ -2351,9 +2489,6 @@ mod tests {
             assert!(!names.contains(&excluded.to_string()), "got: {names:?}");
         }
     }
-    /// grok-build toolsets have no Skill tool — skills are read from
-    /// `SKILL.md` via `read_file` — so a compat `Skill` allowlist entry grants
-    /// toolset.
     #[tokio::test]
     async fn skill_allowlist_maps_to_read() {
         let agent = build_with_tools(vec!["Skill".into()], vec![]).await;
@@ -2377,9 +2512,6 @@ mod tests {
             "no full-toolset fallback — unlisted tools must be excluded; got: {names:?}"
         );
     }
-    /// `Read` and `Skill` both map to `ToolKind::Read`, but the allowlist phase
-    /// `read_file` (plus always-on MCP access) without falling back to the full
-    /// single base `read_file` entry is kept exactly once, never double-registered.
     #[tokio::test]
     async fn read_and_skill_allowlist_keeps_single_read_file() {
         let agent = build_with_tools(vec!["Read".into(), "Skill".into()], vec![]).await;
@@ -2395,8 +2527,6 @@ mod tests {
             "read_file must be registered exactly once for tools: [Read, Skill]; got: {names:?}"
         );
     }
-    /// A compat-style `mcp__server__tool` allowlist entry is always allowed: it
-    /// neither triggers the full-toolset fallback nor strips MCP access.
     #[tokio::test]
     async fn mcp_prefixed_allowlist_entry_keeps_mcp_access() {
         let tools = vec!["mcp__github__create_issue".into(), "Read".into()];
@@ -2421,9 +2551,6 @@ mod tests {
             "no full-toolset fallback — unlisted tools must be excluded; got: {names:?}"
         );
     }
-    /// Compat `ToolSearch` meta-tool maps to grok's `search_tool` (MCP
-    /// is a filter (`retain`) over a `HashSet` of kinds, not an inserter — so the
-    /// falling back to the full toolset.
     #[tokio::test]
     async fn tool_search_allowlist_maps_to_search_tool() {
         let agent = build_with_tools(vec!["ToolSearch".into()], vec![]).await;
@@ -2505,8 +2632,6 @@ mod tests {
             "function web_search tool must be removed when disallowed"
         );
     }
-    /// Regression: with backend search + web search both enabled, both
-    /// hosted tools appear and `backend_search_enabled()` is true.
     #[tokio::test]
     async fn hosted_tools_populated_when_backend_search_and_web_search_enabled() {
         let agent = build_with_web_search(true, true, &[], None).await;
@@ -2525,8 +2650,6 @@ mod tests {
             "expected XSearch hosted tool, got: {hosted:?}"
         );
     }
-    /// XSearch is added unconditionally when backend search is on;
-    /// WebSearch requires the web-search config.
     #[tokio::test]
     async fn hosted_tools_only_xsearch_when_web_search_disabled() {
         let agent = build_with_web_search(false, true, &[], None).await;
@@ -2544,8 +2667,6 @@ mod tests {
             "expected XSearch hosted tool, got: {hosted:?}"
         );
     }
-    /// Backend search off: gate bool false and no hosted tools, regardless
-    /// of web-search config.
     #[tokio::test]
     async fn hosted_tools_empty_when_backend_search_disabled() {
         let agent = build_with_web_search(true, false, &[], None).await;

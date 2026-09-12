@@ -35,17 +35,9 @@ impl<T> Expr<T> {
         Self::And(items.into_iter().map(Self::Value).collect())
     }
 
-    /// Evaluate the expression tree.
-    ///
-    /// `f` is called for each `Value(t)` node — it decides whether that
-    /// leaf is true or false. `And`, `Or`, `Not` combine results as
-    /// expected. `True`/`False` are constants.
-    ///
-    /// Usage:
-    /// ```ignore
-    /// // Top-level: evaluate a tool's requirements against the registry
-    /// tool.requires_expr().eval(&|req| req.eval(&ctx))
-    /// ```
+    /// Evaluate the expression tree. `f` is called for each `Value(t)` node — it decides whether
+    /// that leaf is true or false. `And`, `Or`, `Not` combine results as expected. `True`/`False`
+    /// are constants.
     pub fn eval(&self, f: &impl Fn(&T) -> bool) -> bool {
         match self {
             Expr::True => true,
@@ -73,10 +65,8 @@ impl ToolParamsRequirement {
         }
     }
 
-    /// Check this requirement against a JSON params object.
-    ///
-    /// Looks up `self.key` in `params`, then evaluates `self.value`
-    /// as an expression over the actual value. For the common case
+    /// Check this requirement against a JSON params object. Looks up `self.key` in `params`, then
+    /// evaluates `self.value` as an expression over the actual value. For the common case
     /// (`Expr::Value(expected)`), this is just equality.
     pub fn check(&self, params: &serde_json::Value) -> bool {
         let actual = params.get(&self.key);
@@ -95,10 +85,9 @@ pub struct ProposedTool<'a> {
     pub input_schema: Option<&'a serde_json::Value>,
 }
 
-/// The world a `ToolRequirement` evaluates against.
-///
-/// Built from the enabled tools + their params (from `ToolServerConfig`),
-/// combined with static metadata (tool_kinds) from the `ToolRegistryBuilder`.
+/// The world a `ToolRequirement` evaluates against. Built from the enabled tools + their params
+/// (from `ToolServerConfig`), combined with static metadata (tool_kinds) from the
+/// `ToolRegistryBuilder`.
 pub struct EvalContext<'a> {
     /// All enabled tools in the proposed configuration.
     pub tools: &'a [ProposedTool<'a>],
@@ -131,21 +120,14 @@ pub enum ToolRequirement {
         condition: Expr<ToolParamsRequirement>,
         requirement: Box<ToolRequirement>,
     },
-    /// Require that a tool of the given kind has a visible input param.
-    ///
-    /// Used when description templates reference `${{ params.<kind>.<param> }}`
-    /// — ensures the param exists and isn't hidden/pinned by the client config.
-    /// Validation fails if the param is missing from the tool's input schema.
+    /// Require that a tool of the given kind has a visible input param. Used when description templates reference `${{
+    /// params.<kind>.<param> }}` — ensures the param exists and isn't hidden/pinned by the client config. Validation fails
+    /// if the param is missing from the tool's input schema.
     InputParam { kind: Expr<ToolKind>, param: String },
 }
 
 impl ToolRequirement {
     /// Evaluate this requirement against the proposed tool configuration.
-    ///
-    /// This is the closure passed to `Expr<ToolRequirement>::eval()`:
-    /// ```ignore
-    /// tool.requires_expr().eval(&|req| req.eval(&ctx))
-    /// ```
     pub fn eval(&self, ctx: &EvalContext) -> bool {
         match self {
             // "Is tool `namespace:id` enabled, and do its params satisfy if_params?"

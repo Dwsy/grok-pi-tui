@@ -1,26 +1,26 @@
-//! Push → pull round-trip smoke test against the live backend.
+//! Round-trip test against the live backend: pushes one session, then pulls it back.
 //!
 //! Run with: `cargo test -p xai-grok-shell -- pull_smoke --ignored --nocapture`
 
 #[cfg(test)]
 mod tests {
-    use crate::auth::GrokAuth;
     use crate::remote::client::BackendClient;
     use crate::session::storage::{JsonlStorageAdapter, StorageAdapter};
     use std::collections::BTreeMap;
     use std::sync::Arc;
+    use xai_grok_login::GrokAuth;
 
     fn load_prod_auth() -> Option<GrokAuth> {
         let path = crate::util::grok_home::grok_home().join("auth.json");
         let contents = std::fs::read_to_string(&path).ok()?;
         let store: BTreeMap<String, GrokAuth> = serde_json::from_str(&contents).ok()?;
-        let scope = crate::auth::GrokComConfig::default().auth_scope();
-        crate::auth::lookup_auth(&store, &scope)
+        let scope = xai_grok_login::GrokComConfig::default().auth_scope();
+        xai_grok_login::lookup_auth(&store, &scope)
     }
 
-    /// Full round-trip using the real RemoteSync production code path:
-    /// create RemoteSync → queue ACP notifications → flush → verify on
-    /// backend → pull back → verify local hydration + storage adapter load.
+    /// Full round trip through the real production `RemoteSync` path.
+    /// Creates a `RemoteSync`, queues ACP notifications, flushes, and verifies the backend row.
+    /// Then pulls the session back and verifies local hydration and the storage adapter load.
     #[tokio::test]
     #[ignore]
     async fn smoke_push_pull_round_trip() {
@@ -31,9 +31,9 @@ mod tests {
         };
 
         let auth = load_prod_auth().expect("No auth.json — run `grok login`");
-        let am = Arc::new(crate::auth::AuthManager::new(
+        let am = Arc::new(xai_grok_login::AuthManager::new(
             &crate::util::grok_home::grok_home(),
-            crate::auth::GrokComConfig::default(),
+            xai_grok_login::GrokComConfig::default(),
         ));
         am.hot_swap(auth);
         let client = BackendClient::new().with_auth_manager(am.clone());
@@ -51,6 +51,7 @@ mod tests {
             updated_at: Some(chrono::Utc::now().to_rfc3339()),
             total_messages: None,
             parent_session_id: None,
+            agent_id: None,
             session_kind: None,
             subagent_type: None,
             subagent_persona: None,

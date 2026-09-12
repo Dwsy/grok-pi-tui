@@ -15,19 +15,14 @@ use crate::scrollback::blocks::SessionEvent;
 // Auth dispatch
 // ---------------------------------------------------------------------------
 
-/// `/logout` -- ask the shell to clear auth, then return to the login screen.
+/// `/logout`: ask the shell to clear auth, then return to the login screen.
 pub(super) fn dispatch_logout(_app: &mut AppView) -> Vec<Effect> {
     vec![Effect::Logout]
 }
 
 /// Ensure `login_method_id` is populated from stored auth methods.
-/// On the eager-auth path (cached token), login_method_id is never set
-/// because the user skipped the login screen.
-///
-/// Does **not** invent `grok.com` when no interactive method is advertised
-/// (e.g. `preferred_method=api_key` with no key — empty `auth_methods`).
-/// Callers already surface "No login method available" when this leaves
-/// `login_method_id` unset.
+/// On the eager-auth path (cached token) `login_method_id` is never set, because the user skipped the login screen.
+/// Does **not** invent `grok.com` when no interactive method is advertised (`preferred_method=api_key` with no key leaves `auth_methods` empty).
 pub(super) fn ensure_login_method(app: &mut AppView) {
     if app.login_method_id.is_some() {
         return;
@@ -45,9 +40,8 @@ pub(super) fn ensure_login_method(app: &mut AppView) {
     // No interactive method: leave login_method_id unset (fail-closed).
 }
 
-/// Error when no interactive login method is available (empty auth_methods,
-/// e.g. `preferred_method=api_key` with no credentials). Prefer the shell's
-/// pin-unavailable copy when the list is empty.
+/// Error when no interactive login method is available (empty auth_methods, e.g. `preferred_method=api_key` with no credentials).
+/// When the list is empty, prefer the shell's `PREFERRED_API_KEY_UNAVAILABLE` copy.
 fn no_login_method_error(app: &AppView) -> String {
     if app.auth_methods.is_empty() {
         xai_grok_shell::agent::auth_method::PREFERRED_API_KEY_UNAVAILABLE.to_string()
@@ -56,10 +50,9 @@ fn no_login_method_error(app: &AppView) -> String {
     }
 }
 
-/// Abort any in-flight Authenticate/SwitchAccount task *and* its URL poll so a
-/// new login cannot stack device-code mints or have a stale poll steal the
-/// successor's URL (single-flight). No-op when not authenticating or when the
-/// abort handles have not been installed yet.
+/// Abort any in-flight Authenticate/SwitchAccount task *and* its URL poll (single-flight).
+/// A new login must not stack device-code mints or let a stale poll steal the successor's URL.
+/// No-op when not authenticating or when the abort handles have not been installed yet.
 fn abort_prior_auth(app: &mut AppView) {
     if let AuthState::Authenticating {
         handle,
@@ -116,18 +109,16 @@ pub(super) fn dispatch_switch_account(app: &mut AppView) -> Vec<Effect> {
     ]
 }
 
-/// Scan the trailing run of session-event / system blocks for a
-/// [`SessionEvent::ReAuthRequired`] prompt. Used by the `PromptResponse`
-/// handler to suppress the redundant "Turn failed" block after a 401 — the
-/// re-auth prompt is pushed by the `RetryState` handler, which runs first.
+/// Scan the trailing run of session-event / system blocks for a [`SessionEvent::ReAuthRequired`] prompt.
+/// Used by the `PromptResponse` handler to suppress the redundant "Turn failed" block after a 401.
+/// The re-auth prompt is pushed by the `RetryState` handler, which runs first.
 pub(super) fn scrollback_has_recent_reauth_prompt(
     scrollback: &crate::scrollback::state::ScrollbackState,
 ) -> bool {
     trailing_session_events(scrollback).any(|(_, ev)| matches!(ev, SessionEvent::ReAuthRequired))
 }
 
-/// True if the trailing run of session/system blocks contains a terminal
-/// context-overflow block ([`SessionEvent::ContextTooLarge`] or `CompactionFailed`).
+/// True if the trailing run of session/system blocks has a terminal context-overflow block ([`SessionEvent::ContextTooLarge`] or `CompactionFailed`).
 /// Lets `PromptResponse` suppress the redundant `TurnFailed`, mirroring reauth.
 pub(super) fn scrollback_has_recent_context_too_large(
     scrollback: &crate::scrollback::state::ScrollbackState,
@@ -146,11 +137,9 @@ pub(crate) fn scrollback_has_recent_disk_full(
     trailing_session_events(scrollback).any(|(_, ev)| matches!(ev, SessionEvent::DiskFull))
 }
 
-/// True if the trailing run already has a dedicated terminal error banner that
-/// replaces `TurnFailed` (re-auth, context overflow, disk-full, formatted
-/// request failure). `CompactionFailed` is deliberately excluded — it can
-/// appear mid-turn, and a stale one must not swallow an unrelated error's
-/// only surface on the reconcile/viewer rails.
+/// True if the trailing run already has a dedicated terminal error banner that replaces `TurnFailed`.
+/// `CompactionFailed` is deliberately excluded: it can appear mid-turn.
+/// On the reconcile/viewer paths a stale one must not swallow the only banner an unrelated error gets.
 pub(in crate::app) fn scrollback_has_recent_error_banner(
     scrollback: &crate::scrollback::state::ScrollbackState,
 ) -> bool {
@@ -165,10 +154,9 @@ pub(in crate::app) fn scrollback_has_recent_error_banner(
     })
 }
 
-/// True if the trailing run already has a formatted [`SessionEvent::RequestFailed`]
-/// banner. Lets `PromptResponse` skip the redundant `TurnFailed`. Deliberately
-/// does NOT match `RetryFailed`: the special cases that keep it (legacy_auth,
-/// encrypted_content_mismatch) keep their pre-existing marker behavior.
+/// True if the trailing run already has a formatted [`SessionEvent::RequestFailed`] banner.
+/// Lets `PromptResponse` skip the redundant `TurnFailed`.
+/// Deliberately does not match `RetryFailed`.
 pub(super) fn scrollback_has_recent_request_failed(
     scrollback: &crate::scrollback::state::ScrollbackState,
 ) -> bool {
@@ -176,11 +164,9 @@ pub(super) fn scrollback_has_recent_request_failed(
         .any(|(_, ev)| matches!(ev, SessionEvent::RequestFailed { .. }))
 }
 
-/// The trailing run of session events, newest first: yields `(index, event)`
-/// for each session-event block at the tail of the scrollback, skipping
-/// interleaved system messages and stopping at the first substantive block.
-/// Banners for the finishing turn live in this run — pushed just before its
-/// `PromptResponse` arrived.
+/// The trailing run of session events, newest first: yields `(index, event)` for each session-event block at the tail of the scrollback.
+/// It skips interleaved system messages and stops at the first substantive block.
+/// Banners for the finishing turn live in this run; they were pushed just before its `PromptResponse` arrived.
 pub(super) fn trailing_session_events(
     scrollback: &crate::scrollback::state::ScrollbackState,
 ) -> impl Iterator<Item = (usize, &SessionEvent)> {
@@ -200,11 +186,9 @@ pub(super) fn trailing_session_events(
         })
 }
 
-/// Strip the trailing run of auth-error blocks — the `ReAuthRequired`
-/// prompt plus any stale `RetryFailed` / `TurnFailed` — from an agent's
-/// scrollback. Called after a successful mid-session re-auth so the prompt
-/// disappears once the user returns to the session. Mirrors the
-/// credit-limit upsell's stale-block strip.
+/// Strip the trailing run of auth-error blocks (the `ReAuthRequired` prompt plus any stale `RetryFailed` / `TurnFailed`) from an agent's scrollback.
+/// Called after a successful mid-session re-auth so the prompt disappears once the user returns to the session.
+/// Mirrors how the credit-limit upsell strips its stale blocks.
 pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
     let to_remove: Vec<usize> = trailing_session_events(&agent.scrollback)
         .filter(|(_, ev)| {
@@ -223,16 +207,9 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
     }
 }
 
-/// Start an interactive login flow. Triggered by pressing 'l' on the
-/// welcome screen or by the `/login` slash command.
-///
-/// When invoked mid-session (the active view is an agent/dashboard rather
-/// than the welcome screen), the auth UI — including the external auth
-/// provider's sign-in URL and status — is only rendered by the welcome
-/// view. We therefore stash the caller's view in `auth_return_view` and
-/// switch to `Welcome` so the flow is actually visible; the prior view is
-/// restored once auth completes or is cancelled. Without this, `/login`
-/// with an external auth provider configured appeared to do nothing.
+/// Start an interactive login flow. Triggered by pressing 'l' on the welcome screen or by the `/login` slash command.
+/// Only the welcome view renders the auth UI (the external auth provider's sign-in URL and status).
+/// A mid-session invocation therefore stashes the caller's view in `auth_return_view` and switches to `Welcome` so the flow is visible.
 pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
     ensure_login_method(app);
     let Some(method_id) = app.login_method_id.clone() else {
@@ -242,9 +219,8 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
         return vec![];
     };
 
-    // Surface the auth UI when triggered from inside a session. `show_welcome`
-    // resets ephemeral state here, covering the AuthComplete / cancel-login
-    // fallbacks too (`auth_return_view` is only ever set here).
+    // Show the auth UI when triggered from inside a session
+    // `show_welcome` resets ephemeral state here, covering the AuthComplete / cancel-login fallbacks too (`auth_return_view` is only ever set here)
     if !matches!(app.active_view, ActiveView::Welcome) {
         app.auth_return_view = Some(app.active_view);
         show_welcome(app);
@@ -273,19 +249,15 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
     ]
 }
 
-/// Cancel a login that was started from inside a session and restore the
-/// caller's view. Only meaningful when `auth_return_view` is set (a
-/// mid-session `/login` or 401 re-auth prompt). Aborts the in-flight auth
-/// task and tells the shell to cancel its device/loopback flow so a retry
-/// does not race a still-polling prior mint. Bump the seq so a fresh login
-/// does not collide with a late `AuthComplete`/`AuthFailed`.
+/// Only meaningful when `auth_return_view` is set (a mid-session `/login` or 401 re-auth prompt).
+/// Aborts the in-flight auth task and tells the shell to cancel its device/loopback flow so a retry does not race a still-polling prior mint.
+/// Bump the seq so a fresh login does not collide with a late `AuthComplete`/`AuthFailed`.
 pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
     let Some(return_view) = app.auth_return_view.take() else {
         return vec![];
     };
-    // Capture the attempt's request_seq before abort clears Authenticating so
-    // the shell cancel is scoped to this attempt only (a delayed RPC must not
-    // cancel a fast re-login).
+    // Capture the attempt's request_seq before abort clears Authenticating, so the shell cancel is scoped to this attempt only
+    // A delayed RPC must not cancel a fast re-login
     let cancel_seq = match &app.auth_state {
         AuthState::Authenticating { request_seq, .. } => Some(*request_seq),
         _ => None,
@@ -296,19 +268,15 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
     app.auth_show_raw_url = false;
     app.auth_code_input.reset();
     restore_auth_return_view(app, return_view);
-    // The user bailed out of re-auth — drop stashed prompts and strip the
-    // stale re-auth prompt from scrollback (on all agents: the login may
-    // have been started from the dashboard). Clearing the stash alone is
-    // not enough: a leftover `ReAuthRequired` block would let a later
-    // `PromptResponse` re-detect it via `scrollback_has_recent_reauth_prompt`
-    // and re-stash the prompt, so a subsequent unrelated login could
-    // silently resubmit it. Mirrors the strip in the `AuthComplete` path.
+    // This runs on all agents because the login may have been started from the dashboard
+    // Clearing the stash alone is not enough
+    // A leftover `ReAuthRequired` block would let a later `PromptResponse` re-detect it via `scrollback_has_recent_reauth_prompt`
     for agent in app.agents.values_mut() {
         agent.reauth_stashed_prompt = None;
         strip_trailing_auth_error_blocks(agent);
     }
-    // Ask the shell to cancel its in-flight interactive auth (device poll /
-    // loopback wait). Fire-and-forget: UI state is already restored.
+    // Ask the shell to cancel its in-flight interactive auth (device poll / loopback wait)
+    // Fire-and-forget: UI state is already restored
     match cancel_seq {
         Some(request_seq) => vec![Effect::CancelAuth { request_seq }],
         None => vec![],
@@ -340,7 +308,7 @@ pub(super) fn handle_auth_complete(
     {
         if let Some(meta_val) = meta.as_ref()
             && let Ok(auth_meta) =
-                serde_json::from_value::<xai_grok_shell::auth::AuthMeta>(meta_val.clone())
+                serde_json::from_value::<xai_grok_login::AuthMeta>(meta_val.clone())
         {
             app.apply_auth_meta(&auth_meta);
         }
@@ -350,33 +318,23 @@ pub(super) fn handle_auth_complete(
         app.welcome_prompt_focused = !app.is_access_blocked();
         app.auth_code_input.reset();
 
-        // Mid-session re-auth (`/login` or a 401 prompt): restore the
-        // view the user was on instead of running the startup
-        // load-session flow. The session state lives in `app.agents`,
-        // independent of `active_view`, so it is preserved across the
-        // auth detour.
+        // Mid-session re-auth (`/login` or a 401 prompt): restore the view the user was on instead of running the startup load-session flow
+        // The session state lives in `app.agents`, independent of `active_view`, so it is preserved across the auth detour
         if let Some(return_view) = app.auth_return_view.take() {
             restore_auth_return_view(app, return_view);
-            // Mid-session re-auth returns to the existing session, NOT
-            // the startup flow, so discard any deferred startup stash
-            // (e.g. an incidental `Ctrl+N` pressed during /login that the
-            // chokepoint deferred) rather than leaving it to fire later.
+            // Mid-session re-auth returns to the existing session, not the startup flow
+            // Discard any deferred startup stash rather than leaving it to fire later
+            // One example: an incidental `Ctrl+N` pressed during /login that the chokepoint deferred
             clear_startup_actions(app);
-            // Re-auth succeeded — hide the now-stale re-auth prompt
-            // (and any trailing error blocks) so the user returns to
-            // a clean session. Mirrors the credit-limit upsell's
-            // stale-block strip.
-            // Auth is global, so handle every agent (the login may
-            // have been started from the dashboard, not the agent
-            // that 401'd).
+            // Re-auth succeeded: hide the now-stale re-auth prompt (and any trailing error blocks) so the user returns to a clean session
+            // Mirrors how the credit-limit upsell strips its stale blocks
+            // Auth is global, so handle every agent (the login may have been started from the dashboard, not the agent that 401'd)
             let mut retry_effects = Vec::new();
             let mut page_flips = Vec::new();
             for agent in app.agents.values_mut() {
                 strip_trailing_auth_error_blocks(agent);
-                // Auto-resubmit the prompt that failed on the expired
-                // login so the user doesn't have to retype it. The
-                // user couldn't have queued another prompt during the
-                // auth detour, so a plain front-enqueue + drain is safe.
+                // Auto-resubmit the prompt that failed on the expired login so the user doesn't have to retype it
+                // The user couldn't have queued another prompt during the auth detour, so a plain front-enqueue and drain is safe
                 if let Some(prompt) = agent.reauth_stashed_prompt.take() {
                     agent.scrollback.push_block(RenderBlock::system(
                         "Re-authenticated. Retrying\u{2026}".to_string(),
@@ -392,13 +350,13 @@ pub(super) fn handle_auth_complete(
             }
             let mut effects = dispatch(Action::RequestBundleStatus, app);
             if app.usage_visible {
-                effects.push(Effect::FetchAppBilling);
+                effects.push(Effect::FetchAppBilling { nonce: 0 });
             }
             effects.extend(retry_effects);
             return effects;
         }
 
-        // status only; shell auto-syncs post-auth
+        // Request bundle status only; the shell auto-syncs after auth
         let mut effects = dispatch(Action::RequestBundleStatus, app);
 
         // Start auto-checking subscription if gated.
@@ -410,24 +368,20 @@ pub(super) fn handle_auth_complete(
         }
         // Fetch billing so the welcome screen can show a credit warning.
         if app.usage_visible {
-            effects.push(Effect::FetchAppBilling);
+            effects.push(Effect::FetchAppBilling { nonce: 0 });
         }
         // Fetch changelog (mirrors startup path for interactive login).
         effects.push(Effect::FetchChangelog);
 
-        // ZDR-blocked users stay on the welcome screen — discard any
-        // deferred startup (they cannot start a session).
+        // ZDR-blocked users stay on the welcome screen; discard any deferred startup (they cannot start a session)
         if app.is_zdr_blocked() {
             clear_startup_actions(app);
             return effects;
         }
 
-        // Replay deferred session startup once BOTH gates are open. Auth
-        // is now Done, so `session_startup_allowed()` here means "is trust
-        // also resolved?" -- if trust is still Pending its question renders
-        // next and its answer drains instead. Same predicate the trust
-        // handlers use, so the deferred startup runs exactly once after
-        // whichever gate resolves last.
+        // Replay deferred session startup once both gates are open
+        // If trust is still Pending its question renders next and its answer drains instead
+        // The trust handlers use the same predicate, so the deferred startup runs exactly once after whichever gate resolves last
         if app.session_startup_allowed() {
             effects.extend(drain_startup_actions(app));
         }
@@ -452,9 +406,8 @@ pub(super) fn handle_auth_url_ready(
         && *current_seq == request_seq
     {
         *current_url = auth_url;
-        // Prefer `mode`; fall back to `external` for older agents. An
-        // old-agent device login lands on Loopback (harmless paste box;
-        // the background poll still completes).
+        // Prefer `mode`; fall back to `external` for older agents
+        // An old-agent device login lands on Loopback (harmless paste box; the background poll still completes)
         *current_mode = match mode.as_deref() {
             Some("device") => AuthMode::Device,
             Some("command") => AuthMode::Command,
@@ -524,8 +477,7 @@ pub(super) fn handle_mcp_auth_trigger_done(
             }
         }
     }
-    // No toast on success: the row transition from the FetchMcpsList
-    // refresh below is the confirmation.
+    // No toast on success: the row transition from the FetchMcpsList refresh below is the confirmation
     let Some(session_id) = agent.session.session_id.clone() else {
         return vec![];
     };

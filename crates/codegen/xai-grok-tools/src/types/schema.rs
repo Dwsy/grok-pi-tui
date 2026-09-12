@@ -1,9 +1,8 @@
 //! Helper schema types for JSON Schema generation.
 use serde::Deserialize;
-/// Schema helper for integers - produces clean integer schema without extra fields.
-/// By default schemars adds "format": "uint" and "minimum": 0.0 which we don't want.
-///
-/// Use with `#[schemars(with = "GrokIntegerSchema")]` on `Option<usize>` fields.
+/// Schema helper for integers - produces clean integer schema without extra fields. By default
+/// schemars adds "format": "uint" and "minimum": 0.0 which we don't want. Use with `#[schemars(with
+/// = "GrokIntegerSchema")]` on `Option<usize>` fields.
 pub struct GrokIntegerSchema;
 impl schemars::JsonSchema for GrokIntegerSchema {
     fn schema_name() -> std::borrow::Cow<'static, str> {
@@ -168,11 +167,9 @@ where
             .map_err(serde::de::Error::custom),
     }
 }
-/// Deserialize `Option<String>` from a JSON string, number, or boolean —
-/// scalar values are coerced to their string form. Mirrors zod's
-/// `z.coerce.string()` used by the TypeScript grok-computer tools, where
-/// models routinely send numeric-looking IDs (e.g. CDP request IDs such as
-/// `62576.34`) as JSON numbers.
+/// Deserialize `Option<String>` from a JSON string, number, or boolean — scalar values are coerced to their string
+/// form. Mirrors zod's `z.coerce.string()` used by the TypeScript grok-computer tools, where models routinely send
+/// numeric-looking IDs (e.g. CDP request IDs such as `62576.34`) as JSON numbers.
 pub fn deserialize_lenient_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,

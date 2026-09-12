@@ -60,7 +60,7 @@
     #[test]
     fn version_mismatch_on_welcome_uses_welcome_toast() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = AppView::new(tx, ModelState::default(), Vec::new());
+        let mut app = AppView::new(tx, ModelState::default(), Vec::new(), crate::render::draw::EscapeWriter::disconnected());
         app.leader_mode = true;
         assert!(matches!(app.active_view, ActiveView::Welcome));
         assert!(app.agents.is_empty());
@@ -96,7 +96,7 @@
     #[test]
     fn version_mismatch_on_welcome_survives_reconnected_toast() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = AppView::new(tx, ModelState::default(), Vec::new());
+        let mut app = AppView::new(tx, ModelState::default(), Vec::new(), crate::render::draw::EscapeWriter::disconnected());
         app.leader_mode = true;
         assert!(handle_ext_notification(&both_versions_notif(), &mut app));
         let mismatch = toast_157_150();

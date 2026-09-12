@@ -105,12 +105,8 @@ async fn breaker_opens_after_threshold_401s() {
     );
 }
 
-/// Sliding-window sanity: a 200/401 mix below the failure-rate
-/// threshold must NOT trip, even with enough samples to satisfy
-/// `min_samples`. With `client()` preset (min_samples=5,
-/// error_rate_threshold=0.5), 6 × 200 + 4 × 401 = 10 samples,
-/// rate = 0.4 < 0.5 → still closed.  The successes lead so the
-/// partial rate never crosses 0.5 once `min_samples` is reached.
+/// Sliding-window sanity: a 200/401 mix below the failure-rate threshold must not trip.
+/// Successes lead so the partial rate never crosses the threshold once `min_samples` is reached.
 #[tokio::test]
 async fn sliding_window_below_threshold_does_not_trip() {
     let hits = Arc::new(AtomicU32::new(0));
@@ -255,10 +251,8 @@ async fn breaker_short_circuit_returns_http_upload_error_503() {
     assert!(http_err.message.contains("circuit breaker open"));
 }
 
-/// Concurrent half-open probes: N simultaneous `upload`s past the
-/// cool-down must collapse into exactly ONE wire request. The
-/// probe is held on a `Notify` so the breaker can't close before
-/// the lagging callers race through `breaker.check()`.
+/// Concurrent half-open probes: N simultaneous uploads past cool-down must collapse into one wire request.
+/// The probe is held on a `Notify` so the breaker cannot close before lagging callers race `check()`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn breaker_half_open_serialises_concurrent_probes() {
     let hits = Arc::new(AtomicU32::new(0));
@@ -305,13 +299,9 @@ async fn breaker_half_open_serialises_concurrent_probes() {
 
     const N: usize = 16;
     let barrier = Arc::new(tokio::sync::Barrier::new(N));
-    // `laggers_done` fires exactly once, when the (N-1) callers
-    // that did NOT win the probe slot have surfaced from
-    // `upload()` with a short-circuited `Err`. The probe task is
-    // still parked in the server handler at that point, so it
-    // has NOT yet been counted. Replacing the previous
-    // 100 ms wall-clock sleep removes the CI-flake window where
-    // a slow lagger could race the probe-gate release.
+    // `laggers_done` fires once, when the N-1 non-probe callers have short-circuited.
+    // The probe is still parked, so it has not been counted yet.
+    // Replaces a wall-clock sleep that flaked when a slow lagger raced the probe-gate release.
     let laggers_done = Arc::new(tokio::sync::Notify::new());
     let laggers_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut tasks = Vec::with_capacity(N);
@@ -331,10 +321,8 @@ async fn breaker_half_open_serialises_concurrent_probes() {
         }));
     }
 
-    // Hold the probe until (a) the probe has reached the server,
-    // and (b) all N-1 lagging callers have raced through
-    // `breaker.check()` and short-circuited. Only then release
-    // the gate so the probe can return 200 and close the breaker.
+    // Hold the probe until it has reached the server and all N-1 laggers have short-circuited.
+    // Only then release the gate so the probe can return 200 and close the breaker.
     probe_started.notified().await;
     laggers_done.notified().await;
     probe_gate.notify_one();

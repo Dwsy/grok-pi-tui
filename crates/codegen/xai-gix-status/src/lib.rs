@@ -373,10 +373,8 @@ mod nproc_tests {
                     eprintln!("{SKIP_MARK} setrlimit failed: {e}");
                     std::process::exit(EXIT_SKIP);
                 }
-                // Fill empirically: the kernel checks RLIMIT_NPROC against the
-                // real UID's TOTAL task count across all processes, so no
-                // arithmetic on this process's own thread count can find the
-                // ceiling (that assumption exit-0'd this test twice on CI).
+                // Fill empirically: the kernel checks RLIMIT_NPROC against the real UID's total task count.
+                // No arithmetic on this process's own thread count can find the ceiling.
                 let mut holders = Vec::new();
                 let mut hit_limit = false;
                 for _ in 0..MAX_HOLDERS {
@@ -400,15 +398,9 @@ mod nproc_tests {
                     );
                     std::process::exit(EXIT_SKIP);
                 }
-                // Refund one slot per soft scaffolding spawn on the
-                // into_index_worktree_iter path so those succeed and the NEXT
-                // spawn to fail is `gitoxide.in_parallel.produce.N`, whose
-                // expect("valid name") panics on `gix_status::index_as_worktree`:
-                //   slot 1 funds gix::status::index_worktree::producer (soft map_err(SpawnThread))
-                //   slot 2 funds gix_status::dirwalk (soft map_err(SpawnThread))
-                //   slot 3 funds gix_status::index_as_worktree (soft map_err(SpawnThread))
-                // Same-UID churn may eat refunds first; the parent then insists
-                // the resulting scan error is itself a spawn failure.
+                // Refund one slot per soft scaffolding spawn so those succeed and the next failure is `produce.N`.
+                // That expect panics on `gix_status::index_as_worktree`. Same-UID churn may eat refunds first.
+                // The parent then insists the resulting scan error is itself a spawn failure.
                 for _ in 0..SCAFFOLD_SLOTS {
                     if let Some(holder) = holders.pop() {
                         holder.release();
@@ -534,10 +526,8 @@ mod nproc_tests {
             "uncapped status must not complete under tight nproc; \
              code={code:?} signal={signal:?}\nstdout={stdout}\nstderr={stderr}"
         );
-        // cargo builds test targets with panic=unwind (the workspace
-        // panic=abort applies to non-test profiles), so the expect("valid
-        // name") panic surfaces as stderr markers plus a nonzero exit; the
-        // SIGABRT arm covers abort-configured harnesses.
+        // cargo builds test targets with panic=unwind, so the expect panic surfaces as stderr plus a nonzero exit.
+        // The SIGABRT arm covers abort-configured harnesses.
         let aborted = signal == Some(libc::SIGABRT)
             || stderr.contains("gix_status::index_as_worktree")
             || stderr.contains("valid name");

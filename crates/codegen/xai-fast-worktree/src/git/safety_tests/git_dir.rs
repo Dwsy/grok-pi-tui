@@ -204,10 +204,9 @@ fn a_store_under_the_registration_keeps_the_worktree() {
     );
 }
 
-/// The over-keep guard: when the survivor holds the LFS object at the same path,
-/// the dying-store check finds nothing missing and the standalone copy is still
-/// reclaimed. Without this a broken store pairing would silently keep every
-/// worktree, and no keep-direction test would notice.
+/// Over-keep guard: if the survivor holds the same LFS object, the dying store
+/// is still reclaimed. Without this a broken pairing would keep every worktree
+/// and no keep-direction test would notice.
 #[test]
 fn an_lfs_object_the_survivor_also_holds_does_not_keep_the_worktree() {
     let fixture = Fixture::new("");

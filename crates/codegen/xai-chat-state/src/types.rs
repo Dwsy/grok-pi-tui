@@ -6,11 +6,9 @@ use std::num::NonZeroU64;
 use serde::{Deserialize, Serialize};
 use xai_grok_sampling_types::{ConversationItem, SamplingConfig};
 
-/// Canonical marker for an injected memory-context block. Shared by the
-/// emitter in `xai-grok-shell` and the upsert/detection here — a drift would
-/// silently break dedup and let blocks accumulate in the prompt prefix.
-/// Detection assumes the literal never appears in a system prompt except as
-/// an injected block.
+/// Canonical marker for an injected memory-context block. Shared by emitter and upsert/detection.
+/// A drift would silently break dedup and let blocks accumulate in the prompt prefix.
+/// Assumes the literal never appears in a system prompt except as an injected block.
 pub const MEMORY_CONTEXT_OPEN_TAG: &str = "<memory-context>";
 
 /// Closing tag paired with [`MEMORY_CONTEXT_OPEN_TAG`].
@@ -65,9 +63,7 @@ pub struct NotificationMeta {
 }
 
 /// Configuration for tool-result pruning.
-///
-/// Prunes old, large tool results from the conversation to reclaim context space.
-/// Two modes: soft trim (keep head + tail) and hard clear (replace entirely).
+/// Soft trim keeps head + tail; hard clear replaces entirely.
 #[derive(Debug, Clone)]
 pub struct PruningConfig {
     /// Whether pruning is enabled.
@@ -110,10 +106,7 @@ pub enum AuthType {
 }
 
 /// Credential/secret fields that the actor stores opaquely.
-///
-/// These are fields from the shell's full `Config` that aren't part of
-/// `xai_grok_sampling_types::SamplingConfig` (which is secret-free).
-/// The actor just stores and returns them — it never interprets them.
+/// Not part of secret-free `SamplingConfig`. The actor stores and returns them — it never interprets them.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Credentials {
     /// API key for authentication.
@@ -139,9 +132,7 @@ pub struct TurnCapture {
 }
 
 /// Item counts for a conversation, broken down by role.
-///
-/// Returned by `get_conversation_counts()` — avoids cloning the conversation
-/// when only role counts and total length are needed (e.g. for telemetry).
+/// Avoids cloning the conversation when only role counts and total length are needed.
 #[derive(Debug, Clone, Default)]
 pub struct ConversationCounts {
     /// Total number of items in the conversation.
@@ -175,12 +166,16 @@ mod tests {
             conversation: vec![],
             sampling_config: SamplingConfig {
                 base_url: "https://api.example.com".to_string(),
+                mtls_cert_dir: None,
                 model: "test-model".to_string(),
                 max_completion_tokens: None,
                 temperature: None,
                 top_p: None,
+                max_retries: Some(6),
+                rate_limit_retry_threshold: Some(4),
                 api_backend: Default::default(),
                 extra_headers: Default::default(),
+                conversation_group_id: None,
                 query_params: Default::default(),
                 env_http_headers: Default::default(),
                 context_window: NonZeroU64::new(128_000).unwrap(),
@@ -206,6 +201,11 @@ mod tests {
         assert!(deserialized.conversation.is_empty());
         assert!(deserialized.agent_edited_paths.is_empty());
         assert!(deserialized.last_compaction_prompt_index.is_none());
+        assert_eq!(deserialized.sampling_config.max_retries, Some(6));
+        assert_eq!(
+            deserialized.sampling_config.rate_limit_retry_threshold,
+            Some(4)
+        );
     }
 
     #[test]
@@ -220,12 +220,16 @@ mod tests {
             ],
             sampling_config: SamplingConfig {
                 base_url: "https://api.example.com".to_string(),
+                mtls_cert_dir: None,
                 model: "grok-3".to_string(),
                 max_completion_tokens: Some(4096),
                 temperature: Some(0.7),
                 top_p: None,
+                max_retries: None,
+                rate_limit_retry_threshold: None,
                 api_backend: Default::default(),
                 extra_headers: Default::default(),
+                conversation_group_id: None,
                 query_params: Default::default(),
                 env_http_headers: Default::default(),
                 context_window: NonZeroU64::new(128_000).unwrap(),

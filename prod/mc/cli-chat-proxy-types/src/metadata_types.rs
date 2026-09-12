@@ -60,6 +60,9 @@ pub struct PromptMetadata {
     pub turn_number: u64,
     /// Request id for this prompt (uuid v4 we generate per prompt)
     pub request_id: String,
+    /// Subagent attempt id when this trace belongs to a child activation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
     /// Timestamp at the start of prompt handling (UTC RFC3339)
     pub turn_started_at: String,
     /// Git repo root (if the session cwd is inside a git repository).
@@ -135,6 +138,7 @@ pub struct PromptMetadataParams {
     pub session_id: String,
     pub turn_number: u64,
     pub request_id: String,
+    pub attempt_id: Option<String>,
     pub turn_started_at: String,
     pub repo_root: Option<String>,
     pub remote_url: Option<String>,
@@ -167,6 +171,7 @@ impl PromptMetadata {
             session_id: params.session_id,
             turn_number: params.turn_number,
             request_id: params.request_id,
+            attempt_id: params.attempt_id,
             turn_started_at: params.turn_started_at,
             repo_root: params.repo_root,
             remote_url: params.remote_url,
@@ -273,6 +278,7 @@ mod tests {
             profile: "strict".into(),
             applied: true,
         });
+        meta.attempt_id = Some("at1.abc".into());
         let json = serde_json::to_string(&meta).unwrap();
         let deserialized: PromptMetadata = serde_json::from_str(&json).unwrap();
         assert_eq!(
@@ -282,6 +288,7 @@ mod tests {
                 applied: true,
             })
         );
+        assert_eq!(deserialized.attempt_id.as_deref(), Some("at1.abc"));
     }
     #[test]
     fn new_defaults_optional_collection_fields() {

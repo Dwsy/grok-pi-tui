@@ -5,7 +5,9 @@ pub mod metadata;
 pub mod pdf;
 pub mod pptx;
 
-pub use metadata::{FileMetadata, bytes_to_metadata};
+pub use metadata::{
+    FileMetadata, bytes_to_metadata, extract_svg_text, should_embed_as_conversation_image,
+};
 pub use pdf::{PDF_MAX_PAGES_PER_READ, parse_page_range};
 
 pub use image::{CompressImageError, compress_image_for_conversation, image_read_output};

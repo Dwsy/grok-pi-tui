@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
+use xai_grok_tools::implementations::grok_build::workflow::WorkflowControl;
+
 use super::super::acp_session::SessionActor;
 use super::named_workflow_args::parse_named_workflow_args;
+use crate::session::workflow::manager::ControlError;
 
 impl SessionActor {
     pub(crate) fn named_workflow_snapshot(
@@ -10,20 +13,20 @@ impl SessionActor {
         crate::session::workflow::registry::WorkflowRegistry,
         Vec<crate::session::workflow::registry::WorkflowListing>,
     ) {
+        #[cfg(test)]
+        crate::session::slash_authority::record_workflow_discovery_call();
         crate::session::workflow::registry::workflow_snapshot(Some(std::path::Path::new(
             self.session_info.cwd.as_str(),
         )))
     }
 
-    /// Model-facing catalog of launchable workflows, or `None` when
-    /// background workflows are disabled, this session is a subagent
-    /// (launches are top-level only), or none are registered.
+    /// Model-facing catalog of launchable workflows.
+    /// Returns `None` when background workflows are disabled, this session is a subagent (launches are top-level only), or none are registered.
     pub(crate) fn workflow_listing_for_prompt(&self) -> Option<String> {
         self.workflow_listing_snapshot().map(|(text, _)| text)
     }
 
-    /// Same catalog as [`Self::workflow_listing_for_prompt`], plus the
-    /// entry count used by `/context`.
+    /// Same catalog as [`Self::workflow_listing_for_prompt`], plus the entry count used by `/context`.
     pub(crate) fn workflow_listing_snapshot(&self) -> Option<(String, usize)> {
         if !self.background_workflows_enabled || self.startup_hints.is_subagent {
             return None;
@@ -148,13 +151,13 @@ impl SessionActor {
             many => {
                 let rows: Vec<String> = many
                     .iter()
-                    .map(|(_, status, name)| format!("  {name} ({})", status.as_str()))
+                    .map(|(_, status, name)| format!("  {name} ({})", status.as_ref()))
                     .collect();
                 return format!(
                     "Several runs could be '{}' — pick one by name:\n{}\n(/workflow {} <name>)",
-                    op.as_str(),
+                    op.as_ref(),
                     rows.join("\n"),
-                    op.as_str(),
+                    op.as_ref(),
                 );
             }
         };
@@ -162,21 +165,38 @@ impl SessionActor {
 
         match op {
             ManageOp::Pause => {
-                if status != WorkflowRunStatus::Active {
-                    return format!("Run '{name}' is not active (status: {}).", status.as_str());
+                let outcome = self
+                    .workflow_manager
+                    .lock()
+                    .await
+                    .control_run(&full_id, WorkflowControl::Pause);
+                match outcome {
+                    Ok(_) => format!("Paused {name}. /workflow resume{id_suffix} to continue."),
+                    Err(ControlError::NotApplicable { status, .. }) => {
+                        format!("Run '{name}' is not active (status: {}).", status.as_ref())
+                    }
+                    Err(ControlError::UnknownRun(_)) => {
+                        format!("No workflow run matches '{run_id}'.")
+                    }
                 }
-                self.workflow_manager.lock().await.pause(&full_id);
-                format!("Paused {name}. /workflow resume{id_suffix} to continue.")
             }
             ManageOp::Stop => {
-                if status.is_terminal() {
-                    return format!(
-                        "Run '{name}' is already finished (status: {}).",
-                        status.as_str()
-                    );
+                let outcome = self
+                    .workflow_manager
+                    .lock()
+                    .await
+                    .control_run(&full_id, WorkflowControl::Stop);
+                match outcome {
+                    Ok(_) => format!("Stopped {name}."),
+                    Err(ControlError::NotApplicable { status, .. }) => format!(
+                        "Run '{name}' cannot be stopped (status: {}); it has already finished or \
+                         hit its agent budget.",
+                        status.as_ref()
+                    ),
+                    Err(ControlError::UnknownRun(_)) => {
+                        format!("No workflow run matches '{run_id}'.")
+                    }
                 }
-                self.workflow_manager.lock().await.cancel(&full_id);
-                format!("Stopped {name}.")
             }
             ManageOp::Resume => {
                 if status == WorkflowRunStatus::Active {
@@ -185,7 +205,7 @@ impl SessionActor {
                 if !status.is_resumable() {
                     return format!(
                         "Run '{name}' cannot be resumed (status: {}). Start a new run instead.",
-                        status.as_str()
+                        status.as_ref()
                     );
                 }
                 if status == WorkflowRunStatus::BudgetLimited {
@@ -312,8 +332,8 @@ impl SessionActor {
     }
 }
 
-/// User-facing `/workflow` (and `/workflow runs`) overview. Runs are keyed by
-/// display name only — run ids stay internal.
+/// User-facing `/workflow` (and `/workflow runs`) overview.
+/// Runs are keyed by display name only; run ids stay internal.
 fn format_workflow_runs_overview(
     mut runs: Vec<crate::session::workflow::tracker::WorkflowRunState>,
 ) -> String {
@@ -325,8 +345,7 @@ fn format_workflow_runs_overview(
                 browse with /workflows."
             .to_string();
     }
-    // Tracker order is start order; newest first within each group, live
-    // runs before terminal ones, and truly-active runs before paused ones.
+    // Tracker order is start order; newest first within each group, live runs before terminal ones, and truly-active runs before paused ones
     runs.reverse();
     runs.sort_by_key(|run| {
         (
@@ -342,7 +361,7 @@ fn format_workflow_runs_overview(
             out,
             "- '{}' — {}",
             run.name,
-            run.status.as_str().replace('_', " ")
+            run.status.as_ref().replace('_', " ")
         );
         if let Some(line) = super::reminders::workflow_phase_line(run) {
             let _ = write!(out, "\n  {line}");
@@ -376,7 +395,8 @@ fn format_workflow_runs_overview(
     out
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 enum ManageOp {
     Pause,
     Resume,
@@ -394,21 +414,11 @@ impl ManageOp {
             _ => None,
         }
     }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Pause => "pause",
-            Self::Resume => "resume",
-            Self::Stop => "stop",
-            Self::Save => "save",
-        }
-    }
 }
 
 /// Bare `/workflow stop` (and pause/resume/save) must not pick a run.
-/// An empty selector used to match every name via `starts_with("")` and
-/// then auto-pick the only applicable one — that feels like stopping
-/// "the first" run.
+/// An empty selector used to match every name via `starts_with("")` and then auto-pick the only applicable one.
+/// That feels like stopping "the first" run.
 fn savable_definition_names(session_cwd: &std::path::Path) -> std::collections::HashSet<String> {
     crate::session::workflow::registry::list_workflows(Some(session_cwd))
         .into_iter()
@@ -422,31 +432,30 @@ fn format_manage_needs_name(
     runs: &[crate::session::workflow::tracker::WorkflowRunState],
     savable_names: &std::collections::HashSet<String>,
 ) -> String {
-    use crate::session::workflow::tracker::WorkflowRunStatus;
     if runs.is_empty() {
         return "No workflow runs in this session yet.".to_string();
     }
     let applicable: Vec<_> = runs
         .iter()
         .filter(|run| match op {
-            ManageOp::Pause => run.status == WorkflowRunStatus::Active,
+            ManageOp::Pause => run.status.accepts(WorkflowControl::Pause),
             ManageOp::Resume => run.status.is_resumable(),
-            ManageOp::Stop => !run.status.is_terminal(),
+            ManageOp::Stop => run.status.accepts(WorkflowControl::Stop),
             ManageOp::Save => savable_names.contains(&run.name),
         })
         .collect();
     if applicable.is_empty() {
-        return format!("No runs to {}.", op.as_str());
+        return format!("No runs to {}.", op.as_ref());
     }
     let rows: Vec<String> = applicable
         .iter()
-        .map(|run| format!("  {} ({})", run.name, run.status.as_str().replace('_', " ")))
+        .map(|run| format!("  {} ({})", run.name, run.status.as_ref().replace('_', " ")))
         .collect();
     format!(
         "Say which run to {}:\n{}\n(/workflow {} <name>)",
-        op.as_str(),
+        op.as_ref(),
         rows.join("\n"),
-        op.as_str(),
+        op.as_ref(),
     )
 }
 
@@ -457,9 +466,7 @@ type RunMatch = (
 );
 
 fn narrow_run_matches(mut all: Vec<RunMatch>, selector: &str, op: ManageOp) -> Vec<RunMatch> {
-    use crate::session::workflow::tracker::WorkflowRunStatus;
-    // Empty selector is handled by the caller so we never auto-pick "the
-    // only applicable run" for a bare `/workflow stop`.
+    // Empty selector is handled by the caller so we never auto-pick "the only applicable run" for a bare `/workflow stop`
     if selector.is_empty() {
         return all;
     }
@@ -475,9 +482,9 @@ fn narrow_run_matches(mut all: Vec<RunMatch>, selector: &str, op: ManageOp) -> V
         let applicable: Vec<_> = all
             .iter()
             .filter(|(_, status, ..)| match op {
-                ManageOp::Pause => *status == WorkflowRunStatus::Active,
+                ManageOp::Pause => status.accepts(WorkflowControl::Pause),
                 ManageOp::Resume => status.is_resumable(),
-                ManageOp::Stop => !status.is_terminal(),
+                ManageOp::Stop => status.accepts(WorkflowControl::Stop),
                 ManageOp::Save => true,
             })
             .cloned()

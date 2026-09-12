@@ -1,8 +1,7 @@
 //! In-app how-to documentation data (embedded markdown).
 //!
-//! Single source of truth: two static arrays (`USER_GUIDE`, `REFERENCE_DOCS`)
-//! hold every doc. All lookups are zero-allocation; `DocEntry` exists only for
-//! backward compatibility with the TUI doc picker.
+//! Single source of truth: two static arrays (`USER_GUIDE`, `REFERENCE_DOCS`) hold every doc.
+//! All lookups are zero-allocation; `DocEntry` exists only for backward compatibility with the TUI doc picker.
 
 /// A compile-time document entry. All fields are `&'static str`.
 #[derive(Debug)]
@@ -176,12 +175,17 @@ pub static USER_GUIDE: &[Doc] = &[
         "Configuration Reference",
         "Field list for config.toml, managed_config.toml, and requirements.toml"
     ),
+    // Direct include_str! so gazelle can put this file in compile_data.
+    // `guide!` hides the path inside concat!($file) and gazelle cannot see it.
+    Doc {
+        filename: "27-grok-clone.md",
+        title: "grok clone",
+        description: "Depth-1 Grove clone, --full-history, and safe deepen/switch commands",
+        content: include_str!("../docs/user-guide/27-grok-clone.md"),
+    },
 ];
 
-/// Non-user-guide reference docs. Separate from USER_GUIDE because they
-/// live under `docs/` (not `docs/user-guide/`), are not extracted to disk,
-/// and do not follow the NN-*.md managed naming pattern. Bundled via
-/// `include_str!` so they are available at runtime without a docs path.
+/// Non-user-guide reference docs. Bundled via `include_str!` so they are available at runtime without a docs path.
 static REFERENCE_DOCS: &[Doc] = &[
     Doc {
         filename: "hooks-and-plugins.md",

@@ -3,7 +3,7 @@
 //! These standalone functions convert `xai_grok_tools::types::output::ToolOutput`
 //! into ACP protocol types (`acp::ToolCallUpdate`, `acp::Plan`).
 //!
-//! `raw_output` is serialized directly from ToolOutput via serde — no manual JSON
+//! `raw_output` is serialized directly from ToolOutput via serde, with no manual JSON
 //! construction. The TUI deserializes it back into the same ToolOutput type, so
 //! field names must match exactly. Path relativization for display happens on the
 //! TUI side (which already has `base_path` for this purpose).
@@ -19,10 +19,8 @@ use xai_grok_tools::types::output::{
 use xai_tool_types::{KillTaskOutput, TaskOutputOutput};
 
 /// Rewrites real worktree paths to display paths in serialized output.
-///
-/// In forked sessions, tools produce output containing the worktree
-/// directory (e.g., `/root/.grok/worktrees/project/fork-019cb252-...`). The
-/// client UI should instead see the original project path (the `display_cwd`).
+/// In forked sessions, tools produce output containing the worktree directory.
+/// The client UI should instead see the original project path (the `display_cwd`).
 #[derive(Clone, Debug)]
 pub(crate) struct PathRewriter {
     /// The real worktree path (what tools actually see).
@@ -34,8 +32,7 @@ pub(crate) struct PathRewriter {
 impl PathRewriter {
     /// Create a new `PathRewriter` if `display_cwd` differs from `real_cwd`.
     ///
-    /// Returns `None` if the paths are the same (no rewriting needed) or if
-    /// `display_cwd` is not set.
+    /// Returns `None` if the paths are the same (no rewriting needed) or if `display_cwd` is not set.
     pub(crate) fn new(real_cwd: &str, display_cwd: Option<&str>) -> Option<Self> {
         let display_cwd = display_cwd?;
         if real_cwd == display_cwd {
@@ -48,15 +45,11 @@ impl PathRewriter {
     }
 
     /// Rewrite all occurrences of the real worktree path with the display path.
-    ///
-    /// Handles both plain paths (e.g., `/root/.grok/worktrees/project/fork-...`)
-    /// and URL-encoded paths (e.g., `%2Froot%2F.grok%2Fworktrees%2F...`) that
-    /// appear in session directory structures and `output_file` references.
+    /// Handles both plain paths and URL-encoded paths that appear in session directory structures and `output_file` references.
     pub(crate) fn rewrite(&self, text: &str) -> String {
         let plain = text.replace(&self.real_cwd, &self.display_cwd);
-        // Also replace URL-encoded form — session directory paths use
-        // urlencoding::encode(&cwd) as a path component, so background task
-        // output_file paths and similar references contain encoded overlay cwd.
+        // Also replace the URL-encoded form: session directory paths use urlencoding::encode(&cwd) as a path component,
+        // so background task output_file paths and similar references embed the encoded real cwd
         let encoded_real = urlencoding::encode(&self.real_cwd);
         if plain.contains(encoded_real.as_ref()) {
             let encoded_display = urlencoding::encode(&self.display_cwd);
@@ -75,11 +68,8 @@ impl PathRewriter {
     }
 
     /// Rewrite a `serde_json::Value` by replacing paths in the serialized JSON string.
-    ///
-    /// Serialize to string, replace (plain + URL-encoded), re-parse. Catches
-    /// paths embedded anywhere in the JSON tree without needing to walk the
-    /// structure. Reuses `rewrite()` so both plain and encoded replacements
-    /// are applied consistently.
+    /// Catches paths embedded anywhere in the JSON tree without needing to walk the structure.
+    /// Reuses `rewrite()` so both plain and encoded replacements are applied consistently.
     pub(crate) fn rewrite_json(&self, value: serde_json::Value) -> serde_json::Value {
         let serialized = value.to_string();
         let rewritten = self.rewrite(&serialized);
@@ -108,8 +98,7 @@ fn maybe_rewrite_path(rewriter: Option<&PathRewriter>, path: PathBuf) -> PathBuf
 
 /// Serialize ToolOutput to JSON for the `raw_output` field in ACP updates.
 ///
-/// Uses serde directly — ToolOutput derives Serialize with `#[serde(tag = "type")]`,
-/// so the JSON round-trips cleanly with the TUI's deserialization.
+/// Uses serde directly: ToolOutput derives Serialize with `#[serde(tag = "type")]`, so the JSON round-trips cleanly with the TUI's deserialization.
 pub(crate) fn raw_output_json(
     output: &ToolOutput,
     rewriter: Option<&PathRewriter>,
@@ -122,13 +111,8 @@ pub(crate) fn raw_output_json(
 }
 
 /// Convert tool output to an ACP `ToolCallUpdate` for rich TUI rendering.
-///
-/// `Todo` output returns a minimal `Completed` update (the richer rendering
-/// goes through `acp_plan_update` as a `Plan` notification).
-///
-/// `tool_meta` is attached as `_meta` on the update for MCP tools that have
-/// MCP Apps UI metadata (e.g., `_meta.ui.resourceUri`). This allows clients
-/// to render interactive UIs without maintaining a separate metadata store.
+/// `Todo` returns a minimal `Completed` update; the richer view is the separate `Plan` notification.
+/// `tool_meta` is attached as `_meta` so MCP Apps clients can render interactive UI without a side metadata store.
 pub(crate) fn acp_tool_update(
     output: &ToolOutput,
     tool_call_id: &str,
@@ -155,11 +139,8 @@ pub(crate) fn acp_tool_update(
                     (content, acp::ToolCallStatus::Failed)
                 }
                 ReadFileOutput::ImageContent(image_content) => {
-                    // Construct the ACP `ImageContent` directly from the
-                    // tool's local image type rather than going through a
-                    // `From` impl on the tools crate -- that lets
-                    // `xai-grok-tools` stay free of an
-                    // `agent-client-protocol` dependency.
+                    // Construct the ACP `ImageContent` directly from the tool's local image type rather than going
+                    // through a `From` impl on the tools crate, so that `xai-grok-tools` stays free of an `agent-client-protocol` dependency
                     let content = Some(vec![acp::ToolCallContent::from(acp::ContentBlock::Image(
                         acp::ImageContent::new(
                             image_content.data.clone(),
@@ -299,7 +280,7 @@ pub(crate) fn acp_tool_update(
                 .raw_output(raw_output_json(output, rewriter)),
         )),
         // Web fetch output is converted to text content for the model.
-        // Success (Content) → Completed; errors (DomainNotAllowed, CrossHostRedirect) → Failed.
+        // Success (Content) maps to Completed; errors (DomainNotAllowed, CrossHostRedirect) map to Failed
         // This matches the pattern used by ReadFile, ListDir, and SearchReplace.
         ToolOutput::WebFetch(web_fetch_output) => {
             use xai_grok_tools::types::output::WebFetchOutput;
@@ -320,12 +301,8 @@ pub(crate) fn acp_tool_update(
                     .raw_output(raw_output_json(output, rewriter)),
             ))
         }
-        // Todo also sends a Plan notification (see acp_plan_update), but we still
-        // need to complete the tool call so the TUI flushes pending agent messages
-        // and avoids concatenating text across tool-call boundaries.
-        //
-        // Error variants (e.g., DuplicateId) get `Failed` status so the Python
-        // side can distinguish tool-logic errors from infra errors via raw_output.
+        // Todo also sends a Plan notification, but we still need to complete the tool call so the TUI flushes pending agent messages and avoids concatenating text across tool-call boundaries.
+        // Error variants get `Failed` status so the Python side can distinguish tool-logic errors from infra errors via raw_output.
         ToolOutput::Todo(todo_output) => {
             use xai_grok_tools::types::output::TodoWriteOutput;
             let (status, content) = match todo_output {
@@ -459,7 +436,7 @@ pub(crate) fn acp_tool_update(
         ToolOutput::ApplyPatch(apply_patch_output) => {
             let (content, status) = match apply_patch_output {
                 ApplyPatchOutput::Success { files, .. } => {
-                    // Send one acp::Diff per affected file — mirrors the
+                    // Send one acp::Diff per affected file, mirroring the
                     // SearchReplace pattern so the TUI can render inline diffs.
                     let content: Vec<acp::ToolCallContent> = files
                         .iter()
@@ -547,9 +524,8 @@ pub(crate) fn acp_tool_update(
                 .raw_output(raw_output_json(output, rewriter)),
         )),
         ToolOutput::SubagentCompleted(sub) => {
-            // Text includes resume handle for discoverability + meta for TUI.
-            // Shared with the chat-bidi server via `to_model_text` so both
-            // surfaces present a completed subagent identically.
+            // The text includes the resume handle so users can find it, plus meta for the TUI
+            // Shared with the chat-bidi server via `to_model_text` so both clients present a completed subagent identically
             let content = Some(vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
                 acp::TextContent::new(sub.to_model_text()),
             ))]);
@@ -558,6 +534,24 @@ pub(crate) fn acp_tool_update(
                 acp::ToolCallUpdateFields::new()
                     .status(Some(acp::ToolCallStatus::Completed))
                     .content(content)
+                    .raw_output(raw_output_json(output, rewriter)),
+            ))
+        }
+        ToolOutput::SendSubagentMessage(send) => {
+            use xai_grok_tools::implementations::grok_build::send_subagent_message::SendSubagentMessageDisposition;
+
+            let status = match send.disposition() {
+                SendSubagentMessageDisposition::Accepted
+                | SendSubagentMessageDisposition::Unconfirmed => acp::ToolCallStatus::Completed,
+                SendSubagentMessageDisposition::Rejected => acp::ToolCallStatus::Failed,
+            };
+            Some(acp::ToolCallUpdate::new(
+                acp::ToolCallId::new(Arc::from(tool_call_id)),
+                acp::ToolCallUpdateFields::new()
+                    .status(Some(status))
+                    .content(Some(vec![acp::ToolCallContent::from(
+                        acp::ContentBlock::Text(acp::TextContent::new(send.to_string())),
+                    )]))
                     .raw_output(raw_output_json(output, rewriter)),
             ))
         }
@@ -629,20 +623,15 @@ pub(crate) fn acp_tool_update(
                 .status(Some(acp::ToolCallStatus::Completed))
                 .raw_output(raw_output_json(output, rewriter)),
         )),
-        // Internal tools (open_page, browse_page, etc.) are not used in the
-        // shell — they are server-only.  This arm covers variants that appear
-        // when Cargo unifies the optional web-tools feature across the workspace.
+        // Internal tools (open_page, browse_page, etc.) are not used in the shell; they are server-only
+        // This arm covers variants that appear when Cargo unifies the optional web-tools feature across the workspace
         #[allow(unreachable_patterns)]
         _ => None,
     }
 }
 
 /// Convert a `Todo` tool output to an ACP `Plan` notification.
-///
 /// Returns `None` for non-Todo outputs.
-///
-/// This converts `xai-grok-tools`' TodoItem (which has `id`, `content: Option<String>`,
-/// `status: Option<String>`) to `acp::PlanEntry` (which has `content`, `priority`, `status`).
 /// The `id` is not directly represented in `PlanEntry` but the ordering is preserved.
 pub(crate) fn acp_plan_update(output: &ToolOutput) -> Option<acp::Plan> {
     use crate::tools::todo::plan_entry_from_todo_item;
@@ -729,8 +718,7 @@ fn build_apply_patch_edit_details(
         }
     }
 
-    // If no differences found (e.g., add or delete), create a single entry
-    // covering the whole content.
+    // If no differences found (e.g., add or delete), create a single entry covering the whole content
     if details.is_empty() {
         details.push(SearchReplaceEditDetail {
             old_string: old_content.to_string(),
@@ -751,6 +739,52 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use xai_grok_tools::types::output::*;
+
+    #[test]
+    fn test_acp_tool_update_send_subagent_message_outcomes_are_terminal() {
+        use xai_grok_tools::implementations::grok_build::send_subagent_message::SendSubagentMessageOutput::*;
+
+        for (send, expected_status) in [
+            (
+                Accepted {
+                    message_id: "m-1".into(),
+                },
+                acp::ToolCallStatus::Completed,
+            ),
+            (NotFoundOrNotOwned, acp::ToolCallStatus::Failed),
+            (NotActiveOrFinalizing, acp::ToolCallStatus::Failed),
+            (Saturated { max_in_flight: 8 }, acp::ToolCallStatus::Failed),
+            (AdmissionUncertain, acp::ToolCallStatus::Completed),
+            (NotAcceptedBeforeDeadline, acp::ToolCallStatus::Failed),
+            (Unsupported, acp::ToolCallStatus::Failed),
+            (
+                Limit {
+                    max_bytes: 8,
+                    observed_bytes: 9,
+                },
+                acp::ToolCallStatus::Failed,
+            ),
+            (ChannelClosed, acp::ToolCallStatus::Failed),
+        ] {
+            let expected_text = send.to_string();
+            let output = ToolOutput::SendSubagentMessage(send);
+            let update = acp_tool_update(&output, "call-message", None, None).expect("update");
+            assert_eq!(update.fields.status, Some(expected_status));
+            assert_eq!(update.fields.raw_output, serde_json::to_value(&output).ok());
+            let Some(acp::ToolCallContent::Content(acp::Content {
+                content: acp::ContentBlock::Text(text),
+                ..
+            })) = update
+                .fields
+                .content
+                .as_deref()
+                .and_then(|content| content.first())
+            else {
+                panic!("expected text content");
+            };
+            assert_eq!(text.text, expected_text);
+        }
+    }
 
     #[test]
     fn test_acp_tool_update_read_file_success() {
@@ -809,8 +843,7 @@ mod tests {
             },
         ];
 
-        // Build plan entries using the canonical helper, then override
-        // in_progress → completed (same logic as emit_turn_end_plan_cleanup).
+        // Build plan entries using the canonical helper, then override in_progress to completed (same logic as emit_turn_end_plan_cleanup).
         let entries: Vec<acp::PlanEntry> = items
             .iter()
             .map(|item| {
@@ -936,8 +969,8 @@ mod tests {
             other => panic!("expected Text content, got {other:?}"),
         }
 
-        // ToolOutput::Text wraps TextOutput { text: String }, which serde can
-        // serialize with internal tagging. raw_output carries the JSON.
+        // ToolOutput::Text wraps TextOutput { text: String }, which serde can serialize with internal tagging
+        // raw_output carries the JSON
         assert!(update.fields.raw_output.is_some());
     }
 

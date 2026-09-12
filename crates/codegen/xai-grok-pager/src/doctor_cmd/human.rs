@@ -24,7 +24,7 @@ pub(super) fn format(report: &DiagnosticReport) -> String {
     fact(&mut out, "ssh", if facts.ssh { "yes" } else { "no" });
     match &facts.color.level {
         RuntimeFact::Available(level) => {
-            fact(&mut out, "color", level.as_str());
+            fact(&mut out, "color", level.as_ref());
             let themes = if facts.color.available_themes.len() == facts.color.total_themes {
                 "all".to_owned()
             } else {

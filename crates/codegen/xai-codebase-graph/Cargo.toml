@@ -55,6 +55,7 @@ tracing = { workspace = true }
 once_cell = { workspace = true }
 # Concurrent hash map for deduplication registries
 dashmap = { workspace = true }
+strum = { workspace = true }
 # Parsing, keeping it here to avoid pollution
 tree-sitter = "0.25.10"
 tree-sitter-rust = "0.24.0"

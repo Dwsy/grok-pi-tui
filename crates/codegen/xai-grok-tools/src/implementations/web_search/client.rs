@@ -10,10 +10,9 @@ pub struct WebSearchClient {
     http: reqwest::Client,
     base_url: String,
     model: String,
-    /// Authoritative domain allowlist from `[toolset.web_search] allowed_domains`.
-    /// When set it governs the search and the model's per-call `allowed_domains`
-    /// is ignored (see [`Self::resolve_filters`]). Mutually exclusive with
-    /// `default_excluded_domains`.
+    /// Authoritative domain allowlist from `[toolset.web_search] allowed_domains`. When set it
+    /// governs the search and the model's per-call `allowed_domains` is ignored (see
+    /// [`Self::resolve_filters`]). Mutually exclusive with `default_excluded_domains`.
     default_allowed_domains: Option<Vec<String>>,
     /// Authoritative domain blocklist from `[toolset.web_search] excluded_domains`.
     /// The model cannot un-set it by naming a blocked domain in its own
@@ -97,20 +96,9 @@ impl WebSearchClient {
             attribution_callback: None,
         })
     }
-    /// Resolve the effective domain filters for a request.
-    ///
-    /// A configured `[toolset.web_search]` policy is **authoritative**: when the
-    /// user sets `allowed_domains` or `excluded_domains`, it governs and the
-    /// model's per-call `allowed_domains` is ignored. This is required for
-    /// `excluded_domains` to be a real block. Otherwise the model could bypass
-    /// the user's blocklist simply by naming the blocked domain in its own
-    /// `allowed_domains`. Only when no config policy is set does the model's
-    /// per-call allowlist apply. The two lists are mutually exclusive, so at
-    /// most one of the returned options is `Some`.
-    ///
-    /// The config source guarantees at most one list is set (the resolver drops
-    /// one, and deserialize rejects both), but should both ever be present the
-    /// allowlist wins, matching the resolver's tiebreak so the two paths agree.
+    /// Resolve the effective domain filters for a request. This is required for `excluded_domains` to be a real block. Otherwise the model could
+    /// bypass the user's blocklist simply by naming the blocked domain in its own `allowed_domains`. Only when no config policy is set does the
+    /// model's per-call allowlist apply. The two lists are mutually exclusive, so at most one of the returned options is `Some`.
     fn resolve_filters(
         &self,
         model_allowed: Option<Vec<String>>,
@@ -131,11 +119,7 @@ impl WebSearchClient {
         }
         (model_allowed.filter(|d| !d.is_empty()), None)
     }
-    /// Build the serialized `/responses` request body for a single web search.
-    ///
-    /// async_openai's `WebSearchToolFilters` models only `allowed_domains`, so
-    /// `excluded_domains` is injected into the tool's `filters` after
-    /// serialization (the backend Responses API accepts it). The request always
+    /// Build the serialized `/responses` request body for a single web search. The request always
     /// carries exactly one tool (`web_search`) at index 0.
     fn build_request_json(
         &self,
@@ -199,10 +183,9 @@ impl WebSearchClient {
             sent_bearer,
         );
     }
-    /// Perform a web search query using the Responses API.
-    ///
-    /// Returns `(content, citations)` where content is the assistant's text
-    /// and citations are unique URLs found in the response annotations.
+    /// Perform a web search query using the Responses API. Returns `(content, citations)` where
+    /// content is the assistant's text and citations are unique URLs found in the response
+    /// annotations.
     pub async fn search(
         &self,
         query: &str,
@@ -265,13 +248,9 @@ impl WebSearchClient {
         let citations = extract_citations(&response_obj);
         Ok((content, citations))
     }
-    /// Same as [`Self::search`] but also extracts per-citation titles when
-    /// the Responses API surfaces them. Returns `(content, citations_with_titles)`
-    /// where each citation is `(title, url)`. Empty `title` strings indicate
-    /// the upstream didn't supply one for that URL.
-    ///
-    /// Used by the cursor-compat `WebSearch` adapter to render a
-    /// `Links:\n1. [title](url)` list instead of the LLM synthesis text.
+    /// Same as [`Self::search`] but also extracts per-citation titles when the Responses API surfaces them. Returns `(content,
+    /// citations_with_titles)` where each citation is `(title, url)`. Empty `title` strings indicate the upstream didn't supply one for that URL.
+    /// Used by the cursor-compat `WebSearch` adapter to render a `Links:\n1. [title](url)` list instead of the LLM synthesis text.
     pub async fn search_with_titles(
         &self,
         query: &str,
@@ -360,11 +339,9 @@ fn extract_citations(response: &rs::Response) -> Vec<String> {
     citations.retain(|url| seen.insert(url.clone()));
     citations
 }
-/// Extract `(title, url)` pairs from the Responses API annotations.
-///
-/// `title` may be an empty string when upstream doesn't supply one. URLs
-/// are deduplicated while preserving the first-seen order so the rendered
-/// `Links:` list is stable and free of duplicates.
+/// Extract `(title, url)` pairs from the Responses API annotations. `title` may be an empty string
+/// when upstream doesn't supply one. URLs are deduplicated while preserving the first-seen order so
+/// the rendered `Links:` list is stable and free of duplicates.
 fn extract_citation_pairs(response: &rs::Response) -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = Vec::new();
     for output_item in &response.output {
@@ -766,10 +743,9 @@ mod tests {
             None
         }
     }
-    /// When the dynamic provider returns `None`, the static `api_key`
-    /// from config must still be sent as the Authorization header.
-    /// This is a regression scenario: API-key users
-    /// past the 30-day client TTL saw 401 because no auth was sent.
+    /// When the dynamic provider returns `None`, the static `api_key` from config must still be
+    /// sent as the Authorization header. This is a regression scenario: API-key users past the
+    /// 30-day client TTL saw 401 because no auth was sent.
     #[tokio::test]
     async fn static_api_key_is_fallback_when_provider_returns_none() {
         use wiremock::matchers::{header, method, path};

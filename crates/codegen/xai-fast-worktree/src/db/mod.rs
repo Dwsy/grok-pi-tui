@@ -13,8 +13,21 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use xai_sqlite_journal::{BUSY_RETRY_BUDGET, JournalMode};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    strum::AsRefStr,
+    strum::IntoStaticStr,
+)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "snake_case")]
 pub enum WorktreeKind {
     Session,
     Ab,
@@ -25,17 +38,6 @@ pub enum WorktreeKind {
 }
 
 impl WorktreeKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Session => "session",
-            Self::Ab => "ab",
-            Self::Pool => "pool",
-            Self::Fork => "fork",
-            Self::Manual => "manual",
-            Self::Subagent => "subagent",
-        }
-    }
-
     pub fn from_str_lossy(s: &str) -> Self {
         Self::from_str_exact(s).unwrap_or(Self::Manual)
     }
@@ -68,21 +70,17 @@ impl WorktreeKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr, strum::IntoStaticStr,
+)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "snake_case")]
 pub enum WorktreeStatus {
     Alive,
     Dead,
 }
 
 impl WorktreeStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Alive => "alive",
-            Self::Dead => "dead",
-        }
-    }
-
     pub fn from_str_lossy(s: &str) -> Self {
         match s {
             "alive" => Self::Alive,
@@ -224,16 +222,12 @@ impl WorktreeDb {
 
     fn set_journal_mode(&self, mode: JournalMode) -> Result<()> {
         mode.apply_with_retry(&self.conn)
-            .with_context(|| format!("failed to set journal mode {}", mode.as_str()))
+            .with_context(|| format!("failed to set journal mode {}", mode.as_ref()))
     }
 
-    /// Open the default DB at `~/.grok/worktrees.db`.
-    ///
-    /// Discovers grok home via `xai_grok_home::resolve_grok_home` (`$GROK_HOME`,
-    /// else the canonicalized `<home>/.grok`).
-    /// Path is resolved fresh each call (env read plus a canonicalize) to
-    /// support test overrides. Each call opens its own connection — callers in
-    /// hot paths should cache the `WorktreeDb` instance.
+    /// Open `~/.grok/worktrees.db` via `resolve_grok_home` (`$GROK_HOME`, else
+    /// `<home>/.grok`). Resolved fresh each call for test overrides. Each call
+    /// opens its own connection — hot paths should cache the instance.
     pub fn open_default() -> Result<Self> {
         Self::open(&resolve_grok_home()?)
     }
@@ -368,11 +362,8 @@ impl WorktreeDb {
         queries::get_by_id(&self.conn, id)
     }
 
-    /// Look up by ID, label, or path.
-    ///
-    /// If `id_or_path` contains `/`, it's treated as a path (canonicalized
-    /// before lookup). Otherwise it's looked up first as a DB ID, then as a
-    /// worktree label (stored in `metadata.label`).
+    /// Look up by ID, label, or path. A `/` means path (canonicalized first);
+    /// otherwise DB ID, then `metadata.label`.
     pub fn get(&self, id_or_path: &str) -> Result<Option<WorktreeRecord>> {
         if id_or_path.contains('/') {
             let canon = PathBuf::from(id_or_path);
@@ -436,11 +427,8 @@ impl WorktreeDb {
     }
 }
 
-/// Derive a worktree ID from its destination path: `<basename>-<hash of full path>`
-/// (the last component, minus any `worktree-` prefix, plus a full-path hash).
-///
-/// The basename alone collides across repos, and `INSERT OR REPLACE` would then evict
-/// the other repo's record; hashing the full path keeps distinct worktrees distinct.
+/// `<basename>-<hash of full path>`. Basename alone collides across repos, and
+/// `INSERT OR REPLACE` would evict the other record.
 pub fn id_from_path(path: &Path) -> String {
     crate::worktree::plan::worktree_id_from_path(path)
 }
@@ -459,7 +447,7 @@ pub fn now_epoch_secs() -> i64 {
 
 /// Resolve the grok home: `$GROK_HOME`, else `<home>/.grok`.
 pub fn resolve_grok_home() -> Result<PathBuf> {
-    xai_grok_home::resolve_grok_home()
+    xai_dirs::resolve_grok_home()
         .context("neither $GROK_HOME nor a home directory could be resolved")
 }
 
@@ -469,14 +457,9 @@ pub fn resolve_grok_home() -> Result<PathBuf> {
 #[cfg(test)]
 static GROK_HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Test-only isolation for code that resolves the DB via `open_default()`.
-///
-/// Holds [`GROK_HOME_ENV_LOCK`] (serializing concurrent setters), points
-/// `GROK_HOME` at a fresh private tmp dir, and restores the prior value on drop.
-/// Use instead of hand-rolling the lock + restore guard + tmp dir per test.
-///
-/// `Drop` restores `GROK_HOME` before `_lock` releases, so the env is correct
-/// before another waiting setter proceeds.
+/// Test-only: hold [`GROK_HOME_ENV_LOCK`], point `GROK_HOME` at a private tmp
+/// dir, restore on drop. `Drop` restores the env before the lock releases so
+/// the next setter never sees a stale value.
 #[cfg(test)]
 pub(crate) struct GrokHomeFixture {
     _lock: std::sync::MutexGuard<'static, ()>,
@@ -498,11 +481,9 @@ impl GrokHomeFixture {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("grok-home");
         std::fs::create_dir_all(&home).unwrap();
-        // Warm up the DB (journal-mode conversion + schema) before exposing it
-        // via GROK_HOME, sparing the test hot loop set_journal_mode's retry
-        // sleeps. This open has exclusive access (nothing reaches the path
-        // until GROK_HOME points here); set_journal_mode's retry is the actual
-        // race fix.
+        // Warm journal-mode + schema before GROK_HOME is visible, so the hot
+        // loop skips retry sleeps. This open is exclusive; the retry is the
+        // actual race fix.
         let _ = WorktreeDb::open(&home);
         let prev = std::env::var_os("GROK_HOME");
         // SAFETY: the fixture holds the GROK_HOME env lock for its whole

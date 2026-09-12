@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::auth::AuthManager;
+use xai_grok_login::AuthManager;
 
 const GROK_WEB_URL: &str = "https://grok.com";
 
@@ -116,7 +116,7 @@ impl WorkspacesClient {
         if let Some(email) = &auth.email {
             builder = builder.header("x-email", email);
         }
-        let builder = xai_file_utils::trace_context::inject_trace_context_into_request(builder);
+        let builder = xai_grok_otel::inject_trace_context_into_request(builder);
 
         let response = builder.send().await?;
         let status = response.status();

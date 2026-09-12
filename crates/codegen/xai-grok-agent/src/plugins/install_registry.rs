@@ -1,7 +1,4 @@
-//! Install registry for managing plugins installed from git repos or local directories.
-//!
-//! Tracks which repos have been cloned/symlinked into the managed install directory,
-//! along with the plugins discovered within each repo.
+//! Tracks which repos have been cloned/symlinked into the managed install directory, along with the plugins discovered within each repo.
 //!
 //! The registry is persisted as `registry.json` in the install directory.
 
@@ -13,7 +10,6 @@ use serde::{Deserialize, Serialize};
 /// Default install directory name under `~/.grok/`.
 const DEFAULT_INSTALL_DIR_NAME: &str = "installed-plugins";
 
-/// Registry of installed repos and their plugins.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallRegistry {
     /// Schema version for forward compatibility.
@@ -25,7 +21,6 @@ pub struct InstallRegistry {
     install_dir: PathBuf,
 }
 
-/// How a repo was installed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum InstallKind {
@@ -41,15 +36,13 @@ pub enum InstallKind {
     /// Copied from a local directory (full tree snapshot under installed-plugins).
     Local {
         source_path: PathBuf,
-        /// Optional plugin subdirectory selector used at install time (e.g.
-        /// multi-package `path#plugins/foo`). Preserved so refresh rediscovers
-        /// the same scope.
+        /// Optional plugin subdirectory selector used at install time (e.g. multi-package `path#plugins/foo`).
+        /// Preserved so refresh rediscovers the same scope.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subdir: Option<String>,
     },
 }
 
-/// A single installed repo, which may contain one or more plugins.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledRepo {
     pub kind: InstallKind,
@@ -64,7 +57,6 @@ pub struct InstalledRepo {
     pub marketplace: Option<MarketplaceProvenance>,
 }
 
-/// Marketplace provenance — tracks which marketplace a plugin was installed from.
 /// Lives here (not in xai-grok-plugin-marketplace) to keep dependency direction sane.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketplaceProvenance {
@@ -76,7 +68,6 @@ pub struct MarketplaceProvenance {
     pub plugin_subdir: String,
 }
 
-/// A plugin discovered within an installed repo.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoPlugin {
     /// Subdirectory within the repo (None if plugin is at repo root).
@@ -101,15 +92,13 @@ fn paths_match_plugin_root(
 
 impl InstallRegistry {
     /// Load the registry from the resolved install directory.
-    ///
     /// If the registry file doesn't exist, returns an empty registry.
     pub fn load() -> Self {
         Self::load_from(Self::resolve_install_dir())
     }
 
     /// Load the registry from an explicit install directory.
-    ///
-    /// Missing file → empty registry. Read/parse errors → empty registry after a warning.
+    /// A missing file returns an empty registry. Read or parse errors also return an empty registry, after a warning.
     pub fn load_from(install_dir: PathBuf) -> Self {
         match Self::try_load_from(install_dir.clone()) {
             Ok(reg) => reg,
@@ -124,7 +113,7 @@ impl InstallRegistry {
         }
     }
 
-    /// Fallible load: missing `registry.json` is empty; read/parse errors are `Err`.
+    /// Fallible load: a missing `registry.json` yields an empty registry; read/parse errors yield `Err`.
     pub fn try_load_from(install_dir: PathBuf) -> Result<Self, InstallError> {
         let registry_path = install_dir.join("registry.json");
         match std::fs::read_to_string(&registry_path) {
@@ -144,7 +133,6 @@ impl InstallRegistry {
         }
     }
 
-    /// Create an empty registry for the given install directory.
     pub fn empty(install_dir: PathBuf) -> Self {
         Self {
             version: 1,
@@ -153,7 +141,8 @@ impl InstallRegistry {
         }
     }
 
-    /// Save the registry to disk.
+    /// Save the registry to disk. Every writer holds the registry flock across load→mutate→save
+    /// (shell `lock_install_registry`, agent [`lock_registry`] — same lock file).
     pub fn save(&self) -> Result<(), InstallError> {
         self.save_atomic()
     }
@@ -194,18 +183,15 @@ impl InstallRegistry {
         Ok(())
     }
 
-    /// Get a repo by its repo key.
     pub fn get_repo(&self, repo_key: &str) -> Option<&InstalledRepo> {
         self.repos.get(repo_key)
     }
 
-    /// Get a mutable reference to a repo by its repo key.
     pub fn get_repo_mut(&mut self, repo_key: &str) -> Option<&mut InstalledRepo> {
         self.repos.get_mut(repo_key)
     }
 
     /// Find which repo a plugin belongs to.
-    ///
     /// Returns `(repo_key, repo, plugin)` if found.
     pub fn find_plugin(&self, plugin_name: &str) -> Option<(&str, &InstalledRepo, &RepoPlugin)> {
         for (repo_key, repo) in &self.repos {
@@ -233,30 +219,24 @@ impl InstallRegistry {
         })
     }
 
-    /// Insert a repo into the registry.
     pub fn insert(&mut self, repo_key: String, repo: InstalledRepo) {
         self.repos.insert(repo_key, repo);
     }
 
-    /// Remove a repo from the registry.
     pub fn remove(&mut self, repo_key: &str) -> Option<InstalledRepo> {
         self.repos.remove(repo_key)
     }
 
-    /// List all installed repos.
     pub fn list(&self) -> Vec<(&str, &InstalledRepo)> {
         let mut entries: Vec<_> = self.repos.iter().map(|(k, v)| (k.as_str(), v)).collect();
         entries.sort_by_key(|(k, _)| *k);
         entries
     }
 
-    /// Get the install directory path.
     pub fn install_dir(&self) -> &Path {
         &self.install_dir
     }
 
-    /// Resolve the install directory from config or default.
-    ///
     /// Resolution order:
     /// 1. `[plugins].install_dir` from effective config (requirements > config > managed)
     /// 2. Default: `~/.grok/installed-plugins/`
@@ -268,27 +248,19 @@ impl InstallRegistry {
         xai_grok_config::grok_home().join(DEFAULT_INSTALL_DIR_NAME)
     }
 
-    /// Read `[plugins].install_dir` from the effective config
-    /// (managed_config.toml merged under config.toml — user wins).
+    /// Read `[plugins].install_dir` from the effective config (managed_config.toml merged under config.toml; user wins).
     fn read_install_dir_from_config() -> Option<PathBuf> {
         let root = xai_grok_config::load_effective_config_disk_only().ok()?;
         let value = root.get("plugins")?.get("install_dir")?.as_str()?;
         let expanded = if let Some(stripped) = value.strip_prefix("~/") {
-            dirs::home_dir()?.join(stripped)
+            xai_dirs::home_dir()?.join(stripped)
         } else {
             PathBuf::from(value)
         };
         Some(expanded)
     }
 
-    /// Generate a unique repo key from a source identifier.
-    ///
-    /// Format: `<basename>-<hash8>` where hash8 = first 8 hex chars of
-    /// SHA-256(normalized source).
-    ///
-    /// Examples:
-    /// - `https://github.com/org-a/tools` → `tools-a1b2c3d4`
-    /// - `/Users/me/projects/my-plugin` → `my-plugin-e5f6g7h8`
+    /// Format: `<basename>-<hash8>` where hash8 is the first 8 hex chars of SHA-256(normalized source).
     pub fn repo_key(source: &str) -> String {
         let basename = source
             .trim_end_matches('/')
@@ -319,6 +291,71 @@ impl InstallRegistry {
         let hash8 = format!("{:08x}", hash & 0xFFFFFFFF);
 
         format!("{trimmed}-{hash8}")
+    }
+}
+
+/// Exclusive advisory flock over `<install_dir>/registry.lock` (drop releases it) — the same lock
+/// file and [`acquire_file_lock`] as the shell's `plugin::acquire::lock_install_registry`.
+#[derive(Debug)]
+pub struct RegistryLockGuard {
+    _file: std::fs::File,
+}
+
+/// Take the registry flock, polling up to `timeout`. The error string names
+/// the lock path; "timeout" means another plugin operation is in progress.
+pub fn lock_registry(
+    install_dir: &Path,
+    timeout: std::time::Duration,
+) -> Result<RegistryLockGuard, String> {
+    std::fs::create_dir_all(install_dir).map_err(|e| {
+        format!(
+            "failed to create install dir {}: {e}",
+            install_dir.display()
+        )
+    })?;
+    acquire_file_lock("registry", &install_dir.join("registry.lock"), timeout)
+        .map(|file| RegistryLockGuard { _file: file })
+}
+
+/// How often lock acquisition retries while polling toward its timeout.
+const LOCK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Exclusive advisory flock on `lock_path`, polled until `timeout`; per open file description,
+/// so it conflicts in-process too. The ONE flock helper for every plugin lock site.
+pub fn acquire_file_lock(
+    label: &str,
+    lock_path: &Path,
+    timeout: std::time::Duration,
+) -> Result<std::fs::File, String> {
+    use fs2::FileExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)
+        .map_err(|e| format!("failed to open {label} lock {}: {e}", lock_path.display()))?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(file),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!(
+                        "{label} lock timeout after {}s for {}",
+                        timeout.as_secs(),
+                        lock_path.display()
+                    ));
+                }
+                std::thread::sleep(LOCK_POLL_INTERVAL);
+            }
+            Err(e) => {
+                return Err(format!(
+                    "failed to lock {label} {}: {e}",
+                    lock_path.display()
+                ));
+            }
+        }
     }
 }
 
@@ -399,7 +436,6 @@ mod tests {
         assert!(reg.repos.is_empty());
         assert!(reg.list().is_empty());
 
-        // Insert
         reg.insert(
             "test-repo-12345678".to_string(),
             InstalledRepo {
@@ -627,5 +663,24 @@ mod tests {
             }
             _ => panic!("expected Local"),
         }
+    }
+
+    /// Writer exclusion (per-OFD flock, so in-process too): a second holder times out while held, then acquires after release.
+    #[test]
+    fn lock_registry_excludes_second_holder_until_released() {
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let held =
+            lock_registry(dir.path(), Duration::from_millis(50)).expect("first lock acquires");
+        let detail = lock_registry(dir.path(), Duration::from_millis(150))
+            .expect_err("second holder must time out while the lock is held");
+        assert!(
+            detail.contains("registry lock timeout"),
+            "timeout must name the registry lock, got: {detail}"
+        );
+        drop(held);
+        lock_registry(dir.path(), Duration::from_millis(50))
+            .expect("lock re-acquirable after release");
     }
 }

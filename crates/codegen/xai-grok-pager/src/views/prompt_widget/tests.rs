@@ -216,7 +216,7 @@
 
     #[test]
     fn cmd_backspace_and_ctrl_u_kill_to_beginning_keep_text_after_cursor() {
-        // Kill cursor→BOL, not the whole line (terminals often send Cmd+Bsp as ^U).
+        // Kill from the cursor to line start, not the whole line (terminals often send Cmd+Bsp as ^U)
         for key in [
             key!(Backspace, SUPER).to_key_event(),
             key!('u', CONTROL).to_key_event(),
@@ -230,25 +230,16 @@
         }
     }
 
-    /// Cmd+A is gated to Ghostty in production, but every other test
-    /// in this module runs in a generic test environment whose
-    /// `terminal_context().brand` is `Unknown`. This helper builds a
-    /// `PromptWidget` and force-enables the gate so the handler is
-    /// exercised on every platform.
+    /// The Cmd+A gate is Ghostty-only in production, and every other test in this module runs with `terminal_context().brand` as `Unknown`.
+    /// This helper builds a `PromptWidget` and force-enables the gate so the handler is exercised on every platform.
     fn ghostty_prompt() -> PromptWidget {
         let mut pw = PromptWidget::new();
         pw.cmd_a_select_all_enabled = true;
         pw
     }
 
-    /// Gate predicate: only Ghostty enables `Cmd+A` select-all today.
-    ///
-    /// The `match` expression below is exhaustive over `TerminalName`,
-    /// so adding a new variant to the enum will fail to compile here
-    /// until someone decides whether the new terminal should opt in.
-    /// That's the whole point — this gate decision is a per-brand
-    /// policy choice and must not be silently inherited by future
-    /// additions.
+    /// Gate predicate: only Ghostty enables `Cmd+A` select-all today. The gate is a per-brand policy
+    /// choice and must not be silently inherited by future additions.
     #[test]
     fn cmd_a_supported_only_for_ghostty() {
         use crate::terminal::TerminalName;
@@ -274,10 +265,7 @@
             TerminalName::Otty,
             TerminalName::Unknown,
         ] {
-            // Compiler-enforced exhaustiveness: if a new TerminalName
-            // variant is added without being listed above, this match
-            // fails to compile and the gate decision is forced into
-            // someone's hands.
+            // Exhaustive on purpose: an unlisted new TerminalName variant fails to compile, forcing the gate decision into someone's hands
             let expected = match brand {
                 TerminalName::Ghostty => true,
                 TerminalName::AppleTerminal
@@ -377,10 +365,8 @@
         let range = pw.textarea.selection_range().expect("selection set");
         assert_eq!(range.start, 0);
         assert_eq!(range.end, full.len());
-        // `selected_text` returns the buffer text, which includes the
-        // `[Image #1]` chip placeholder. The path part is present when
-        // `source_path` is set on the `PastedImage` — for `test_image()`
-        // the source_path is `None`, so we just see `[Image #1]`.
+        // `selected_text` returns the buffer text, which includes the `[Image #1]` chip placeholder
+        // The path part shows only when `source_path` is set; `test_image()` leaves it `None`, so we just see `[Image #1]`
         let selected = pw.textarea.selected_text().expect("selected text");
         assert!(selected.contains("[Image #1]"));
         assert!(selected.contains("describe this"));
@@ -397,8 +383,7 @@
         pw.handle_key(&key!('a', SUPER).to_key_event());
         pw.handle_key(&key!(Backspace).to_key_event());
 
-        // Buffer is emptied and the PastedImage records are reconciled
-        // away by `sync_images_with_textarea` (called after the delete).
+        // Buffer is emptied and the PastedImage records are reconciled away by `sync_images_with_textarea` (called after the delete)
         assert!(pw.textarea.text().is_empty());
         assert!(
             pw.images.is_empty(),
@@ -406,8 +391,7 @@
         );
     }
 
-    /// Chip text is always path-free even when `source_path` is set —
-    /// filepath lives on the PastedImage and in the preview overlay only.
+    /// Chip text is always path-free even when `source_path` is set; the filepath lives on the PastedImage and in the preview overlay only.
     #[test]
     fn cmd_a_image_chip_selection_is_path_free() {
         use std::path::PathBuf;
@@ -441,10 +425,8 @@
         );
     }
 
-    /// When the gate is disabled (i.e. the user is not on Ghostty),
-    /// `Cmd+A` must fall through untouched: no selection, no cursor
-    /// movement, and the event is reported as `Ignored` (the textarea
-    /// has no native binding for `SUPER + a`).
+    /// When the gate is disabled (the user is not on Ghostty), `Cmd+A` must fall through untouched: no selection and no cursor movement.
+    /// The event reports `Ignored` because the textarea has no native binding for `SUPER + a`.
     #[test]
     fn cmd_a_is_noop_when_gate_is_disabled() {
         let mut pw = PromptWidget::new();
@@ -533,9 +515,8 @@
         assert_eq!(pw.desired_height(80, &style, true, 20), 5); // top_divider(1)+text(3)+bot_divider(1)
     }
 
-    /// While history BROWSE mode is active the composer height is frozen at
-    /// one text row: stepping onto a multi-line entry must not resize the
-    /// box (the resize happens once the user edits and the browse detaches).
+    /// While history BROWSE mode is active the composer height is frozen at one text row: stepping onto a multi-line entry must not resize the box.
+    /// The resize happens once the user edits and the browse detaches.
     #[test]
     fn desired_height_frozen_during_history_browse() {
         let mut pw = PromptWidget::new();
@@ -555,7 +536,7 @@
             3, // frozen: top_divider(1)+text(1)+bot_divider(1)
         );
 
-        // Detach (deactivate) → the box resizes to fit the text.
+        // Detach (deactivate), and the box resizes to fit the text
         pw.history_search.deactivate();
         assert_eq!(pw.desired_height(80, &style, true, 20), 5);
     }
@@ -582,11 +563,8 @@
         assert_eq!(pw.desired_height(80, &style, true, 20), 2); // text(1)+bot_divider(1)
     }
 
-    /// Regression test: inline prompt `desired_height` must use the narrower
-    /// text width returned by each view's `inline_text_width` rather than
-    /// the full `inner_width`. If the height is computed at the wider width,
-    /// text that wraps in the actual draw area would be clipped because the
-    /// panel doesn't grow enough.
+    /// Regression test: inline prompt `desired_height` must use each view's narrower `inline_text_width`, not the full `inner_width`.
+    /// A height computed at the wider width clips text that wraps in the actual draw area, because the panel doesn't grow enough.
     #[test]
     fn desired_height_inline_prompt_uses_render_width() {
         let mut pw = PromptWidget::new();
@@ -658,6 +636,21 @@
         assert_ne!(pw.textarea.text(), before);
     }
 
+    /// Terminals without the kitty keyboard protocol send Ctrl+Shift+Z as plain Ctrl+Z, so Alt+Z is the fallback redo key.
+    #[test]
+    fn alt_z_redoes() {
+        let mut pw = PromptWidget::new();
+        pw.handle_key(&key!('x').to_key_event());
+        pw.handle_key(&key!('z', CONTROL).to_key_event()); // undo
+        let before = pw.textarea.text().to_string();
+
+        assert_eq!(
+            pw.handle_key(&key!('z', ALT).to_key_event()),
+            PromptEvent::Edited,
+        );
+        assert_ne!(pw.textarea.text(), before);
+    }
+
     #[test]
     fn unknown_ctrl_key_is_ignored() {
         let mut pw = PromptWidget::new();
@@ -715,7 +708,7 @@
     fn backslash_continuation_via_try_send() {
         let mut pw = PromptWidget::new();
         pw.textarea.insert_str("hello\\");
-        // try_send with trailing \ → continuation (insert newline), returns None
+        // try_send with a trailing \ inserts a newline continuation and returns None
         assert_eq!(pw.try_send(), None);
         assert_eq!(pw.textarea.text(), "hello\n");
     }
@@ -749,8 +742,7 @@
 
     #[test]
     fn paste_single_line_trailing_newline_preserved() {
-        // Trailing newlines are preserved so split paste batches keep
-        // inter-line newlines (e.g. "hello\n" then "world").
+        // Trailing newlines are preserved so split paste batches keep inter-line newlines (e.g. "hello\n" then "world").
         let mut pw = PromptWidget::new();
         assert_eq!(pw.handle_paste("hello world\n"), PromptEvent::Edited);
         assert_eq!(pw.textarea.text(), "hello world\n");
@@ -787,6 +779,41 @@
         assert_eq!(pw.textarea.text(), text);
         assert_eq!(pw.textarea.elements().len(), 1);
         assert_eq!(pw.textarea.elements()[0].kind, KIND_PASTE);
+    }
+
+    /// Display label of the single paste chip in the buffer, e.g. `[Pasted: 4 lines]`.
+    fn paste_chip_label(pw: &PromptWidget) -> String {
+        let elems = pw.textarea.elements();
+        assert_eq!(elems.len(), 1);
+        assert_eq!(elems[0].kind, KIND_PASTE);
+        elems[0]
+            .display
+            .as_ref()
+            .expect("chip has a display label")
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn paste_paragraph_separators_create_chip() {
+        // Rich-text clipboards (macOS voice memos) separate paragraphs with U+2029, which str::lines() does not split on
+        let mut pw = PromptWidget::new();
+        assert_eq!(
+            pw.handle_paste("line1\u{2029}line2\u{2029}line3\u{2029}line4"),
+            PromptEvent::Edited
+        );
+        assert_eq!(paste_chip_label(&pw), "[Pasted: 4 lines]");
+        assert_eq!(pw.textarea.text(), "line1\nline2\nline3\nline4");
+    }
+
+    #[test]
+    fn paste_below_threshold_separators_become_newlines() {
+        let mut pw = PromptWidget::new();
+        assert_eq!(pw.handle_paste("ab\u{2029}cd"), PromptEvent::Edited);
+        assert!(pw.textarea.elements().is_empty());
+        assert_eq!(pw.textarea.text(), "ab\ncd");
     }
 
     #[test]
@@ -851,10 +878,8 @@
 
     #[test]
     fn paste_large_multiline_chip_shows_size_not_lines() {
-        // Regression: a large *multi-line* paste (e.g. 1 MB) was labeled
-        // "[Pasted: N lines]" because the line-count path took precedence over
-        // byte size. A large paste should read as its size regardless of how
-        // many lines it has.
+        // Regression: a 1 MB multi-line paste was labeled "[Pasted: N lines]" because the line-count path took precedence over byte size
+        // A large paste should read as its size regardless of how many lines it has
         let mut pw = PromptWidget::new();
         let text = "lorem ipsum dolor\n".repeat(2000); // ~36 KB across 2000 lines
         assert!(text.len() > PASTE_CHIP_DISPLAY_BYTES && text.lines().count() >= 4);
@@ -898,7 +923,7 @@
         let mut pw = PromptWidget::new();
         let text = "line1\nline2\nline3\nline4";
         pw.handle_paste(text);
-        // Cursor should be at end of element after insert
+        // Cursor sits past the element after insert, so no on-chip match
         assert_eq!(pw.paste_element_at_cursor(), None);
         // Move cursor back into the element
         pw.textarea.set_cursor(0);
@@ -910,8 +935,7 @@
         let mut pw = PromptWidget::new();
         let text = "line1\nline2\nline3\nline4";
         pw.handle_paste(text);
-        // insert_element leaves the cursor one past the chip; the preview
-        // must still show at the moment the chip is created.
+        // insert_element leaves the cursor one past the chip; the preview must still show at the moment the chip is created
         assert_eq!(pw.textarea.cursor(), pw.textarea.elements()[0].range.end);
         assert_eq!(pw.paste_element_for_preview(), Some(text));
     }
@@ -948,8 +972,7 @@
             "chips must be adjacent"
         );
         let boundary = elems[0].range.end;
-        // At the shared boundary the cursor sits ON the second chip, which
-        // wins over the left-adjacent first chip.
+        // At the shared boundary the cursor sits ON the second chip, which wins over the left-adjacent first chip
         pw.textarea.set_cursor(boundary);
         assert_eq!(pw.paste_element_for_preview(), Some(second));
     }
@@ -959,8 +982,7 @@
         let mut pw = PromptWidget::new();
         pw.insert_image(test_image()).unwrap();
         let end = pw.textarea.elements()[0].range.end;
-        // Right-adjacent fallback is gated on KIND_PASTE: an image chip
-        // ending at the cursor must not trigger a paste preview.
+        // Right-adjacent fallback is gated on KIND_PASTE: an image chip ending at the cursor must not trigger a paste preview
         pw.textarea.set_cursor(end);
         assert_eq!(pw.paste_element_for_preview(), None);
     }
@@ -1118,19 +1140,19 @@
             .draw(&mut buf, area, Some(overlay), &style, None, None)
             .post_flush_escapes
             .expect("first preview");
-        assert!(first_escape.as_str().contains("a=t"));
+        assert!(first_escape.as_str().contains("a=T"));
         let _ = first_escape.commit();
         let second_escape = second
             .draw(&mut buf, area, Some(overlay), &style, None, None)
             .post_flush_escapes
             .expect("second preview");
-        assert!(second_escape.as_str().contains("a=t"));
+        assert!(second_escape.as_str().contains("a=T"));
         let _ = second_escape.commit();
         let first_again = first
             .draw(&mut buf, area, Some(overlay), &style, None, None)
             .post_flush_escapes
             .expect("first preview again");
-        assert!(first_again.as_str().contains("a=t"));
+        assert!(first_again.as_str().contains("a=T"));
     }
 
     #[test]
@@ -1165,8 +1187,7 @@
             "image chip must start at the paste chip's end"
         );
         let boundary = elems[0].range.end;
-        // On-chip match of any kind wins: at the boundary the cursor sits ON
-        // the image chip, so no paste preview paints under the image preview.
+        // On-chip match of any kind wins: at the boundary the cursor sits ON the image chip, so no paste preview paints under the image preview
         pw.textarea.set_cursor(boundary);
         assert_eq!(pw.paste_element_for_preview(), None);
         assert!(pw.image_at_cursor().is_some(), "image owns the overlay");
@@ -1189,8 +1210,7 @@
 
     #[test]
     fn paste_preview_hint_right_adjacent_never_mentions_enter() {
-        // At the post-paste position Enter submits, so the hint must not
-        // advertise it — the honest affordance there is pasting again.
+        // At the post-paste position Enter submits, so the hint must not advertise it; what the user can actually do there is paste again
         let mut pw = PromptWidget::new();
         pw.handle_paste("line1\nline2\nline3\nline4");
         let hint: String = pw
@@ -1212,13 +1232,11 @@
 
         // Move cursor onto the element
         pw.textarea.set_cursor(0);
-        // Enter should inline it
         assert_eq!(
             pw.try_element_interaction(&key!(Enter).to_key_event()),
             Some(ElementInteraction::Inlined)
         );
         assert!(pw.textarea.elements().is_empty());
-        // Text is still there
         assert_eq!(pw.textarea.text(), text);
     }
 
@@ -1227,7 +1245,6 @@
         let mut pw = PromptWidget::new();
         pw.handle_paste("line1\nline2\nline3\nline4");
         pw.textarea.set_cursor(0);
-        // 'a' should not inline
         assert_eq!(pw.try_element_interaction(&key!('a').to_key_event()), None);
         assert_eq!(pw.textarea.elements().len(), 1);
     }
@@ -1247,8 +1264,7 @@
     fn expand_paste_element_at_cursor_requires_on_chip() {
         let mut pw = PromptWidget::new();
         pw.handle_paste("line1\nline2\nline3\nline4");
-        // Cursor sits right after the chip. Unlike the display-only
-        // preview, adjacency must NOT expand.
+        // Cursor sits right after the chip. Unlike the display-only preview, adjacency must NOT expand.
         assert!(!pw.expand_paste_element_at_cursor());
         assert_eq!(pw.textarea.elements().len(), 1);
     }
@@ -1308,8 +1324,7 @@
 
     #[test]
     fn repaste_with_tabs_expands_chip() {
-        // insert_element expands tabs in the buffer; the repaste comparison
-        // must canonicalize the incoming text the same way.
+        // insert_element expands tabs in the buffer; the repaste comparison must canonicalize the incoming text the same way
         let mut pw = PromptWidget::new();
         let text = "a\tb\nc\nd\ne";
         pw.handle_paste(text);
@@ -1321,9 +1336,8 @@
 
     #[test]
     fn repaste_with_bare_cr_expands_chip() {
-        // normalize_cr is an identity on \r\n; bare \r is its non-identity
-        // case — the chip stores the \n form, so the repaste comparison
-        // must normalize the incoming bytes before comparing.
+        // normalize_line_breaks is an identity on \r\n; bare \r is its non-identity case
+        // The chip stores the \n form, so the repaste comparison must normalize the incoming bytes before comparing
         let mut pw = PromptWidget::new();
         let text = "line1\rline2\rline3\rline4";
         pw.handle_paste(text);
@@ -1517,9 +1531,7 @@
 
     #[test]
     fn sync_acp_commands_passes_tools_to_registry() {
-        // End-to-end: tracker advertises a toolset, sync forwards it,
-        // and tool-gated commands like /loop disappear when their
-        // tool isn't registered.
+        // End-to-end: tracker advertises a toolset, sync forwards it, and tool-gated commands like /loop disappear when their tool isn't registered
         let mut pw = PromptWidget::new();
         let models = crate::acp::model_state::ModelState::default();
         let mut empty_tools = std::collections::HashSet::new();
@@ -1527,7 +1539,7 @@
 
         // Sync with a toolset that omits scheduler_create.
         pw.sync_acp_commands(&[], Some(&empty_tools), &models);
-        // Now type /loop -- it should be filtered out of the dropdown.
+        // Now type /loop; it should be filtered out of the dropdown
         pw.textarea.insert_str("/loop");
         pw.refresh_slash(&models);
         let snap = pw.slash_snapshot();
@@ -1540,7 +1552,7 @@
                 .collect::<Vec<_>>()
         );
 
-        // Add the tool back and resync -- /loop returns.
+        // Add the tool back and resync; /loop returns
         empty_tools.insert("scheduler_create".to_string());
         pw.sync_acp_commands(&[], Some(&empty_tools), &models);
         pw.refresh_slash(&models);
@@ -1558,7 +1570,7 @@
         let mut pw = PromptWidget::new();
         let models = crate::acp::model_state::ModelState::default();
 
-        // Type alias "/m" → should match the "/m" alias of "/model".
+        // Typing the alias "/m" should match the "/m" alias of "/model"
         pw.textarea.insert_str("/m");
         pw.refresh_slash(&models);
 
@@ -1566,7 +1578,7 @@
         assert!(snap.open);
         assert_eq!(snap.selection().unwrap().display, "/m");
 
-        // Accept → text should become "/m " (alias + trailing space since model takes args).
+        // Accepting should produce "/m " (alias + trailing space since model takes args)
         pw.accept_slash_completion(&models);
         assert!(
             pw.textarea.text().starts_with("/m"),
@@ -1575,8 +1587,7 @@
         );
     }
 
-    /// Accepting a completion rewrites the token; an unrelated highlight
-    /// (Shift+arrows while the dropdown is open) must not survive the accept.
+    /// Accepting a completion rewrites the token; an unrelated highlight (Shift+arrows while the dropdown is open) must not survive the accept.
     #[test]
     fn accept_completion_drops_active_highlight() {
         let mut pw = PromptWidget::new();
@@ -1595,7 +1606,7 @@
         let mut pw = PromptWidget::new();
         let models = crate::acp::model_state::ModelState::default();
 
-        // Type "/mod" → should match "/model" which takes_args.
+        // Typing "/mod" should match "/model" which takes_args
         pw.textarea.insert_str("/mod");
         pw.refresh_slash(&models);
 
@@ -1634,9 +1645,8 @@
             "/model grok-4",
             "the row's trailing space must not stack on the existing separator"
         );
-        // Absorb (not trim-the-insert): the cursor must land after the
-        // separator so the post-accept refresh is in the args phase — the
-        // Enter-chains flow. Trimming would leave it at the command end.
+        // Absorb, not trim the insert: the cursor lands after the separator, so the post-accept refresh is in the args phase where Enter chains
+        // Trimming would leave it at the command end
         assert_eq!(pw.textarea.cursor(), "/model ".len());
         assert!(!pw.slash_snapshot().cursor_in_command);
     }
@@ -1660,15 +1670,13 @@
             pw.slash_move_selection(1);
         }
 
-        // …then indented code pastes as a chip flush against it, its first
-        // byte a plain space (handle_paste does not refresh the snapshot).
+        // …then indented code pastes as a chip flush against it, its first byte a plain space (handle_paste does not refresh the snapshot)
         let pasted = " if foo:\n    bar\n    baz\n    qux";
         pw.handle_paste(pasted);
         assert_eq!(pw.textarea.elements().len(), 1);
 
-        // Accepting must not absorb the chip's leading byte: replace_range
-        // expands any element overlap to the whole chip, so an absorbed
-        // chip byte would silently delete the entire paste.
+        // Accepting must not absorb the chip's leading byte: replace_range expands any element overlap to the whole chip
+        // An absorbed chip byte would silently delete the entire paste
         assert!(pw.accept_slash_completion(&models));
         let elements = pw.textarea.elements();
         assert_eq!(elements.len(), 1, "paste chip must survive the accept");
@@ -1686,15 +1694,14 @@
         let mut pw = PromptWidget::new();
         let models = crate::acp::model_state::ModelState::default();
 
-        // Type "/qu" → should match "/quit" which does NOT take args.
+        // Typing "/qu" should match "/quit" which does NOT take args
         pw.textarea.insert_str("/qu");
         pw.refresh_slash(&models);
 
         let snap = pw.slash_snapshot();
         assert!(snap.matches.iter().any(|r| r.display == "/quit"));
 
-        // Select /quit (it may not be first if other commands match).
-        // Find it and navigate to it.
+        // Find /quit and navigate to it (it may not be first if other commands match)
         let quit_idx = snap
             .matches
             .iter()
@@ -1732,7 +1739,7 @@
         assert!(snap.open, "arg suggestions should be open");
         assert!(snap.args_range.is_some());
 
-        // Accept arg completion → should replace "gr" with "Grok 4.5".
+        // Accepting the arg completion should replace "gr" with "Grok 4.5"
         pw.accept_slash_completion(&models);
         let text = pw.textarea.text().to_string();
         assert!(
@@ -1748,11 +1755,11 @@
         let mut pw = PromptWidget::new();
         let models = crate::acp::model_state::ModelState::default();
 
-        // Type "/comp" → matches "/compact".
+        // Typing "/comp" matches "/compact"
         pw.textarea.insert_str("/comp");
         pw.refresh_slash(&models);
 
-        // Accept → text becomes "/compact " (trailing space since takes_args).
+        // Accepting makes the text "/compact " (trailing space since takes_args)
         pw.accept_slash_completion(&models);
         let text = pw.textarea.text().to_string();
         assert_eq!(text, "/compact ");
@@ -1787,17 +1794,15 @@
 
     #[test]
     fn sync_acp_then_refresh_ordering() {
-        // Regression: sync_acp_commands must update registry BEFORE
-        // refreshing snapshot. If reversed, the snapshot would use
-        // the old registry and miss the new commands.
+        // Regression: sync_acp_commands must update the registry BEFORE refreshing the snapshot
+        // If reversed, the snapshot would use the old registry and miss the new commands
         let mut pw = PromptWidget::new();
         let models = crate::acp::model_state::ModelState::default();
 
         // Start with text that would match a new ACP command.
         pw.textarea.insert_str("/ses");
 
-        // Sync adds "session-info" — sync_acp_commands internally
-        // calls refresh_slash, so the snapshot should already show it.
+        // Sync adds "session-info"; sync_acp_commands internally calls refresh_slash, so the snapshot should already show it
         let acp_cmds = vec![agent_client_protocol::AvailableCommand::new(
             "session-info".to_string(),
             "Show session info".to_string(),
@@ -1813,8 +1818,7 @@
 
     #[test]
     fn repeated_sync_does_not_corrupt_registry() {
-        // Regression: calling sync_acp_commands multiple times should
-        // not accumulate duplicates or lose builtins.
+        // Regression: calling sync_acp_commands multiple times should not accumulate duplicates or lose builtins
         let mut pw = PromptWidget::new();
         let models = crate::acp::model_state::ModelState::default();
 
@@ -1829,8 +1833,7 @@
         pw.sync_acp_commands(&acp_cmds, None, &models);
 
         // Should have exactly all pager-local builtins + 1 ACP ("flush").
-        // We compute the expected count from `builtin_commands()` so the
-        // assertion stays accurate as the builtin set grows.
+        // The expected count comes from `builtin_commands()` so the assertion stays accurate as the builtin set grows
         let expected = crate::slash::commands::builtin_commands().len() + 1;
         let registry = &pw.slash_controller.registry();
         assert_eq!(registry.command_count(), expected);
@@ -1929,34 +1932,41 @@
 
     #[test]
     fn paste_inline_trailing_newline_preserved() {
-        // Inline path (< 4 lines) preserves trailing newlines so
-        // split batches on Windows keep inter-line newlines.
+        // Inline path (< 4 lines) preserves trailing newlines so split batches on Windows keep inter-line newlines
         let mut pw = PromptWidget::new();
         pw.handle_paste("a\nb\nc\n");
         assert_eq!(pw.textarea.text(), "a\nb\nc\n");
         assert!(pw.textarea.elements().is_empty());
     }
 
-    // ── normalize_cr tests ─────────────────────────────────────────
+    // ── normalize_line_breaks tests ────────────────────────────────
 
     #[test]
-    fn normalize_cr_bare_cr() {
-        assert_eq!(normalize_cr("a\rb\rc"), "a\nb\nc");
+    fn normalize_line_breaks_bare_cr() {
+        assert_eq!(normalize_line_breaks("a\rb\rc"), "a\nb\nc");
     }
 
     #[test]
-    fn normalize_cr_crlf_preserved() {
-        assert_eq!(normalize_cr("a\r\nb\r\nc"), "a\r\nb\r\nc");
+    fn normalize_line_breaks_crlf_preserved() {
+        assert_eq!(normalize_line_breaks("a\r\nb\r\nc"), "a\r\nb\r\nc");
     }
 
     #[test]
-    fn normalize_cr_mixed() {
-        assert_eq!(normalize_cr("a\r\nb\rc"), "a\r\nb\nc");
+    fn normalize_line_breaks_mixed() {
+        assert_eq!(normalize_line_breaks("a\r\nb\rc"), "a\r\nb\nc");
     }
 
     #[test]
-    fn normalize_cr_no_cr() {
-        assert_eq!(normalize_cr("no cr\nhere"), "no cr\nhere");
+    fn normalize_line_breaks_no_cr() {
+        assert_eq!(normalize_line_breaks("no cr\nhere"), "no cr\nhere");
+    }
+
+    #[test]
+    fn normalize_line_breaks_unicode_separators() {
+        assert_eq!(normalize_line_breaks("a\u{2028}b\u{2029}c"), "a\nb\nc");
+        assert_eq!(normalize_line_breaks("a\r\nb\u{2029}c"), "a\r\nb\nc");
+        assert_eq!(normalize_line_breaks("a\r\u{2029}b"), "a\n\nb");
+        assert_eq!(normalize_line_breaks("a\u{2028}\r\nb"), "a\n\r\nb");
     }
 
     // ── Inline paste (handle_paste without element) ──────────────
@@ -1966,7 +1976,7 @@
         let mut pw = PromptWidget::new();
         let text = "line1\nline2\nline3";
         // Simulate Ctrl+Shift+V: insert_str directly, no element.
-        let normalized = normalize_cr(text);
+        let normalized = normalize_line_breaks(text);
         pw.textarea.insert_str(&normalized);
         assert_eq!(pw.textarea.text(), text);
         assert!(pw.textarea.elements().is_empty());
@@ -1974,8 +1984,7 @@
 
     #[test]
     fn slash_state_resets_when_text_cleared() {
-        // Regression: after typing "/" and getting suggestions, clearing
-        // the text should close the dropdown.
+        // Regression: after typing "/" and getting suggestions, clearing the text should close the dropdown
         let mut pw = PromptWidget::new();
         let models = crate::acp::model_state::ModelState::default();
 
@@ -2073,11 +2082,8 @@
         assert_eq!(pw.image_counter, 0);
     }
 
-    /// A non-empty `set_text` replacement with NO `[Image #N]`
-    /// placeholders implies the prompt no longer holds chips. Image
-    /// state is cleared to prevent orphan `PastedImage` records from
-    /// surviving (those would never be referenced by a chip in the
-    /// buffer and would still appear in `drain_images()` on send).
+    /// A non-empty `set_text` replacement with NO `[Image #N]` placeholders implies the prompt no longer holds chips.
+    /// Image state is cleared so orphan `PastedImage` records cannot survive and still appear in `drain_images()` on send.
     #[test]
     fn set_text_nonempty_no_placeholders_clears_image_state() {
         let mut pw = PromptWidget::new();
@@ -2094,20 +2100,16 @@
         assert_eq!(pw.image_counter, 0);
     }
 
-    /// A non-empty `set_text` replacement that retains
-    /// `[Image #N]` placeholders preserves image state. The
-    /// rewind-restore path in `dispatch.rs` relies on this: the
-    /// `restore_chip_elements` + `set_images` calls re-bind the
-    /// stashed `PastedImage` records to the chips in the text.
+    /// A non-empty `set_text` replacement that retains `[Image #N]` placeholders preserves image state.
+    /// The rewind-restore path in `dispatch.rs` relies on this: `restore_chip_elements` and `set_images` re-bind the stashed records to the chips.
     #[test]
     fn set_text_nonempty_with_placeholders_preserves_image_state() {
         let mut pw = PromptWidget::new();
         pw.insert_image(test_image()).unwrap();
         assert_eq!(pw.images.len(), 1);
 
-        // Replacement text still contains `[Image #1]` so image state
-        // is meaningful — keep it. (In real rewind flows, the caller
-        // follows with restore_chip_elements + set_images.)
+        // Replacement text still contains `[Image #1]`, so image state is meaningful; keep it
+        // (In real rewind flows, the caller follows with restore_chip_elements and set_images.)
         pw.set_text("look at [Image #1] please");
 
         assert_eq!(pw.images.len(), 1);
@@ -2136,7 +2138,7 @@
             pw.try_element_interaction(&key!(Enter).to_key_event()),
             Some(ElementInteraction::ImagePreview)
         );
-        // Image chip is NOT inlined — element still present
+        // Image chip is NOT inlined; element still present
         assert_eq!(pw.textarea.elements().len(), 1);
         assert_eq!(pw.textarea.text(), "[Image #1] ");
     }
@@ -2168,15 +2170,13 @@
         let mut pw = PromptWidget::new();
         pw.insert_image(test_image()).unwrap();
 
-        // After insert, cursor is past the trailing space (range.end + 1).
-        // The overlay does NOT show at that position.
+        // After insert, cursor is past the trailing space (range.end + 1). The overlay does NOT show at that position.
         assert!(
             pw.image_at_cursor().is_none(),
             "cursor past trailing space should not trigger overlay"
         );
 
-        // Move cursor onto the element itself (range.start) where the
-        // overlay should show.
+        // Move cursor onto the element itself (range.start) where the overlay should show
         let elem_start = pw.textarea.elements()[0].range.start;
         pw.textarea.set_cursor(elem_start);
         let img = pw.image_at_cursor().unwrap();
@@ -2192,11 +2192,9 @@
         );
     }
 
-    /// Deleting the highest-numbered chip mid-prompt must NOT drop the counter
-    /// back to the surviving max — otherwise the next insertion reuses an old
-    /// number, producing sequences like `[Image #1] [Image #2] [Image #1]`.
-    /// Deletes `#2` (counter==2, live max==1) to actually exercise the
-    /// monotonic guard.
+    /// Deleting the highest-numbered chip mid-prompt must NOT drop the counter back to the surviving max.
+    /// Otherwise the next insertion reuses an old number, producing sequences like `[Image #1] [Image #2] [Image #1]`.
+    /// Deletes `#2` (counter==2, live max==1) to actually exercise the monotonic guard.
     #[test]
     fn image_counter_stays_monotonic_after_chip_deletion() {
         let mut pw = PromptWidget::new();
@@ -2205,15 +2203,13 @@
         assert_eq!(pw.image_counter, 2);
         assert_eq!(pw.images.len(), 2);
 
-        // Delete the higher-numbered chip (#2). After deletion live==[#1] but
-        // counter must remain 2 so the next insert lands at #3.
+        // Delete the higher-numbered chip (#2). After deletion live==[#1] but the counter must remain 2 so the next insert lands at #3.
         let second_id = pw.textarea.elements()[1].id;
         let second_range_start = pw.textarea.elements()[1].range.start;
         pw.textarea.set_cursor(second_range_start);
         pw.textarea.inline_element(second_id);
 
-        // Force the reconciliation that `handle_key` runs after
-        // every text edit.
+        // Force the reconciliation that `handle_key` runs after every text edit
         pw.sync_images_with_textarea();
 
         assert_eq!(
@@ -2239,9 +2235,8 @@
         );
     }
 
-    /// Same monotonic contract as above, but driven through the natural
-    /// `handle_key(Backspace)` path so a refactor that moves the sync hook
-    /// past the counter assignment fails at the keystroke layer.
+    /// Same monotonic contract as above, but driven through the natural `handle_key(Backspace)` path.
+    /// A refactor that moves the sync hook past the counter assignment fails at the keystroke layer.
     #[test]
     fn image_counter_stays_monotonic_via_backspace_keystroke() {
         let mut pw = PromptWidget::new();
@@ -2250,9 +2245,7 @@
         assert_eq!(pw.image_counter, 2);
 
         // Cursor sits past the trailing space of `[Image #2] `.
-        // Backspace removes the trailing space → still 2 chips.
-        // Another Backspace removes `[Image #2]` chip (atomic
-        // element deletion).
+        // The first Backspace removes the trailing space, leaving 2 chips; the second removes the `[Image #2]` chip (atomic element deletion)
         pw.handle_key(&key!(Backspace).to_key_event());
         pw.handle_key(&key!(Backspace).to_key_event());
 
@@ -2270,10 +2263,9 @@
         );
     }
 
-    /// Three drops in the same prompt must yield `1, 2, 3` — never `1, 2, 1`.
-    /// A transient delete of the highest chip is performed between drops #2
-    /// and #3 so the monotonic guard is actually exercised (without the
-    /// delete, the counter would already equal the live max).
+    /// Three drops in the same prompt must yield `1, 2, 3`, never `1, 2, 1`.
+    /// A transient delete of the highest chip between drops #2 and #3 exercises the monotonic guard.
+    /// Without the delete, the counter would already equal the live max.
     #[test]
     fn three_drops_in_same_prompt_yield_sequential_numbers() {
         let mut pw = PromptWidget::new();
@@ -2296,8 +2288,7 @@
             "after a transient #2 delete, the next drop must issue \
              #3 (not reuse #2). Got {numbers:?}",
         );
-        // `inline_element` leaves the deleted chip's text behind as plain
-        // characters, so count chip ELEMENTS not text matches.
+        // `inline_element` leaves the deleted chip's text behind as plain characters, so count chip ELEMENTS not text matches
         let live_image_numbers: Vec<usize> = pw
             .textarea
             .elements()
@@ -2312,9 +2303,8 @@
         );
     }
 
-    /// `sync_images_with_textarea` keys its staging map on `element_id` so
-    /// two `PastedImage` records that accidentally share a `display_number`
-    /// both survive (rather than one collapsing in a number-keyed map).
+    /// `sync_images_with_textarea` keys its staging map on `element_id`.
+    /// Two `PastedImage` records that accidentally share a `display_number` both survive, rather than one collapsing in a number-keyed map.
     #[test]
     fn sync_handles_two_images_sharing_display_number() {
         let mut pw = PromptWidget::new();
@@ -2326,12 +2316,10 @@
             "insert_image must issue unique element_ids",
         );
 
-        // Corrupt: assign `display_number = 1` to the second image, mimicking
-        // a future regression that assigned identical numbers.
+        // Corrupt: assign `display_number = 1` to the second image, mimicking a future regression that assigned identical numbers
         pw.images[1].display_number = 1;
 
-        // The textarea still has two elements with distinct element_ids;
-        // the corruption is purely in the `PastedImage` records.
+        // The textarea still has two elements with distinct element_ids; the corruption is purely in the `PastedImage` records
         assert_eq!(pw.textarea.elements().len(), 2);
 
         pw.sync_images_with_textarea();
@@ -2350,21 +2338,16 @@
 
     // ── set_images: identity-based pairing ───────────────────────────
 
-    /// Two restored chips with identical placeholder byte length must
-    /// get distinct `element_id`s after `set_images`. A naive
-    /// `find()`-by-byte-length match would collapse both chips onto
-    /// the same `element_id`, and the next
-    /// `sync_images_with_textarea` would drop one entry as a
-    /// "duplicate element_id" warn.
+    /// Two restored chips with identical placeholder byte length must get distinct `element_id`s after `set_images`.
+    /// A naive `find()`-by-byte-length match would collapse both chips onto the same `element_id`.
+    /// The next `sync_images_with_textarea` would then drop one entry as a "duplicate element_id" warn.
     #[test]
     fn set_images_with_two_same_length_chips_preserves_distinct_element_ids() {
         use crate::app::agent::ChipElement;
 
         let mut pw = PromptWidget::new();
-        // Build a buffer that matches the rewind-restore shape:
-        // `"[Image #1] [Image #2] "`. Both chip placeholders are 10
-        // bytes each — without the fix, the linear `find()` returns
-        // the same first element for both images.
+        // Build a buffer that matches the rewind-restore shape: `"[Image #1] [Image #2] "`
+        // Both chip placeholders are 10 bytes each; a byte-length `find()` would return the same first element for both images
         let text = "[Image #1] [Image #2] ";
         pw.set_text(text);
 
@@ -2404,17 +2387,15 @@
         assert_eq!(pw.images[1].element_id, elem_ids[1]);
         assert_ne!(pw.images[0].element_id, pw.images[1].element_id);
 
-        // Survive a sync_images_with_textarea: both chips must still
-        // be there, neither collapsed onto the other's id.
+        // Survive a sync_images_with_textarea: both chips must still be there, neither collapsed onto the other's id
         pw.sync_images_with_textarea();
         assert_eq!(pw.images.len(), 2);
         let post_sync_ids: Vec<_> = pw.images.iter().map(|i| i.element_id).collect();
         assert_eq!(post_sync_ids[0], elem_ids[0]);
         assert_eq!(post_sync_ids[1], elem_ids[1]);
 
-        // Pin the range-identity binding. A regression that mapped
-        // both PastedImages to distinct-but-wrong element_ids would
-        // pass the `assert_ne!` above but break this check.
+        // Pin the range-identity binding
+        // A regression that mapped both PastedImages to distinct-but-wrong element_ids would pass the `assert_ne!` above but break this check
         let elem_a_range = pw
             .textarea
             .elements()
@@ -2435,19 +2416,16 @@
         assert_eq!(elem_b_range, 11..21);
     }
 
-    /// Inputs longer than `IMAGE_CAP` are truncated at the top of
-    /// `set_images`. Dropping the truncate (or off-by-one'ing the
-    /// comparison) would silently let a malformed session restore
-    /// unbounded images.
+    /// Inputs longer than `IMAGE_CAP` are truncated at the top of `set_images`.
+    /// Dropping the truncate (or off-by-one'ing the comparison) would silently let a malformed session restore unbounded images.
     #[test]
     fn set_images_truncates_input_exceeding_image_cap() {
         use crate::app::agent::ChipElement;
 
         let mut pw = PromptWidget::new();
 
-        // Build text + chip elements for `IMAGE_CAP + 5` chips. The
-        // numbering must match what `display_text(N)` produces
-        // (10-char `[Image #N]` for N<10, 11-char for N>=10).
+        // Build the text and chip elements for `IMAGE_CAP + 5` chips
+        // The numbering must match what `display_text(N)` produces (10-char `[Image #N]` for N<10, 11-char for N>=10)
         let mut text = String::new();
         let mut chip_elements: Vec<ChipElement> = Vec::new();
         let cap_plus = PromptWidget::IMAGE_CAP + 5;
@@ -2482,24 +2460,19 @@
             PromptWidget::IMAGE_CAP,
             "input above the cap must be truncated to IMAGE_CAP",
         );
-        // Truncation preserves the first IMAGE_CAP entries (display
-        // numbers 1..=IMAGE_CAP). The last 5 are dropped.
+        // Truncation preserves the first IMAGE_CAP entries (display numbers 1..=IMAGE_CAP). The last 5 are dropped.
         let numbers: Vec<usize> = pw.images.iter().map(|i| i.display_number).collect();
         assert_eq!(numbers, (1..=PromptWidget::IMAGE_CAP).collect::<Vec<_>>(),);
     }
 
-    /// The bounded-stash cap at `IMAGE_CAP * 2` evicts oldest-first
-    /// (by `display_number`) and cleans up the staged temp file on
-    /// each evicted record. Dropping the cleanup hook would silently
-    /// leak temp files; flipping the sort order would keep the wrong
-    /// half of the stash on redo.
+    /// The bounded-stash cap at `IMAGE_CAP * 2` evicts oldest-first (by `display_number`) and removes the staged temp file of each evicted record.
+    /// Dropping the cleanup hook would silently leak temp files; flipping the sort order would keep the wrong half of the stash on redo.
     #[test]
     fn sync_caps_image_undo_stash_and_cleans_up_evicted_temp_files() {
         let mut pw = PromptWidget::new();
 
         // Stuff `IMAGE_CAP * 2 + 3` entries into the stash directly.
-        // Each entry has a unique staged_temp_path so we can observe
-        // which files were cleaned up by the eviction hook.
+        // Each entry has a unique staged_temp_path so we can observe which files were cleaned up by the eviction hook
         let dir = tempfile::tempdir().unwrap();
         let total = PromptWidget::IMAGE_CAP * 2 + 3;
         let mut temp_paths: Vec<std::path::PathBuf> = Vec::new();
@@ -2513,9 +2486,8 @@
             pw.image_undo_stash.push(img);
         }
 
-        // Force the sync path that runs the eviction logic. The
-        // textarea has no chip elements, so all stash entries are
-        // re-stashed (no live chip to rebind), then capped.
+        // Force the sync path that runs the eviction logic
+        // The textarea has no chip elements, so all stash entries are re-stashed (no live chip to rebind), then capped
         pw.sync_images_with_textarea();
 
         assert_eq!(
@@ -2524,8 +2496,7 @@
             "stash must be capped at IMAGE_CAP * 2",
         );
 
-        // Surviving entries are the highest `display_number` ones
-        // (oldest evicted == lowest numbers).
+        // Surviving entries are the highest `display_number` ones; the evicted oldest carry the lowest numbers
         let survivors: Vec<usize> = pw
             .image_undo_stash
             .iter()
@@ -2537,8 +2508,7 @@
         assert_eq!(survivors_sorted[0], expected_lowest);
         assert_eq!(*survivors_sorted.last().unwrap(), total);
 
-        // The 3 evicted entries (display_number 1, 2, 3) had their
-        // staged temp files cleaned up.
+        // The 3 evicted entries (display_number 1, 2, 3) had their staged temp files cleaned up
         for n in 1..=3 {
             let evicted_path = &temp_paths[n - 1];
             assert!(
@@ -2560,14 +2530,8 @@
         }
     }
 
-    /// `self.images` is populated by `insert_image` in
-    /// **chronological** order, but `textarea.elements()` is sorted
-    /// by **buffer position**. Inserting the second image at the
-    /// start of the buffer (cursor-at-Home) is enough to make the
-    /// two arrays diverge. The drain → restore → set_images
-    /// pipeline must still bind each `PastedImage` to the chip with
-    /// the matching `display_number` — a positional zip would
-    /// silently swap them.
+    /// The drain, restore, set_images pipeline must still bind each `PastedImage` to the chip with the
+    /// matching `display_number`.
     #[test]
     fn set_images_pairs_by_display_number_after_out_of_order_insert() {
         let mut pw = PromptWidget::new();
@@ -2575,9 +2539,8 @@
         // Insert chip #1 at end (cursor sits past trailing space).
         pw.insert_image(test_image()).unwrap();
 
-        // Move cursor to start, then insert chip #2. Buffer order is
-        // now `[Image #2] [Image #1] ` but `self.images` is
-        // chronological: [#1, #2].
+        // Move cursor to start, then insert chip #2
+        // Buffer order is now `[Image #2] [Image #1] ` but `self.images` is chronological: [#1, #2]
         pw.textarea.set_cursor(0);
         pw.insert_image(test_image()).unwrap();
         assert_eq!(pw.images[0].display_number, 1);
@@ -2603,9 +2566,8 @@
         let pre_drain_eid_1 = pw.images[0].element_id;
         let pre_drain_eid_2 = pw.images[1].element_id;
 
-        // Simulate the rewind-restore round-trip: drain images
-        // (chronological order), capture chip elements (buffer order),
-        // set_text back, restore_chip_elements, set_images.
+        // Simulate the rewind-restore round-trip
+        // Drain images (chronological order), capture chip elements (buffer order), set_text back, restore_chip_elements, set_images
         let images = pw.drain_images();
         assert_eq!(images[0].display_number, 1);
         assert_eq!(images[1].display_number, 2);
@@ -2625,9 +2587,7 @@
         pw.restore_chip_elements(&chip_elements);
         pw.set_images(images);
 
-        // After restore, each PastedImage must bind to the chip whose
-        // text parses to its display_number — NOT the chip at the same
-        // positional index.
+        // Each restored PastedImage must bind to the chip whose text parses to its display_number, NOT the chip at the same positional index
         let buf = pw.textarea.text();
         for img in &pw.images {
             let elem = pw
@@ -2647,10 +2607,8 @@
             );
         }
 
-        // The textarea reissues fresh `ElementId`s on
-        // `restore_chip_elements`, so each `PastedImage` must have
-        // been rebound to a new id rather than carrying the
-        // pre-drain identity through.
+        // The textarea reissues fresh `ElementId`s on `restore_chip_elements`
+        // Each `PastedImage` must be rebound to a new id rather than carrying the pre-drain identity through
         let post_eids: Vec<_> = pw.images.iter().map(|i| i.element_id).collect();
         assert!(
             post_eids.iter().all(|eid| *eid != pre_drain_eid_1),
@@ -2680,8 +2638,7 @@
     #[test]
     fn parse_image_display_number_handles_path_suffix_form() {
         // Path-suffix form `[Image #N: <path>]` must parse the number out.
-        // Without the suffix split, the inner ":/foo/bar.png" sub-string
-        // breaks `usize::parse` and the function silently returns `None`.
+        // Without the suffix split, the inner ":/foo/bar.png" sub-string breaks `usize::parse` and the function silently returns `None`
         assert_eq!(
             parse_image_display_number("[Image #3: /foo/bar.png]"),
             Some(3),
@@ -2693,22 +2650,17 @@
         // Empty path suffix (degenerate but representable).
         assert_eq!(parse_image_display_number("[Image #1:]"), Some(1));
         assert_eq!(parse_image_display_number("[Image #5: ]"), Some(5));
-        // Multi-colon path (legal on Unix, common on macOS for
-        // certain Time Machine / network mount paths). The split is
-        // on the FIRST `:` only, so subsequent colons land in the
-        // discarded suffix.
+        // Multi-colon path (legal on Unix, common on macOS for certain Time Machine / network mount paths)
+        // The split is on the FIRST `:` only, so subsequent colons land in the discarded suffix
         assert_eq!(
             parse_image_display_number("[Image #7: /odd:name:with:colons.png]"),
             Some(7),
         );
     }
 
-    /// Pin the parser's intentional permissiveness with respect to
-    /// whitespace inside the `#N` token. The canonical emitter
-    /// (`display_text`) never produces `[Image # 1]` or
-    /// `[Image #1 ]` — the permissiveness is purely defence in
-    /// depth against a future emitter change or a clipboard payload
-    /// that somehow injects a space.
+    /// Pin the parser's intentional permissiveness about whitespace inside the `#N` token.
+    /// The canonical emitter (`display_text`) never produces `[Image # 1]` or `[Image #1 ]`.
+    /// The permissiveness is defence in depth against a future emitter change or a clipboard payload that somehow injects a space.
     #[test]
     fn parse_image_display_number_tolerates_internal_whitespace() {
         assert_eq!(parse_image_display_number("[Image # 1]"), Some(1));
@@ -2790,10 +2742,9 @@
         );
     }
 
-    /// Ctrl+C on a non-empty prompt clears all content AND zeroes the image
-    /// counter so the next drop starts at #1. Complements
-    /// `image_counter_resets_after_clear_and_reinsert` which covers the
-    /// `set_text("")` reset path; this one drives Ctrl+C through `handle_key`.
+    /// Ctrl+C on a non-empty prompt clears all content AND zeroes the image counter so the next drop starts at #1.
+    /// Complements `image_counter_resets_after_clear_and_reinsert`, which covers the `set_text("")` reset path.
+    /// This one drives Ctrl+C through `handle_key`.
     #[test]
     fn ctrl_c_clear_resets_image_counter_to_zero() {
         let mut pw = PromptWidget::new();
@@ -2801,7 +2752,7 @@
         pw.insert_image(test_image()).unwrap();
         assert_eq!(pw.image_counter, 2);
 
-        // Ctrl+C → set_text("") → `crate::prompt_images::clear` zeroes the counter.
+        // Ctrl+C calls set_text(""), and `crate::prompt_images::clear` zeroes the counter
         pw.handle_key(&key!('c', CONTROL).to_key_event());
 
         assert!(pw.textarea.text().is_empty());
@@ -2833,9 +2784,7 @@
         assert_eq!(pw.textarea.text(), "[Image #1] ");
     }
 
-    /// A prompt widget with both contextual-hint tips enabled, so the
-    /// per-keystroke detection (gated off by default) actually runs in these
-    /// on-path tests.
+    /// A prompt widget with both contextual-hint tips enabled, so the per-keystroke detection (gated off by default) runs in these tests.
     fn hinted_prompt() -> PromptWidget {
         let mut pw = PromptWidget::new();
         pw.contextual_hint_undo = true;
@@ -2843,8 +2792,7 @@
         pw
     }
 
-    /// Type `n` chars through `handle_key` so the undo-tip clear detector
-    /// observes a user-built draft.
+    /// Type `n` chars through `handle_key` so the undo-tip clear detector observes a user-built draft.
     fn type_chars(pw: &mut PromptWidget, n: usize) {
         for _ in 0..n {
             assert_eq!(
@@ -2854,8 +2802,7 @@
         }
     }
 
-    /// Ctrl+C wiping a substantial user-typed draft raises the one-shot
-    /// undo-tip fire signal, and the wipe is genuinely undoable.
+    /// Ctrl+C wiping a substantial user-typed draft raises the one-shot undo-tip fire signal, and the wipe is genuinely undoable.
     #[test]
     fn ctrl_c_clear_of_substantial_draft_fires_undo_tip() {
         let mut pw = hinted_prompt();
@@ -2879,8 +2826,7 @@
         assert!(pw.take_undo_tip_fire());
     }
 
-    /// Programmatic clears (submit/queue flows call `set_text` directly)
-    /// never fire, and the stale peak cannot leak into the next keystroke.
+    /// Programmatic clears (submit/queue flows call `set_text` directly) never fire, and the stale peak cannot leak into the next keystroke.
     #[test]
     fn programmatic_set_text_clear_does_not_fire_undo_tip() {
         let mut pw = hinted_prompt();
@@ -2891,8 +2837,7 @@
         assert!(!pw.take_undo_tip_fire(), "resync absorbs the stale peak");
     }
 
-    /// Ctrl+C with images attached must NOT fire: `set_text("")` drains the
-    /// image payloads, so the advertised undo would restore dead chips.
+    /// Ctrl+C with images attached must NOT fire: `set_text("")` drains the image payloads, so the advertised undo would restore dead chips.
     #[test]
     fn ctrl_c_clear_with_images_suppresses_undo_tip() {
         let mut pw = hinted_prompt();
@@ -2908,8 +2853,7 @@
         );
     }
 
-    /// Kill-style wipes stash image payloads (fully restorable), so an
-    /// image-bearing ctrl+u still fires.
+    /// Kill-style wipes stash image payloads (fully restorable), so an image-bearing ctrl+u still fires.
     #[test]
     fn ctrl_u_kill_with_images_still_fires_undo_tip() {
         let mut pw = hinted_prompt();
@@ -2925,22 +2869,18 @@
         assert!(pw.take_undo_tip_fire());
     }
 
-    /// Accepting an @-file completion replaces a long `@query` with a short
-    /// ref/chip — a big shrink, but a completion, not a wipe. It must NOT fire
-    /// the undo tip (regression: the wrapper used to feed the accept to the
-    /// clear detector, spuriously tripping the wipe thresholds).
+    /// Accepting an @-file completion replaces a long `@query` with a short ref/chip: a big shrink, but a completion, not a wipe.
+    /// It must NOT fire the undo tip (regression: the wrapper used to feed the accept to the clear detector, tripping the wipe thresholds).
     #[test]
     fn accepting_file_completion_does_not_fire_undo_tip() {
         let mut pw = hinted_prompt();
-        // Build a long `@`-query THROUGH handle_key so the clear detector
-        // observes a peak >= FIRE_PEAK_LEN and its last_len matches the
-        // on-screen length — the precondition under which a shrink fires.
+        // Build a long `@`-query THROUGH handle_key so the clear detector observes a peak >= FIRE_PEAK_LEN
+        // Its last_len then matches the on-screen length, the precondition under which a shrink fires
         pw.handle_key(&key!('@').to_key_event());
         type_chars(&mut pw, 24); // "@" + 24 = 25 chars
         assert!(!pw.take_undo_tip_fire(), "typing must not fire");
 
-        // Force the dropdown visible with a SHORT file result so accepting
-        // shrinks the draft into the wipe-residue band (<= FIRE_RESIDUE_LEN).
+        // Force the dropdown visible with a SHORT file result so accepting shrinks the draft into the wipe-residue band (<= FIRE_RESIDUE_LEN)
         let cursor = pw.textarea.text().len();
         let ctx = crate::views::file_search::context::detect(pw.textarea.text(), cursor)
             .expect("@-context must parse");
@@ -2948,7 +2888,7 @@
             .set_test_state(ctx, vec![fuzzy_result("z", false)], 0);
         assert!(pw.file_search.is_visible());
 
-        // Accept via Tab: "@xxxx…" -> "@z " is a big shrink but a completion.
+        // Accept via Tab: "@xxxx…" becoming "@z " is a big shrink but a completion
         assert_eq!(
             pw.handle_key(&key!(Tab).to_key_event()),
             PromptEvent::Edited
@@ -2963,9 +2903,8 @@
         );
     }
 
-    /// Typing a draft across into a planning keyword raises the one-shot
-    /// plan-nudge fire signal exactly once (rising edge), then stays quiet
-    /// while the keyword remains present.
+    /// Typing a draft across into a planning keyword raises the one-shot plan-nudge fire signal exactly once (rising edge).
+    /// It then stays quiet while the keyword remains present.
     #[test]
     fn typing_into_planning_keyword_fires_plan_nudge_once() {
         let mut pw = hinted_prompt();
@@ -2985,8 +2924,7 @@
         );
     }
 
-    /// Slash- and bash-prefixed drafts route to a command, not a planning
-    /// prompt, so the plan nudge stays silent even with a keyword present.
+    /// Slash- and bash-prefixed drafts route to a command, not a planning prompt, so the plan nudge stays silent even with a keyword present.
     #[test]
     fn slash_and_bash_drafts_suppress_plan_nudge() {
         for prefix in ['/', '!'] {
@@ -3002,11 +2940,9 @@
         }
     }
 
-    /// A programmatic restore (`set_text`) of a draft that already mentions a
-    /// planning keyword must NOT fire on the next real edit — the user never
-    /// typed the keyword across the rising edge. The before/after scan reads
-    /// the pre-edit text fresh, so `before == after == keyword-present` → no
-    /// fire (no per-writer resync needed).
+    /// A programmatic restore (`set_text`) of a draft that already mentions a planning keyword must NOT fire on the next real edit.
+    /// The user never typed the keyword across the rising edge.
+    /// The before/after scan reads the pre-edit text fresh, so `before == after == keyword-present` means no fire (no per-writer resync needed).
     #[test]
     fn restored_keyword_draft_does_not_fire_plan_nudge() {
         let mut pw = hinted_prompt();
@@ -3020,9 +2956,8 @@
         );
     }
 
-    /// A bracketed paste of a keyword (which bypasses `handle_key`) must not
-    /// fire on the following keystroke — the fresh pre-edit read sees the
-    /// keyword already present.
+    /// A bracketed paste of a keyword (which bypasses `handle_key`) must not fire on the following keystroke.
+    /// The fresh pre-edit read sees the keyword already present.
     #[test]
     fn pasted_keyword_does_not_fire_plan_nudge_on_next_key() {
         let mut pw = hinted_prompt();
@@ -3038,11 +2973,8 @@
         );
     }
 
-    /// Accepting an `@`-file completion whose path contains a planning keyword
-    /// (e.g. `@design.py`) sets `completion_accepted` on that keypress, so it
-    /// never fires; and the NEXT keystroke must not fire either, because the
-    /// fresh pre-edit read sees the keyword the accept put in the buffer. This
-    /// is the leaky-latch bug the before/after revert fixes.
+    /// Accepting an `@`-file completion whose path holds a planning keyword (e.g. `@design.py`) never fires: the accept sets `completion_accepted`.
+    /// The NEXT keystroke must not fire either, because the fresh pre-edit read sees the keyword the accept put in the buffer.
     #[test]
     fn completion_accept_of_keyword_path_does_not_fire_plan_nudge() {
         let mut pw = hinted_prompt();
@@ -3059,8 +2991,7 @@
             crate::tips::plan_nudge::prompt_mentions_planning(pw.text()),
             "fixture: the accepted path must leave a keyword in the buffer"
         );
-        // A normal keystroke after the accept must NOT fire — the keyword was
-        // already present pre-edit.
+        // A normal keystroke after the accept must NOT fire; the keyword was already present pre-edit
         pw.handle_key(&KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(
             !pw.take_plan_nudge_fire(),
@@ -3068,9 +2999,8 @@
         );
     }
 
-    /// A paste chord (inline Ctrl+Shift+V or Ctrl/Cmd+V) is not a typed edit,
-    /// so it never fires the rising edge even when it brings a keyword into an
-    /// empty draft — keeping inline paste consistent with bracketed paste.
+    /// A paste chord (inline Ctrl+Shift+V or Ctrl/Cmd+V) is not a typed edit.
+    /// It never fires the rising edge even when it brings a keyword into an empty draft, keeping inline paste consistent with bracketed paste.
     #[test]
     fn paste_chord_edit_does_not_fire_plan_nudge() {
         let mut pw = PromptWidget::new();
@@ -3082,9 +3012,8 @@
         assert!(!pw.plan_nudge_fire_for_edit(&key!('v', CONTROL).to_key_event(), false));
     }
 
-    /// With contextual hints disabled (the default), `handle_key` skips the
-    /// per-keystroke detection entirely: a qualifying wipe and a
-    /// keyword-crossing edit both stay silent.
+    /// With contextual hints disabled (the default), `handle_key` skips the per-keystroke detection entirely.
+    /// A qualifying wipe and a keyword-crossing edit both stay silent.
     #[test]
     fn contextual_hints_disabled_skips_tip_detection() {
         let mut pw = PromptWidget::new();
@@ -3112,15 +3041,14 @@
         );
     }
 
-    /// Per-tip independence: with the plan-mode tip off but the undo tip on,
-    /// only the undo detector runs — a substantial wipe fires undo while a
-    /// keyword-crossing edit stays silent.
+    /// Per-tip independence: with the plan-mode tip off but the undo tip on, only the undo detector runs.
+    /// A substantial wipe fires undo while a keyword-crossing edit stays silent.
     #[test]
     fn contextual_hints_per_tip_gates_are_independent() {
         let mut pw = PromptWidget::new();
         pw.set_contextual_hints(/* undo */ true, /* plan_mode */ false);
 
-        // Cross into a planning keyword — plan nudge is off, so it must not fire.
+        // Cross into a planning keyword; plan nudge is off, so it must not fire
         for ch in "plan".chars() {
             pw.handle_key(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
@@ -3194,7 +3122,7 @@
         assert!(!snap.matches.is_empty());
     }
 
-    // ── T8: lifecycle edge-case tests ──────────────────────────────
+    // ── Lifecycle edge-case tests ────────────────────────────────────
 
     #[test]
     fn ctrl_c_clears_image_state() {
@@ -3217,8 +3145,7 @@
         assert_eq!(pw.images.len(), 1);
         assert_eq!(pw.textarea.elements().len(), 1);
 
-        // Undo the image insertion — removes the element from TextArea
-        // but images vec may still hold the stale entry.
+        // Undo the image insertion removes the element from TextArea but the images vec may still hold the stale entry
         pw.handle_key(&key!('z', CONTROL).to_key_event());
         assert!(pw.textarea.elements().is_empty());
 
@@ -3262,7 +3189,7 @@
         let images = pw.drain_images();
         let blocks =
             crate::prompt_images::build_content_blocks_with_workspace("text".into(), images, None);
-        // Text block + 1 valid image = 2 blocks (not 3).
+        // A text block and the one valid image make 2 blocks (not 3)
         assert_eq!(blocks.len(), 2);
     }
 
@@ -3335,15 +3262,8 @@
 
     #[test]
     fn deleting_all_text_keeps_image_counter_high_water_mark() {
-        // Monotonic counter contract (Bug C): within a single prompt
-        // lifetime the counter only ever advances upward. Backspacing
-        // through the textarea content removes the chip elements but
-        // does NOT trigger a counter reset — only an explicit prompt
-        // reset (`set_text("")`, Ctrl+C) zeros the counter. This
-        // prevents the bug where a brief empty-buffer state between
-        // drops let a fresh insertion reuse `#1`, producing the
-        // user-reported sequence `[Image #1] [Image #2] [Image #1]`
-        // in a single prompt.
+        // Monotonic counter contract: within a single prompt lifetime the counter only ever advances
+        // upward. Only an explicit prompt reset (`set_text("")`, Ctrl+C) zeros the counter.
         let mut pw = PromptWidget::new();
         pw.insert_image(test_image()).unwrap();
         pw.handle_key(&key!(' ').to_key_event());
@@ -3385,9 +3305,8 @@
         }
     }
 
-    /// Seed the prompt with `@<query>` text, place the cursor at the end, and
-    /// inject a single fake fuzzy result so the dropdown is "visible" and has
-    /// a valid selection.
+    /// Seed the prompt with `@<query>` text, place the cursor at the end, and inject a single fake fuzzy result.
+    /// The dropdown is then "visible" with a valid selection.
     fn seed_at_completion(
         pw: &mut PromptWidget,
         query: &str,
@@ -3408,8 +3327,7 @@
 
     #[test]
     fn right_arrow_with_no_popup_does_not_drill_down() {
-        // No @-context, no popup. Right Arrow must NOT trigger acceptance —
-        // it should fall through to normal cursor-movement handling.
+        // No @-context, no popup. Right Arrow must NOT trigger acceptance; it should fall through to normal cursor-movement handling.
         let mut pw = PromptWidget::new();
         pw.textarea.insert_str("hello");
         pw.textarea.set_cursor(0);
@@ -3421,19 +3339,15 @@
         assert_eq!(pw.textarea.text(), "hello");
         // The cursor should have advanced one character (normal Right behavior).
         assert_eq!(pw.textarea.cursor(), 1);
-        // And the event type is whatever normal cursor movement produces — we
-        // don't assert on it, just that it didn't blow up or insert text.
+        // And the event type is whatever normal cursor movement produces; we don't assert on it, just that it didn't blow up or insert text
         let _ = event;
     }
 
     #[test]
     fn right_arrow_with_popup_visible_but_no_valid_selection_passes_through() {
-        // Defensive case: popup is visible (results non-empty) but the
-        // selection index is out of bounds. `file_search_has_selection`
-        // should return false and Right Arrow must fall through to the
-        // textarea's normal cursor-right behavior. In production the
-        // selection invariant is maintained by FileSearchState (see the
-        // comment in handle_file_search_key); this test locks in the gate.
+        // Defensive case: popup is visible (results non-empty) but the selection index is out of bounds
+        // `file_search_has_selection` should return false and Right Arrow must fall through to the textarea's normal cursor-right behavior
+        // In production FileSearchState maintains the selection invariant (see handle_file_search_key); this test locks in the gate
         let mut pw = PromptWidget::new();
         let typed = "@src";
         pw.textarea.insert_str(typed);
@@ -3441,9 +3355,7 @@
         pw.textarea.set_cursor(cursor);
         let ctx = crate::views::file_search::context::detect(pw.textarea.text(), cursor)
             .expect("@-context must parse");
-        // Seed one result but mark `selected = 1` (out of bounds) so
-        // `file_search_has_selection` returns false even though the popup
-        // is visible.
+        // Seed one result but mark `selected = 1` (out of bounds) so `file_search_has_selection` returns false even though the popup is visible
         pw.file_search
             .set_test_state(ctx, vec![fuzzy_result("src", true)], 1);
         assert!(pw.file_search.is_visible());
@@ -3453,15 +3365,13 @@
 
         // No drill-down occurred: text is unchanged, no `/` was appended.
         assert_eq!(pw.textarea.text(), typed);
-        // PassThrough: the textarea handled the key. Cursor was already
-        // at end-of-line so it cannot advance further.
+        // PassThrough: the textarea handled the key. Cursor was already at end-of-line so it cannot advance further.
         assert_eq!(pw.textarea.cursor(), cursor);
     }
 
     #[test]
     fn right_arrow_at_end_of_line_with_no_popup_preserved() {
-        // Cursor is already at end-of-line and there's no popup. Right Arrow
-        // must be harmless and must not insert anything.
+        // Cursor is already at end-of-line and there's no popup. Right Arrow must be harmless and must not insert anything.
         let mut pw = PromptWidget::new();
         pw.textarea.insert_str("abc");
         let cursor = pw.textarea.text().len();
@@ -3476,13 +3386,9 @@
 
     #[test]
     fn right_arrow_drills_into_directory_result() {
-        // User typed `@src`, the highlighted suggestion is the directory
-        // `src`. Right Arrow replaces the path portion of the @-token with
-        // the full selected path, WITHOUT a trailing `/`. The missing
-        // slash is intentional: it keeps the context out of dir-mode so
-        // the dropdown re-populates with both files and directories under
-        // `src`. If the user wants to filter to directories only, they
-        // can type `/` themselves.
+        // User typed `@src`, the highlighted suggestion is the directory `src`. Right Arrow replaces the
+        // path portion of the @-token with the full selected path, WITHOUT a trailing `/`. If the user
+        // wants to filter to directories only, they can type `/` themselves.
         let mut pw = PromptWidget::new();
         seed_at_completion(&mut pw, "src", "src", true);
         assert!(pw.file_search.is_visible());
@@ -3492,8 +3398,7 @@
 
         assert_eq!(pw.textarea.text(), "@src");
         assert_eq!(pw.textarea.cursor(), "@src".len());
-        // The text is plain (no atomic file-ref element wrapping it), so
-        // the user can keep editing path segments freely.
+        // The text is plain (no atomic file-ref element wrapping it), so the user can keep editing path segments freely
         assert!(
             pw.textarea
                 .elements()
@@ -3501,8 +3406,7 @@
                 .all(|e| e.kind != KIND_FILE_REF),
             "directory drill-down must not create a file-ref element"
         );
-        // Context kept alive so the dropdown can repopulate, and NOT in
-        // dir-mode (since we deliberately did not append `/`).
+        // Context kept alive so the dropdown can repopulate, and NOT in dir-mode (since we deliberately did not append `/`)
         assert!(
             pw.file_search.context().is_some(),
             "directory drill-down must not clear the @-context"
@@ -3515,12 +3419,8 @@
 
     #[test]
     fn right_arrow_in_dir_mode_drills_one_level_deeper() {
-        // Already in dir mode (`@src/`). Highlighted suggestion is the
-        // nested `src/foo` directory. Right Arrow replaces the @-token's
-        // path portion with `src/foo` -- no trailing `/`. This drops the
-        // user out of dir-mode, so the dropdown will then show files AND
-        // dirs whose path matches `src/foo`. To keep filtering to dirs
-        // only, the user types `/` themselves.
+        // Already in dir mode (`@src/`). Highlighted suggestion is the nested `src/foo` directory. To keep
+        // filtering to dirs only, the user types `/` themselves.
         let mut pw = PromptWidget::new();
         seed_at_completion(&mut pw, "src/", "src/foo", true);
         assert!(pw.file_search.is_visible());
@@ -3557,14 +3457,13 @@
             .context()
             .expect("drilling into a dir whose name has a space must not close the dropdown");
         assert_eq!(ctx.query, "my dir");
-        // No trailing `/` → shows files and dirs.
+        // Without a trailing `/` the dropdown shows files and dirs
         assert!(!pw.file_search.is_dir_mode());
     }
 
     #[test]
     fn right_arrow_drills_into_hidden_dir_with_space_in_name() {
-        // Hidden mode + spaced name: drill must keep `!`, stay open, and treat
-        // the space as path content (exercises `after_bang` end-to-end).
+        // Hidden mode + spaced name: drill must keep `!`, stay open, and treat the space as path content (exercises `after_bang` end-to-end)
         let mut pw = PromptWidget::new();
         seed_at_completion(&mut pw, "!my", "my dir", true);
         assert!(pw.file_search.is_visible());
@@ -3583,9 +3482,8 @@
 
     #[test]
     fn tab_in_dir_mode_drills_into_nested_dir_with_space() {
-        // Discriminating: the child's own segment carries the space (`sub dir`)
-        // from a space-free parent, so no residual anchor masks it. Without the
-        // Tab `set_drill_prefix`, the space terminates and the `.expect` panics.
+        // Discriminating: the child's own segment carries the space (`sub dir`) from a space-free parent, so no residual anchor masks it
+        // Without the Tab `set_drill_prefix`, the space terminates and the `.expect` panics
         let mut pw = PromptWidget::new();
         seed_at_completion(&mut pw, "src/", "src/sub dir", true); // dir mode, no prior anchor
         assert!(pw.file_search.is_dir_mode());
@@ -3602,11 +3500,10 @@
 
     #[test]
     fn esc_clears_drill_anchor_after_spaced_drill() {
-        // Esc → clear_context must also drop the anchor, else the closed
-        // `@my dir` would re-detect as a context.
+        // Esc's clear_context must also drop the anchor, else the closed `@my dir` would re-detect as a context
         let mut pw = PromptWidget::new();
         seed_at_completion(&mut pw, "my", "my dir", true);
-        pw.handle_key(&key!(Right).to_key_event()); // → "@my dir", anchor "my dir"
+        pw.handle_key(&key!(Right).to_key_event()); // yields "@my dir", anchor "my dir"
         assert!(pw.file_search.context().is_some());
 
         pw.handle_key(&key!(Esc).to_key_event());
@@ -3625,10 +3522,10 @@
         // The `(Some, None)` leaving-@-mode arm must drop the anchor with the context.
         let mut pw = PromptWidget::new();
         seed_at_completion(&mut pw, "my", "my dir", true);
-        pw.handle_key(&key!(Right).to_key_event()); // → "@my dir", anchor "my dir"
+        pw.handle_key(&key!(Right).to_key_event()); // yields "@my dir", anchor "my dir"
         assert!(pw.file_search.context().is_some());
 
-        // Cursor before `@` → leaving @-mode.
+        // Cursor before `@` means leaving @-mode
         pw.textarea.set_cursor(0);
         pw.update_file_search_context();
         assert!(pw.file_search.context().is_none());
@@ -3644,13 +3541,12 @@
 
     #[test]
     fn drill_anchor_dropped_when_text_reverts_below_prefix() {
-        // Undo/paste can revert a drilled path while the @-token stays alive
-        // (`@my dir` → `@my`). The anchor must drop then, so reconstructing
-        // `@my dir` in one edit terminates at the space (closed) like plain
-        // typing, instead of silently re-matching the stale anchor.
+        // Undo/paste can revert a drilled path while the @-token stays alive (`@my dir` back to `@my`)
+        // The anchor must drop then, so reconstructing `@my dir` in one edit terminates at the space (closed) like plain typing
+        // Otherwise it would silently re-match the stale anchor
         let mut pw = PromptWidget::new();
         seed_at_completion(&mut pw, "my", "my dir", true);
-        pw.handle_key(&key!(Right).to_key_event()); // → "@my dir", anchor "my dir"
+        pw.handle_key(&key!(Right).to_key_event()); // yields "@my dir", anchor "my dir"
         assert_eq!(pw.textarea.text(), "@my dir");
         assert!(pw.file_search.context().is_some());
 
@@ -3674,8 +3570,7 @@
 
     #[test]
     fn tab_on_file_in_dir_mode_references_it() {
-        // Files now show under a `path/` query; Tab/Enter on a file must
-        // reference it as an atomic element, not append `/` to descend into it.
+        // Files now show under a `path/` query; Tab/Enter on a file must reference it as an atomic element, not append `/` to descend into it
         let mut pw = PromptWidget::new();
         seed_at_completion(&mut pw, "src/", "src/main.rs", false); // file in dir-mode
         assert!(pw.file_search.is_dir_mode());
@@ -3691,10 +3586,8 @@
 
     #[test]
     fn right_arrow_in_hidden_mode_preserves_bang_prefix() {
-        // Hidden mode (`@!src`) + dir result `src` + Right Arrow must
-        // produce `@!src` (NOT `@src` with the `!` silently dropped). The
-        // re-detected context must still be in hidden mode so further
-        // fuzzy results continue to include hidden/gitignored entries.
+        // Hidden mode (`@!src`) + dir result `src` + Right Arrow must produce `@!src` (NOT `@src` with the `!` silently dropped)
+        // The re-detected context must still be in hidden mode so further fuzzy results continue to include hidden/gitignored entries
         let mut pw = PromptWidget::new();
         seed_at_completion(&mut pw, "!src", "src", true);
         assert!(pw.file_search.is_visible());
@@ -3721,11 +3614,8 @@
 
     #[test]
     fn right_arrow_on_file_behaves_like_tab() {
-        // Highlighted suggestion is a file. There is nothing nested under
-        // a file to drill into, so Right Arrow on a file is intentionally
-        // identical to Tab: insert the file-ref element + a trailing space
-        // and dismiss the dropdown. (The Right Arrow drill-down behavior
-        // is reserved for directory results.)
+        // Highlighted suggestion is a file. There is nothing nested under a file to drill into, so Right
+        // Arrow on a file is intentionally identical to Tab.
         let mut pw = PromptWidget::new();
         seed_at_completion(&mut pw, "READ", "README.md", false);
 
@@ -3749,9 +3639,8 @@
 
     #[test]
     fn right_arrow_on_file_matches_tab_exactly() {
-        // Belt-and-suspenders: prove Right and Tab produce byte-identical
-        // text + cursor + element output for a file selection, so they
-        // cannot drift apart in the future.
+        // Prove Right and Tab produce byte-identical text, cursor, and element output for a file selection
+        // That keeps them from drifting apart in the future
         let mut pw_right = PromptWidget::new();
         seed_at_completion(&mut pw_right, "READ", "README.md", false);
         pw_right.handle_key(&key!(Right).to_key_event());
@@ -3780,8 +3669,7 @@
 
     #[test]
     fn tab_still_appends_trailing_space_on_file() {
-        // Regression guard: Tab's existing behavior — insert file ref + a
-        // trailing space — must not be affected by the Right Arrow addition.
+        // Regression guard: Tab's existing behavior (insert file ref + a trailing space) must not be affected by the Right Arrow addition
         let mut pw = PromptWidget::new();
         seed_at_completion(&mut pw, "READ", "README.md", false);
 
@@ -3793,8 +3681,7 @@
 
     // ── Ghost text tests ────────────────────────────────────────────
 
-    /// Chromeless prompt style for rendering tests (no borders, no prefix,
-    /// no vpad — textarea starts at area origin).
+    /// Chromeless prompt style for rendering tests (no borders, no prefix, no vpad; the textarea starts at the area origin).
     fn ghost_test_style() -> PromptStyle {
         PromptStyle {
             focused: true,
@@ -3810,6 +3697,191 @@
         (x_start..x_end)
             .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
             .collect()
+    }
+
+    #[test]
+    fn mode_flags_show_plan_and_permission_together() {
+        use crate::app::actions::PermissionLabel;
+        let theme = Theme::current();
+        let cases = [
+            (Some("plan"), PermissionLabel::AlwaysApprove, vec!["plan", "always-approve"]),
+            (Some("plan"), PermissionLabel::Auto, vec!["plan", "auto"]),
+            (Some("plan approval"), PermissionLabel::Ask, vec!["plan approval"]),
+            (None, PermissionLabel::AlwaysApprove, vec!["always-approve"]),
+            (None, PermissionLabel::Auto, vec!["auto"]),
+            (None, PermissionLabel::Ask, vec![]),
+        ];
+        for (plan_label, permission, expected) in cases {
+            let flags = mode_flags(plan_label, permission, &theme);
+            let texts: Vec<&str> = flags.iter().map(|f| f.text).collect();
+            assert_eq!(texts, expected, "{plan_label:?} + {permission:?}");
+        }
+        let flags = mode_flags(Some("plan"), PermissionLabel::Auto, &theme);
+        assert_eq!(flags[0].color, Some(theme.accent_plan));
+        assert_eq!(flags[1].color, Some(theme.accent_system));
+    }
+
+    /// The "plan" mode flag on the bottom divider keeps its accent color on the terminal theme: the
+    /// subtle toward-bg dimming blend cannot be computed against a Reset bg, and the old gray fallback
+    /// (Reset there) erased the plan-mode cue entirely. RGB themes keep the dimmed blend.
+    #[test]
+    fn plan_flag_keeps_accent_color_on_terminal_theme() {
+        let _guard = crate::theme::cache::pin_theme();
+        let area = Rect::new(0, 0, 60, 4);
+
+        let render = || {
+            let theme = Theme::current();
+            let flags = [PromptFlag {
+                text: "plan",
+                color: Some(theme.accent_plan),
+                bold: false,
+            }];
+            let info = PromptInfo {
+                model_name: "grok",
+                flags: &flags,
+                ..Default::default()
+            };
+            let mut pw = PromptWidget::new();
+            let style = PromptStyle {
+                focused: true,
+                ..Default::default()
+            };
+            let mut buf = Buffer::empty(area);
+            pw.draw(&mut buf, area, None, &style, Some(&info), None);
+            for y in 0..area.height {
+                let row = buf_text_at(&buf, 0, area.width, y);
+                if let Some(byte_x) = row.find("plan") {
+                    // Byte offset → cell column (borders are multi-byte,
+                    // all glyphs on this row are single-width).
+                    let x = row[..byte_x].chars().count() as u16;
+                    return buf.cell((x, y)).unwrap().style();
+                }
+            }
+            panic!("plan flag not rendered");
+        };
+
+        crate::theme::cache::set(crate::theme::ThemeKind::Terminal);
+        let style = render();
+        assert_eq!(
+            style.fg,
+            Some(Theme::current().accent_plan),
+            "terminal theme keeps the solid plan accent"
+        );
+
+        // GrokNight: dimmed toward bg at truecolor; where quantization makes
+        // the palette named (blend inexpressible), the solid accent — never
+        // the old gray fallback.
+        crate::theme::cache::set(crate::theme::ThemeKind::GrokNight);
+        let style = render();
+        let theme = Theme::current();
+        assert_ne!(style.fg, Some(theme.gray), "never drops to gray");
+        match style.fg {
+            Some(ratatui::style::Color::Rgb(..)) => {
+                assert_ne!(style.fg, Some(theme.accent_plan), "truecolor dims")
+            }
+            _ => assert_eq!(style.fg, Some(theme.accent_plan), "quantized keeps accent"),
+        }
+    }
+
+    /// Plan mode recolors the composer border (`border_color_override`), but the model-name caption
+    /// drawn over the border must not inherit that accent from the cells underneath.
+    #[test]
+    fn plan_border_does_not_recolor_model_caption_on_terminal_theme() {
+        let _guard = crate::theme::cache::pin_theme();
+        crate::theme::cache::set(crate::theme::ThemeKind::Terminal);
+        let theme = Theme::current();
+        let area = Rect::new(0, 0, 60, 4);
+
+        let flags = [PromptFlag {
+            text: "plan",
+            color: Some(theme.accent_plan),
+            bold: false,
+        }];
+        let info = PromptInfo {
+            model_name: "grok",
+            flags: &flags,
+            ..Default::default()
+        };
+        let mut pw = PromptWidget::new();
+        let style = PromptStyle {
+            focused: true,
+            border_color_override: Some(theme.accent_plan),
+            ..Default::default()
+        };
+        let mut buf = Buffer::empty(area);
+        pw.draw(&mut buf, area, None, &style, Some(&info), None);
+
+        let find = |needle: &str| {
+            for y in 0..area.height {
+                let row = buf_text_at(&buf, 0, area.width, y);
+                if let Some(byte_x) = row.find(needle) {
+                    let x = row[..byte_x].chars().count() as u16;
+                    return buf.cell((x, y)).unwrap().style();
+                }
+            }
+            panic!("{needle} not rendered");
+        };
+
+        let caption = find("grok");
+        assert_eq!(
+            caption.fg,
+            Some(ratatui::style::Color::Reset),
+            "caption must not inherit the plan border accent, got {caption:?}"
+        );
+        assert!(caption.add_modifier.contains(Modifier::DIM));
+        assert_eq!(find("plan").fg, Some(theme.accent_plan), "flag stays yellow");
+    }
+
+    /// Colorless info-line chrome (uncolored flags, the "multiline" label)
+    /// renders via `muted()`: DIM on the terminal theme (where `gray` is
+    /// Reset and the old style painted full default fg), gray fg on RGB.
+    #[test]
+    fn info_line_chrome_is_muted_on_terminal_theme() {
+        let _guard = crate::theme::cache::pin_theme();
+        let area = Rect::new(0, 0, 60, 4);
+
+        let render = |needle: &str| {
+            let flags = [PromptFlag {
+                text: "yolo",
+                color: None,
+                bold: false,
+            }];
+            let info = PromptInfo {
+                model_name: "grok",
+                flags: &flags,
+                multiline: true,
+                ..Default::default()
+            };
+            let mut pw = PromptWidget::new();
+            let style = PromptStyle {
+                focused: true,
+                ..Default::default()
+            };
+            let mut buf = Buffer::empty(area);
+            pw.draw(&mut buf, area, None, &style, Some(&info), None);
+            for y in 0..area.height {
+                let row = buf_text_at(&buf, 0, area.width, y);
+                if let Some(byte_x) = row.find(needle) {
+                    let x = row[..byte_x].chars().count() as u16;
+                    return buf.cell((x, y)).unwrap().style();
+                }
+            }
+            panic!("{needle} not rendered");
+        };
+
+        crate::theme::cache::set(crate::theme::ThemeKind::Terminal);
+        for needle in ["yolo", "multiline"] {
+            let style = render(needle);
+            assert!(
+                style.add_modifier.contains(Modifier::DIM),
+                "terminal theme must render {needle} dim, got {style:?}"
+            );
+        }
+
+        crate::theme::cache::set(crate::theme::ThemeKind::GrokNight);
+        let style = render("yolo");
+        assert_eq!(style.fg, Some(Theme::current().gray), "RGB keeps gray fg");
+        assert!(!style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]
@@ -3844,7 +3916,7 @@
 
     #[test]
     fn ghost_text_cleared_on_any_set_text_swap() {
-        // Non-empty swaps too — see the `set_text` invariant comment.
+        // Non-empty swaps too; see the `set_text` invariant comment
         let mut pw = PromptWidget::new();
         pw.textarea.insert_str("git st");
         pw.set_ghost_text(Some("atus".into()));
@@ -3860,6 +3932,8 @@
 
     #[test]
     fn ghost_text_renders_at_cursor_when_at_end() {
+        // Pinned: asserts the RGB ghost fg, which reads the ambient theme.
+        let _guard = crate::theme::cache::pin_theme();
         let mut pw = PromptWidget::new();
         pw.textarea.insert_str("hello");
         pw.set_ghost_text(Some(" world".into()));
@@ -3931,8 +4005,7 @@
         let mut buf = Buffer::empty(area);
         pw.draw(&mut buf, area, None, &ghost_test_style(), None, None);
 
-        // The slash inline ghost may paint cells here, but our shell
-        // suggestion "GHOST" must not appear.
+        // The slash inline ghost may paint cells here, but our shell suggestion "GHOST" must not appear
         let ghost_region = buf_text_at(&buf, 5, 10, 0);
         assert!(
             !ghost_region.contains("GHOST"),
@@ -3951,7 +4024,7 @@
         let mut buf = Buffer::empty(area);
         pw.draw(&mut buf, area, None, &ghost_test_style(), None, None);
 
-        // truncate_str(" world and more stuff", 7) -> " world…"
+        // truncate_str(" world and more stuff", 7) yields " world…"
         let ghost = buf_text_at(&buf, 5, 12, 0);
         assert_eq!(ghost, " world…");
     }
@@ -3969,8 +4042,45 @@
         let mut buf = Buffer::empty(area);
         pw.draw(&mut buf, area, None, &style, None, None);
 
-        // Unfocused -> cursor_pos is None -> ghost text skipped.
+        // Unfocused means cursor_pos is None, so ghost text is skipped
         assert_eq!(buf_text_at(&buf, 5, 11, 0).trim(), "");
+    }
+
+    /// The empty-composer placeholder uses `Theme::muted()`: DIM on the
+    /// terminal theme (where `gray` is `Reset` and a plain fg would be
+    /// indistinguishable from typed text), gray fg on RGB themes.
+    #[test]
+    fn placeholder_is_dim_on_terminal_theme_and_gray_elsewhere() {
+        let _guard = crate::theme::cache::pin_theme();
+        let mut style = ghost_test_style();
+        style.focused = false;
+        let area = Rect::new(0, 0, 40, 1);
+
+        let render = |pw: &mut PromptWidget| {
+            let mut buf = Buffer::empty(area);
+            pw.draw(&mut buf, area, None, &style, None, None);
+            assert!(
+                buf_text_at(&buf, 0, 14, 0).contains("Build anything"),
+                "placeholder text missing"
+            );
+            buf.cell((0, 0)).unwrap().style()
+        };
+
+        crate::theme::cache::set(crate::theme::ThemeKind::Terminal);
+        let terminal = render(&mut PromptWidget::new());
+        assert!(
+            terminal.add_modifier.contains(Modifier::DIM),
+            "terminal-theme placeholder must be dimmed, got {terminal:?}"
+        );
+
+        crate::theme::cache::set(crate::theme::ThemeKind::GrokNight);
+        let groknight = render(&mut PromptWidget::new());
+        assert_eq!(
+            groknight.fg,
+            Some(Theme::current().gray),
+            "RGB-theme placeholder keeps the gray fg"
+        );
+        assert!(!groknight.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]
@@ -3984,14 +4094,14 @@
         let mut buf = Buffer::empty(area);
         pw.draw(&mut buf, area, None, &ghost_test_style(), None, None);
 
-        // Cursor at end of "bb" on row 1 -> ghost "cc" at (2, 1).
+        // Cursor at end of "bb" on row 1 puts ghost "cc" at (2, 1)
         assert_eq!(buf_text_at(&buf, 2, 4, 1), "cc");
     }
 
     #[test]
     fn ghost_text_with_zero_available_width() {
         let mut pw = PromptWidget::new();
-        // Text fills the entire width — no room for ghost text.
+        // Text fills the entire width, no room for ghost text
         pw.textarea.insert_str("abcdefghij");
         pw.set_ghost_text(Some("GHOST".into()));
 
@@ -3999,7 +4109,7 @@
         let mut buf = Buffer::empty(area);
         pw.draw(&mut buf, area, None, &ghost_test_style(), None, None);
 
-        // All 10 columns used by text — ghost has 0 avail, nothing rendered.
+        // All 10 columns used by text; ghost has 0 avail, nothing rendered
         assert_eq!(buf_text_at(&buf, 0, 10, 0), "abcdefghij");
     }
 
@@ -4034,11 +4144,10 @@
 
     // --- paint_slash_token_highlight (wrap-aware token painting) ---
 
-    /// Sentinel highlight color — never produced by the textarea's own render.
+    /// Sentinel highlight color, never produced by the textarea's own render.
     const TOKEN_FG: ratatui::style::Color = ratatui::style::Color::Rgb(9, 99, 199);
 
-    /// Render `text` into a buffer at `area`, then paint `range` with
-    /// [`TOKEN_FG`] the way `draw` does for recognized slash tokens.
+    /// Render `text` into a buffer at `area`, then paint `range` with [`TOKEN_FG`] the way `draw` does for recognized slash tokens.
     fn painted_textarea_buf(text: &str, area: Rect, range: std::ops::Range<usize>) -> Buffer {
         let mut ta = TextArea::new();
         ta.insert_str(text);
@@ -4052,9 +4161,8 @@
 
     #[test]
     fn slash_highlight_paints_all_rows_of_wrapped_token() {
-        // Width 8 forces the 12-wide token to soft-wrap at the line end; the
-        // continuation row's cells must be painted too. The text is only the
-        // token, so every non-blank cell must carry the highlight.
+        // Width 8 forces the 12-wide token to soft-wrap at the line end; the continuation row's cells must be painted too
+        // The text is only the token, so every non-blank cell must carry the highlight
         let area = Rect::new(0, 0, 8, 4);
         let token = "/pr-workflow";
         let buf = painted_textarea_buf(token, area, 0..token.len());
@@ -4087,8 +4195,7 @@
 
     #[test]
     fn slash_highlight_leaves_body_cells_unpainted() {
-        // "xx"/"yy" share no characters with the token, so cells classify by
-        // symbol alone — independent of where the wrap boundary lands.
+        // "xx"/"yy" share no characters with the token, so cells classify by symbol alone, independent of where the wrap boundary lands
         let area = Rect::new(0, 0, 8, 4);
         let buf = painted_textarea_buf("xx /pr-workflow yy", area, 3..15);
 
@@ -4119,8 +4226,7 @@
 
     #[test]
     fn slash_highlight_paints_visible_tail_of_scrolled_token() {
-        // Height-2 viewport with the cursor at the end: the token's first row
-        // scrolls off the top, but its on-screen tail must still be painted.
+        // Height-2 viewport with the cursor at the end: the token's first row scrolls off the top, but its on-screen tail must still be painted
         let area = Rect::new(0, 0, 8, 2);
         let buf = painted_textarea_buf("/pr-workflow abc", area, 0..12);
 
@@ -4191,7 +4297,7 @@
         pw.set_ghost_text(Some("world".into()));
 
         assert!(pw.accept_ghost(AcceptMode::Full).is_none());
-        // Ghost not consumed — still present.
+        // Ghost not consumed; still present
         assert!(pw.has_ghost_text());
         // Text unchanged.
         assert_eq!(pw.text(), "hello");
@@ -4216,8 +4322,7 @@
 
     // -- completion accept / splice application ---------------------------------
 
-    /// Wire-shaped token item: whole-line `insert_text`, `token_text` span
-    /// replacement (what a range-emitting shell sends).
+    /// Wire-shaped token item: `insert_text` carries the whole line, `token_text` carries the span replacement a range-emitting shell sends.
     fn token_completion(
         line: &str,
         token: &str,
@@ -4278,8 +4383,7 @@
         assert_eq!(pw.text(), "echo something else");
     }
 
-    /// The widget accept resolves against its own draft: a token item whose
-    /// range still fits comes back as an in-place splice…
+    /// The widget accept resolves against its own draft: a token item whose range still fits comes back as an in-place splice…
     #[test]
     fn dropdown_accept_resolves_against_current_draft() {
         let mut pw = PromptWidget::new();
@@ -4293,8 +4397,7 @@
         );
     }
 
-    /// …and one whose range no longer fits resolves `Stale` — the draft is
-    /// never clobbered by a stale token.
+    /// …and one whose range no longer fits resolves `Stale`; the draft is never clobbered by a stale token.
     #[test]
     fn dropdown_accept_stale_range_resolves_stale() {
         let mut pw = PromptWidget::new();
@@ -4311,9 +4414,8 @@
 
     // -- apply_completion_fill ---------------------------------------------
 
-    /// The widget-level fill writes the decided LCP over the typed token and
-    /// parks the cursor after it (the decision matrix lives in
-    /// `suggestion_controller`'s `tab_decision` tests).
+    /// The widget-level fill writes the decided LCP over the typed token and parks the cursor after it.
+    /// The decision matrix lives in `suggestion_controller`'s `tab_decision` tests.
     #[test]
     fn apply_completion_fill_writes_and_positions_cursor() {
         let mut pw = PromptWidget::new();
@@ -4324,10 +4426,8 @@
         assert_eq!(pw.cursor(), "cat alpha_".len());
     }
 
-    /// A completion range clipping an atomic element must no-op: the
-    /// textarea expands any element overlap to the WHOLE element, so
-    /// splicing a token range that ends inside a paste chip would replace
-    /// the entire pasted block (data loss). Both write paths reject.
+    /// A completion range clipping an atomic element must no-op: the textarea expands any element overlap to the WHOLE element.
+    /// Splicing a token range that ends inside a paste chip would replace the entire pasted block (data loss). Both write paths reject.
     #[test]
     fn completion_splice_and_fill_reject_range_clipping_paste_chip() {
         let mut pw = PromptWidget::new();
@@ -4356,8 +4456,7 @@
 
     // -- Predicted-next-prompt suggestion through PromptWidget ----------------
 
-    /// Widget with an active gate and a loaded suggestion — the state right
-    /// after a turn ends with `x.ai/suggestPrompt` resolved.
+    /// Widget with an active gate and a loaded suggestion: the state right after a turn ends with `x.ai/suggestPrompt` resolved.
     fn widget_with_prompt_suggestion(text: &str) -> PromptWidget {
         let mut pw = PromptWidget::new();
         pw.prompt_suggestion_active = true;
@@ -4474,9 +4573,9 @@
     #[test]
     #[serial_test::serial]
     fn teal_highlighting_on_second_line() {
-        // Asserts the full-TUI accent color. The slash highlight now reads the
-        // global `embedded` flag (monochrome when set), so pin it off and
-        // serialize against the modal_window embedded test that toggles it.
+        // Asserts the full-TUI accent color
+        // The slash highlight reads the global `embedded` flag (monochrome when set)
+        // Pin it off and serialize against the modal_window embedded test that toggles it
         crate::views::modal_window::set_embedded(false);
         let mut pw = PromptWidget::new();
         pw.textarea.insert_str("hello\n/model");
@@ -4490,8 +4589,7 @@
         let mut buf = Buffer::empty(area);
         pw.draw(&mut buf, area, None, &ghost_test_style(), None, None);
 
-        // Verify the token text rendered on row 1 (line 2) at the correct position,
-        // regardless of color support in the test environment.
+        // Verify the token text rendered on row 1 (line 2) at the correct position, regardless of color support in the test environment
         let token_text = buf_text_at(&buf, 0, 6, 1);
         assert_eq!(token_text, "/model", "token should render on row 1");
 
@@ -4521,8 +4619,7 @@
 
     // ── Inline title on the top border ──────────────────────────────
 
-    /// Bordered chrome style (the agent-view prompt shape) with an optional
-    /// session title.
+    /// Bordered chrome style (the agent-view prompt shape) with an optional session title.
     fn title_test_style(title: Option<&str>) -> PromptStyle {
         PromptStyle {
             title: title.map(str::to_string),
@@ -4541,18 +4638,20 @@
 
     #[test]
     fn title_renders_on_top_border_with_corners_intact() {
+        // Pinned: the caption blend reads the ambient theme at draw time.
+        let _guard = crate::theme::cache::pin_theme();
         let buf = draw_bordered(40, &title_test_style(Some("my session")));
 
-        // ` my session ` is 12 cols, right-aligned ending 2 cells before ╮:
-        // label at x 25..=36, dashes at 37..=38, corner at 39.
+        // ` my session ` is 12 cols, right-aligned ending 2 cells before ╮: label at x 25..=36, dashes at 37..=38, corner at 39
         assert_eq!(buf_text_at(&buf, 25, 37, 0), " my session ");
         assert_eq!(buf.cell((0, 0)).unwrap().symbol(), "\u{256d}");
         assert_eq!(buf.cell((39, 0)).unwrap().symbol(), "\u{256e}");
         assert_eq!(buf_text_at(&buf, 37, 39, 0), "\u{2500}\u{2500}");
 
-        // Info-line treatment: dimmed secondary text on the prompt bg (same
-        // blend as `render_info_line`'s model name), no bold, no inverse.
+        // Info-line treatment: dimmed secondary text on the prompt bg (same blend as `render_info_line`'s model name), no bold, no inverse
         let theme = Theme::current();
+        // The blend can fail even pinned (FORCE_COLOR envs quantize to
+        // ANSI16); the caption then keeps muted()'s gray fg.
         let expected_fg =
             crate::render::color::blend_color(theme.bg_base, theme.text_secondary, 0.6)
                 .unwrap_or(theme.gray);
@@ -4563,9 +4662,8 @@
         assert!(!title_cell.add_modifier.contains(Modifier::REVERSED));
         let border = buf.cell((1, 0)).unwrap().style();
         assert_eq!(border.bg, title_cell.bg);
-        // Fg delta vs the border rule (like the bottom info line vs its ╰─╯
-        // rule) — only meaningful with color support, same guard as the
-        // slash-highlight test above (monochrome themes resolve to Reset).
+        // Fg delta vs the border rule (like the bottom info line vs its ╰─╯ rule)
+        // Only meaningful with color support, same guard as the slash-highlight test above (monochrome themes resolve to Reset)
         if theme.text_secondary != ratatui::style::Color::Reset {
             assert_ne!(border.fg, title_cell.fg);
         }
@@ -4613,12 +4711,12 @@
             .any(|y| (area.left()..area.right()).any(|x| buf.cell((x, y)).is_some_and(|c| c.bg == bg)))
     }
 
-    /// Inline surfaces repaint the chip's baked-in `paste_bg` to the panel
-    /// background; without the flag the chip keeps its own background. Uses
-    /// a sentinel panel color so the test holds under terminal-default,
-    /// where every palette entry quantizes to `Color::Reset`.
+    /// Inline surfaces repaint the chip's baked-in `paste_bg` to the panel background; without the flag the chip keeps its own background.
+    /// Uses a sentinel panel color so the test holds under terminal-default, where every palette entry quantizes to `Color::Reset`.
     #[test]
     fn panel_bg_repaints_paste_chip_to_panel_bg() {
+        // Pinned: the chip bg is read from the ambient theme at draw time.
+        let _guard = crate::theme::cache::pin_theme();
         let theme = Theme::current();
         let panel = ratatui::style::Color::Rgb(12, 34, 56);
         assert_ne!(theme.paste_bg, panel, "fixture: sentinel must differ");
@@ -4738,15 +4836,14 @@
         ));
         assert_eq!(pw.textarea.selection_range(), Some(0..5));
 
-        // Cursor (head) is at 5; plain Right collapses to 5 — same text,
-        // same cursor, selection cleared.
+        // Cursor (head) is at 5; plain Right collapses to 5: same text, same cursor, selection cleared
         let event = pw.handle_key(&KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert_eq!(event, PromptEvent::Edited);
         assert_eq!(pw.textarea.selection_range(), None);
         assert_eq!(pw.textarea.cursor(), 5);
     }
 
-    /// Esc drops the highlight but is never consumed — the same press still cancels.
+    /// Esc drops the highlight but is never consumed; the same press still cancels.
     #[test]
     fn esc_with_selection_clears_highlight_and_declines() {
         let mut pw = PromptWidget::new();
@@ -4757,8 +4854,7 @@
         assert_eq!(pw.textarea.selection_range(), None);
     }
 
-    /// Modified Esc has no structural consumer: the widget consumes it via
-    /// the textarea catch-all so the cleared highlight repaints (Edited).
+    /// Modified Esc has no structural consumer: the widget consumes it via the textarea catch-all so the cleared highlight repaints (Edited).
     #[test]
     fn modified_esc_with_selection_clears_and_repaints() {
         let mut pw = PromptWidget::new();

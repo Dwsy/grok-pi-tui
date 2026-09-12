@@ -12,13 +12,9 @@ use crate::types::Hunk;
 /// This is aligned with the diff limit to ensure consistent behavior.
 pub(crate) const MAX_TRACKED_TEXT_BYTES: usize = 1024 * 1024; // 1 MB
 
-/// Explicit state of file content storage.
-/// Replaces Option<String> for baseline/current_content to avoid unbounded memory.
-/// Files exceeding MAX_TRACKED_TEXT_BYTES or containing binary content are
-/// stored with metadata only (no text retained).
-///
-/// `Serialize`/`Deserialize` back the disk-persisted rewind checkpoint store; the
-/// default externally-tagged representation round-trips every variant.
+/// Replaces Option<String> for baseline/current_content to avoid unbounded memory. Files exceeding MAX_TRACKED_TEXT_BYTES
+/// or containing binary content are stored with metadata only (no text retained). `Serialize`/`Deserialize` back the
+/// disk-persisted rewind checkpoint store; the default externally-tagged representation round-trips every variant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileContentState {
     /// File does not exist at this reference point.
@@ -28,10 +24,9 @@ pub enum FileContentState {
     Binary { byte_len: Option<usize> },
     /// File exceeds MAX_TRACKED_TEXT_BYTES; content not retained.
     TooLarge { byte_len: usize },
-    /// File content is a Git LFS pointer (small text stub that references
-    /// the real object in the LFS store). Not diffable because the working
-    /// copy holds the smudged (real) content while the git blob holds only
-    /// the pointer — comparing them produces a phantom diff.
+    /// File content is a Git LFS pointer (small text stub that references the real object in the LFS store). Not diffable
+    /// because the working copy holds the smudged (real) content while the git blob holds only the pointer — comparing them
+    /// produces a phantom diff.
     LfsPointer { byte_len: usize },
     /// Path is a symbolic link. Not diffable because the hunk tracker
     /// follows symlinks when reading content, producing a phantom diff
@@ -69,13 +64,9 @@ impl FileContentState {
     }
 }
 
-/// Cached state for git repository discovery.
-/// Avoids repeated filesystem walks to find the repo root.
-///
-/// When a repo is discovered, we cache a `gix::ThreadSafeRepository` handle
-/// so that subsequent operations can call `.to_thread_local()` (a cheap
-/// `Arc` clone + thread-local wrapper) instead of re-opening the repo via
-/// `gix::open()` on every `spawn_blocking` call.
+/// Avoids repeated filesystem walks to find the repo root. When a repo is discovered, we cache a
+/// `gix::ThreadSafeRepository` handle so that subsequent operations can call `.to_thread_local()` (a cheap `Arc` clone +
+/// thread-local wrapper) instead of re-opening the repo via `gix::open()` on every `spawn_blocking` call.
 #[derive(Clone)]
 pub(crate) enum GitRepoState {
     /// Haven't attempted discovery yet
@@ -135,11 +126,8 @@ pub(crate) struct FileHunkState {
     /// Determines if file stays tracked in AgentOnly mode.
     pub is_agent_file: bool,
 
-    /// True if the baseline has been patched by an accept action (diverged
-    /// from git HEAD).  Used by `handle_file_change` to decide whether to
-    /// re-read the baseline from git HEAD: if this flag is set and the new
-    /// file content matches git HEAD, the baseline is refreshed and the flag
-    /// cleared.  This handles `git restore .` without undoing accepts when
-    /// the user makes a normal (non-restore) edit.
+    /// Used by `handle_file_change` to decide whether to re-read the baseline from git HEAD: if this flag is set and the new
+    /// file content matches git HEAD, the baseline is refreshed and the flag cleared. This handles `git restore.` without
+    /// undoing accepts when the user makes a normal (non-restore) edit.
     pub baseline_accepted: bool,
 }

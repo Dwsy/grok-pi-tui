@@ -70,11 +70,8 @@ pub fn unregister_session(name: &str) -> Result<()> {
 }
 
 /// Check whether a registered session's ptyctl server is reachable.
-///
-/// Probes `GET /query/status` and requires a 200 with the ptyctl status body
-/// shape — a bare TCP connect (or bare 200) would misread an unrelated
-/// process on a recycled port as live. Not PID-based because the recorded
-/// PID is the child, which may exit while a `--linger` server is still up.
+/// Requires a 200 with the ptyctl status body — a bare TCP connect would misread a recycled port.
+/// Not PID-based: the recorded PID is the child, which may exit while a `--linger` server is up.
 pub async fn server_alive(port: u16) -> bool {
     let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(500))

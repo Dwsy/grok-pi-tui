@@ -1,25 +1,20 @@
 //! Terminal inline image rendering (Kitty / iTerm2 protocols).
 //!
-//! Provides escape-sequence helpers for rendering images inside the
-//! existing preview overlay. The text-fallback path in
-//! [`crate::render::image_overlay`] remains the primary preview; this
-//! module adds pixel-level rendering for supported terminals.
+//! Provides escape-sequence helpers for rendering images inside the existing preview overlay.
+//! The text-fallback path in [`crate::render::image_overlay`] remains the primary preview.
+//! This module adds pixel-level rendering for supported terminals.
 //!
 //! # Supported protocols
 //!
 //! - **Kitty graphics protocol**: used by Kitty, Ghostty, WezTerm, Warp
-//! - **iTerm2 inline images**: helpers exist but are currently gated off in
-//!   [`protocol_for_brand()`] (see there for why); the text fallback is used
-//!   for iTerm2 instead.
+//! - **iTerm2 inline images**: helpers exist but are currently gated off in [`protocol_for_brand()`] (see there for why).
+//!   The text fallback is used for iTerm2 instead.
 //!
 //! # Usage
 //!
 //! 1. Call [`detect_graphics_protocol()`] once (cached).
-//! 2. During draw, if an image preview is active, call
-//!    [`render_kitty_image()`] or [`render_iterm2_image()`] to build the
-//!    escape sequence.
-//! 3. Write the escape sequence to stderr **after** the ratatui cell
-//!    flush but inside the synchronized-output block.
+//! 2. During draw, if an image preview is active, call [`render_kitty_image()`] or [`render_iterm2_image()`] to build the escape sequence.
+//! 3. Write the escape sequence to stderr **after** the ratatui cell flush but inside the synchronized-output block.
 //! 4. Coordinate shared ID-1 ownership through [`super::overlay`].
 
 use std::sync::OnceLock;
@@ -31,20 +26,18 @@ use super::{TerminalName, terminal_context};
 // Graphics protocol detection
 // -------------------------------------------------------------------------
 
-/// Graphics protocol supported by the current terminal.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum GraphicsProtocol {
     /// Kitty graphics protocol (also used by Ghostty, WezTerm).
     Kitty,
     /// iTerm2 inline images protocol.
     ITerm2,
-    /// No graphics protocol available — text fallback only.
+    /// No graphics protocol available; the text fallback is used instead.
     #[default]
     None,
 }
 
 impl GraphicsProtocol {
-    /// Whether this protocol can render pixel images inline.
     pub fn supports_images(self) -> bool {
         !matches!(self, Self::None)
     }
@@ -52,38 +45,29 @@ impl GraphicsProtocol {
 
 static GRAPHICS_PROTOCOL: OnceLock<GraphicsProtocol> = OnceLock::new();
 
-/// When set, scrollback inline-media overlays are forced **off** process-wide,
-/// regardless of the terminal's graphics capability. The scrollback-native
-/// minimal mode (`grok --minimal`) sets this once at startup: it never runs the
-/// interactive draw loop that paints inline images, so committed media blocks
-/// must always fall back to the `[Open …]` text affordance — and must not
-/// reserve blank image rows. See [`set_inline_overlay_force_off`].
+/// Minimal mode never runs the draw loop, so overlays stay off and media uses the text affordance instead of blank image rows.
 static INLINE_OVERLAY_FORCE_OFF: AtomicBool = AtomicBool::new(false);
 
-/// Force scrollback inline-media overlays off (`off = true`) or restore the
-/// capability-based default (`off = false`) process-wide. Called once at
-/// startup by the pager when minimal mode is active.
+/// Force scrollback inline-media overlays off (`off = true`) or restore the capability-based default (`off = false`) process-wide.
+/// Called once at startup by the pager when minimal mode is active.
 pub fn set_inline_overlay_force_off(off: bool) {
     INLINE_OVERLAY_FORCE_OFF.store(off, Ordering::Relaxed);
 }
 
-/// Whether scrollback inline-media overlays are currently forced off — i.e. the
-/// process is in minimal/scrollback-native mode, which commits static text and
-/// never runs the interactive draw loop. Also used to suppress draw-loop-painted
-/// affordances (e.g. the mermaid button row) that would otherwise commit blank.
+/// Whether scrollback inline-media overlays are currently forced off, i.e. the process is in minimal/scrollback-native mode.
+/// That mode commits static text and never runs the interactive draw loop.
+/// Also used to suppress affordances the draw loop paints (e.g. the mermaid button row) that would otherwise commit as blank rows.
 pub fn scrollback_inline_overlay_forced_off() -> bool {
     INLINE_OVERLAY_FORCE_OFF.load(Ordering::Relaxed)
 }
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// Per-test override so tests don't depend on the host terminal or the
-    /// process-wide `GRAPHICS_PROTOCOL` cache.
+    /// Per-test override so tests don't depend on the host terminal or the process-wide `GRAPHICS_PROTOCOL` cache.
     static TEST_PROTOCOL_OVERRIDE: std::cell::Cell<Option<GraphicsProtocol>> =
         const { std::cell::Cell::new(None) };
 }
 
-/// Detect and cache the graphics protocol for the current terminal.
 pub fn detect_graphics_protocol() -> GraphicsProtocol {
     #[cfg(any(test, feature = "test-support"))]
     if let Some(p) = TEST_PROTOCOL_OVERRIDE.with(|c| c.get()) {
@@ -98,17 +82,9 @@ pub fn detect_graphics_protocol() -> GraphicsProtocol {
     })
 }
 
-/// Whether the current terminal can safely host scrollback inline-media
-/// overlays.
-///
-/// This is narrower than "supports Kitty graphics": scrollback media uses
-/// Kitty image ids, placement ids, z-index, clearing, and source cropping so
-/// images scroll with the text grid. Warp accepts some Kitty image escapes but
-/// does not reliably support that placement/scrollback model, which leaves
-/// stale or corrupted pixels while scrolling.
+/// Narrower than Kitty graphics support. Warp accepts some escapes but not the placement/scrollback model, leaving stale pixels.
 pub fn scrollback_inline_overlay_active() -> bool {
-    // Minimal mode forces this off process-wide: it never paints inline images,
-    // so media must always use the text affordance.
+    // Minimal mode forces this off process-wide: it never paints inline images, so media must always use the text affordance
     if INLINE_OVERLAY_FORCE_OFF.load(Ordering::Relaxed) {
         return false;
     }
@@ -143,8 +119,8 @@ fn scrollback_inline_overlay_active_for_brand(
     )
 }
 
-/// Set a per-thread protocol override for tests. Returns a guard that
-/// clears it on drop.
+/// Set a per-thread protocol override for tests.
+/// Returns a guard that clears it on drop.
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_protocol_for_test(p: GraphicsProtocol) -> TestProtocolGuard {
     TEST_PROTOCOL_OVERRIDE.with(|c| c.set(Some(p)));
@@ -162,12 +138,9 @@ impl Drop for TestProtocolGuard {
     }
 }
 
-/// Map terminal brand to graphics protocol. Returns `None` on Windows
-/// because ConPTY strips the Kitty/iTerm2 APC escape sequences before
-/// they reach the host terminal.
+/// Returns `None` on Windows because ConPTY strips the Kitty/iTerm2 APC escape sequences before they reach the host terminal.
 ///
-/// Parameterised by `is_windows` so unit tests can exercise both paths
-/// on any OS.
+/// Parameterised by `is_windows` so unit tests can exercise both paths on any OS.
 pub fn protocol_for_brand(brand: TerminalName, is_windows: bool) -> GraphicsProtocol {
     if is_windows {
         return GraphicsProtocol::None;
@@ -177,14 +150,51 @@ pub fn protocol_for_brand(brand: TerminalName, is_windows: bool) -> GraphicsProt
         TerminalName::Ghostty => GraphicsProtocol::Kitty,
         TerminalName::WezTerm => GraphicsProtocol::Kitty,
         TerminalName::WarpTerminal => GraphicsProtocol::Kitty,
-        // iTerm2's OSC 1337 inline-image protocol lacks the image-id, z-index,
-        // source-crop, and clear primitives the Kitty protocol has, so overlay
-        // images don't track the text grid — they paint wrong or never appear
-        // (leaving a stuck "Loading…" hint). Disable it; the text/metadata
-        // fallback is used instead. Re-enable with `ITerm2` once verified.
+        // OSC 1337 lacks placement/clear primitives, so scrollback images do not track the grid. Preview opts in separately.
         TerminalName::Iterm2 => GraphicsProtocol::None,
         _ => GraphicsProtocol::None,
     }
+}
+
+static PROMPT_PREVIEW_PROTOCOL: OnceLock<GraphicsProtocol> = OnceLock::new();
+
+/// iTerm2 is allowed only here: the box never sits on the bottom row, and closing it repaints every occupied cell so no clear escape is needed.
+pub fn prompt_preview_graphics_protocol() -> GraphicsProtocol {
+    let base = detect_graphics_protocol();
+    if base != GraphicsProtocol::None || test_protocol_override_active() {
+        return base;
+    }
+    *PROMPT_PREVIEW_PROTOCOL.get_or_init(|| {
+        let ctx = terminal_context();
+        if ctx.graphics_protocol_skip_reason().is_some() {
+            return GraphicsProtocol::None;
+        }
+        prompt_preview_protocol_for_brand(
+            ctx.brand,
+            cfg!(target_os = "windows"),
+            ctx.term_features.as_deref(),
+            ctx.is_ssh,
+        )
+    })
+}
+
+/// iTerm2 needs `TERM_FEATURES` `F` or OSC 1337 leaks base64. That var does not cross SSH, so absence there is not a denial.
+pub fn prompt_preview_protocol_for_brand(
+    brand: TerminalName,
+    is_windows: bool,
+    term_features: Option<&str>,
+    is_ssh: bool,
+) -> GraphicsProtocol {
+    if !is_windows && brand == TerminalName::Iterm2 {
+        let display_allowed = match term_features {
+            Some(features) => features.contains('F'),
+            None => is_ssh,
+        };
+        if display_allowed {
+            return GraphicsProtocol::ITerm2;
+        }
+    }
+    protocol_for_brand(brand, is_windows)
 }
 
 // -------------------------------------------------------------------------
@@ -194,7 +204,6 @@ pub fn protocol_for_brand(brand: TerminalName, is_windows: bool) -> GraphicsProt
 /// Shared placement ID; every renderer must coordinate through [`super::overlay`].
 pub(super) const KITTY_PLACEMENT_ID: u32 = 1;
 
-/// Kitty graphics protocol image format identifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KittyImageFormat {
     /// PNG image data (`f=100`).
@@ -209,7 +218,6 @@ impl KittyImageFormat {
     }
 }
 
-/// Detect the Kitty graphics format code for encoded image bytes.
 pub fn kitty_format_from_bytes(image_data: &[u8]) -> Option<KittyImageFormat> {
     match xai_grok_shared::clipboard::mime_from_bytes(image_data) {
         "image/png" => Some(KittyImageFormat::Png),
@@ -222,22 +230,14 @@ pub fn kitty_mime_is_directly_supported(mime_type: &str) -> bool {
     mime_type == "image/png"
 }
 
-/// Prepare encoded image bytes for Kitty's raw-byte overlay path.
-///
-/// Kitty accepts encoded PNG bytes via `f=100`, but not encoded JPEG/WebP/etc.
-/// Convert other decodable images to PNG before handing them to the centered
-/// overlay renderer. Callers must keep this out of draw paths.
-///
-/// On macOS, uses `sips` (Apple CoreGraphics) which handles ICC colour
-/// profiles correctly. Falls back to the `image` crate on other platforms.
+/// Kitty `f=100` accepts PNG only. Keep off the draw path. macOS uses `sips` so ICC profiles survive; elsewhere the `image` crate.
 pub fn prepare_kitty_overlay_image_bytes(image_data: &[u8]) -> Option<Vec<u8>> {
     if kitty_format_from_bytes(image_data).is_some() {
         return Some(image_data.to_vec());
     }
 
-    // On macOS, convert via `sips` through a temp file. CoreGraphics
-    // handles ICC colour profiles correctly, avoiding the artifacts
-    // that the `image` crate's JPEG→PNG path can produce.
+    // On macOS, convert via `sips` through a temp file
+    // CoreGraphics handles ICC colour profiles correctly, avoiding the artifacts that the `image` crate's JPEG-to-PNG path can produce
     if cfg!(target_os = "macos")
         && let Some(png) = convert_via_sips(image_data)
     {
@@ -314,7 +314,6 @@ fn convert_via_sips(image_data: &[u8]) -> Option<Vec<u8>> {
     Some(png)
 }
 
-/// Prepare encoded image bytes for the currently detected overlay protocol.
 pub fn prepare_overlay_image_bytes(image_data: &[u8]) -> Option<Vec<u8>> {
     match detect_graphics_protocol() {
         GraphicsProtocol::Kitty => prepare_kitty_overlay_image_bytes(image_data),
@@ -323,17 +322,7 @@ pub fn prepare_overlay_image_bytes(image_data: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// Build a Kitty graphics protocol escape sequence to display encoded image data.
-///
-/// The image is transmitted inline as base64-encoded data and scaled by the
-/// terminal to fit `cols` columns × `rows` rows. The terminal handles
-/// HiDPI/Retina scaling correctly since it knows the actual cell pixel
-/// dimensions.
-///
-/// Uses `a=T` (transmit + display), `f=<format>` (PNG format), `t=d`
-/// (direct data transmission), `q=2` (suppress responses), `C=1` (preserve
-/// cursor position), and `z=1` (draw above text cells), chunked into 4096-byte
-/// pieces.
+/// Terminal scales to the cell rect (it knows HiDPI). `C=1` preserves the cursor, `z=1` draws above text, `q=2` suppresses replies.
 pub fn render_kitty_image(
     image_data: &[u8],
     format: KittyImageFormat,
@@ -343,10 +332,8 @@ pub fn render_kitty_image(
     render_kitty_image_z(image_data, format, cols, rows, 1)
 }
 
-/// Render a Kitty image with a specific z-index.
-///
-/// `z=1`: above text (modal overlays). `z=-1`: below text, above
-/// background (inline scrollback media — dropdowns render on top).
+/// `z=1`: above text (modal overlays).
+/// `z=-1`: below text, above background (inline scrollback media; dropdowns render on top).
 pub fn render_kitty_image_z(
     image_data: &[u8],
     format: KittyImageFormat,
@@ -373,7 +360,6 @@ pub fn transmit_kitty_image(image_data: &[u8], format: KittyImageFormat, image_i
     kitty_chunked_escape(image_data, &header)
 }
 
-/// Encode image data as chunked Kitty escape sequences.
 /// `first_chunk_header` is the metadata for the first chunk (action, format, etc.).
 fn kitty_chunked_escape(image_data: &[u8], first_chunk_header: &str) -> String {
     use base64::Engine as _;
@@ -401,7 +387,7 @@ fn kitty_chunked_escape(image_data: &[u8], first_chunk_header: &str) -> String {
 
 /// Place an already-transmitted image at the cursor position (`a=p`).
 ///
-/// Tiny escape (~50 bytes) — no image data, just placement metadata.
+/// Tiny escape (~50 bytes): no image data, just placement metadata.
 pub fn place_kitty_image(image_id: u32, cols: u16, rows: u16, z: i32) -> String {
     format!(
         "\x1b_Ga=p,i={},p={},c={},r={},z={},C=1,q=2\x1b\\",
@@ -431,24 +417,19 @@ pub fn place_kitty_image_cropped(
 
 /// Build a Kitty escape sequence to delete a specific image by ID.
 pub fn clear_kitty_image(image_id: u32) -> String {
-    format!("\x1b_Ga=d,d=i,i={},q=2\x1b\\", image_id)
+    format!("\x1b_Ga=d,d=i,i={image_id},q=2\x1b\\")
 }
 
 // -------------------------------------------------------------------------
 // iTerm2 inline images protocol
 // -------------------------------------------------------------------------
 
-/// Build an iTerm2 inline image escape sequence.
-///
-/// Uses `\x1b]1337;File=inline=1;width=Ncells;height=Ncells;preserveAspectRatio=1:BASE64\x07`.
+/// `preserveAspectRatio=0`: callers already sized the rect. Re-preserving against real cell geometry letterboxes blank bands.
 pub fn render_iterm2_image(image_data: &[u8], cols: u16, rows: u16) -> String {
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD.encode(image_data);
     format!(
-        "\x1b]1337;File=inline=1;width={cols}cells;height={rows}cells;preserveAspectRatio=1:{b64}\x07",
-        cols = cols,
-        rows = rows,
-        b64 = b64,
+        "\x1b]1337;File=inline=1;width={cols}cells;height={rows}cells;preserveAspectRatio=0:{b64}\x07",
     )
 }
 
@@ -456,22 +437,7 @@ pub fn render_iterm2_image(image_data: &[u8], cols: u16, rows: u16) -> String {
 // Shared overlay helpers
 // -------------------------------------------------------------------------
 
-/// Build the full escape-sequence string to render image data at a cell
-/// position using the provided graphics protocol.
-///
-/// For Kitty: transmits image data once (`a=t`) then places it (`a=p`). Pass
-/// `retransmit = false` on subsequent frames to emit only the placement escape
-/// (~50 bytes) instead of re-uploading the full image every redraw.
-///
-/// For iTerm2: always emits the full inline image escape (no separate transmit
-/// primitive). Callers should pass `retransmit = false` after the first frame
-/// to avoid re-decoding the same image every tick.
-///
-/// Returns `None` when no graphics protocol is available.
-///
-/// Pass `retransmit = false` on subsequent frames to skip the data upload
-/// (Kitty: place-only; iTerm2: no-op).
-#[allow(clippy::too_many_arguments)]
+/// Delete-then-transmit: Warp ignores placement replace, so `a=p` would stack duplicates. Unchanged placements must not call this.
 pub(super) fn build_overlay_image_escapes_for_protocol(
     protocol: GraphicsProtocol,
     image_data: &[u8],
@@ -479,7 +445,6 @@ pub(super) fn build_overlay_image_escapes_for_protocol(
     rows: u16,
     cell_x: u16,
     cell_y: u16,
-    retransmit: bool,
 ) -> Option<String> {
     if protocol == GraphicsProtocol::None {
         return None;
@@ -487,41 +452,30 @@ pub(super) fn build_overlay_image_escapes_for_protocol(
 
     let mut esc = String::new();
     // ANSI cursor positioning is 1-based.
-    esc.push_str(&format!("\x1b[{};{}H", cell_y + 1, cell_x + 1));
     match protocol {
         GraphicsProtocol::Kitty => {
-            if retransmit {
-                // Transmit once, then place — never use a=T (transmit+display)
-                // on every frame; that re-uploads the full image at ~10fps and
-                // balloons native GPU surface counts in long-lived sessions.
-                // Place-only frames do not need image bytes / format detection.
-                let format = kitty_format_from_bytes(image_data)?;
-                esc.push_str(&transmit_kitty_image(
-                    image_data,
-                    format,
-                    KITTY_PLACEMENT_ID,
-                ));
-            }
-            esc.push_str(&place_kitty_image(
-                KITTY_PLACEMENT_ID,
-                cols,
-                rows,
-                1, // above text (modal overlays)
+            let format = kitty_format_from_bytes(image_data)?;
+            esc.push_str(&clear_kitty_image(KITTY_PLACEMENT_ID));
+            esc.push_str(&format!("\x1b[{};{}H", cell_y + 1, cell_x + 1));
+            esc.push_str(&render_kitty_image_z(
+                image_data, format, cols, rows, 1, // above text (modal overlays)
             ));
         }
         GraphicsProtocol::ITerm2 => {
-            if retransmit {
-                esc.push_str(&render_iterm2_image(image_data, cols, rows));
-            }
+            // Unlike Kitty (`C=1`), OSC 1337 advances the cursor past the image, so save/restore it (DECSC/DECRC) around the write
+            // These escapes are written post-flush, after ratatui parked the caret for the frame
+            esc.push_str("\x1b7");
+            esc.push_str(&format!("\x1b[{};{}H", cell_y + 1, cell_x + 1));
+            esc.push_str(&render_iterm2_image(image_data, cols, rows));
+            esc.push_str("\x1b8");
         }
         GraphicsProtocol::None => unreachable!(),
     }
     Some(esc)
 }
 
-/// Transmit inline image data to the terminal GPU.
-///
-/// Kitty: uploads with the given `image_id`. iTerm2: no-op (data sent per-place).
+/// Kitty: uploads with the given `image_id`.
+/// iTerm2: no-op; the data is sent with each placement instead.
 pub fn transmit_inline_image(image_data: &[u8], image_id: u32) -> Option<String> {
     match detect_graphics_protocol() {
         GraphicsProtocol::Kitty => {
@@ -533,12 +487,9 @@ pub fn transmit_inline_image(image_data: &[u8], image_id: u32) -> Option<String>
     }
 }
 
-/// Place an inline image at a position, optionally cropping.
-///
 /// For Kitty: ~80 bytes (no image data, just placement with crop).
-/// For iTerm2: sends full image data only when `emit_iterm_data` is true
-/// (no crop support). Pass `false` after the first placement to avoid
-/// re-decoding the same image on every TUI frame.
+/// For iTerm2: sends full image data only when `emit_iterm_data` is true (no crop support).
+/// Pass `false` after the first placement to avoid re-decoding the same image on every TUI frame.
 #[allow(clippy::too_many_arguments)]
 pub fn place_inline_image(
     image_data: &[u8],
@@ -601,30 +552,56 @@ pub fn place_inline_image(
     Some(esc)
 }
 
-/// Compute the cell dimensions (`cols`, `rows`) to display an image at
-/// its correct aspect ratio within a bounding box of `max_cols × max_rows`.
-///
-/// Terminal cells are not square — they're roughly twice as tall as wide
-/// (typical monospace cell ~8px wide × ~16px tall, ratio ≈ 0.5). This
-/// function accounts for that so a 1:1 image appears visually square
-/// and a 16:9 screenshot looks like a 16:9 rectangle.
+/// Fallback cell width/height ratio (typical monospace cell ~8×16 px), used when the terminal does not report its pixel size.
+const DEFAULT_CELL_ASPECT: f64 = 0.5;
+
+/// Protocols fill the cell rect, so an assumed 1:2 cell stretches other fonts. Implausible reports (tmux, Windows, non-tty) use the default.
+/// Once per process: zoom scales both axes. Tests pin the fallback.
+fn cell_aspect() -> f64 {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        DEFAULT_CELL_ASPECT
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        static CELL_ASPECT: OnceLock<f64> = OnceLock::new();
+        *CELL_ASPECT.get_or_init(|| {
+            crossterm::terminal::window_size()
+                .map(|ws| cell_aspect_from(&ws))
+                .unwrap_or(DEFAULT_CELL_ASPECT)
+        })
+    }
+}
+
+/// Pure part of [`cell_aspect`]: the ratio math and the plausibility band.
+// Dead only in the test-support feature build, where `cell_aspect` pins the fallback; production calls it and the unit tests exercise it directly
+#[cfg_attr(feature = "test-support", allow(dead_code))]
+fn cell_aspect_from(ws: &crossterm::terminal::WindowSize) -> f64 {
+    if ws.columns == 0 || ws.rows == 0 || ws.width == 0 || ws.height == 0 {
+        return DEFAULT_CELL_ASPECT;
+    }
+    let aspect =
+        (f64::from(ws.width) / f64::from(ws.columns)) / (f64::from(ws.height) / f64::from(ws.rows));
+    // Real monospace cells live in this band; anything outside means the report is bogus (e.g. display size instead of window size).
+    if (0.3..=0.8).contains(&aspect) {
+        aspect
+    } else {
+        DEFAULT_CELL_ASPECT
+    }
+}
+
+/// Uses measured [`cell_aspect`] so a 1:1 image stays visually square; cells are not square.
 pub fn fit_image_to_cells(img_w: u32, img_h: u32, max_cols: u16, max_rows: u16) -> (u16, u16) {
     if img_w == 0 || img_h == 0 || max_cols == 0 || max_rows == 0 {
         return (max_cols.max(1), max_rows.max(1));
     }
 
-    // Cell aspect ratio: width / height. Typical monospace cell is ~0.5
-    // (half as wide as tall). This converts between pixel-space and
-    // cell-space so the image doesn't appear stretched.
-    let cell_aspect: f64 = 0.5;
+    let cell_aspect = cell_aspect();
 
-    // Image aspect ratio in pixel space.
     let img_aspect = img_w as f64 / img_h as f64;
 
-    // Convert image aspect to cell-space: how many columns per row the
-    // image needs to look correct. A cell is `cell_aspect` times as wide
-    // as it is tall, so we divide by cell_aspect.
-    //   cols_per_row = img_aspect / cell_aspect
+    // Convert image aspect to cell-space: how many columns per row the image needs to look correct
+    // A cell is `cell_aspect` times as wide as it is tall, so we divide by cell_aspect
     let cols_per_row = img_aspect / cell_aspect;
 
     // Try fitting by width first.

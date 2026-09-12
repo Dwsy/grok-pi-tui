@@ -2,16 +2,9 @@ use std::collections::HashMap;
 
 const MAX_LINES_READ_DEFAULT: usize = 1_000;
 
-/// Client-configurable truncation settings.
-/// All fields are optional — `None` means "use the tool's built-in default".
-///
-/// There is deliberately no per-line cap: clipping long lines silently
-/// corrupts single-line files (minified JSON, data dumps) with no way for
-/// the model to recover the clipped bytes. Non-skill reads are bounded by
-/// the whole-read `MAX_NUM_TOKENS` cap instead (skill files are exempt from
-/// all read limits by design). Other agent CLIs likewise apply no
-/// per-line cap. The wire field (`TruncationConfig.max_chars_per_line` in
-/// grok-tools.proto) is deprecated and ignored.
+/// Client-configurable truncation settings. All fields are optional — `None` means "use the tool's built-in default".
+/// There is deliberately no per-line cap: clipping long lines silently corrupts single-line files (minified JSON, data
+/// dumps) with no way for the model to recover the clipped bytes.
 #[derive(Debug, Clone, Default)]
 pub struct TruncationConfig {
     /// Max total output bytes for any tool. Default: 40KB.
@@ -20,12 +13,9 @@ pub struct TruncationConfig {
     pub per_tool_max_output_bytes: HashMap<String, usize>,
     /// Max lines to read (read_file). Default: 1000.
     pub max_lines_read: Option<usize>,
-    /// Inline cap for MCP tool results only (bytes). Consulted by the MCP
-    /// truncation path (`mcp_max_output_bytes_for`) between the per-tool map
-    /// and `default_max_output_bytes`. Deliberately separate from
-    /// `default_max_output_bytes` so an MCP-specific override (e.g. a repo's
-    /// `[mcp] max_output_bytes`) never changes non-MCP readers like the
-    /// opencode bash cap.
+    /// Inline cap for MCP tool results only (bytes). Consulted by the MCP truncation path (`mcp_max_output_bytes_for`) between the per-tool map and
+    /// `default_max_output_bytes`. Deliberately separate from `default_max_output_bytes` so an MCP-specific override (e.g. a repo's `[mcp]
+    /// max_output_bytes`) never changes non-MCP readers like the opencode bash cap.
     pub mcp_max_output_bytes: Option<usize>,
 }
 
@@ -45,14 +35,9 @@ impl TruncationConfig {
         self.default_max_output_bytes.unwrap_or(builtin_default)
     }
 
-    /// Resolve the max output bytes for an **MCP** payload.
-    ///
-    /// Precedence: per-tool override > MCP-specific override
-    /// (`mcp_max_output_bytes`) > default override > built-in fallback.
-    ///
-    /// Only the MCP truncation path (`util::mcp_truncate`) should call this;
-    /// non-MCP tools keep using [`Self::max_output_bytes_for`] so that an
-    /// MCP-specific override never bleeds into their caps.
+    /// Resolve the max output bytes for an **MCP** payload. Precedence: per-tool override > MCP-specific override (`mcp_max_output_bytes`) >
+    /// default override > built-in fallback. Only the MCP truncation path (`util::mcp_truncate`) should call this; non-MCP tools keep using
+    /// [`Self::max_output_bytes_for`] so that an MCP-specific override never bleeds into their caps.
     pub fn mcp_max_output_bytes_for(&self, tool_name: &str, builtin_default: usize) -> usize {
         if let Some(&per_tool) = self.per_tool_max_output_bytes.get(tool_name) {
             return per_tool;
@@ -62,18 +47,9 @@ impl TruncationConfig {
             .unwrap_or(builtin_default)
     }
 
-    /// Replace template placeholders in a tool description with current config values.
-    ///
-    /// Recognized placeholders:
-    /// - `{max_lines_read}` — from `max_lines_read` (default 1000)
-    /// - `{max_wait_ms}` — the blocking-wait ceiling, as `600000 (~10 min)`
-    /// - `{max_output_bytes}` — resolved via `max_output_bytes_for(tool_name, builtin_default)`
-    /// - `{max_chars_per_line}` — fixed display value for opencode-compat
-    ///   descriptions only; the opencode `read` tool clips at its own
-    ///   hardcoded `MAX_LINE_LENGTH` (2000), independent of this config.
-    ///   grok_build `read_file` never clips lines.
-    ///
-    /// Returns the original string unchanged if no placeholders are present.
+    /// Replace template placeholders in a tool description with current config values. `{max_lines_read}` — from `max_lines_read` (default 1000)
+    /// `{max_chars_per_line}` — fixed display value for opencode-compat descriptions only; the opencode `read` tool clips at its own hardcoded
+    /// `MAX_LINE_LENGTH` (2000), independent of this config. grok_build `read_file` never clips lines.
     pub fn interpolate_description(
         &self,
         description: &str,
@@ -96,19 +72,9 @@ impl TruncationConfig {
             )
     }
 
-    /// Resolve placeholders in each schema property description, and pin the
-    /// blocking-wait ceiling as a `maximum` on whichever property documents it.
-    ///
-    /// The tool description alone cannot carry the cap: `description_override`
-    /// replaces that string outright under toolchain randomization, so on most
-    /// draws the interpolated copy never reaches the model. Properties are only
-    /// ever renamed, so a bound placed here survives every draw — and a
-    /// `maximum` reaches a model that skips the prose.
-    ///
-    /// `{max_wait_ms}` in a property description is the marker for which
-    /// property is the wait, so no tool or parameter name is hardcoded and a
-    /// renamed parameter is handled for free (keys are remapped by the time
-    /// this runs).
+    /// Resolve placeholders in each schema property description, and pin the blocking-wait ceiling as a `maximum` on
+    /// whichever property documents it. The tool description alone cannot carry the cap: `description_override` replaces
+    /// that string outright under toolchain randomization, so on most draws the interpolated copy never reaches the model.
     pub fn apply_to_schema(
         &self,
         schema: &mut serde_json::Value,
@@ -222,12 +188,9 @@ mod tests {
         );
     }
 
-    /// The bound has to land somewhere that actually constrains the value.
-    /// `Option<u64>` could plausibly be emitted as `anyOf: [integer, null]`, in
-    /// which case a root `maximum` would be inert — so assert against the real
-    /// generated schema rather than a hand-written one, and pin the shape it
-    /// relies on. schemars puts `minimum` at the root for the same field, which
-    /// is the precedent this follows.
+    /// The bound has to land somewhere that actually constrains the value. `Option<u64>` could plausibly be emitted as `anyOf: [integer, null]`, in
+    /// which case a root `maximum` would be inert — so assert against the real generated schema rather than a hand-written one, and pin the shape
+    /// it relies on. schemars puts `minimum` at the root for the same field, which is the precedent this follows.
     #[test]
     fn apply_to_schema_bounds_the_real_optional_u64_property() {
         let generated =

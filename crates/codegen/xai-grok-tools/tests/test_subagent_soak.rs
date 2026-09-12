@@ -82,10 +82,9 @@ impl Metric {
         }
     }
 
-    /// Where a metric must be present and within budget. RSS everywhere;
-    /// threads and open files only on Linux — macOS now samples threads too,
-    /// but the budgets are tuned against Linux nightlies, so a macOS sample
-    /// lands in the summary without being enforced.
+    /// Where a metric must be present and within budget. RSS everywhere; threads and open files
+    /// only on Linux — macOS now samples threads too, but the budgets are tuned against Linux
+    /// nightlies, so a macOS sample lands in the summary without being enforced.
     fn budgeted_on_this_platform(self) -> bool {
         match self {
             Metric::Rss => true,
@@ -324,8 +323,12 @@ impl ChildRunner for SoakRunner {
                 request,
                 cancellation,
                 reporter,
+                attempt_id: _,
+                wake_origin: _,
                 queued_for: _,
                 session_running: _,
+                agent_address: _,
+                spawner_session_id: _,
             } = run;
             let promoted = reporter
                 .started(StartedChild {
@@ -388,7 +391,17 @@ impl ChildRunner for SoakRunner {
         Box::pin(std::future::ready(SubagentDescribeOutcome::Unavailable))
     }
 
-    fn on_completed(&self, _completion: ChildCompletion<Self::CompletionData>) {}
+    fn supports_wake(&self) -> bool {
+        true
+    }
+
+    fn on_completed(
+        &self,
+        _completion: ChildCompletion<Self::CompletionData>,
+        terminal_published: Box<dyn FnOnce() + Send>,
+    ) {
+        terminal_published();
+    }
 }
 
 fn soak_request(id: String, background: bool) -> SubagentRequest {
@@ -408,19 +421,20 @@ fn soak_request(id: String, background: bool) -> SubagentRequest {
         fork_context: false,
         owner: SubagentOwner::Task,
         cancel_token: CancellationToken::new(),
+        spawn_root: Default::default(),
     }
 }
 
 async fn run_cycle(backend: &ChannelBackend, i: u64) {
     let fg = backend
-        .spawn(soak_request(format!("fg-{i}"), false))
+        .spawn(soak_request(format!("fg-{i}"), false), None)
         .await
         .expect("foreground spawn round-trips through the coordinator");
     assert!(fg.success, "cycle {i}: foreground child must complete");
 
     let bg_id = format!("bg-{i}");
     let bg = backend
-        .spawn(soak_request(bg_id.clone(), true))
+        .spawn(soak_request(bg_id.clone(), true), None)
         .await
         .expect("background spawn round-trips through the coordinator");
     assert!(bg.success, "cycle {i}: background child must complete");
@@ -451,7 +465,9 @@ async fn concurrent_phase(backend: &ChannelBackend, gate: &tokio::sync::Semaphor
         .map(|k| {
             let backend = backend.clone();
             tokio::task::spawn_local(async move {
-                backend.spawn(soak_request(format!("conc-{k}"), true)).await
+                backend
+                    .spawn(soak_request(format!("conc-{k}"), true), None)
+                    .await
             })
         })
         .collect();
@@ -510,10 +526,9 @@ async fn measure(
     }
 }
 
-/// Takes `budgeted` as a parameter so both arms are testable on any platform.
-/// An unbudgeted metric never fails: missing is fine, and a present value
-/// (macOS thread counts) is informational, not measured against a bound
-/// tuned for another platform.
+/// Takes `budgeted` as a parameter so both arms are testable on any platform. An unbudgeted metric
+/// never fails: missing is fine, and a present value (macOS thread counts) is informational, not
+/// measured against a bound tuned for another platform.
 fn metric_failure(
     metric: Metric,
     value: Option<usize>,
@@ -624,7 +639,6 @@ async fn subagent_lifecycle_soak_bounds_threads_open_files_and_heap() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async move {
-            let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
             // The soak measures registry churn, not admission: keep every
             // spawn unthrottled so cycle counts stay resource-bound.
             let config = CoordinatorConfig {
@@ -635,12 +649,17 @@ async fn subagent_lifecycle_soak_bounds_threads_open_files_and_heap() {
                 },
                 ..CoordinatorConfig::default()
             };
+            let (command_tx, command_rx) = SubagentCoordinator::<SoakRunner>::channel();
             let gate = Arc::new(tokio::sync::Semaphore::new(0));
             tokio::task::spawn_local(
-                SubagentCoordinator::new(command_rx, SoakRunner { gate: gate.clone() }, config)
-                    .run(),
+                SubagentCoordinator::from_channel(
+                    command_rx,
+                    SoakRunner { gate: gate.clone() },
+                    config,
+                )
+                .run(),
             );
-            let backend = ChannelBackend::new(command_tx);
+            let backend = ChannelBackend::from_coordinator(command_tx);
 
             let warmup_quiesced = warmup(&backend, bounds.warmup).await;
             // Drain the concurrent phase into the baseline; a failed drain marks

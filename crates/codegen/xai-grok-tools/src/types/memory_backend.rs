@@ -18,12 +18,9 @@ const STALE_NOTE_DAYS: f64 = 1.0;
 /// Staleness threshold (days): show a strong stale warning.
 const VERY_STALE_DAYS: f64 = 7.0;
 
-/// Format a staleness warning for a memory search result.
-///
-/// Session-scoped chunks older than [`STALE_NOTE_DAYS`] get a note;
-/// those older than [`VERY_STALE_DAYS`] get a stronger warning.
-/// Global and workspace entries are curated/evergreen — no warning emitted.
-/// Returns an empty string for fresh, evergreen, or unknown-age results.
+/// Format a staleness warning for a memory search result. Session-scoped chunks older than [`STALE_NOTE_DAYS`] get a
+/// note; those older than [`VERY_STALE_DAYS`] get a stronger warning. Global and workspace entries are
+/// curated/evergreen — no warning emitted. Returns an empty string for fresh, evergreen, or unknown-age results.
 pub fn format_staleness_note(source: &str, created_at: Option<i64>) -> String {
     if matches!(source, "global" | "workspace") {
         return String::new();
@@ -95,19 +92,13 @@ pub struct MemorySearchResult {
     pub created_at: Option<i64>,
 }
 
-/// Backend-agnostic interface for memory queries.
-///
-/// Implementations must be `Send + Sync` to be stored in `Arc<dyn MemoryBackend>`
-/// on `SessionContext`. All methods are `&self` — no mutation through the trait.
-///
-/// `search` is async because hybrid search may need to call an embedding API
-/// to vectorize the query for KNN lookup.
+/// Backend-agnostic interface for memory queries. Implementations must be `Send + Sync` to be stored in `Arc<dyn
+/// MemoryBackend>` on `SessionContext`. All methods are `&self` — no mutation through the trait. `search` is async
+/// because hybrid search may need to call an embedding API to vectorize the query for KNN lookup.
 #[async_trait::async_trait]
 pub trait MemoryBackend: Send + Sync {
-    /// Search memory for chunks matching a query string.
-    ///
-    /// Returns up to `max_results` results with score >= `min_score`.
-    /// Uses hybrid search (FTS5 + vector KNN) when embeddings are available,
+    /// Search memory for chunks matching a query string. Returns up to `max_results` results with
+    /// score >= `min_score`. Uses hybrid search (FTS5 + vector KNN) when embeddings are available,
     /// falling back to FTS-only otherwise.
     async fn search(
         &self,
@@ -127,26 +118,16 @@ pub trait MemoryBackend: Send + Sync {
     /// Return the total number of indexed chunks.
     fn total_chunks(&self) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>;
 
-    /// Return the configured default for `max_results` in search queries.
-    ///
-    /// When the `memory_search` tool caller does not supply an explicit value,
-    /// using this instead of a hardcoded fallback ensures that
-    /// `[memory.search].max_results` config is honoured at the tool boundary.
-    ///
-    /// The default implementation returns `6`, matching the previous hardcoded
-    /// value, so existing backends without a custom config behave identically.
+    /// Return the configured default for `max_results` in search queries. When the `memory_search` tool caller does not supply an explicit value,
+    /// using this instead of a hardcoded fallback ensures that `[memory.search].max_results` config is honoured at the tool boundary. The default
+    /// implementation returns `6`, matching the previous hardcoded value, so existing backends without a custom config behave identically.
     fn default_search_max_results(&self) -> usize {
         6
     }
 
-    /// Return the configured default for `min_score` in search queries.
-    ///
-    /// When the caller does not supply an explicit threshold, using this instead
-    /// of a hardcoded `0.0` ensures `[memory.search].min_score` config is
-    /// honoured at the tool boundary.
-    ///
-    /// The default implementation returns `0.0` (accept all results), matching
-    /// the previous hardcoded value.
+    /// Return the configured default for `min_score` in search queries. When the caller does not supply an explicit
+    /// threshold, using this instead of a hardcoded `0.0` ensures `[memory.search].min_score` config is honoured at the
+    /// tool boundary. The default implementation returns `0.0` (accept all results), matching the previous hardcoded value.
     fn default_search_min_score(&self) -> f64 {
         0.0
     }

@@ -1,10 +1,9 @@
 use super::types::{BATCH_TRUNCATION_LIMIT, BUFFER_CAP_BYTES, LINE_TRUNCATION_LIMIT};
 use crate::util::floor_char_boundary;
 
-/// Processes raw stdout chunks into complete lines.
-///
-/// Buffers partial lines, splits on `\n`, truncates individual lines at
-/// `LINE_TRUNCATION_LIMIT` chars, and caps the internal buffer at `BUFFER_CAP_BYTES`.
+/// Processes raw stdout chunks into complete lines. Buffers partial lines, splits on `\n`,
+/// truncates individual lines at `LINE_TRUNCATION_LIMIT` chars, and caps the internal buffer at
+/// `BUFFER_CAP_BYTES`.
 #[derive(Default)]
 pub struct LineProcessor {
     buffer: Vec<u8>,
@@ -71,10 +70,9 @@ pub fn batch_lines(lines: &[String]) -> String {
     }
 }
 
-/// Sanitize a model-supplied monitor description for embedding in the
-/// `<monitor-event …>` attribute and in line labels: `"` would break the
-/// attribute / the parser's `" task_id="` anchor, and newlines would break
-/// the single-line opening-tag shape (`>\n` anchor) and label lines.
+/// Sanitize a model-supplied monitor description for embedding in the `<monitor-event …>` attribute
+/// and in line labels: `"` would break the attribute / the parser's `" task_id="` anchor, and
+/// newlines would break the single-line opening-tag shape (`>\n` anchor) and label lines.
 pub fn sanitize_monitor_description(description: &str) -> String {
     description.replace('"', "'").replace(['\n', '\r'], " ")
 }

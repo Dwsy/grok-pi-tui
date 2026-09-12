@@ -1,4 +1,4 @@
-// `McpOAuthConfig` / `McpOAuthConfigMap` re-exported via `mcp` (see `mcp.rs`).
+// `McpOAuthConfig` / `McpOAuthConfigMap` are re-exported via `mcp` (see `mcp.rs`)
 
 mod announcements;
 mod campaigns;
@@ -24,11 +24,10 @@ pub use consent::*;
 pub use hints::*;
 pub use load::*;
 pub use mcp::*;
-pub(crate) use mcp_reenable::reenableable_disabled_stubs;
+pub(crate) use mcp_reenable::{McpDefinitionIndex, needs_definition_scan};
 pub use permissions::*;
 pub use persist::*;
-// `remote` extracted to the `xai-grok-config-types` crate (dependency inversion);
-// re-exported so `crate::util::config::{RemoteSettings, GoalRoleModel}` keep working.
+// These types live in `xai-grok-config-types`; the re-export keeps `crate::util::config::{RemoteSettings, GoalRoleModel}` working
 pub use resolve::*;
 pub use settings_writes::*;
 pub use tips::*;

@@ -109,10 +109,9 @@ pub struct SchemeMetrics {
     /// Edit-trace: steps that required re-read (anchor stale after edit).
     pub trace_reread_required: usize,
 
-    /// Estimated total read-amplification lines across all validations.
-    /// Candidate A: 1 line per validation.
-    /// Candidate B: chunk_size lines per validation.
-    /// Candidate C: (line_idx - checkpoint_start + 1) lines per validation.
+    /// Estimated total read-amplification lines across all validations. Candidate A: 1 line per
+    /// validation. Candidate B: chunk_size lines per validation. Candidate C: (line_idx -
+    /// checkpoint_start + 1) lines per validation.
     pub read_amp_lines: usize,
 }
 
@@ -400,11 +399,9 @@ fn run_phase1_for_file(
                 context: anchor.context.clone(),
             };
 
-            // Ground truth: determine expected validity based on LineOutcome.
-            // An anchor should be Valid if the line is Unchanged or Reindented
-            // (whitespace-normalized hashing preserves anchors across
-            // indentation changes). Shifted, Modified, and Deleted anchors
-            // should all be detected as invalid (Stale or OutOfRange).
+            // Ground truth: determine expected validity based on LineOutcome. An anchor should be Valid if the line is Unchanged
+            // or Reindented (whitespace-normalized hashing preserves anchors across indentation changes). Shifted, Modified, and
+            // Deleted anchors should all be detected as invalid (Stale or OutOfRange).
             let outcome = &mutation_result.outcomes[orig_idx];
             let should_be_valid =
                 matches!(outcome, LineOutcome::Unchanged | LineOutcome::Reindented);
@@ -502,12 +499,9 @@ fn standard_traces(line_count: usize) -> Vec<Vec<TraceStep>> {
     ]
 }
 
-/// Run Phase 2 (edit-trace simulation) for one file.
-///
-/// The simulation keeps using the existing anchor set as long as the probed
-/// anchor survives. Anchors are only regenerated (simulating a re-read) when
-/// the probed anchor is stale. This measures how often each scheme forces a
-/// re-read in sequential editing workflows.
+/// Run Phase 2 (edit-trace simulation) for one file. The simulation keeps using the existing anchor set as long as the
+/// probed anchor survives. Anchors are only regenerated (simulating a re-read) when the probed anchor is stale. This
+/// measures how often each scheme forces a re-read in sequential editing workflows.
 fn run_phase2_for_file(
     scheme: &dyn AnchorScheme,
     _file_name: &str,
@@ -663,10 +657,9 @@ struct Config3 {
 
     #[test]
     fn content_only_has_zero_false_stale() {
-        // With proper ground truth (Unchanged = should be Valid, Shifted =
-        // should be Stale), Candidate A should have zero false_stale:
-        // it never reports Stale for a truly unchanged-at-same-position line
-        // because it has no contextual component.
+        // With proper ground truth (Unchanged = should be Valid, Shifted = should be Stale),
+        // Candidate A should have zero false_stale: it never reports Stale for a truly
+        // unchanged-at-same-position line because it has no contextual component.
         let corpus = test_corpus();
         let config = BenchmarkConfig {
             hash_lengths: vec![3],
@@ -684,10 +677,9 @@ struct Config3 {
 
     #[test]
     fn chunk_has_nonzero_false_stale() {
-        // Candidate B reports Stale for unchanged lines when a nearby line
-        // in the same chunk changed (chunk context invalidation). These are
-        // false_stale: the line is unchanged but the scheme conservatively
-        // rejects it.
+        // Candidate B reports Stale for unchanged lines when a nearby line in the same chunk
+        // changed (chunk context invalidation). These are false_stale: the line is unchanged but
+        // the scheme conservatively rejects it.
         let corpus = test_corpus();
         let config = BenchmarkConfig {
             hash_lengths: vec![3],

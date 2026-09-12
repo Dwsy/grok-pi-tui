@@ -21,7 +21,7 @@ fn the_first_recorded_identity_wins_whole_and_wire_values_are_stable() {
 
     let labels: Vec<&str> = Entrypoint::ALL
         .iter()
-        .map(|entrypoint| entrypoint.as_str())
+        .map(|entrypoint| entrypoint.as_ref())
         .collect();
     assert_eq!(
         labels,
@@ -57,7 +57,7 @@ fn release_channel_labels_map_to_the_closed_set() {
 
     let labels: Vec<&str> = ReleaseChannel::ALL
         .iter()
-        .map(|channel| channel.as_str())
+        .map(|channel| channel.as_ref())
         .collect();
     assert_eq!(labels, ["stable", "alpha", "unknown"]);
 }

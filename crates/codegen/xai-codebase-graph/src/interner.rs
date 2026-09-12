@@ -60,12 +60,8 @@ impl StringId {
 }
 
 /// Arena-based string interner for efficient string deduplication.
-///
-/// Stores all strings in a single contiguous buffer to minimize allocations
-/// and improve cache locality. Uses a hash-based lookup for O(1) interning.
-///
-/// The interner stores arbitrary byte sequences, supporting paths and strings
-/// that may not be valid UTF-8.
+/// Contiguous buffer for cache locality; hash lookup for O(1) interning.
+/// Stores arbitrary bytes, including non-UTF-8 paths.
 #[derive(Debug, Clone)]
 pub struct StringInterner {
     /// Contiguous storage for all interned byte strings
@@ -95,10 +91,7 @@ impl StringInterner {
     }
 
     /// Create an interner with pre-allocated capacity.
-    ///
-    /// # Arguments
-    /// * `string_bytes` - Estimated total bytes for all strings
-    /// * `num_strings` - Estimated number of unique strings
+    /// `string_bytes` is estimated total bytes; `num_strings` is estimated unique count.
     pub fn with_capacity(string_bytes: usize, num_strings: usize) -> Self {
         Self {
             arena: Vec::with_capacity(string_bytes),
@@ -110,12 +103,8 @@ impl StringInterner {
         }
     }
 
-    /// Intern a byte string, returning its StringId.
-    /// If the string is already interned, returns the existing id.
-    ///
-    /// # Complexity
-    /// O(1) average case, O(k) worst case where k is the number of
-    /// hash collisions (typically 0 or 1).
+    /// Intern a byte string, returning its StringId. Existing strings return the existing id.
+    /// O(1) average; O(k) worst case on hash collisions.
     pub fn intern_bytes(&mut self, s: &[u8]) -> StringId {
         let hash = Self::hash_bytes(s);
 
@@ -150,10 +139,7 @@ impl StringInterner {
     }
 
     /// Get the StringId for a byte string without interning it.
-    /// Returns None if the string is not in the interner.
-    ///
-    /// # Complexity
-    /// O(1) average case.
+    /// `None` if the string is not in the interner. O(1) average.
     pub fn get_bytes_id(&self, s: &[u8]) -> Option<StringId> {
         let hash = Self::hash_bytes(s);
 
@@ -173,20 +159,14 @@ impl StringInterner {
         self.get_bytes_id(s.as_bytes())
     }
 
-    /// Get the raw bytes for a StringId.
-    ///
-    /// # Complexity
-    /// O(1)
+    /// Get the raw bytes for a StringId. O(1).
     pub fn get_bytes(&self, id: StringId) -> Option<&[u8]> {
         let (start, len) = *self.offsets.get(id.0 as usize)?;
         self.arena
             .get(start as usize..(start as usize + len as usize))
     }
 
-    /// Get the string for a StringId, if it's valid UTF-8.
-    ///
-    /// # Complexity
-    /// O(1)
+    /// Get the string for a StringId, if it's valid UTF-8. O(1).
     pub fn get(&self, id: StringId) -> Option<&str> {
         self.get_bytes(id).and_then(|b| std::str::from_utf8(b).ok())
     }
@@ -267,14 +247,9 @@ impl StringInterner {
         &self.offsets
     }
 
-    /// Release over-allocated capacity in the arena and offsets buffers.
-    ///
-    /// After a bulk build the arena and offsets Vecs may hold up to 2× their
-    /// actual content due to doubling growth.  Calling this reclaims that
-    /// wasted heap.  The lookup table is intentionally left unshrunk because
-    /// it benefits from load-factor headroom.
-    ///
-    /// This is an internal maintenance hook called by `ScopeGraphIndex::compact()`.
+    /// Release over-allocated capacity in the arena and offsets buffers after a bulk build.
+    /// The lookup table is left unshrunk because it benefits from load-factor headroom.
+    /// Called by `ScopeGraphIndex::compact()`.
     pub(crate) fn shrink_to_fit(&mut self) {
         self.arena.shrink_to_fit();
         self.offsets.shrink_to_fit();

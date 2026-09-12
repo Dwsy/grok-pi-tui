@@ -77,10 +77,9 @@ fn build_wide_tree(width: usize, with_target: bool) -> TempDir {
     temp
 }
 
-/// JS-monorepo shape: ~1/6 of the dirs are sources across a few packages; the
-/// rest live in `node_modules/` trees nested *below* the top level, which the
-/// fan-out strategy's recursive child watches cannot skip (on inotify each of
-/// those dirs still costs a watch descriptor) but per-dir mode prunes.
+/// JS-monorepo shape: sources are a minority; the rest live in nested `node_modules/`.
+/// Fan-out recursive child watches cannot skip those dirs (each still costs an inotify watch).
+/// Per-dir mode prunes them.
 fn build_nested_ignored_tree() -> TempDir {
     let temp = TempDir::new().unwrap();
     let root = temp.path();

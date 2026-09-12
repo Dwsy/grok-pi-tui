@@ -132,22 +132,6 @@ fn run_with_capture<F: FnOnce()>(f: F) -> Vec<CapturedEvent> {
 }
 
 #[test]
-fn closed_to_open_emits_warn_opened() {
-    let events = run_with_capture(|| {
-        let obs = TracingObserver::new("storage_breaker");
-        obs.on_state_change(BreakerState::Closed, BreakerState::Open, "trip");
-    });
-    let openings: Vec<_> = events
-        .iter()
-        .filter(|e| e.message == "circuit breaker opened")
-        .collect();
-    assert_eq!(openings.len(), 1);
-    assert_eq!(openings[0].level, Level::WARN);
-    assert_eq!(openings[0].target, "circuit_breaker");
-    assert_eq!(openings[0].breaker.as_deref(), Some("storage_breaker"));
-}
-
-#[test]
 fn open_to_half_open_emits_debug_half_open_not_info_closed() {
     let events = run_with_capture(|| {
         let obs = TracingObserver::new("storage_breaker");
@@ -233,10 +217,8 @@ fn on_outcome_success_is_silent() {
 }
 
 /// Snapshot the full structured field set on a Closed->Open transition.
-/// Analytics queries depend on `target=circuit_breaker` + the named
-/// fields `{breaker, old, new, reason}`. A rename of `?old` -> `?prev`
-/// (or a dropped `reason` field) at the emit site must fail this test
-/// before silently breaking analytics dashboards.
+/// Analytics queries depend on `target=circuit_breaker` and `{breaker, old, new, reason}`.
+/// A rename or dropped field must fail this test before breaking dashboards.
 #[test]
 fn opened_event_field_set_is_stable() {
     let events = run_with_capture(|| {

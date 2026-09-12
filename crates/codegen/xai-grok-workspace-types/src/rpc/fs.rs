@@ -1,6 +1,5 @@
-//! File I/O methods: service-level `workspace.put_files` /
-//! `workspace.get_files` and the `workspace.fs_*` extension ops backing
-//! the shell's `x.ai/fs/*` ACP methods.
+//! File I/O methods: the service-level `workspace.put_files` / `workspace.get_files` pair and the `workspace.fs_*` extension ops.
+//! The `workspace.fs_*` ops back the shell's `x.ai/fs/*` ACP methods.
 
 use std::path::PathBuf;
 
@@ -15,36 +14,21 @@ use super::{RpcActivityClass, WorkspaceRpc};
 /// A single file entry to write.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PutFileEntry {
-    /// Path relative to the client-fs base (the bound session's cwd when it
-    /// extends the workspace root, else the root); escapes are rejected.
+    /// Path relative to the client-fs base (the bound session's cwd when it extends the workspace root, else the root); escapes are rejected.
     pub path: String,
     /// UTF-8 file content (one chunk).
     pub content: String,
     /// If true, create parent directories as needed (default: true).
     #[serde(default = "default_true")]
     pub create_dirs: bool,
-    /// If true, append to the file instead of overwriting it.
-    ///
-    /// **Chunked writes:** To stream a large file without holding it
-    /// entirely in memory, split the content into chunks and send
-    /// multiple `PutFileEntry` items (or multiple `put_files` calls)
-    /// for the same path:
-    ///   - First chunk: `append: false` (creates/truncates the file)
-    ///   - Subsequent chunks: `append: true`
-    ///
-    /// Default: `false` (overwrite).
+    /// If true, append instead of overwrite. Default false.
+    /// Chunked writes: first chunk `append: false` (create/truncate), later chunks `append: true`, so a large file need not be held entirely in memory.
     #[serde(default)]
     pub append: bool,
 }
 
-/// Request to write one or more files to the workspace filesystem.
-///
-/// Service-level write: NOT tracked in hunk tracker, NOT visible to model.
-///
-/// **Non-transactional:** Files are written sequentially. If file N fails,
-/// files 1..N-1 are already written to disk and will NOT be rolled back.
-/// Callers must inspect per-file results in `PutFilesRes` to detect partial
-/// failures.
+/// Write one or more files. Service-level: not hunk-tracked and not visible to the model.
+/// Non-transactional: a failure leaves earlier files written. Callers must inspect per-file results.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PutFilesReq {
     pub files: Vec<PutFileEntry>,
@@ -66,9 +50,8 @@ pub struct PutFileResult {
     /// Error message if `ok` is false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// SHA-256 hex digest of the content that was written in this call
-    /// (only set if ok). For `append: true`, this is the hash of the
-    /// appended chunk, not the full file.
+    /// SHA-256 hex digest of the content that was written in this call (only set if ok).
+    /// For `append: true`, this is the hash of the appended chunk, not the full file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hash: Option<String>,
 }
@@ -79,21 +62,14 @@ pub struct PutFilesRes {
 }
 
 /// A single file to read, with optional cache validation and byte-range support.
-///
-/// # Byte-range and UTF-8 alignment
-///
-/// `offset` and `length` specify byte ranges, but the response `content` is
-/// returned as a UTF-8 `String`. If a byte range splits a multi-byte UTF-8
-/// codepoint, the implementation returns an error for that file entry rather
-/// than producing invalid text. Callers that need arbitrary byte-level
-/// chunking should align offsets to codepoint boundaries.
+/// Ranges are bytes but `content` is a UTF-8 `String`; a split codepoint errors rather than emitting invalid text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetFileEntry {
     /// Path relative to the client-fs base (see [`PutFileEntry::path`]).
     pub path: String,
-    /// If set, the server compares this hash against the full-file content
-    /// hash. If they match, the content field in the response is `None`
-    /// (cache hit). Works for both full-file and chunked reads.
+    /// If set, the server compares this hash against the full-file content hash.
+    /// If they match, the content field in the response is `None` (cache hit).
+    /// Works for both full-file and chunked reads.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub if_none_match: Option<String>,
     /// Byte offset to start reading from (default: 0).
@@ -121,7 +97,6 @@ impl WorkspaceRpc for GetFilesReq {
 pub struct GetFileResult {
     /// The requested path (echoed back).
     pub path: String,
-    /// Whether the file exists.
     pub exists: bool,
     /// File content (full file or requested byte range as UTF-8).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,8 +124,7 @@ pub struct GetFilesRes {
 // Filesystem extension ops (`workspace.fs_*`)
 // =========================================================================
 
-// Response types — serde shapes match the shell's `session::file_system`
-// types byte-for-byte so the ACP wire contract is unchanged.
+// Response types: serde shapes match the shell's `session::file_system` types byte-for-byte so the ACP wire contract is unchanged
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -211,10 +185,9 @@ pub struct FsListReq {
     pub depth: usize,
     #[serde(default = "default_limit")]
     pub limit: usize,
-    /// Pagination offset applied after the dirs-first / case-insensitive
-    /// sort (default 0). When `offset > 0` (or the directory exceeds
-    /// `limit`) the server collects the walk, sorts, then returns the
-    /// stable slice `[offset, offset + limit)`.
+    /// Pagination offset applied after the dirs-first / case-insensitive sort (default 0).
+    /// When `offset > 0` (or the directory exceeds `limit`) the server collects the whole walk and sorts it.
+    /// It then returns the stable slice `[offset, offset + limit)`.
     #[serde(default)]
     pub offset: u64,
     #[serde(default = "default_true")]
@@ -253,24 +226,21 @@ pub struct FsReadFileReq {
     pub path: String,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
-    /// Byte offset to start reading from. When `offset` or `length` is
-    /// set (or `encoding` is `base64`) the read is a binary-safe ranged
-    /// read; when all are absent the whole file is read.
+    /// Byte offset to start reading from.
+    /// When `offset` or `length` is set (or `encoding` is `base64`) the read is a binary-safe ranged read.
+    /// When all are absent the whole file is read.
     #[serde(default)]
     pub offset: Option<u64>,
-    /// Bytes to read (absent means "to EOF"). Only consulted for ranged
-    /// reads, and always capped at `max_bytes` and the server's hard limit —
-    /// so an unset `length` still returns at most `max_bytes`. Detect "more
-    /// data" by comparing the returned bytes (from `offset`) against `size`.
+    /// Bytes to read (absent means to EOF). Only for ranged reads, always capped at `max_bytes` and the server hard limit.
+    /// Detect more data by comparing returned bytes from `offset` against `size`.
     #[serde(default)]
     pub length: Option<u64>,
-    /// Per-chunk byte budget applied on top of `length` (default 1 MiB),
-    /// further clamped server-side so a single chunk fits the hub frame
-    /// after base64. Only consulted for ranged reads.
+    /// Per-chunk byte budget applied on top of `length` (default 1 MiB).
+    /// Further clamped server-side so a single chunk fits the hub frame after base64.
+    /// Only consulted for ranged reads.
     #[serde(default = "default_max_bytes")]
     pub max_bytes: u64,
-    /// Transfer encoding for ranged reads (default `utf8`; non-UTF-8
-    /// ranges fall back to base64 regardless of this setting).
+    /// Transfer encoding for ranged reads (default `utf8`; non-UTF-8 ranges fall back to base64 regardless of this setting).
     #[serde(default)]
     pub encoding: FsReadEncoding,
 }
@@ -310,21 +280,8 @@ impl WorkspaceRpc for FsDeleteFileReq {
     type Response = ();
 }
 
-// =========================================================================
-// Client-facing read-only fs ops (`workspace.client_fs_*`)
-// =========================================================================
-//
-// Distinct from the shell-facing `workspace.fs_*` ops above: every `path`
-// is workspace-root-relative (not absolute), timestamps are `mtimeMs`
-// epoch milliseconds (not RFC 3339 strings), `client_fs_list` paginates
-// with a post-sort `offset`, and reads are binary-safe (base64 chunks).
-// camelCase wire format with fixed-width integers only, so both the
-// workspace server (`xai-grok-workspace`) and the grok.com backend
-// compile against the same structs — a field rename breaks both sides.
-//
-// The method names use a `client_fs` segment (not `fs`) because the
-// `workspace.fs_*` ops above already serve the shell's `x.ai/fs/*`
-// methods with incompatible schemas.
+// Client-facing `workspace.client_fs_*`: root-relative paths, `mtimeMs`, post-sort pagination, binary-safe base64. Not the shell `workspace.fs_*` schema.
+// camelCase, fixed-width integers only. Server and grok.com backend share these structs; a field rename breaks both.
 
 /// Wire method name for [`ClientFsListReq`].
 pub const CLIENT_FS_LIST_METHOD: &str = "workspace.client_fs_list";
@@ -333,12 +290,10 @@ pub const CLIENT_FS_STAT_METHOD: &str = "workspace.client_fs_stat";
 /// Wire method name for [`ClientFsReadFileReq`].
 pub const CLIENT_FS_READ_FILE_METHOD: &str = "workspace.client_fs_read_file";
 
-/// Filesystem node kind. Wire values match the shell's `x.ai/fs/list`
-/// node `type` strings.
+/// Filesystem node kind. Wire values match the shell's `x.ai/fs/list` node `type` strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FsNodeType {
-    /// A directory.
     Directory,
     /// A regular file (or anything that is not a directory).
     File,
@@ -348,8 +303,8 @@ pub enum FsNodeType {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FsReadEncoding {
-    /// UTF-8 text in `content` (shell-compatible default). Falls back to
-    /// base64 when the requested byte range is not valid UTF-8.
+    /// UTF-8 text in `content` (shell-compatible default).
+    /// Falls back to base64 when the requested byte range is not valid UTF-8.
     #[default]
     Utf8,
     /// Base64 in `contentBase64` (binary-safe; chunked readers use this).
@@ -360,9 +315,7 @@ pub enum FsReadEncoding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FsContentType {
-    /// Payload is valid UTF-8.
     Text,
-    /// Payload is not valid UTF-8.
     Binary,
 }
 
@@ -376,16 +329,14 @@ fn default_max_bytes() -> u64 {
     1_048_576
 }
 
-/// ACP-compatible list request (camelCase wire format, mirrors
-/// `x.ai/fs/list` plus `offset` pagination).
+/// ACP-compatible list request (camelCase wire format, mirrors `x.ai/fs/list` plus `offset` pagination).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientFsListReq {
-    /// Path relative to the client-fs base (`""` or `"."` = the base: the
-    /// bound session's cwd when it extends the workspace root, else the
-    /// root); escapes are rejected.
+    /// Path relative to the client-fs base; escapes are rejected.
+    /// `""` or `"."` mean the base itself: the bound session's cwd when it extends the workspace root, else the root.
     pub path: String,
-    /// Walk depth below `path` (1 = immediate children).
+    /// Walk depth below `path` (1 means immediate children).
     #[serde(default = "default_client_depth")]
     pub depth: u32,
     /// Include dotfiles.
@@ -394,8 +345,7 @@ pub struct ClientFsListReq {
     /// Maximum entries per page; the server caps this at 1000.
     #[serde(default = "default_client_limit")]
     pub limit: u32,
-    /// Pagination offset, applied after the dirs-first case-insensitive
-    /// sort (divergent from the shell, which has no offset).
+    /// Pagination offset, applied after the dirs-first case-insensitive sort (divergent from the shell, which has no offset).
     #[serde(default)]
     pub offset: u64,
     /// Follow symlinks while walking.
@@ -404,7 +354,7 @@ pub struct ClientFsListReq {
     /// Apply gitignore-style filters while walking.
     #[serde(default = "default_true")]
     pub respect_git_ignore: bool,
-    /// Glob allowlist (empty = everything).
+    /// Glob allowlist (empty means everything).
     #[serde(default)]
     pub include_globs: Vec<String>,
     /// Glob denylist.
@@ -418,8 +368,7 @@ impl WorkspaceRpc for ClientFsListReq {
     type Response = ClientFsListRes;
 }
 
-/// One listed node. Shell-aligned except `path` (client-fs-base-relative)
-/// and `mtimeMs` (epoch millis).
+/// One listed node. Shell-aligned except `path` (client-fs-base-relative) and `mtimeMs` (epoch millis).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientFsListNode {
@@ -427,7 +376,6 @@ pub struct ClientFsListNode {
     pub name: String,
     /// Path relative to the client-fs base (divergent: shell is absolute).
     pub path: String,
-    /// Node kind.
     #[serde(rename = "type")]
     pub node_type: FsNodeType,
     /// `Some(true)` when the entry itself is a symlink; omitted otherwise.
@@ -436,8 +384,7 @@ pub struct ClientFsListNode {
     /// File size in bytes (files only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
-    /// Modification time as epoch milliseconds (divergent: shell sends
-    /// RFC 3339 `modifiedAt`).
+    /// Modification time as epoch milliseconds (divergent: shell sends RFC 3339 `modifiedAt`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mtime_ms: Option<i64>,
 }
@@ -448,12 +395,11 @@ pub struct ClientFsListNode {
 pub struct ClientFsListRes {
     /// One page of nodes (post-sort slice `[offset, offset + limit)`).
     pub nodes: Vec<ClientFsListNode>,
-    /// `true` when more entries exist beyond this page, or when the
-    /// server's collection cap was hit before the walk finished.
+    /// `true` when more entries exist beyond this page, or when the server's collection cap was hit before the walk finished.
     pub truncated: bool,
 }
 
-/// Stat request — existence, metadata, and a content hash for one path.
+/// Stat request: existence, metadata, and a content hash for one path.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientFsStatReq {
@@ -467,13 +413,12 @@ impl WorkspaceRpc for ClientFsStatReq {
     type Response = ClientFsStatRes;
 }
 
-/// Response for [`ClientFsStatReq`]. A missing path — including one whose
-/// intermediate component is a file rather than a directory — is
-/// `exists: false` with all other fields absent (not an RPC error).
+/// Response for [`ClientFsStatReq`].
+/// A missing path is `exists: false` with all other fields absent (not an RPC error).
+/// That includes a path whose intermediate component is a file rather than a directory.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientFsStatRes {
-    /// Whether the path exists.
     pub exists: bool,
     /// Node kind, when the path exists.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -484,14 +429,14 @@ pub struct ClientFsStatRes {
     /// Modification time as epoch milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mtime_ms: Option<i64>,
-    /// SHA-256 hex digest of the full content (files only) — keys the
-    /// backend's content-addressed write-through cache.
+    /// SHA-256 hex digest of the full content (files only).
+    /// It keys the backend's content-addressed write-through cache.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hash: Option<String>,
 }
 
-/// Binary-safe chunked read request. Unlike `workspace.get_files`, byte
-/// ranges need no UTF-8 alignment — chunks transfer as base64.
+/// Binary-safe chunked read request.
+/// Unlike `workspace.get_files`, byte ranges need no UTF-8 alignment: chunks transfer as base64.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientFsReadFileReq {
@@ -500,19 +445,16 @@ pub struct ClientFsReadFileReq {
     /// Byte offset to start reading from (default 0).
     #[serde(default)]
     pub offset: Option<u64>,
-    /// Bytes to read (absent means "to EOF"), always capped at `max_bytes`
-    /// and the server's hard limit — so an unset `length` still returns at
-    /// most `max_bytes`. Detect "more data" by comparing the returned bytes
-    /// (from `offset`) against `size`.
+    /// Bytes to read (absent means "to EOF"), always capped at `max_bytes` and the server's hard limit.
+    /// An unset `length` still returns at most `max_bytes`.
+    /// Detect "more data" by comparing the returned bytes (from `offset`) against `size`.
     #[serde(default)]
     pub length: Option<u64>,
-    /// Per-chunk byte cap applied on top of `length` (default 1 MiB). The
-    /// server additionally clamps the effective budget to 4 MiB so a
-    /// single chunk always fits the hub's 8 MiB frame cap after base64.
+    /// Per-chunk byte cap applied on top of `length` (default 1 MiB).
+    /// The server additionally clamps the effective budget to 4 MiB so a single chunk always fits the hub's 8 MiB frame cap after base64.
     #[serde(default = "default_max_bytes")]
     pub max_bytes: u64,
-    /// Transfer encoding (default `utf8`, shell-compatible; chunked
-    /// binary readers request `base64`).
+    /// Transfer encoding (default `utf8`, shell-compatible; chunked binary readers request `base64`).
     #[serde(default)]
     pub encoding: FsReadEncoding,
 }
@@ -523,18 +465,16 @@ impl WorkspaceRpc for ClientFsReadFileReq {
     type Response = ClientFsReadFileRes;
 }
 
-/// Response for [`ClientFsReadFileReq`]. Exactly one of `content` /
-/// `contentBase64` is populated, matching `type`: `text` ⇒ `content`
-/// (unless base64 was requested), `binary` ⇒ `contentBase64`.
+/// Response for [`ClientFsReadFileReq`].
+/// Exactly one of `content` / `contentBase64` is populated, matching `type`.
+/// `text` fills `content` (unless base64 was requested); `binary` fills `contentBase64`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientFsReadFileRes {
-    /// UTF-8 payload (only when `utf8` was requested and the range is
-    /// valid UTF-8).
+    /// UTF-8 payload (only when `utf8` was requested and the range is valid UTF-8).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-    /// Base64 payload (when `base64` was requested, or as the fallback
-    /// for non-UTF-8 ranges).
+    /// Base64 payload (when `base64` was requested, or as the fallback for non-UTF-8 ranges).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_base64: Option<String>,
     /// Total file size in bytes (not the chunk length).
@@ -566,7 +506,6 @@ mod tests {
         let req: FsListReq = serde_json::from_value(serde_json::json!({"path": "."})).unwrap();
         assert_eq!(req.depth, 1);
         assert_eq!(req.limit, 1000);
-        // New pagination field defaults to 0 (legacy first-page behavior).
         assert_eq!(req.offset, 0);
         assert!(req.include_hidden);
         assert!(req.follow_symlinks);
@@ -575,9 +514,7 @@ mod tests {
 
     #[test]
     fn fs_read_file_req_defaults_are_legacy_full_read() {
-        // Absent offset/length/encoding ⇒ whole-file read with the
-        // unchanged wire contract; max_bytes defaults to 1 MiB and is
-        // only consulted on ranged reads.
+        // Absent offset/length/encoding means a whole-file read; max_bytes defaults to 1 MiB and is only consulted on ranged reads
         let req: FsReadFileReq =
             serde_json::from_value(serde_json::json!({ "path": "a.txt" })).unwrap();
         assert_eq!(req.offset, None);
@@ -611,10 +548,8 @@ mod tests {
         assert!(json.get("modifiedAt").is_none());
     }
 
-    /// Wire-stability snapshot for the client-facing `client_fs_*` types:
-    /// pins the serialized JSON form so field renames or serde-default
-    /// changes fail loudly (the one real wire risk is cross-version skew
-    /// between a backend and an older workspace image).
+    /// Pins the serialized JSON form of the client-facing `client_fs_*` types so field renames or serde-default changes fail loudly.
+    /// The one real wire risk is cross-version skew between a backend and an older workspace image.
     #[test]
     fn client_fs_wire_stability_snapshot() {
         use serde_json::json;
@@ -753,7 +688,7 @@ mod tests {
             })
         );
 
-        // Method names + WorkspaceRpc wiring.
+        // Method names and WorkspaceRpc wiring
         assert_eq!(CLIENT_FS_LIST_METHOD, "workspace.client_fs_list");
         assert_eq!(CLIENT_FS_STAT_METHOD, "workspace.client_fs_stat");
         assert_eq!(CLIENT_FS_READ_FILE_METHOD, "workspace.client_fs_read_file");

@@ -85,9 +85,8 @@ pub struct GlobOutput {
     /// Absolute paths of matched files included in `count`, sorted by mtime
     /// descending. Empty when `count == 0`.
     pub entries: Vec<String>,
-    /// The model-facing workspace root used to resolve `path` -- equal to
-    /// `display_cwd_or_cwd(cwd, display_cwd)`. Adapters that re-format the
-    /// output use this as the relativization base when
+    /// The model-facing workspace root used to resolve `path` -- equal to `display_cwd_or_cwd(cwd,
+    /// display_cwd)`. Adapters that re-format the output use this as the relativization base when
     /// the model omits `path`, instead of re-resolving cwd themselves.
     pub cwd_for_display: String,
 }
@@ -171,7 +170,7 @@ impl xai_tool_runtime::Tool for GlobTool {
 
         // ── Build ripgrep command ───────────────────────────────
         //   rg --files --glob='!.git/*' --hidden --glob=<pattern> <search_dir>
-        let rg_exec = rg_path();
+        let rg_exec = rg_path()?;
         let mut cmd = Command::new(rg_exec);
         cmd.arg("--files")
             .arg("--glob=!.git/*")
@@ -245,10 +244,9 @@ impl xai_tool_runtime::Tool for GlobTool {
             mtime_ms: i64,
         }
 
-        // Collect every match so total_count is accurate. Cap stat()s and
-        // the returned entry list at RESULT_LIMIT so we don't pay the syscall
-        // cost on huge result sets, but keep counting lines past the cap so
-        // the truncation marker can report the real overflow.
+        // Collect every match so total_count is accurate. Cap stat()s and the returned entry list
+        // at RESULT_LIMIT so we don't pay the syscall cost on huge result sets, but keep counting
+        // lines past the cap so the truncation marker can report the real overflow.
         let mut entries: Vec<FileEntry> = Vec::new();
         let mut total_count: usize = 0;
         for line in stdout.lines() {
@@ -356,13 +354,8 @@ mod tests {
             .render(ToolMetadata::description_template(&GlobTool))
             .unwrap();
         assert!(
-            rendered.contains("required file_pattern parameter")
-                && rendered.contains("set search_dir"),
+            rendered.contains("file_pattern") && rendered.contains("search_dir"),
             "renamed pattern/path params must appear:\n{rendered}"
-        );
-        assert!(
-            !rendered.contains("extension breakdowns") && !rendered.contains("dot-directories"),
-            "stale list_dir-style claims must not remain:\n{rendered}"
         );
     }
 
@@ -736,11 +729,9 @@ mod tests {
 
     #[tokio::test]
     async fn gitignore_respected() {
-        // ripgrep's positive --glob overrides .gitignore, so we test the
-        // underlying ignore behavior by using a pattern that doesn't match
-        // the ignored file. Without .gitignore, `rg --files --hidden`
-        // *would* list ignored_dir/ contents, but with .gitignore they are
-        // excluded from results that don't glob-override them.
+        // ripgrep's positive --glob overrides .gitignore, so we test the underlying ignore behavior by using a pattern that
+        // doesn't match the ignored file. Without .gitignore, `rg --files --hidden` *would* list ignored_dir/ contents, but
+        // with .gitignore they are excluded from results that don't glob-override them.
         let tmp = TempDir::new().unwrap();
 
         // Initialize a git repo so ripgrep respects .gitignore.

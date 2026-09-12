@@ -19,13 +19,9 @@ const DIFF_TIMEOUT: Duration = Duration::from_secs(10);
 /// Files larger than this will be skipped to avoid pathological diff behavior.
 const MAX_DIFF_FILE_SIZE: usize = 1024 * 1024; // 1 MB
 
-/// Generate a unified diff patch string from baseline and current content.
-/// This produces a patch that can be parsed by Pierre's `getSingularPatch`.
-///
-/// Returns None if:
-/// - Content is identical
-/// - Either file exceeds MAX_DIFF_FILE_SIZE
-/// - Diff computation times out
+/// Generate a unified diff patch string from baseline and current content. This produces a patch that can be parsed by
+/// Pierre's `getSingularPatch`. Returns None if: Content is identical; Either file exceeds MAX_DIFF_FILE_SIZE; Diff
+/// computation times out.
 pub fn generate_unified_patch(path: &Path, baseline: &str, current: &str) -> Option<String> {
     // If content is identical, no patch needed
     if baseline == current {
@@ -149,13 +145,9 @@ pub fn generate_hunk_patch(baseline: &str, current: &str, hunk: &Hunk) -> String
     output
 }
 
-/// Compute hunks by diffing baseline against current content.
-/// Uses the `similar` crate for line-based diff.
-///
-/// Returns an empty vector if:
-/// - Content is identical (no changes)
-/// - Either file exceeds MAX_DIFF_FILE_SIZE
-/// - Diff computation times out
+/// Compute hunks by diffing baseline against current content. Uses the `similar` crate for line-based diff. Returns an
+/// empty vector if: Content is identical (no changes); Either file exceeds MAX_DIFF_FILE_SIZE; Diff computation times
+/// out.
 pub fn compute_hunks(path: &Path, baseline: &str, current: &str, source: HunkSource) -> Vec<Hunk> {
     // If content is identical, no hunks
     if baseline == current {
@@ -328,17 +320,8 @@ pub fn format_unified_diff(hunk: &Hunk) -> String {
     output
 }
 
-/// Replace lines in content starting at `start_line` (1-indexed),
-/// removing `remove_count` lines and inserting `insert_text`.
-///
-/// # Arguments
-/// * `content` - The full file content to patch
-/// * `start_line` - 1-indexed line number where patch begins
-/// * `remove_count` - Number of lines to remove (can be 0 for pure insert)
-/// * `insert_text` - Text to insert (can be empty for pure delete)
-///
-/// # Returns
-/// The patched content
+/// Replace lines in content starting at `start_line` (1-indexed), removing `remove_count` lines and inserting
+/// `insert_text`.
 pub fn patch_lines(
     content: &str,
     start_line: usize,
@@ -648,14 +631,8 @@ mod tests {
 
     #[test]
     fn test_find_matching_hunk_fallback_best_overlap() {
-        // This test figures out the edge case mentioned: when a new hunk overlaps
-        // *multiple* old hunks (and no content match, so fallback), the current
-        // .find() picks the *first* overlapping one -- order-dependent, can preserve
-        // wrong hunk ID/source.
-        //
-        // We use different overlap sizes so "best" (max overlap) is unambiguous.
-        // With current code, this test FAILS (picks "small" because it's first).
-        // After fix to use max overlap, it should PASS (picks "large").
+        // We use different overlap sizes so "best" (max overlap) is unambiguous. With current code, this test FAILS (picks
+        // "small" because it's first). After fix to use max overlap, it should PASS (picks "large").
 
         // Old hunks with no content match to new_hunk, ordered small-first
         let old_hunk_small = Arc::new(Hunk {
@@ -694,11 +671,8 @@ mod tests {
 
         let old_hunks = vec![old_hunk_small.clone(), old_hunk_large.clone()]; // small first!
 
-        // New hunk overlaps both, but more with large:
-        // new lines 2-5 (end=6)
-        // - small: overlap lines 2 (size=1)
-        // - large: overlap lines 3-5 (size=3)
-        // Content differs -> no content match -> fallback to overlap
+        // New hunk overlaps both, but more with large: new lines 2-5 (end=6). small: overlap lines 2 (size=1); large: overlap
+        // lines 3-5 (size=3). Content differs -> no content match -> fallback to overlap
         let new_hunk = Hunk {
             id: HunkId::new(),
             path: "test.rs".into(),

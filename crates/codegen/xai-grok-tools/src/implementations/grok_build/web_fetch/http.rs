@@ -13,13 +13,9 @@ use arc_swap::ArcSwapOption;
 use super::config::WebFetchParams;
 use super::error::WebFetchError;
 
-/// Cached, invalidatable HTTP client for web fetching.
-///
-/// - **Normal path:** `get_or_rebuild()` returns the cached client via a
-///   lock-free atomic load.
-/// - **On transport error:** call `invalidate()` to atomically set the
-///   client to `None`. The next `get_or_rebuild()` falls through and
-///   builds a fresh client with a clean connection pool.
+/// Cached, invalidatable HTTP client for web fetching. **Normal path:** `get_or_rebuild()` returns the cached client
+/// via a lock-free atomic load. **On transport error:** call `invalidate()` to atomically set the client to `None`. The
+/// next `get_or_rebuild()` falls through and builds a fresh client with a clean connection pool.
 #[derive(Clone, Debug)]
 pub(crate) struct HttpClient {
     inner: Arc<ArcSwapOption<reqwest::Client>>,

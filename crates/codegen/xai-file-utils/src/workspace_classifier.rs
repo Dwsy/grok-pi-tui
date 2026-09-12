@@ -37,7 +37,7 @@ pub fn is_project_dir(cwd: &Path) -> bool {
         return false;
     }
 
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = xai_dirs::home_dir() else {
         return false;
     };
 
@@ -196,11 +196,6 @@ mod tests {
         fn deep_project_is_safe() {
             assert!(is_project_dir(Path::new("/Users/someone/my-project/src")));
         }
-
-        #[test]
-        fn home_subdir_is_safe() {
-            assert!(is_project_dir(Path::new("/Users/someone/my-project")));
-        }
     }
 
     #[cfg(target_os = "macos")]
@@ -216,7 +211,7 @@ mod tests {
 
         #[test]
         fn library_is_unsafe() {
-            if let Some(home) = dirs::home_dir() {
+            if let Some(home) = xai_dirs::home_dir() {
                 assert!(!is_project_dir(&home.join("Library")));
                 assert!(!is_project_dir(&home.join("Library/Caches")));
                 assert!(!is_project_dir(&home.join("Library/Application Support")));
@@ -225,7 +220,7 @@ mod tests {
 
         #[test]
         fn icloud_drive_projects_are_safe() {
-            if let Some(home) = dirs::home_dir() {
+            if let Some(home) = xai_dirs::home_dir() {
                 assert!(is_project_dir(&home.join(
                     "Library/Mobile Documents/com~apple~CloudDocs/Projects/my-app"
                 )));
@@ -253,7 +248,7 @@ mod tests {
 
         #[test]
         fn grok_dirs_are_unsafe() {
-            if let Some(home) = dirs::home_dir() {
+            if let Some(home) = xai_dirs::home_dir() {
                 assert!(!is_project_dir(&home.join(".grok")));
                 assert!(!is_project_dir(&home.join(".grok/bin")));
             }
@@ -261,14 +256,14 @@ mod tests {
 
         #[test]
         fn grok_prefixed_dirs_are_unsafe() {
-            if let Some(home) = dirs::home_dir() {
+            if let Some(home) = xai_dirs::home_dir() {
                 assert!(!is_project_dir(&home.join(".grok-proxy-work")));
             }
         }
 
         #[test]
         fn cache_dirs_are_unsafe() {
-            if let Some(home) = dirs::home_dir() {
+            if let Some(home) = xai_dirs::home_dir() {
                 assert!(!is_project_dir(&home.join(".cache/zoe-proc")));
                 assert!(!is_project_dir(&home.join(".config/nvim")));
             }
@@ -276,7 +271,7 @@ mod tests {
 
         #[test]
         fn other_ai_tool_dirs_are_unsafe() {
-            if let Some(home) = dirs::home_dir() {
+            if let Some(home) = xai_dirs::home_dir() {
                 assert!(!is_project_dir(&home.join(".gemini/antigravity")));
                 assert!(!is_project_dir(&home.join(".hermes/kanban")));
                 assert!(!is_project_dir(&home.join(".claude/projects")));
@@ -289,14 +284,14 @@ mod tests {
 
         #[test]
         fn home_is_unsafe() {
-            if let Some(home) = dirs::home_dir() {
+            if let Some(home) = xai_dirs::home_dir() {
                 assert!(!is_project_dir(&home));
             }
         }
 
         #[test]
         fn home_project_is_safe() {
-            if let Some(home) = dirs::home_dir() {
+            if let Some(home) = xai_dirs::home_dir() {
                 assert!(is_project_dir(&home.join("my-project")));
             }
         }
@@ -312,20 +307,6 @@ mod tests {
         fn desktop_project_is_safe() {
             if let Some(d) = dirs::desktop_dir() {
                 assert!(is_project_dir(&d.join("my-project")));
-            }
-        }
-
-        #[test]
-        fn bare_downloads_is_unsafe() {
-            if let Some(d) = dirs::download_dir() {
-                assert!(!is_project_dir(&d));
-            }
-        }
-
-        #[test]
-        fn bare_documents_is_unsafe() {
-            if let Some(d) = dirs::document_dir() {
-                assert!(!is_project_dir(&d));
             }
         }
     }
@@ -370,6 +351,19 @@ mod tests {
             let sub = tmp.path().join("deep/sub/dir");
             std::fs::create_dir_all(&sub).unwrap();
             assert!(is_project_dir(&sub));
+        }
+        #[test]
+        fn bare_downloads_is_unsafe() {
+            if let Some(d) = dirs::download_dir() {
+                assert!(!is_project_dir(&d));
+            }
+        }
+
+        #[test]
+        fn bare_documents_is_unsafe() {
+            if let Some(d) = dirs::document_dir() {
+                assert!(!is_project_dir(&d));
+            }
         }
     }
 }

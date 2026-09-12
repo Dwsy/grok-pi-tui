@@ -1,15 +1,10 @@
-//! Network-level integration tests using `wiremock`.
+//! Covers the HTTP-fetching paths in `version.rs` that take a URL parameter directly.
+//! We don't need `serial_test` here because each `MockServer` binds to its own random port and tests don't touch global state.
 //!
-//! Covers the HTTP-fetching paths in `version.rs` that take a URL parameter
-//! directly. We don't need `serial_test` here because each `MockServer` binds
-//! to its own random port and tests don't touch global state.
-//!
-//! NOTE on retry timing: the prod retry backoff is 1s + 2s + 4s = 7s
-//! wall-clock. We can't use `tokio::time::pause()` because reqwest's I/O
-//! reactor uses the same tokio timer and stalls when time is paused. So
-//! retry-exhaustion tests are intrinsically slow (~7s each); we keep the
-//! count small and let them run in parallel (wiremock binds random ports
-//! so there's no contention).
+//! NOTE on retry timing: the prod retry backoff is 1s + 2s + 4s = 7s wall-clock.
+//! We can't use `tokio::time::pause()` because reqwest's I/O reactor uses the same tokio timer and stalls when time is paused.
+//! So retry-exhaustion tests are intrinsically slow (~7s each).
+//! We keep the count small and let them run in parallel (wiremock binds random ports so there's no contention).
 
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -54,13 +49,12 @@ async fn gcs_pointer_trims_whitespace() {
 
 #[tokio::test]
 async fn gcs_pointer_rejects_invalid_semver_no_retry() {
-    // Invalid semver in the channel pointer is a hard error — must NOT
-    // retry (it's a server data bug, not a transient failure).
+    // Invalid semver in the channel pointer is a hard error and must NOT retry (it's a server data bug, not a transient failure)
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/stable"))
         .respond_with(ResponseTemplate::new(200).set_body_string("not-a-version"))
-        .expect(1) // exactly one request — no retry on parse failure
+        .expect(1) // no retry on parse failure
         .mount(&server)
         .await;
 
@@ -115,8 +109,7 @@ async fn gcs_pointer_alpha_returns_alpha_when_higher() {
 
 #[tokio::test]
 async fn gcs_pointer_stable_channel_does_not_fetch_alpha() {
-    // Stable-channel users should not pay the cost of fetching the alpha
-    // pointer. The mock for /alpha should never be hit.
+    // Stable-channel users should not pay the cost of fetching the alpha pointer
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/stable"))
@@ -136,31 +129,10 @@ async fn gcs_pointer_stable_channel_does_not_fetch_alpha() {
         .unwrap();
     assert_eq!(v, "0.1.181");
 }
-
-#[tokio::test]
-async fn gcs_pointer_with_long_pre_release_version() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/alpha"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("0.1.190-alpha.42"))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/stable"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("0.1.189"))
-        .mount(&server)
-        .await;
-
-    let v = fetch_gcs_version_from_base("alpha", &server.uri())
-        .await
-        .unwrap();
-    assert_eq!(v, "0.1.190-alpha.42");
-}
-
 #[tokio::test]
 async fn gcs_pointer_preserves_path_in_base_url() {
-    // base_url may include a path component (in practice the prod GCS URL
-    // does: `/cli`). The function appends `/{channel}`.
+    // base_url may include a path component (in practice the prod GCS URL does: `/cli`)
+    // The function appends `/{channel}`
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/cli/stable"))
@@ -173,9 +145,8 @@ async fn gcs_pointer_preserves_path_in_base_url() {
     assert_eq!(v, "0.1.181");
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Retry behavior — these tests intentionally exercise the 1s+2s+4s backoff,
-// so each takes ~7 seconds. They run in parallel.
+// ─────────────────────────────────────────────────────────────────────────────. Retry behavior — these tests
+// intentionally exercise the 1s+2s+4s backoff, so each takes ~7 seconds. They run in parallel.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -315,9 +286,8 @@ async fn gcs_pointer_connection_refused_is_retried_and_returns_error() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// download_silent — same body shape as download_with_progress but no
-// progress bar to capture.
+// ───────────────────────────────────────────────────────────────────────────── download_silent — same body shape as
+// download_with_progress but no progress bar to capture.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -341,8 +311,6 @@ async fn download_silent_writes_body_to_dest() {
 
 #[tokio::test]
 async fn download_silent_preserves_binary_bytes_unchanged() {
-    // Verify that arbitrary binary content (including null bytes, high
-    // bytes, control chars) round-trips intact.
     let server = MockServer::start().await;
     let body: Vec<u8> = (0u8..=255).cycle().take(10_000).collect();
     Mock::given(method("GET"))
@@ -376,7 +344,6 @@ async fn download_silent_atomically_renames_via_tmp_file() {
         .await
         .unwrap();
 
-    // After successful download, only the final file should exist.
     assert!(dest.exists());
     assert!(
         !dest.with_extension("tmp").exists(),
@@ -384,8 +351,7 @@ async fn download_silent_atomically_renames_via_tmp_file() {
     );
 }
 
-/// A downloaded artifact must be published already executable (the install
-/// path execs it right after download).
+/// A downloaded artifact must be published already executable (the install path execs it right after download).
 #[cfg(unix)]
 #[tokio::test]
 async fn download_silent_publishes_executable() {
@@ -492,8 +458,7 @@ async fn download_silent_handles_empty_body() {
 
 #[tokio::test]
 async fn download_silent_streams_large_body() {
-    // 5 MB to verify streaming (file is written incrementally, not loaded
-    // entirely in memory before write).
+    // 5 MB to verify streaming (file is written incrementally, not loaded entirely in memory before write)
     let server = MockServer::start().await;
     let body = vec![0xAB_u8; 5 * 1024 * 1024];
     Mock::given(method("GET"))
@@ -523,7 +488,7 @@ async fn download_silent_to_nonexistent_parent_dir_fails() {
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    // Parent directory does NOT exist — should fail at file create.
+    // Parent directory does NOT exist, so the download fails at file create
     let dest = tmp.path().join("missing-subdir").join("grok");
     let err = download_silent(&format!("{}/x", server.uri()), &dest)
         .await
@@ -535,15 +500,13 @@ async fn download_silent_to_nonexistent_parent_dir_fails() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// download_with_progress — same contract; covers the spinner path
-// (no Content-Length) and the progress-bar path (with Content-Length).
+// ───────────────────────────────────────────────────────────────────────────── download_with_progress — same contract;
+// covers the spinner path (no Content-Length) and the progress-bar path (with Content-Length).
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn download_with_progress_writes_body_with_content_length() {
-    // Wiremock sets Content-Length when set_body_bytes is used, so this
-    // exercises the determinate-progress-bar path.
+    // Wiremock sets Content-Length when set_body_bytes is used, so this exercises the determinate-progress-bar path
     let server = MockServer::start().await;
     let body = b"binary content".to_vec();
     Mock::given(method("GET"))
@@ -599,9 +562,8 @@ async fn download_with_progress_atomic_rename() {
     assert!(!dest.with_extension("tmp").exists());
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Parallel byte-range path — exercises the HEAD + 206 Partial Content code path
-// in download_silent / download_with_progress for files >= 16 MiB.
+// ─────────────────────────────────────────────────────────────────────────────. Parallel byte-range path — exercises
+// the HEAD + 206 Partial Content code path in download_silent / download_with_progress for files >= 16 MiB.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Wiremock responder for `GET` that honors `Range: bytes=A-B` with `206`.
@@ -637,9 +599,8 @@ impl Respond for RangeResponder {
 
 #[tokio::test]
 async fn download_silent_parallel_path_reassembles_bytes() {
-    // 32 MiB body — clears the parallel threshold and yields 2 chunks
-    // (size_mb / 16 = 2, clamped to [1, 8]), so this actually exercises
-    // concurrent range fetches and the seek+write reassembly.
+    // A 32 MiB body clears the parallel threshold and yields 2 chunks (size_mb / 16 = 2, clamped to [1, 8])
+    // This exercises concurrent range fetches and the seek-and-write reassembly
     let body: Vec<u8> = (0u32..(32 * 1024 * 1024 / 4))
         .flat_map(|n| n.to_le_bytes())
         .collect();

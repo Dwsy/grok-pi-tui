@@ -70,34 +70,16 @@ pub struct CrashReport {
     pub report_path: PathBuf,
 }
 
-/// Install the crash handler for SIGBUS, SIGSEGV, and SIGABRT (Unix; on
-/// Windows only access violations are captured).
-///
-/// Must be called early in `main()`, before any async runtime or thread
-/// spawning. Creates `crash_dir` if it does not exist.
-///
-/// Returns `true` if the handler was installed successfully.
-/// On unsupported platforms, this is a no-op that returns `false`.
+/// Install the crash handler for SIGBUS, SIGSEGV, and SIGABRT (Unix; Windows: access violations).
+/// Call early in `main()`, before any async runtime or thread spawning. Creates `crash_dir` if needed.
+/// Returns `true` on success; unsupported platforms are a no-op returning `false`.
 pub fn install(config: CrashHandlerConfig) -> bool {
     handler::install(&config.crash_dir, &config.app_version)
 }
 
-/// Install a minimal SIGSEGV/SIGBUS/SIGABRT handler that only restores the
-/// terminal.
-///
-/// On Unix, saves the current termios state, allocates an alternate signal
-/// stack, and registers a handler that writes terminal restore escape
-/// sequences to stderr, restores termios, then re-raises with default
-/// disposition (preserving core dumps).
-///
-/// On Windows, registers an unhandled-exception filter that writes restore
-/// sequences; no termios equivalent.
-///
+/// Install a minimal SIGSEGV/SIGBUS/SIGABRT handler that only restores the terminal.
+/// No crash reporting (no file I/O, no stack walking). If [`install`] is called later, it replaces these.
 /// No-op on unsupported platforms.
-///
-/// No crash reporting (no file I/O, no stack walking). If [`install`] is
-/// called later, it replaces these handlers with full crash-reporting
-/// variants.
 pub fn install_terminal_restore_only() {
     handler::install_terminal_restore_only()
 }
@@ -115,10 +97,8 @@ pub fn disable_terminal_escape_restore() {
 }
 
 /// Check for a crash from the previous session.
-///
-/// Reads `crash_dir/last-crash.bin`, symbolicates the backtrace,
-/// writes a human-readable report, and archives it. Returns `Some` if
-/// a valid crash file was found, `None` otherwise.
+/// Reads `crash_dir/last-crash.bin`, symbolicates, writes a report, and archives it.
+/// `Some` if a valid crash file was found.
 pub fn check_previous_crash(crash_dir: &Path) -> Option<CrashReport> {
     let crash_file = crash_dir.join("last-crash.bin");
     let data = std::fs::read(&crash_file).ok()?;
@@ -149,9 +129,7 @@ pub fn check_previous_crash(crash_dir: &Path) -> Option<CrashReport> {
 }
 
 /// Write `contents` with owner-only permissions when the platform allows it.
-///
-/// Crash reports may include source paths and backtraces; when they land under
-/// `$GROK_HOME` they must not be world-readable.
+/// Crash reports may include source paths and backtraces; under `$GROK_HOME` they must not be world-readable.
 fn write_owner_only(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {

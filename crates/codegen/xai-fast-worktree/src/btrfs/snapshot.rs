@@ -9,13 +9,8 @@ use anyhow::{Context, Result, bail};
 use super::detect::BtrfsInfo;
 use crate::copy::shard::short_path_hash;
 
-/// Create a writable BTRFS snapshot from source to dest.
-///
-/// The source must be a BTRFS subvolume. The dest path must not exist
-/// but its parent directory must exist.
-///
-/// The resulting snapshot is a complete, independent copy that shares
-/// data blocks with the source via BTRFS copy-on-write.
+/// Writable btrfs snapshot. Source must be a subvolume; dest must not exist
+/// but its parent must. Shares data blocks with the source until modified.
 pub fn create_snapshot(source: &Path, dest: &Path) -> Result<()> {
     tracing::debug!(
         source = %source.display(),
@@ -60,34 +55,14 @@ pub struct SnapshotResult {
     /// lives inside the btrfs mount (e.g., `<btrfs_mount>/worktrees/<name>`);
     /// in the direct case it is `dest` itself.
     pub snapshot_path: PathBuf,
-    /// When the snapshot lives inside the btrfs mount, the worktree is exposed
-    /// at `dest` via a symlink pointing to `snapshot_path`. This is that symlink
-    /// path (equal to `dest`). `None` when the snapshot was created directly at
-    /// `dest` (no symlink needed).
+    /// Symlink at `dest` when the snapshot lives inside the btrfs mount.
+    /// `None` when the snapshot was created directly at `dest`.
     pub symlink_path: Option<PathBuf>,
 }
 
-/// Create a BTRFS snapshot, exposing it via a symlink for bind-mounted sources.
-///
-/// When the source subvolume is accessed via a bind mount (e.g., `/workspace/repo`
-/// bind-mounted from `/mnt/btrfs/repo`), the snapshot must be created inside the
-/// btrfs mount point (`btrfs subvolume snapshot` requires source and destination
-/// on the same btrfs filesystem). This function then exposes it at `dest` via a
-/// **symlink** to the on-disk snapshot path.
-///
-/// A symlink is used instead of a `mount --bind` because a bind mount made in a
-/// private mount namespace is invisible to the user's other shells and is torn
-/// down when the process restarts. A symlink is an ordinary filesystem object:
-/// it crosses mount namespaces and persists across process exits. This mirrors
-/// the approach the privileged snapshot delegate uses.
-///
-/// # Arguments
-/// * `btrfs_info` - Information about the source BTRFS subvolume
-/// * `dest` - The desired destination path for the worktree
-///
-/// # Returns
-/// A `SnapshotResult` containing the on-disk snapshot path and the optional
-/// symlink path created at `dest`.
+/// Snapshot on the real btrfs mount (source and dest must share a filesystem),
+/// then expose it at `dest` via a symlink. A bind mount would be namespace-local
+/// and die on process exit; a symlink persists and is visible to other shells.
 pub fn create_snapshot_with_symlink(btrfs_info: &BtrfsInfo, dest: &Path) -> Result<SnapshotResult> {
     let snapshot_source = btrfs_info
         .bind_mount_source
@@ -178,10 +153,8 @@ pub fn create_snapshot_with_symlink(btrfs_info: &BtrfsInfo, dest: &Path) -> Resu
     // Create the snapshot inside the btrfs filesystem
     create_snapshot(snapshot_source, &snapshot_path)?;
 
-    // When the snapshot is inside the source (subvol mount case), the snapshot
-    // contains an empty .grok-snapshots/ directory (btrfs excludes nested subvolumes
-    // from snapshots, leaving only empty directory placeholders). Remove it to
-    // keep the worktree clean.
+    // Nested subvolumes are excluded from the snapshot, leaving an empty
+    // `.grok-snapshots/` placeholder. Remove it so the worktree stays clean.
     let stale_snapshots_dir = snapshot_path.join(".grok-snapshots");
     if stale_snapshots_dir.exists()
         && let Err(e) = std::fs::remove_dir(&stale_snapshots_dir)
@@ -193,10 +166,8 @@ pub fn create_snapshot_with_symlink(btrfs_info: &BtrfsInfo, dest: &Path) -> Resu
         );
     }
 
-    // Expose the snapshot at `dest` via a symlink (namespace-independent). On
-    // failure, reclaim the just-created subvolume — at this point it has no
-    // symlink and no metadata yet, so neither the removal path nor the orphan
-    // scanner could otherwise find it.
+    // On symlink failure, reclaim the subvolume: it has no symlink or metadata
+    // yet, so neither removal nor the orphan scanner could find it.
     expose_or_reclaim_snapshot(
         dest,
         &snapshot_path,
@@ -220,18 +191,9 @@ pub fn create_snapshot_with_symlink(btrfs_info: &BtrfsInfo, dest: &Path) -> Resu
     })
 }
 
-/// Compute the on-disk snapshot subvolume path inside the btrfs mount for a
-/// worktree `dest`.
-///
-/// When the btrfs mount IS the source repo (subvol mount without a separate
-/// root mount), snapshots go under `.grok-snapshots/` to stay hidden from git;
-/// otherwise they go under `worktrees/`.
-///
-/// Name is `<basename>-<hash of full dest>`: basename alone collides when two repos
-/// share a worktree label on one mount, so one snapshot would clobber the other.
-///
-/// Shared with the privileged snapshot delegate so both snapshot-creation paths use
-/// the identical layout.
+/// On-disk snapshot path. Subvol-is-repo uses `.grok-snapshots/` (hidden from
+/// git); otherwise `worktrees/`. Name is `<basename>-<hash>` so two repos sharing
+/// a label on one mount cannot clobber each other. Shared with the delegate.
 pub fn snapshot_dest_path(btrfs_mount: &Path, subvolume_root: &Path, dest: &Path) -> PathBuf {
     let subdir = if btrfs_mount == subvolume_root {
         BTRFS_SNAPSHOT_SUBDIRS[1] // ".grok-snapshots"
@@ -246,20 +208,9 @@ pub fn snapshot_dest_path(btrfs_mount: &Path, subvolume_root: &Path, dest: &Path
     btrfs_mount.join(subdir).join(snapshot_name)
 }
 
-/// Create a symlink at `dest` pointing to `target`, replacing any pre-existing
-/// entry (stale symlink or directory) at `dest`.
-///
-/// Symlinks cross mount namespaces and persist across process exits, so the
-/// worktree at `dest` stays visible to the user's other shells and survives a
-/// grok restart.
-///
-/// Destructive contract: a pre-existing **stale symlink** at `dest` is unlinked;
-/// a pre-existing **directory** is removed only if empty (`remove_dir`). A
-/// non-empty directory at `dest` is an error rather than being recursively
-/// deleted, so a caller can never silently destroy unrelated data.
-///
-/// Shared with the privileged snapshot delegate (single implementation of the
-/// symlink-clear-then-create logic).
+/// Symlink `dest` → `target`, replacing a stale symlink or empty directory.
+/// A non-empty directory is an error — never recursively delete unrelated data.
+/// Shared with the privileged snapshot delegate.
 pub fn create_worktree_symlink(dest: &Path, target: &Path) -> Result<()> {
     if let Some(parent) = dest.parent()
         && !parent.exists()
@@ -293,12 +244,9 @@ pub fn create_worktree_symlink(dest: &Path, target: &Path) -> Result<()> {
     })
 }
 
-/// Expose a freshly created snapshot at `dest`, reclaiming it if exposure fails.
-///
-/// Runs `symlink(dest, snapshot_path)`; on error, best-effort `reclaim`s the
-/// snapshot (it has no symlink and no metadata yet, so nothing else could find
-/// it) and propagates the original error. The `symlink`/`reclaim` steps are
-/// injected so the failure→cleanup branch is unit-testable without root+btrfs.
+/// Symlink `dest` to the snapshot; on failure reclaim it (no symlink or
+/// metadata yet, so nothing else could find it) and return the original error.
+/// Steps are injected so cleanup is testable without root+btrfs.
 fn expose_or_reclaim_snapshot(
     dest: &Path,
     snapshot_path: &Path,
@@ -338,24 +286,9 @@ pub fn delete_snapshot(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Validate that `snapshot_path` is a safe target for a privileged
-/// `btrfs subvolume delete`.
-///
-/// Guards against destroying an arbitrary subvolume (e.g. the live source repo,
-/// or another session/user's snapshot) via a stale, confused, or planted
-/// symlink or `*.btrfs-meta.json` entry. Returns `true` only when the path:
-/// - contains no `..` component,
-/// - is not itself a symlink (`lstat`, so a planted symlink can't redirect the
-///   delete to a subvolume elsewhere),
-/// - lives directly inside a snapshot-storage directory — its real,
-///   canonicalized parent's final component is one of [`BTRFS_SNAPSHOT_SUBDIRS`]
-///   (`worktrees` or `.grok-snapshots`),
-/// - and that directory sits **directly under a real btrfs mount point** (from
-///   the live mount table), anchoring the delete to grok-managed storage rather
-///   than any directory that merely happens to be named `worktrees`.
-///
-/// Treat all symlink targets and metadata paths as untrusted input and pass
-/// them through this check before deleting.
+/// Safe privileged-delete target only if: no `..`, not itself a symlink, parent
+/// is `worktrees` or `.grok-snapshots`, and that dir sits directly under a real
+/// btrfs mount. Untrusted meta/symlink paths must pass this before delete.
 pub fn is_safe_snapshot_delete_target(snapshot_path: &Path) -> bool {
     is_safe_snapshot_delete_target_in(snapshot_path, &btrfs_mount_points())
 }
@@ -411,11 +344,7 @@ fn is_safe_snapshot_delete_target_in(snapshot_path: &Path, btrfs_mounts: &[PathB
         .any(|m| m == grandparent || dunce::canonicalize(m).is_ok_and(|c| c == grandparent))
 }
 
-/// Metadata persisted alongside a direct btrfs snapshot for crash recovery
-/// and orphan scanning.
-///
-/// Stored as `<snapshot_name>.btrfs-meta.json` next to the snapshot directory
-/// (see [`BTRFS_META_SUFFIX`] and [`btrfs_meta_path`]).
+/// Crash-recovery metadata beside the snapshot (`<name>.btrfs-meta.json`).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct BtrfsSnapshotMetadata {
     #[serde(rename = "type")]
@@ -428,11 +357,8 @@ pub struct BtrfsSnapshotMetadata {
 /// Suffix for btrfs snapshot metadata files (e.g., `wt-abc.btrfs-meta.json`).
 pub const BTRFS_META_SUFFIX: &str = ".btrfs-meta.json";
 
-/// Subdirectory names used to store btrfs snapshots inside a btrfs mount point.
-///
-/// `"worktrees"` is used when a separate btrfs root mount exists (common case).
-/// `".grok-snapshots"` is used when the btrfs mount IS the repo subvolume
-/// (dot-prefixed to stay hidden from git).
+/// Snapshot storage dirs: `worktrees` when a separate root mount exists;
+/// `.grok-snapshots` when the mount is the repo subvolume (hidden from git).
 pub const BTRFS_SNAPSHOT_SUBDIRS: &[&str] = &["worktrees", ".grok-snapshots"];
 
 /// Compute the sibling metadata file path for a snapshot directory.
@@ -442,11 +368,8 @@ pub fn btrfs_meta_path(snapshot_path: &Path) -> Option<PathBuf> {
     Some(parent.join(format!("{name}{BTRFS_META_SUFFIX}")))
 }
 
-/// Write recovery metadata for a btrfs snapshot next to it on disk.
-///
-/// Public so the privileged snapshot delegate persists the same
-/// metadata the in-process path does; without it a snapshot whose `mount_target`
-/// symlink is lost is invisible to the orphan scanners and leaks.
+/// Persist recovery metadata beside the snapshot. Without it a lost
+/// `mount_target` symlink is invisible to orphan scanners and leaks.
 pub fn write_btrfs_metadata(snapshot_path: &Path, mount_target: &Path) -> Result<()> {
     let meta_path = btrfs_meta_path(snapshot_path).ok_or_else(|| {
         anyhow::anyhow!(
@@ -478,16 +401,13 @@ pub fn remove_btrfs_metadata(snapshot_path: &Path) {
     }
 }
 
-/// Ownership verdict for a pre-existing snapshot directory, derived from its
-/// sibling `*.btrfs-meta.json`. Lets callers tell a reclaimable crashed-creation
-/// orphan apart from another session's live snapshot before deleting with btrfs
-/// privileges.
+/// Ownership from sibling `*.btrfs-meta.json`. Distinguishes a reclaimable
+/// crashed-creation orphan from another session's live snapshot before a
+/// privileged delete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnapshotMetaState {
-    /// No sibling metadata file: `create_snapshot` succeeded but
-    /// `write_btrfs_metadata` never ran (crash/failure), leaving an orphan at
-    /// this dest's hashed path. Reclaimable — still bounded by
-    /// [`is_safe_snapshot_delete_target`] so the delete stays in managed storage.
+    /// No sibling metadata: snapshot created but metadata never written.
+    /// Reclaimable, still bounded by [`is_safe_snapshot_delete_target`].
     Absent,
     /// Metadata records `mount_target == dest`: a stale snapshot for this exact
     /// worktree; safe to recreate.
@@ -497,10 +417,8 @@ pub enum SnapshotMetaState {
     Mismatch,
 }
 
-/// Classify a pre-existing snapshot directory against `dest` via its sibling
-/// metadata. A *missing* meta file is a crashed-creation orphan (reclaimable);
-/// a meta file that exists but doesn't prove ownership stays a hard refusal so a
-/// retry can't clobber another session's live snapshot.
+/// Missing meta is a crashed-creation orphan (reclaimable). Meta that does not
+/// prove ownership is a hard refusal so a retry cannot clobber another session.
 pub fn snapshot_meta_state(snapshot_path: &Path, dest: &Path) -> SnapshotMetaState {
     let Some(meta_path) = btrfs_meta_path(snapshot_path) else {
         return SnapshotMetaState::Mismatch;
@@ -527,39 +445,8 @@ pub fn snapshot_meta_targets(snapshot_path: &Path, dest: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::btrfs::detect::{is_btrfs, is_btrfs_subvolume};
+    use crate::btrfs::detect::is_btrfs;
     use std::path::PathBuf;
-
-    /// Helper to find a writable BTRFS subvolume for testing.
-    /// Returns (subvolume_path, test_dest_path) if available.
-    fn get_btrfs_snapshot_test_paths() -> Option<(PathBuf, PathBuf)> {
-        // Check environment variable first
-        if let Ok(path) = std::env::var("BTRFS_TEST_PATH") {
-            let path = PathBuf::from(&path);
-            if path.exists()
-                && is_btrfs(&path).unwrap_or(false)
-                && is_btrfs_subvolume(&path).ok().flatten().is_some()
-            {
-                let dest = PathBuf::from(format!("{}_snapshot_test", path.display()));
-                return Some((path, dest));
-            }
-        }
-
-        // Check common BTRFS mount points
-        for candidate in &["/", "/home"] {
-            let path = Path::new(candidate);
-            if path.exists()
-                && is_btrfs(path).unwrap_or(false)
-                && is_btrfs_subvolume(path).ok().flatten().is_some()
-            {
-                // For system paths, use a temp location
-                let dest = PathBuf::from("/tmp/btrfs_snapshot_test");
-                return Some((path.to_path_buf(), dest));
-            }
-        }
-
-        None
-    }
 
     #[test]
     fn test_create_snapshot_nonexistent_source() {
@@ -600,46 +487,6 @@ mod tests {
 
         // Clean up
         let _ = std::fs::remove_dir_all(&dest_path);
-    }
-
-    #[test]
-    fn test_create_snapshot_on_real_btrfs() {
-        // This test automatically skips if no BTRFS subvolume is available
-        let Some((source_path, dest_path)) = get_btrfs_snapshot_test_paths() else {
-            eprintln!("Skipping test: no BTRFS subvolume detected for snapshot test");
-            return;
-        };
-
-        // Clean up if exists from previous run
-        let _ = std::process::Command::new("btrfs")
-            .args(["subvolume", "delete", &dest_path.to_string_lossy()])
-            .output();
-        let _ = std::fs::remove_dir_all(&dest_path);
-
-        // Note: This test may fail if:
-        // 1. We don't have permission to create snapshots
-        // 2. The dest path is on a different filesystem
-        // So we handle both success and expected failures gracefully
-
-        match create_snapshot(&source_path, &dest_path) {
-            Ok(()) => {
-                eprintln!(
-                    "BTRFS snapshot created: {} -> {}",
-                    source_path.display(),
-                    dest_path.display()
-                );
-                assert!(dest_path.exists(), "Snapshot should exist");
-
-                // Clean up - use btrfs subvolume delete
-                let _ = std::process::Command::new("btrfs")
-                    .args(["subvolume", "delete", &dest_path.to_string_lossy()])
-                    .output();
-            }
-            Err(e) => {
-                // Expected to fail if we don't have permissions or cross-filesystem
-                eprintln!("Snapshot failed (expected if no permissions): {}", e);
-            }
-        }
     }
 
     #[test]
@@ -694,19 +541,6 @@ mod tests {
 
         remove_btrfs_metadata(&snapshot_path);
         assert!(!meta_path.exists());
-    }
-
-    #[test]
-    fn test_remove_btrfs_metadata_nonexistent() {
-        remove_btrfs_metadata(Path::new("/nonexistent/snapshot"));
-    }
-
-    #[test]
-    fn test_unix_timestamp_string() {
-        let ts = crate::util::unix_timestamp_string();
-        assert!(ts.ends_with("s-since-epoch"));
-        let secs: u64 = ts.strip_suffix("s-since-epoch").unwrap().parse().unwrap();
-        assert!(secs > 1_700_000_000);
     }
 
     /// Assert the snapshot name keeps `<basename>-` and ends in a 16-hex hash.

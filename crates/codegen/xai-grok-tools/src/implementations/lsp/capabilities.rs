@@ -10,10 +10,8 @@ use async_lsp::lsp_types::{
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncSaveOptions, Url,
 };
 
-/// What the server asked us to do on save.
-///
-/// A server may want no `didSave` at all, or one without the document text.
-/// Sending the full text unconditionally violates the protocol and ships a copy
+/// What the server asked us to do on save. A server may want no `didSave` at all, or one without
+/// the document text. Sending the full text unconditionally violates the protocol and ships a copy
 /// of the file on every edit to a server that will discard it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SavePolicy {
@@ -48,13 +46,9 @@ impl ServerPolicy {
         }
     }
 
-    /// The range to attach to a change event that replaces the whole document,
-    /// given where the previous revision ended.
-    ///
-    /// We always resend the whole file. A server that asked for incremental
-    /// sync still requires a range on every change event, so the full
-    /// replacement is expressed as a range covering the previous revision.
-    /// Full-sync servers get the rangeless form they expect.
+    /// The range to attach to a change event that replaces the whole document, given where the previous revision ended. We always resend the whole
+    /// file. A server that asked for incremental sync still requires a range on every change event, so the full replacement is expressed as a range
+    /// covering the previous revision. Full-sync servers get the rangeless form they expect.
     pub fn full_replacement_range(&self, previous_end: Position) -> Option<Range> {
         self.sync_incremental.then_some(Range {
             start: Position {
@@ -80,11 +74,9 @@ impl ServerPolicy {
     }
 }
 
-/// Whether the server asked for incremental text synchronization.
-///
-/// Servers advertise this either as a bare kind or inside sync options; both
-/// spellings mean the same thing for our purposes. Anything else (including an
-/// absent capability) is treated as full-document sync, which is what we send.
+/// Whether the server asked for incremental text synchronization. Servers advertise this either as a bare kind or
+/// inside sync options; both spellings mean the same thing for our purposes. Anything else (including an absent
+/// capability) is treated as full-document sync, which is what we send.
 fn wants_incremental_sync(cap: Option<&TextDocumentSyncCapability>) -> bool {
     let kind = match cap {
         Some(TextDocumentSyncCapability::Kind(kind)) => Some(*kind),

@@ -38,13 +38,8 @@ impl Default for FsConfig {
 }
 
 /// Drop cancels the event loop and OS watcher.
-///
-/// **Mid-batch lock caveat:** if `.git/index.lock` appears and disappears
-/// within one debounce window, the FS state is read at batch-processing
-/// time — but the lock-path *events* in the batch still mark git-op
-/// activity, so such fast ops produce a normal (settle-merged)
-/// `GitOperationStarted`/`Completed` cycle with the head compared against
-/// its last out-of-op value.
+/// A lock that appears and disappears inside one debounce window is still marked from lock-path events.
+/// Fast ops still produce a settle-merged Started/Completed cycle.
 pub struct FsEventSource {
     out_tx: broadcast::Sender<FsEvent>,
     shutdown: CancellationToken,
@@ -52,10 +47,8 @@ pub struct FsEventSource {
 }
 
 impl FsEventSource {
-    /// Blocks until the OS watcher initializes. Requires a tokio runtime; the
-    /// event loop runs on the current runtime. Prefer [`crate::shared`] (which dedupes
-    /// watchers by directory and runs the loop on the registered long-lived
-    /// runtime) over creating per-caller sources.
+    /// Blocks until the OS watcher initializes. Requires a tokio runtime; the loop runs on the current runtime.
+    /// Prefer [`crate::shared`], which dedupes watchers and runs on the registered long-lived runtime.
     pub fn start(cwd: PathBuf, config: FsConfig) -> Result<Self, FsNotifyError> {
         let handle = Handle::try_current().map_err(|_| FsNotifyError::NoRuntime)?;
         Self::start_on(handle, cwd, config)
@@ -69,15 +62,9 @@ impl FsEventSource {
             debounce_ms: config.debounce_ms,
             ignore_patterns: config.ignore_patterns,
         };
-        // Canonicalize once so discovery and the watcher resolve `.git`/`.sl`
-        // from the *same* root. The watcher canonicalizes `cwd` internally
-        // before its ancestor walk (macOS FSEvents resolves symlinks), so a
-        // symlinked `cwd` passed raw to `discover_vcs` could miss `.sl` while
-        // the watcher still attaches a `.sl/wlock` watch — leaking `.sl/*` as
-        // workspace files and skipping revision-switch suppression. Resolving
-        // here keeps `discover_vcs` (and thus `lock_present`/`is_internal`) in
-        // agreement with the watcher. Falls back to the raw path if `cwd`
-        // doesn't exist yet, matching the watcher's own fallback.
+        // Canonicalize once so discovery and the watcher resolve `.git`/`.sl` from the same root.
+        // A raw symlinked `cwd` could miss `.sl` while the watcher still attaches `wlock`, leaking `.sl/*`.
+        // Falls back to the raw path if `cwd` does not exist yet.
         let cwd = dunce::canonicalize(&cwd).unwrap_or(cwd);
         // Resolve the Sapling kill-switch once so discovery and the watcher
         // agree on whether `.sl` is active.
@@ -112,10 +99,8 @@ impl FsEventSource {
         self.out_tx.subscribe()
     }
 
-    /// Number of OS-level watches this source currently holds (one per
-    /// directory in per-dir mode, one per `watch()` call in fan-out mode).
-    /// On Linux this approximates the process's inotify watch-descriptor
-    /// footprint for this source. Primarily for stats, logs, and benchmarks.
+    /// Number of OS-level watches this source currently holds.
+    /// On Linux this approximates this source's inotify watch-descriptor footprint. Primarily for stats.
     #[must_use]
     pub fn os_watch_count(&self) -> usize {
         self.watcher.watch_count()
@@ -133,14 +118,9 @@ impl Drop for FsEventSource {
     }
 }
 
-/// VCS metadata directories discovered for the watched workspace. Both VCSs are
-/// considered together — a parent move in *either* flips `head_changed` (see
-/// [`read_head`]), so no precedence is needed.
-///
-/// `sl_dir` is discovered whenever a `.sl` exists, *independent* of the
-/// `sapling` kill-switch, so [`VcsDirs::is_internal`] can always anchor to it
-/// and drop `.sl/*`. `sapling` gates only *suppression* (the Sapling arms of
-/// [`lock_present`]/[`read_head`] and the `.sl` watch).
+/// VCS metadata directories for the watched workspace. Either VCS moving flips `head_changed`.
+/// `sl_dir` is discovered independent of the `sapling` kill-switch so `.sl/*` can always be dropped.
+/// `sapling` gates only suppression, not discovery.
 #[derive(Default)]
 struct VcsDirs {
     /// `.git` dir from git2 discovery (handles worktrees / gitlinks).
@@ -169,22 +149,16 @@ impl VcsDirs {
             .and_then(|d| classify_git_path(p, d))
     }
 
-    /// Paths under the discovered `.git`/`.sl` dir tick the state machine but
-    /// are not workspace files, so they never reach `FilesChanged`. Anchored to
-    /// the discovered dirs (not a bare `.sl` component match) so an unrelated
-    /// `.sl` ancestor of the watch root can't suppress real files.
+    /// Paths under the discovered `.git`/`.sl` dir tick the state machine but never reach `FilesChanged`.
+    /// Anchored to the discovered dirs so an unrelated `.sl` ancestor cannot suppress real files.
     fn is_internal(&self, p: &Path) -> bool {
         self.git_dir.as_deref().is_some_and(|d| p.starts_with(d))
             || self.sl_dir.as_deref().is_some_and(|d| p.starts_with(d))
     }
 
-    /// True only for the exact VCS lock files that arm suppression (mirrors
-    /// [`lock_present`]: `index.lock`/`gc.pid` directly under the git dir,
-    /// `wlock` under `.sl`): an event on one marks git-op activity even when
-    /// the file is already gone by batch-processing time. Other transient
-    /// `.git/*.lock` files (`config.lock`, `HEAD.lock`, per-ref locks) must
-    /// NOT synthesize ops — they accompany non-op activity. Name-first
-    /// comparison keeps this allocation-free on the per-path hot loop.
+    /// True only for the exact VCS lock files that arm suppression (`index.lock`/`gc.pid`/`wlock`).
+    /// An event on one marks git-op activity even if the file is already gone. Other `.git/*.lock` files must not synthesize ops.
+    /// Name-first comparison stays allocation-free on the hot loop.
     fn is_lock_path(&self, p: &Path) -> bool {
         let Some(name) = p.file_name() else {
             return false;
@@ -221,12 +195,8 @@ fn lock_present(v: &VcsDirs) -> bool {
     git || sl
 }
 
-/// Combined head token `"<git HEAD>|<sl p1>"`: changes iff *either* VCS moves
-/// its working-copy parent, so [`crate::state::drive`] flags a `sl goto` like a
-/// `git checkout`. Fixed order (git then sl) keeps it stable. The Sapling
-/// segment is only read when suppression is enabled. `None` only when neither
-/// VCS contributes; a present-but-unreadable head contributes an empty segment
-/// (the degraded `head_changed:false` path), not `None`.
+/// Combined head token `"<git HEAD>|<sl p1>"`: changes iff either VCS moves its working-copy parent.
+/// Fixed order keeps it stable. `None` only when neither VCS contributes; an unreadable head is an empty segment, not `None`.
 fn read_head(v: &VcsDirs) -> Option<String> {
     let sl_active = v.sapling && v.sl_dir.is_some();
     if v.git_dir.is_none() && !sl_active {
@@ -248,12 +218,9 @@ fn read_head(v: &VcsDirs) -> Option<String> {
     Some(format!("{git}|{sl}"))
 }
 
-/// First 20 bytes of `.sl/dirstate` = the working-copy parent (p1), hex-encoded
-/// (manual hex avoids a `hex` dep). Read on the event loop like `.git/HEAD`;
-/// `.sl/dirstate` is never *watched*, so a read-only `sl status` triggers no
-/// read. Returns `None` on a non-regular (symlink/FIFO/…), short, or unreadable
-/// file, so wrong/absent Sapling facts degrade to `head_changed:false` instead
-/// of crashing — confirm the on-disk layout against the deployed Sapling version.
+/// First 20 bytes of `.sl/dirstate` are the working-copy parent (p1), hex-encoded.
+/// `.sl/dirstate` is never watched, so a read-only `sl status` triggers no read.
+/// Non-regular, short, or unreadable files return `None` so wrong facts degrade to `head_changed:false`.
 fn read_sl_parent(sl_dir: &Path) -> Option<String> {
     use std::io::Read;
     let dirstate = sl_dir.join("dirstate");
@@ -281,10 +248,8 @@ async fn event_loop(
 ) {
     let mut state = LockState::Idle;
     let mut stale_warn = StaleWarn::default();
-    // Baseline for the next op's head_changed: the head last observed while
-    // no op was running. Fast ops complete their whole lock cycle inside one
-    // debounce batch, so the batch-time head is already post-op; this keeps
-    // the pre-op value.
+    // Baseline for the next op's head_changed: the head last observed while no op was running.
+    // Fast ops complete their lock cycle inside one debounce batch, so the batch-time head is already post-op.
     let mut last_idle_head = read_head(&vcs);
 
     loop {
@@ -304,13 +269,9 @@ async fn event_loop(
                 }
             }
             _ = sleep_until_opt(timer_deadline) => {
-                // Settle expiry emits the merged op's Completed; cooldown
-                // expiry is usually silent Cooldown -> Idle. Either way drive
-                // on fresh facts: a lock that reappeared during the wait
-                // re-locks (Settling, silent) or emits Started (Cooldown) —
-                // op entry uses the pre-op `last_idle_head` baseline exactly
-                // like the event arm, so a mid-op head read can't become
-                // `head_at_start`.
+                // Settle expiry emits the merged op's Completed; cooldown expiry is usually silent.
+                // Drive on fresh facts: a lock that reappeared during the wait re-locks or emits Started.
+                // Op entry uses the pre-op `last_idle_head` so a mid-op head read cannot become `head_at_start`.
                 let head_now = read_head(&vcs);
                 let transition = if lock_present(&vcs) {
                     drive(&mut state, true, last_idle_head.clone(), Instant::now(), cooldown)
@@ -353,13 +314,9 @@ fn process_event(
     cooldown: Duration,
     out_tx: &broadcast::Sender<FsEvent>,
 ) {
-    // FS state read here, not at OS-event time. A fast git op can cycle its
-    // lock entirely inside one debounce batch, so the lock file is already
-    // gone when the batch is processed: treat a lock-path *event* as op
-    // activity too, entering via the lock=true arm (Started / settle-merge)
-    // and immediately releasing into Settling. Op entry records
-    // `last_idle_head` — the batch-time head is already post-op for such
-    // bursts — so the eventual Completed spans the real operation.
+    // FS state is read here, not at OS-event time. A fast git op can cycle its lock inside one debounce batch.
+    // Treat a lock-path event as op activity even if the file is already gone.
+    // Op entry records `last_idle_head` because the batch-time head is already post-op.
     let now = Instant::now();
     let head_now = read_head(vcs);
     let lock_now = lock_present(vcs);
@@ -376,19 +333,15 @@ fn process_event(
         let transition = drive(state, false, head_now.clone(), now, cooldown);
         emit_transition(transition, out_tx);
     }
-    // Accepted race: if a settle expires while the next op's lock event is
-    // still in the debounce window, the baseline recorded here is already
-    // that op's post-op head, so its Completed can read head_changed:false.
-    // Self-healing: buffered FilesChanged force the consumer's rebuild, and
-    // the hunk refresh has its own head_oid/index-mtime check.
+    // Accepted race: if a settle expires while the next op's lock event is still buffered, the baseline is already post-op.
+    // Completed can then read head_changed:false. Self-healing: buffered FilesChanged force a rebuild.
     if matches!(state, LockState::Idle | LockState::Cooldown { .. }) {
         *last_idle_head = head_now;
     }
 
     // While in_op: suppress GitMetaChanged (one wake on Completed, not N).
-    // Settling is in_op — the inter-cycle HEAD moves of a merged op must not
-    // leak as meta wakes — but not in_cooldown: FilesChanged keeps flowing
-    // during Locked/Settling (consumer buffers); Cooldown drops it.
+    // Settling is in_op so inter-cycle HEAD moves do not leak as meta wakes.
+    // FilesChanged keeps flowing during Locked/Settling; Cooldown drops it.
     let in_op = matches!(
         state,
         LockState::Locked { .. } | LockState::Settling { .. } | LockState::Cooldown { .. }
@@ -782,11 +735,9 @@ mod tests {
         assert!(matches!(state, LockState::Cooldown { .. }));
     }
 
-    /// A fast pick completes its whole lock cycle inside one debounce batch:
-    /// the lock file is already gone when the batch is processed, so op
-    /// activity is inferred from the lock-path events. This is what real
-    /// rebases look like on small repos (per-pick lock hold times are
-    /// sub-debounce), so it is the storm's production shape.
+    /// A fast pick completes its whole lock cycle inside one debounce batch.
+    /// The lock file is already gone, so op activity is inferred from lock-path events.
+    /// This is the production shape of rebases on small repos.
     fn simulate_batched_pick(
         temp: &tempfile::TempDir,
         vcs: &VcsDirs,
@@ -881,11 +832,8 @@ mod tests {
         assert_eq!(state, LockState::Idle);
     }
 
-    /// Only the `lock_present` trio (`index.lock`/`gc.pid`/`wlock`) may
-    /// synthesize op activity: git cycles other transient `.git/*.lock`
-    /// files (`config.lock`, `HEAD.lock`, per-ref locks) during non-op
-    /// commands, and treating those as ops would open 500ms suppression
-    /// windows around ordinary activity.
+    /// Only the `lock_present` trio may synthesize op activity.
+    /// Other transient `.git/*.lock` files accompany non-op commands; treating them as ops would open suppression windows around ordinary activity.
     #[test]
     fn non_op_lock_files_do_not_synthesize_ops() {
         let temp = make_fake_git_repo_no_lock();
@@ -985,10 +933,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn read_sl_parent_rejects_non_regular_dirstate() {
-        // A symlinked dirstate (even to a valid 20-byte target) must be rejected
-        // by the `is_file()` guard → None. Without the guard, `File::open` would
-        // follow the link and read the target. The same guard rejects FIFOs,
-        // which is what protects the event loop from a blocking read.
+        // A symlinked dirstate must be rejected by the `is_file()` guard → None.
+        // Without the guard, `File::open` would follow the link. The same guard rejects FIFOs, which would block the event loop.
         let temp = tempfile::TempDir::new().unwrap();
         let sl_dir = temp.path().join(".sl");
         std::fs::create_dir(&sl_dir).unwrap();
@@ -1105,10 +1051,8 @@ mod tests {
 
     #[test]
     fn is_internal_anchors_to_discovered_sl_dir() {
-        // The watch root's path contains an unrelated `.sl` ancestor while the
-        // real repo's `.sl` is deeper. Internal-ness is anchored to the
-        // discovered `sl_dir`, so a normal workspace file outside it is not
-        // internal; only paths under the real `.sl` are.
+        // The watch root's path contains an unrelated `.sl` ancestor while the real repo's `.sl` is deeper.
+        // Internal-ness is anchored to the discovered `sl_dir`, so a normal workspace file outside it is not internal.
         let vcs = VcsDirs {
             git_dir: None,
             sl_dir: Some(PathBuf::from("/x/.sl/proj/.sl")),
@@ -1206,11 +1150,8 @@ mod tests {
         assert_eq!(state, LockState::Idle, "state machine must stay Idle");
     }
 
-    /// Drive the settle expiry exactly like the event loop's timer arm:
-    /// re-read fresh facts at the deadline, drive with the pre-op baseline on
-    /// re-lock, emit the transition, and maintain the idle-head baseline. The
-    /// lock machine runs on std `Instant`, so tests expire the window by
-    /// passing the deadline as `now` instead of sleeping.
+    /// Drive the settle expiry exactly like the event loop's timer arm: re-read fresh facts at the deadline.
+    /// The lock machine runs on std `Instant`, so tests expire the window by passing the deadline as `now`.
     fn expire_settle(
         state: &mut LockState,
         idle_head: &mut Option<String>,

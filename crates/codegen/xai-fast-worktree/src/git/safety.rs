@@ -33,10 +33,9 @@ use working_tree::{find_gitlink_content, find_working_tree_content};
 
 const NO_SUCH_PATH: &str = "/nonexistent/xai-fast-worktree/no-such-file";
 
-/// Whether `<worktree>/.git` is *definitively* absent. `NotFound` and
-/// `NotADirectory` (a non-dir sits where the worktree should be, so nothing can
-/// live inside it) are definitive; any other stat error is "couldn't tell" and
-/// must not be read as absence (the caller keeps rather than treating as NoRepo).
+/// True only if `<worktree>/.git` is definitively absent (`NotFound` or
+/// `NotADirectory`). Any other stat error is "couldn't tell" — the caller keeps
+/// rather than treating the tree as NoRepo.
 pub(super) fn git_entry_definitely_absent(worktree: &Path) -> bool {
     match worktree.join(".git").try_exists() {
         Ok(there) => !there,
@@ -56,10 +55,9 @@ enum Ownership {
     Standalone,
 }
 
-// Production always names reflog-only commits itself (reclaimed.rs) before
-// deleting, so the gate leaves that question to the caller. These test-only
-// entry points layer the standalone reflog-only keep back on top of the verdict
-// so the gate's own conservative behavior can be exercised directly.
+// Production names reflog-only commits itself before deleting, so the gate
+// leaves that to the caller. These test entry points layer that keep back on
+// so the gate's conservative behavior can be exercised directly.
 #[cfg(test)]
 pub(crate) fn safe_to_delete_worktree(worktree: &Path, surviving: Option<&Path>) -> Safety {
     keep_on_reflog_only(

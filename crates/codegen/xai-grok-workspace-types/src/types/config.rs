@@ -1,7 +1,6 @@
-//! Configuration shapes referenced from session lifecycle requests and
-//! `OpsChunk::ProjectConfig` / `OpsChunk::Permissions`.
+//! Configuration shapes referenced from session lifecycle requests and `OpsChunk::ProjectConfig` / `OpsChunk::Permissions`.
 //!
-//! TODO(workspace): align with the canonical project / permission /
+//! TODO: align with the canonical project / permission /
 //! agent-session config types in `xai-grok-config` and friends.
 
 use std::collections::BTreeMap;
@@ -9,13 +8,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Filesystem isolation strategy for a forked session.
-///
-/// `Default` returns [`IsolationMode::None`], which is appropriate for
-/// the root session (which shares the workspace's working tree). Note
-/// that subagent forks should explicitly opt into a more restrictive
-/// mode (e.g. `Worktree`); relying on `Default`
-/// for a subagent gives it shared-tree access, which is rarely the
-/// right default for an exploratory child agent.
+/// `Default` is [`IsolationMode::None`] for the root session; a subagent that relies on it gets shared-tree access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IsolationMode {
@@ -29,13 +22,7 @@ pub enum IsolationMode {
 }
 
 /// Capability mode applied to a forked session.
-///
-/// `Default` returns [`CapabilityMode::ReadWrite`], which is
-/// appropriate for the root session. Subagents should explicitly opt
-/// into a more restrictive mode (typically
-/// `ReadOnly`); relying on `Default` for a subagent gives it
-/// read+write access, which is rarely the right default for an
-/// exploratory child agent.
+/// `Default` is [`CapabilityMode::ReadWrite`] for the root session; a subagent that relies on it gets read and write access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityMode {
@@ -49,9 +36,7 @@ pub enum CapabilityMode {
 }
 
 /// Per-tool-server configuration knob.
-///
-/// TODO(workspace): align with the actual MCP/tool-server config in
-/// `xai-grok-tools` once the wire surface is firm.
+/// TODO: align with the MCP/tool-server config in `xai-grok-tools` once the wire surface is firm.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolServerConfig {
     /// Tool server identifier.
@@ -67,17 +52,8 @@ pub struct ToolServerConfig {
     pub args: BTreeMap<String, String>,
 }
 
-/// Configuration applied when forking a session via
-/// `SessionLifecycleRequest::Fork`.
-///
-/// `Default` returns a config with `IsolationMode::None` and
-/// `CapabilityMode::ReadWrite`. **Be careful using `Default` to
-/// construct a subagent fork**: a subagent
-/// should typically be forked with `Worktree` isolation and a more
-/// restrictive capability mode -- the defaults here are oriented at
-/// the root session, not subagents. Construct subagent configs by
-/// fully-naming the relevant fields (or use a builder helper) rather
-/// than relying on `..Default::default()`.
+/// Configuration applied when forking a session via `SessionLifecycleRequest::Fork`.
+/// `Default` is root-session (`None` + `ReadWrite`); name subagent fields explicitly rather than `..Default::default()`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSessionConfig {
     /// Agent identifier (e.g. `"subagent-explore"`).
@@ -91,7 +67,7 @@ pub struct AgentSessionConfig {
     /// Optional per-tool-server overrides.
     #[serde(default)]
     pub tool_config: Vec<ToolServerConfig>,
-    /// Maximum recursion depth for subagent nesting. 0 = no further nesting.
+    /// Maximum recursion depth for subagent nesting; 0 means no further nesting.
     #[serde(default)]
     pub max_depth: u32,
     /// Working directory override (relative to workspace root).
@@ -104,7 +80,7 @@ pub struct AgentSessionConfig {
 
 /// Project configuration returned by `OpsChunk::ProjectConfig`.
 ///
-/// TODO(workspace): align with `xai_grok_config::ProjectConfig`.
+/// TODO: align with `xai_grok_config::ProjectConfig`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectConfig {
     /// Free-form key/value config (placeholder).
@@ -116,9 +92,7 @@ pub struct ProjectConfig {
 }
 
 /// Permission policy returned by `OpsChunk::Permissions`.
-///
-/// TODO(workspace): align with the canonical permission policy type
-/// (currently a free-form JSON shape).
+/// TODO: align with the canonical permission policy type (currently free-form JSON).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionPolicy {
     /// Tool patterns that are unconditionally allowed (no prompt).

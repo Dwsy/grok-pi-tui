@@ -8,9 +8,7 @@ use xai_grok_sampling_types::{ContentPart, ConversationItem, SyntheticReason, To
 pub const AGENT_MESSAGE_MODEL_LABEL: &str =
     "[Message authored by another agent; not a human request or approval.]";
 /// Canonical history prepared exactly once for a model-facing request.
-///
-/// The private inner value distinguishes prepared history without inspecting
-/// or rewriting payload text.
+/// The private inner value distinguishes prepared history without inspecting payload text.
 pub struct ModelRequestHistory(Vec<ConversationItem>);
 impl ModelRequestHistory {
     pub fn from_raw(conversation: Vec<ConversationItem>) -> Self {
@@ -38,13 +36,9 @@ impl ModelRequestHistory {
         self.0
     }
 }
-/// Drops tool results and backend tool calls, and flattens assistant
-/// `tool_calls` into `[Called tools: ...]` text annotations.
-///
-/// Mutates assistant text in place; do NOT use this directly when sending
-/// to a provider that validates signed `reasoning` blocks against the
-/// surrounding content. Use [`prepare_conversation_for_summarization`]
-/// instead, which also strips `reasoning` so the mutation is safe.
+/// Drops tool results and backend tool calls, flattening assistant `tool_calls` into text.
+/// Mutates assistant text in place — do not send this to a provider that validates signed `reasoning`.
+/// Use [`prepare_conversation_for_summarization`], which also strips `reasoning`.
 pub(crate) fn strip_tool_messages_for_conversation_item(
     conversation: Vec<ConversationItem>,
 ) -> Vec<ConversationItem> {
@@ -75,10 +69,7 @@ pub(crate) fn strip_tool_messages_for_conversation_item(
         .collect()
 }
 /// Drops every `ConversationItem::Reasoning(_)` sibling.
-///
-/// Required before sending to backends that reject the structured reasoning
-/// shape (signed `Thinking` blocks after text mutation; some Chat Completions
-/// providers entirely) and before summarization.
+/// Required before backends that reject structured reasoning, and before summarization.
 pub fn strip_reasoning_blocks(conversation: Vec<ConversationItem>) -> Vec<ConversationItem> {
     conversation
         .into_iter()
@@ -106,17 +97,8 @@ pub(crate) fn strip_images(conversation: Vec<ConversationItem>) -> Vec<Conversat
         .collect()
 }
 /// Prepare a conversation for a summarization call (compaction or memory flush).
-///
-/// Combines `strip_tool_messages_for_conversation_item` (drops tool
-/// results, flattens `tool_calls` into text annotations),
-/// `strip_reasoning_blocks`, and `strip_images`.
-///
-/// The reasoning strip is required because the text mutation in the
-/// tool-message step would invalidate signed `thinking` blocks, which
-/// strict providers reject with a 400.
-///
-/// The image strip replaces `ContentPart::Image` with `"[image]"` so the
-/// summarizer doesn't receive megabytes of base64 data.
+/// Strips tool messages, reasoning, and images. Reasoning must go because text mutation
+/// invalidates signed `thinking` blocks, which strict providers reject with a 400.
 pub fn prepare_conversation_for_summarization(
     conversation: Vec<ConversationItem>,
 ) -> Vec<ConversationItem> {
@@ -289,9 +271,7 @@ const SYSTEM_TAGS: &[&str] = &[
     "rules",
 ];
 /// Strip all known system/metadata tag blocks from `text`.
-///
-/// For each tag in [`SYSTEM_TAGS`], removes every `<tag>…</tag>` occurrence
-/// (including content). Unclosed tags are left untouched.
+/// Unclosed tags are left untouched.
 fn strip_system_tags(text: &str) -> String {
     let mut result = text.to_string();
     for tag in SYSTEM_TAGS {
@@ -309,10 +289,7 @@ fn strip_system_tags(text: &str) -> String {
     result.trim().to_string()
 }
 /// Extracts the user query from a message that may contain metadata tags.
-///
-/// Looks for content within `<user_query>...</user_query>` tags.
-/// If not found, strips known metadata tags (see [`SYSTEM_TAGS`]) and
-/// returns the remaining content.
+/// Prefers `<user_query>` content; otherwise strips known metadata tags and returns the rest.
 pub fn extract_user_query(text: &str) -> String {
     let stripped = strip_system_tags(text);
     if let Some(start) = stripped.find("<user_query>") {
@@ -326,9 +303,7 @@ pub fn extract_user_query(text: &str) -> String {
     stripped
 }
 /// Extract the last actual user query text (stripping metadata tags).
-///
-/// Walks backward through the conversation, finds the last `User` item,
-/// and extracts the raw query via [`extract_user_query`].
+/// Walks backward to the last `User` item and extracts via [`extract_user_query`].
 pub fn extract_last_user_query(conversation: &[ConversationItem]) -> Option<String> {
     conversation
         .iter()
@@ -337,54 +312,27 @@ pub fn extract_last_user_query(conversation: &[ConversationItem]) -> Option<Stri
         .map(|item| extract_user_query(&item.text_content()))
         .filter(|q| !q.is_empty())
 }
-/// The continuation prompt added to the conversation after auto-compaction.
-///
-/// Stored here (rather than only in `xai-grok-shell`) so that query-extraction
-/// helpers in this crate can recognise and exclude it from "real user prompt"
-/// lists without creating a circular dependency or hard-coding the text in two
-/// places.
+/// The continuation prompt added after auto-compaction.
+/// Stored here so query-extraction helpers can exclude it without a circular dependency
+/// or a second hard-coded copy.
 pub const AUTO_CONTINUE_PROMPT: &str = r#"Continue the conversation from where it left off without asking the user any further questions. Resume directly - do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar.
 Pick up the last task as if the break never happened."#;
 /// `false` twin: no preset in this build injects a bootstrap note.
 fn is_bootstrap_reminder_text(_text: &str) -> bool {
     false
 }
-/// Return `true` when the *extracted* query text represents a synthetic
-/// session-internal turn rather than a real human-authored prompt.
-///
-/// The cases handled:
-/// - Empty string — the User item contained only metadata tags with no
-///   `<user_query>` payload (bootstrap prefix on session start).
-/// - `"__auto_continue__"` — the request-id sentinel sometimes stored inside
-///   a `<user_query>` wrapper for identification purposes.
-/// - The full [`AUTO_CONTINUE_PROMPT`] text — the actual message pushed into
-///   the conversation after auto-compaction so the agent keeps progressing.
-///   `extract_user_query` returns this as-is (no tags to strip), so it must
-///   be explicitly excluded to avoid counting it as a real user query.
-/// - A synthetic bootstrap tool-availability note wrapped in
-///   `<system_reminder>` tags (optional presets only).
+/// True when extracted query text is a synthetic session-internal turn, not a human prompt.
+/// Covers empty metadata-only items, the `__auto_continue__` sentinel, [`AUTO_CONTINUE_PROMPT`],
+/// and a `<system_reminder>` bootstrap note.
 pub fn is_synthetic_extracted_query(text: &str) -> bool {
     text.is_empty()
         || text == "__auto_continue__"
         || text == AUTO_CONTINUE_PROMPT
         || is_bootstrap_reminder_text(text)
 }
-/// Classify whether a `ConversationItem` is a **real** user turn for
-/// compaction purposes.
-///
-/// A user item is NOT a real user turn if any of the following hold:
-/// 1. It is not a `User` variant at all.
-/// 2. `synthetic_reason` is `Some(…)` (e.g. `SystemReminder`).
-/// 3. It has no meaningful content: no images AND its extracted query
-///    text is synthetic (empty, `__auto_continue__`, or the full
-///    [`AUTO_CONTINUE_PROMPT`]).
-///
-/// Image-only user prompts (multimodal input with no text) ARE real
-/// user turns — they must anchor the compaction boundary even though
-/// they have no extractable text query.
-///
-/// This is the single source of truth for "real user" classification
-/// in the compaction pipeline.
+/// Classify whether a `ConversationItem` is a real user turn for compaction.
+/// Not real if it is non-`User`, has `synthetic_reason`, or its extracted text is synthetic.
+/// Image-only prompts ARE real — they must anchor the boundary even with no text.
 pub fn is_real_user_turn(item: &ConversationItem) -> bool {
     match item {
         ConversationItem::User(u) => {
@@ -404,14 +352,8 @@ pub fn is_real_user_turn(item: &ConversationItem) -> bool {
         _ => false,
     }
 }
-/// Extract all *real* user queries from a conversation, in order.
-///
-/// "Real" means the item passes [`is_real_user_turn`] — it has no
-/// `synthetic_reason` and its extracted query text is not synthetic.
-///
-/// This is used by the session-end hooks and any logic that needs to
-/// count or enumerate actual human-authored prompts without being
-/// polluted by synthetic bootstrap messages or compaction artifacts.
+/// Extract all real user queries, in order ([`is_real_user_turn`]).
+/// Used where human-authored prompts must not be polluted by synthetics or compaction artifacts.
 pub fn extract_real_user_queries(conversation: &[ConversationItem]) -> Vec<String> {
     conversation
         .iter()
@@ -419,13 +361,9 @@ pub fn extract_real_user_queries(conversation: &[ConversationItem]) -> Vec<Strin
         .map(|item| extract_user_query(&item.text_content()))
         .collect()
 }
-/// Extract the last *real* user query text from a conversation.
-///
-/// Unlike [`extract_last_user_query`], this function skips synthetic turns
-/// (system reminders, metadata-only bootstrap prefixes, auto-continue
-/// prompts) so it always returns content the user actually typed.
-///
-/// Returns `None` when no real user query is found.
+/// Extract the last real user query text, skipping synthetic turns.
+/// Unlike [`extract_last_user_query`], this returns only content the user actually typed.
+/// `None` when no real user query is found.
 pub fn extract_last_real_user_query(conversation: &[ConversationItem]) -> Option<String> {
     conversation
         .iter()
@@ -433,17 +371,9 @@ pub fn extract_last_real_user_query(conversation: &[ConversationItem]) -> Option
         .find(|item| is_real_user_turn(item))
         .map(|item| extract_user_query(&item.text_content()))
 }
-/// Extract messages since the last user message in the conversation.
-///
-/// Walks backward from the end, collecting `Assistant` and `ToolResult` items
-/// until a `User` item is hit. Tool results have their content replaced with
-/// a placeholder to save space.
-///
-/// Returns the items in chronological order (reversed from the backward walk).
-///
-/// **Note**: This uses the raw `User` boundary which includes synthetic items
-/// (system reminders, auto-continue prompts). For compaction, prefer
-/// [`extract_messages_since_last_real_user`] which skips synthetic boundaries.
+/// Extract messages since the last user message. Tool results are placeholder-replaced.
+/// Uses the raw `User` boundary, which includes synthetics.
+/// For compaction, prefer [`extract_messages_since_last_real_user`].
 pub fn extract_messages_since_last_user(
     conversation: &[ConversationItem],
 ) -> Vec<ConversationItem> {
@@ -464,21 +394,9 @@ pub fn extract_messages_since_last_user(
     messages.reverse();
     messages
 }
-/// Extract messages since the last **real** user turn in the conversation.
-///
-/// Like [`extract_messages_since_last_user`], but the boundary is the last
-/// item that passes [`is_real_user_turn`] — synthetic injections (system
-/// warnings, auto-continue prompts) do NOT reset the boundary.
-///
-/// This prevents compaction from splitting an assistant/tool-result pair
-/// that spans across a synthetic user injection, which would create an
-/// orphaned `ToolResult` in the compacted history.
-///
-/// Tool results have their content replaced with a placeholder to save space.
-/// Synthetic `User` items within the tail are omitted from the output.
-///
-/// Returns the items in chronological order.  Falls back to whole-tail
-/// extraction (excluding system) if no real user turn exists.
+/// Extract messages since the last real user turn. Synthetics do not reset the boundary.
+/// Prevents compaction from splitting an assistant/tool pair across a synthetic injection
+/// (which would orphan a `ToolResult`). Tool results are placeholder-replaced.
 pub fn extract_messages_since_last_real_user(
     conversation: &[ConversationItem],
 ) -> Vec<ConversationItem> {
@@ -575,10 +493,7 @@ fn extract_messages_since_last_compaction_anchor(
         .collect()
 }
 /// Summary of a running subagent for compaction context.
-///
-/// This is the compaction-layer type. The protocol-layer equivalent is
-/// `ActiveSubagentSummary` in xai-grok-tools. The mapping between them
-/// happens in `run_compact_inner()` (xai-grok-shell).
+/// Compaction-layer type; mapped from the protocol type in `run_compact_inner()`.
 #[derive(Clone)]
 pub struct RunningSubagentSummary {
     /// The subagent's unique ID.
@@ -599,6 +514,28 @@ pub struct BackgroundTaskSummary {
     /// Model-facing name of the tool that created this task (e.g. `monitor`).
     /// `None` omits it from the reminder.
     pub tool_name: Option<String>,
+}
+/// Summary of a still-registered scheduled loop for compaction context.
+#[derive(Clone)]
+pub struct ScheduledLoopSummary {
+    pub task_id: String,
+    pub interval: String,
+    pub next_fire_at: String,
+    pub prompt: String,
+    pub recurring: bool,
+    pub durable: bool,
+}
+/// Summary of a still-live workflow run for compaction context.
+#[derive(Clone)]
+pub struct WorkflowRunSummary {
+    pub name: String,
+    pub run_id: String,
+    pub status: String,
+    pub objective: String,
+    pub current_phase: Option<String>,
+    pub agents_used: u64,
+    pub agent_budget: Option<u64>,
+    pub elapsed_ms: u64,
 }
 /// Summary of a connected MCP server for compaction context.
 #[derive(Clone)]
@@ -638,11 +575,8 @@ pub struct TodoSummary {
     pub content: String,
     pub status: TodoSummaryStatus,
 }
-/// Context captured at compaction time.
-///
-/// This is a pure data struct — rendering into system-reminder format is
-/// handled by the consumer (e.g. `xai-grok-shell`), which has access to
-/// memory backends and other shell-specific dependencies.
+/// Context captured at compaction time. Pure data.
+/// Rendering into system-reminder format is the consumer's job.
 pub struct CompactionStateContext {
     /// Monotonic cwd generation; zero preserves the legacy compaction shape.
     pub cwd_generation: u64,
@@ -667,6 +601,12 @@ pub struct CompactionStateContext {
     /// Todo list captured at compaction time, for post-compaction
     /// system-reminder injection.
     pub todos: Vec<TodoSummary>,
+    /// Scheduled loops still registered at compaction time.
+    pub scheduled_loops: Vec<ScheduledLoopSummary>,
+    /// Non-terminal workflow runs at compaction time.
+    pub workflows: Vec<WorkflowRunSummary>,
+    /// Model-facing workflow tool name, when one could be resolved.
+    pub workflow_tool_name: Option<String>,
 }
 /// Live session state captured at compaction time, fed to
 /// [`CompactionStateContext::build`].
@@ -679,12 +619,13 @@ pub struct CompactionInputs {
     pub agent_edited_paths: BTreeSet<String>,
     pub connected_mcp_servers: Vec<CompactionServerSummary>,
     pub todos: Vec<TodoSummary>,
+    pub scheduled_loops: Vec<ScheduledLoopSummary>,
+    pub workflows: Vec<WorkflowRunSummary>,
+    pub workflow_tool_name: Option<String>,
 }
 impl CompactionStateContext {
     /// Build the state context from current session state.
-    ///
-    /// Uses a typed compaction boundary for the retained tail while keeping
-    /// the last-query field human-only.
+    /// Uses a typed compaction boundary for the retained tail while keeping the last-query field human-only.
     pub async fn build(conversation: &[ConversationItem], inputs: CompactionInputs) -> Self {
         Self {
             cwd_generation: inputs.cwd_generation,
@@ -697,6 +638,9 @@ impl CompactionStateContext {
             running_subagents: inputs.running_subagents,
             connected_mcp_servers: inputs.connected_mcp_servers,
             todos: inputs.todos,
+            scheduled_loops: inputs.scheduled_loops,
+            workflows: inputs.workflows,
+            workflow_tool_name: inputs.workflow_tool_name,
         }
     }
     /// Create a task summary from individual fields.
@@ -713,13 +657,9 @@ impl CompactionStateContext {
             tool_name,
         }
     }
-    /// Return the **compaction view** of this context: a copy with the
-    /// assistant/tool working tail dropped and the latest agent-message anchor
-    /// kept.
-    ///
-    /// For a sub-agent with a single real user turn, `recent_messages` is the
-    /// entire working transcript, and keeping it frees almost nothing while
-    /// re-cueing the model to re-read the same files.
+    /// Compaction view: drop the assistant/tool working tail, keep the latest agent-message anchor.
+    /// For a single-real-user-turn sub-agent, keeping `recent_messages` frees almost nothing
+    /// and re-cues the model to re-read the same files.
     pub fn for_compaction(&self) -> Self {
         Self {
             cwd_generation: self.cwd_generation,
@@ -735,19 +675,15 @@ impl CompactionStateContext {
             running_subagents: self.running_subagents.clone(),
             connected_mcp_servers: self.connected_mcp_servers.clone(),
             todos: self.todos.clone(),
+            scheduled_loops: self.scheduled_loops.clone(),
+            workflows: self.workflows.clone(),
+            workflow_tool_name: self.workflow_tool_name.clone(),
         }
     }
 }
-/// Clean the compaction model's raw output into the plain-text `Summary:`
-/// block that seeds the next turn.
-///
-/// Drafting scratchpad (a top-level `<analysis>` block, or a nested
-/// `<analysis>`/`<summary>` wrapper / untagged markdown "**Analysis**" header
-/// inside the summary) is stripped; control tokens echoed *within* the body
-/// (the model sometimes quotes its own instruction under section 6) are
-/// neutralized so they can't prime the next turn to re-emit a `<summary>`
-/// block. A summary that already leads with a numbered section is preserved
-/// verbatim even when it quotes `</analysis>`/`<summary>` in a later section.
+/// Clean the compaction model's raw output into the plain-text `Summary:` block.
+/// Leading scratchpad is stripped; control tokens echoed in the body are neutralized
+/// so they cannot prime the next turn to re-emit a `<summary>` block.
 pub fn format_compact_summary(summary: &str) -> String {
     let mut result = summary.to_string();
     while let Some(start) = result.find("<analysis>") {
@@ -788,15 +724,8 @@ pub fn format_compact_summary(summary: &str) -> String {
     result.trim().to_string()
 }
 /// Peel leading drafting scratchpad off an extracted `<summary>` block.
-///
-/// A markdown "**Analysis**"-style header has no opening `<analysis>` tag for
-/// step 1 to catch; it ends at an orphan `</analysis>`. Everything up to and
-/// including the *last* `</analysis>` is dropped, so a scratchpad that itself
-/// quotes `</analysis>` mid-reasoning is still removed whole. The peel is
-/// skipped when the block already starts with a numbered section — including a
-/// markdown-decorated one like `## 1.` or `**1.**` — so a `</analysis>` merely
-/// echoed inside a real section never truncates the summary. Any leftover
-/// leading `<summary>` wrapper is then unwrapped.
+/// A markdown "**Analysis**" header has no opening tag; drop through the last `</analysis>`.
+/// Skip the peel when the block already starts with a numbered section, so an echo cannot truncate.
 fn strip_leading_scratchpad(inner: &str) -> String {
     let mut s = inner.trim();
     let lead = s.trim_start_matches(['#', '*', '-', '>', ' ', '\t']);
@@ -810,10 +739,9 @@ fn strip_leading_scratchpad(inner: &str) -> String {
     }
     s.to_string()
 }
-/// Defuse compaction-control tokens echoed inside a summary body by inserting
-/// a zero-width space after `<`, so they can't be read as live tags by the next
-/// turn. Mirrors `sanitize_evidence` in `goal_classifier.rs`. Closers first so
-/// the inserted sentinel never re-matches.
+/// Defuse compaction-control tokens echoed inside a summary body.
+/// Insert a zero-width space after `<` so they cannot be read as live tags next turn.
+/// Closers first so the inserted sentinel never re-matches.
 fn neutralize_compaction_control_tokens(text: &str) -> String {
     text.replace("</summary>", "<\u{200b}/summary>")
         .replace("<summary>", "<\u{200b}summary>")
@@ -858,10 +786,8 @@ pub fn bound_captured_output(s: &str, max_chars: usize) -> String {
     let elided = total - head - tail;
     format!("{head_str}\n\n…[{elided} chars elided]…\n\n{tail_str}")
 }
-/// Diagnostics for a single compaction model call (one retry-loop iteration),
-/// persisted in order on the request artifact's `attempt_details` so a degraded
-/// retry (a thinking-trace or hallucinated tools instead of a real summary)
-/// isn't bumped invisibly.
+/// Diagnostics for a single compaction model call (one retry-loop iteration).
+/// Persisted on the request artifact so a degraded retry is not bumped invisibly.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CompactionAttempt {
     /// 1-based attempt index, cumulative across input-ladder stages.
@@ -879,12 +805,8 @@ pub struct CompactionAttempt {
     pub error: Option<String>,
 }
 /// Render a `<transcript_location>` pointer block.
-///
-/// The summary carrier embeds this XML pointer to the full raw transcript so
-/// the model can re-read exact pre-compaction detail on demand instead of
-/// carrying the working transcript in context. Carriers that include this
-/// block splice it in right after `</summary_content>`. Carries its own
-/// leading blank line.
+/// The carrier embeds this so the model can re-read pre-compaction detail instead of carrying the transcript.
+/// Spliced right after `</summary_content>`; carries its own leading blank line.
 pub fn format_transcript_location(path: &str) -> String {
     format!(
         "\n\n<transcript_location>\n\
@@ -896,22 +818,13 @@ pub fn format_transcript_location(path: &str) -> String {
     )
 }
 /// Wrap text in `<user_query>...</user_query>` tags.
-///
-/// This is the canonical wrapping used for user messages that contain
-/// a query or compaction summary. Centralised here so both
-/// `xai-chat-state` and `xai-grok-shell` share the same format.
+/// Canonical wrapping shared by `xai-chat-state` and `xai-grok-shell`.
 pub fn wrap_user_query(text: impl Into<String>) -> String {
     let text = text.into();
     format!("<user_query>\n{text}\n</user_query>")
 }
-/// Input data for building a compacted conversation history.
-///
-/// All fields are plain data — no I/O, no network, no shell dependencies.
-/// The caller is responsible for:
-/// - Generating the `compaction_summary` via the LLM.
-/// - Rendering the optional `system_reminder` (which may depend on
-///   shell-specific backends such as memory search).
-/// - Providing the `user_message_prefix` (e.g. `<user_info>` block).
+/// Input data for building a compacted conversation history. Plain data, no I/O.
+/// The caller generates the summary, renders the optional reminder, and supplies the user-message prefix.
 pub struct CompactedHistoryInput<'a> {
     /// The original system message from the conversation.
     pub system_message: ConversationItem,
@@ -932,16 +845,12 @@ pub struct CompactedHistoryInput<'a> {
     /// When `false` (the default), recent messages come first (grok-build
     /// ordering).
     pub summary_before_recent: bool,
-    /// Pre-built transcript hint appended to the summary (caller builds it via
-    /// [`crate::CompactionMode::transcript_hint`] or
-    /// [`format_transcript_location`]). `None` to omit. Appended to BOTH the
-    /// carrier and the grok-build summary.
+    /// Pre-built transcript hint appended to the summary. `None` to omit.
+    /// Appended to BOTH the carrier and the grok-build summary.
     pub transcript_hint: Option<String>,
-    /// Number of summaries generated so far for this user query, *including*
-    /// the one being built. Rendered verbatim into the carrier's
-    /// "Total summaries generated so far …" footer. Ignored by the grok-build
-    /// (`summary_before_recent == false`) path. Callers that don't track a
-    /// counter pass `1`.
+    /// Number of summaries so far for this user query, including the one being built.
+    /// Rendered verbatim into the carrier footer. Ignored by the grok-build path.
+    /// Callers that don't track a counter pass `1`.
     pub summary_count: u64,
 }
 /// `None` twin: the alternate carrier format is not compiled in.
@@ -1027,15 +936,8 @@ pub struct SanitizeResult {
     /// `tool_calls` entry matched them.
     pub stripped_tool_call_ids: Vec<String>,
 }
-/// Check whether a compacted conversation satisfies the provider invariant:
-///
-/// > Every `ToolResult` must have a matching **preceding**
-/// > `Assistant.tool_calls[].id`.
-///
-/// Returns the `tool_call_id`s of any `ToolResult` items that violate
-/// the invariant (empty when the history is valid).
-///
-/// This is a read-only check — it does not modify the conversation.
+/// Check that every `ToolResult` has a matching preceding `Assistant.tool_calls[].id`.
+/// Returns violating `tool_call_id`s (empty when valid). Read-only.
 pub fn validate_compacted_history(items: &[ConversationItem]) -> Vec<String> {
     let mut seen_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut invalid_ids = Vec::new();
@@ -1054,22 +956,9 @@ pub fn validate_compacted_history(items: &[ConversationItem]) -> Vec<String> {
     }
     invalid_ids
 }
-/// Sanitize a compacted conversation by removing orphaned `ToolResult` items.
-///
-/// Enforces the provider-critical invariant via a left-to-right scan:
-///
-/// > Every `ToolResult` in the history must have a matching **preceding**
-/// > `Assistant.tool_calls[].id`.
-///
-/// As each `Assistant` is encountered, its tool-call IDs are added to a
-/// seen set.  Any `ToolResult` whose `tool_call_id` is not yet in the
-/// seen set is stripped (this catches both "no matching assistant" and
-/// "result appears before its call").
-///
-/// **Explicit non-goal**: `Assistant` messages with `tool_calls` but no
-/// matching `ToolResult` are NOT stripped — that can be a legitimate
-/// in-flight or partially-repaired state and is not the invariant that
-/// causes provider 400 errors.
+/// Remove orphaned `ToolResult` items that lack a matching preceding assistant call id.
+/// Left-to-right: a result whose id is not yet seen is stripped (including result-before-call).
+/// Unanswered assistant calls are NOT stripped — that is not the 400 invariant.
 pub fn sanitize_compacted_history(items: Vec<ConversationItem>) -> SanitizeResult {
     let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut stripped_tool_call_ids = Vec::new();
@@ -1117,11 +1006,8 @@ impl HistoryRepairReport {
             || self.synthetic_results_inserted > 0
     }
 }
-/// Repair provider tool-pairing violations in a conversation (e.g. orphaned
-/// `ToolResult`s left by a torn JSONL line, which 400 on every request).
-/// Three passes: [`dedup_duplicate_tool_results`],
-/// [`strip_displaced_tool_results`], then [`repair_dangling_tool_calls`] to
-/// backfill synthetic results for calls the stripping left unanswered.
+/// Repair provider tool-pairing violations (orphaned `ToolResult`s 400 on every request).
+/// Dedup, strip displaced results, then backfill synthetic results for calls left unanswered.
 /// Pure and idempotent.
 pub fn repair_history(items: &mut Vec<ConversationItem>) -> HistoryRepairReport {
     let duplicates_removed = xai_grok_sampling_types::dedup_duplicate_tool_results(items);
@@ -1138,17 +1024,9 @@ pub fn repair_history(items: &mut Vec<ConversationItem>) -> HistoryRepairReport 
         synthetic_results_inserted,
     }
 }
-/// Strip `ToolResult`s that are not in the contiguous run immediately
-/// following the `Assistant` declaring their `tool_call_id` — both orphans
-/// (owner gone: the bricked-session case) and displaced results. Returns the
-/// stripped ids in order.
-///
-/// Deliberately stricter than [`sanitize_compacted_history`]'s "matching id
-/// anywhere before" (providers require adjacency), and deliberately the same
-/// contiguous-run rule as [`repair_dangling_tool_calls`] /
-/// [`dedup_duplicate_tool_results`] so the [`repair_history`] passes agree on
-/// which calls are answered (a leniency mismatch would make the dangling pass
-/// insert synthetic duplicates next to kept results).
+/// Strip `ToolResult`s not in the contiguous run immediately after their declaring `Assistant`.
+/// Stricter than "matching id anywhere before" because providers require adjacency.
+/// Same contiguous-run rule as the other repair passes so they agree on which calls are answered.
 pub fn strip_displaced_tool_results(items: &mut Vec<ConversationItem>) -> Vec<String> {
     let mut run_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut stripped = Vec::new();

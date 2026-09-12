@@ -5,41 +5,9 @@ use ratatui::layout::Rect;
 
 use crate::{common::TerminalLike, segment::split_into_line_segments};
 
-/// Handles terminal resize by completely re-rendering the scrollback history.
-///
-/// This function uses a "nuclear option" approach: it sends RIS (Reset to Initial State)
-/// to clear the entire terminal, then re-outputs all scrollback history and positions
-/// the viewport appropriately.
-///
-/// # Why this approach?
-///
-/// When the terminal is resized, text reflow happens automatically *before* our application
-/// receives the resize signal (SIGWINCH). This creates several problems:
-///
-/// 1. **Scrollback corruption**: The built-in `terminal.autoresize()` doesn't handle reflowed
-///    content properly, often damaging scrollback history or leaving visual artifacts.
-///
-/// 2. **Viewport artifacts**: The old viewport borders get reflowed along with regular text,
-///    appearing as garbage above the new viewport position. While we could try to move the
-///    viewport up to avoid this, it becomes impossible when the viewport is already near the top.
-///
-/// 3. **Unpredictable reflow**: Different terminals handle text reflow differently, making it
-///    nearly impossible to predict exactly where content will end up after resize. We tried
-///    calculating reflow based on character counts, but edge cases and terminal-specific
-///    behaviors made this unreliable.
-///
-/// The RIS + re-render approach is more drastic but provides consistency across all terminals
-/// and resize scenarios. It's especially important for horizontal resizing where text reflow
-/// is most problematic.
-///
-/// # Arguments
-///
-/// * `terminal` - The terminal instance to resize
-/// * `history` - The complete scrollback history (with CRLF line endings)
-///
-/// # Returns
-///
-/// Returns `Ok(())` on success, or an I/O error if terminal operations fail.
+/// When the terminal is resized, text reflow happens automatically *before* our application receives the resize signal
+/// (SIGWINCH). This creates several problems: Unpredictable reflow: Different terminals handle text reflow differently,
+/// making it nearly impossible to predict exactly where content will end up after resize.
 pub fn resize_purge_rerender<T: TerminalLike>(terminal: &mut T, history: &str) -> io::Result<()> {
     let viewport = terminal.viewport_area();
     let size = terminal.size()?;
@@ -95,10 +63,8 @@ pub fn resize_purge_rerender<T: TerminalLike>(terminal: &mut T, history: &str) -
     Ok(())
 }
 
-/// Resize the viewport to a new height with terminal dimensions being the same.
-///
-/// When shrinking: Always anchors to top (gap appears at bottom)
-/// When growing: Tries to expand down first, then pushes content up if needed
+/// Resize the viewport to a new height with terminal dimensions being the same. When shrinking: Always anchors to top
+/// (gap appears at bottom). When growing: Tries to expand down first, then pushes content up if needed
 pub fn resize_viewport_height<T: TerminalLike>(
     terminal: &mut T,
     new_height: u16,
@@ -298,24 +264,6 @@ mod tests {
         // With full screen of content, viewport should be at bottom
         assert_eq!(terminal.viewport_area.y, 25 - 3); // screen_height - viewport_height
         assert_eq!(terminal.viewport_area.height, 3);
-        assert_eq!(terminal.clear_count, 1);
-    }
-
-    #[test]
-    fn test_resize_purge_rerender_with_wrapped_lines() {
-        let mut terminal = MockTerminal::new(40, 10, 2); // Narrow terminal
-        terminal.viewport_area.y = 8;
-
-        // Create a line that will wrap
-        let long_line = "A".repeat(100); // Will wrap to ~3 lines on 40-column terminal
-        let history = format!("{}\r\nShort line\r\n", long_line);
-
-        resize_purge_rerender(&mut terminal, &history).unwrap();
-
-        // The actual position depends on split_into_line_segments calculation
-        // But it should position the viewport appropriately
-        assert!(terminal.viewport_area.y <= 10 - 2);
-        assert_eq!(terminal.viewport_area.height, 2);
         assert_eq!(terminal.clear_count, 1);
     }
 

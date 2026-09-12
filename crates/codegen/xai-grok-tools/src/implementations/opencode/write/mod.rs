@@ -113,13 +113,32 @@ impl xai_tool_runtime::Tool for WriteTool {
         let path = resolve_model_path(&cwd, display_cwd.as_deref(), &input.file_path);
 
         // ── Check if file exists and read old content ────────────
-        let (existed, old_content) = match fs.read_file(&path).await {
+        let (mut existed, mut old_content) = match fs.read_file(&path).await {
             Ok(bytes) => (true, Some(String::from_utf8_lossy(&bytes).into_owned())),
             Err(_) => (false, None),
         };
+        let is_memory_write = match crate::types::memory_v2::write_memory_v2_file(
+            &resources,
+            &path,
+            input.content.as_bytes(),
+        )
+        .await
+        {
+            Ok(crate::types::memory_v2::MemoryV2Write::Written { previous_content }) => {
+                existed = previous_content.is_some();
+                old_content =
+                    previous_content.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+                true
+            }
+            Ok(crate::types::memory_v2::MemoryV2Write::Outside) => false,
+            Err(error) => {
+                return Ok(SearchReplaceOutput::InvalidInput(error));
+            }
+        };
 
         // ── Create parent directories if needed ──────────────────
-        if let Some(parent) = path.parent()
+        if !is_memory_write
+            && let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
             tokio::fs::create_dir_all(parent).await.map_err(|e| {
@@ -132,14 +151,16 @@ impl xai_tool_runtime::Tool for WriteTool {
         }
 
         // ── Write the file ───────────────────────────────────────
-        fs.write_file(&path, input.content.as_bytes())
-            .await
-            .map_err(|e| {
-                xai_tool_runtime::ToolError::execution(
-                    xai_tool_protocol::ToolId::new("write").expect("valid"),
-                    e.to_string(),
-                )
-            })?;
+        if !is_memory_write {
+            fs.write_file(&path, input.content.as_bytes())
+                .await
+                .map_err(|e| {
+                    xai_tool_runtime::ToolError::execution(
+                        xai_tool_protocol::ToolId::new("write").expect("valid"),
+                        e.to_string(),
+                    )
+                })?;
+        }
 
         // ── Send FileWritten notification ────────────────────────
         notification_handle.send_file_written(FileWritten {

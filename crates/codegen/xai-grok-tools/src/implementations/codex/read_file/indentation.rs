@@ -29,11 +29,9 @@ pub(crate) struct IndentationOptions {
 
 // ─── LineRecord ──────────────────────────────────────────────────────
 
-/// Per-line record: number, raw (untruncated), display (truncated), indent.
-///
-/// Matches codex `LineRecord { number, raw, display, indent }`.
-/// `raw` is used for `trimmed()` / `is_blank()` / `is_comment()`;
-/// `display` is used for output formatting.
+/// Per-line record: number, raw (untruncated), display (truncated), indent. Matches codex
+/// `LineRecord { number, raw, display, indent }`. `raw` is used for `trimmed()` / `is_blank()` /
+/// `is_comment()`; `display` is used for output formatting.
 #[derive(Debug)]
 struct LineRecord {
     /// 1-indexed line number.
@@ -151,14 +149,9 @@ fn compute_effective_indents(records: &[LineRecord]) -> Vec<usize> {
     effective
 }
 
-/// Read a block of lines using indentation-based expansion from an anchor.
-///
-/// This is the main entry point for indentation mode.
-///
-/// Ported from codex `indentation::read_block` — uses the codex interleaved
-/// single-loop algorithm with two cursors (i going up, j going down) that
-/// alternate. Sibling filtering and header-comment inclusion are handled
-/// **inline** during expansion, not as post-processing passes.
+/// Read a block of lines using indentation-based expansion from an anchor. This is the main entry point for indentation mode. Ported from codex
+/// `indentation::read_block` — uses the codex interleaved single-loop algorithm with two cursors (i going up, j going down) that alternate.
+/// Sibling filtering and header-comment inclusion are handled **inline** during expansion, not as post-processing passes.
 pub(crate) fn read_block(
     bytes: &[u8],
     offset: usize,
@@ -204,15 +197,9 @@ pub(crate) fn read_block(
         return Ok(vec![format!("L{}: {}", rec.number, rec.display)]);
     }
 
-    // ── Interleaved bidirectional expansion ──────────────────────
-    //
-    // Codex algorithm (lines 293–357): single `while out.len() < final_limit`
-    // loop. BOTH cursors are tried every iteration (up first, then down).
-    // A `progressed` counter tracks whether either direction added a line;
-    // if 0, both are exhausted and we break.
-    //
-    // `i` starts at anchor_idx - 1 going down to 0 (or -1 = exhausted).
-    // `j` starts at anchor_idx + 1 going up to collected.len() (= exhausted).
+    // Interleaved bidirectional expansion Codex algorithm (lines 293–357): single `while out.len() < final_limit` loop. BOTH cursors are tried
+    // every iteration (up first, then down). A `progressed` counter tracks whether either direction added a line; if 0, both are exhausted and we
+    // break. `i` starts at anchor_idx - 1 going down to 0 (or -1 = exhausted).
 
     let mut out: VecDeque<usize> = VecDeque::new();
     out.push_back(anchor_idx);
@@ -286,16 +273,9 @@ pub(crate) fn read_block(
     Ok(lines)
 }
 
-/// Expand the upward cursor by one step. Returns true if a line was
-/// added to `out` (net gain — not reverted).
-///
-/// Codex logic (lines 296–320):
-/// 1. If `eff >= min_indent`: push_front (line 300).
-/// 2. If `eff == min_indent && !include_siblings`:
-///    - `can_take_line = allow_header_comment || counter == 0`
-///    - If can_take_line: increment counter (line is kept).
-///    - If !can_take_line: pop_front (revert THIS just-pushed line), stop cursor.
-/// 3. If `eff < min_indent`: stop cursor, return false.
+/// Expand the upward cursor by one step. Returns true if a line was added to `out` (net gain — not reverted). If `eff >= min_indent`:
+/// push_front (line 300). `can_take_line = allow_header_comment || counter == 0` If can_take_line: increment counter (line is kept). If
+/// !can_take_line: pop_front (revert THIS just-pushed line), stop cursor. If `eff < min_indent`: stop cursor, return false.
 #[allow(clippy::too_many_arguments)]
 fn expand_up(
     collected: &[LineRecord],
@@ -341,15 +321,9 @@ fn expand_up(
     true
 }
 
-/// Expand the downward cursor by one step. Returns true if a line was
-/// added to `out` (net gain — not reverted).
-///
-/// Codex logic (lines 332–348):
-/// 1. If `eff >= min_indent`: push_back (line 334).
-/// 2. If `eff == min_indent && !include_siblings`:
-///    - If `counter > 0`: pop_back (revert THIS just-pushed line), stop cursor.
-///    - Always increment counter (line 346).
-/// 3. If `eff < min_indent`: stop cursor, return false.
+/// Expand the downward cursor by one step. Returns true if a line was added to `out` (net gain — not reverted). If `eff
+/// >= min_indent`: push_back (line 334). If `counter > 0`: pop_back (revert THIS just-pushed line), stop cursor. Always
+/// increment counter (line 346). If `eff < min_indent`: stop cursor, return false.
 fn expand_down(
     effective: &[usize],
     out: &mut VecDeque<usize>,
@@ -436,12 +410,9 @@ mod tests {
 
     #[test]
     fn captures_function_block_with_limit() {
-        // anchor=2 (x=1, indent 4), max_levels=1, min_indent = 4-4 = 0.
-        // With min_indent=0, the entire file is reachable (no indent is below 0).
-        // Sibling filter: going up, def foo is first boundary (counter=1, accepted).
-        // Going down: y, return, blank (effective=4 > 0), def bar (effective=0 == min,
-        // counter=1, accepted), pass (effective=4 > 0, accepted). No second boundary hit,
-        // so downward includes everything.
+        // anchor=2 (x=1, indent 4), max_levels=1, min_indent = 4-4 = 0. With min_indent=0, the entire file is reachable (no indent is below 0).
+        // Sibling filter: going up, def foo is first boundary (counter=1, accepted). Going down: y, return, blank (effective=4 > 0), def bar
+        // (effective=0 == min, counter=1, accepted), pass (effective=4 > 0, accepted). No second boundary hit, so downward includes everything.
         let content =
             b"def foo():\n    x = 1\n    y = 2\n    return x + y\n\ndef bar():\n    pass\n";
 
@@ -468,19 +439,9 @@ mod tests {
 
     #[test]
     fn expands_to_parent_class() {
-        // L1: class MyClass:   (indent 0)
-        // L2:     def method(self):  (indent 4)
-        // L3:         x = 1    (indent 8)  ← ANCHOR
-        // L4:         y = 2    (indent 8)
-        // L5:         return x + y  (indent 8)
-        // L6: (blank, effective=8)
-        // L7:     def other(self):  (indent 4)
-        // L8:         pass     (indent 8)
-        // anchor=3, max_levels=2, min_indent = 8-8 = 0.
-        // Both directions try every iteration. Up first: class MyClass (indent 0,
-        // boundary counter=1, kept). Down: y (eff=8>0, kept). Up: exhausted (i=-1).
-        // Down: return, blank, def other (boundary counter=1, kept since counter was 0),
-        // pass. All accepted because min_indent=0.
+        // L1: class MyClass: (indent 0) L2: def method(self): (indent 4) L3: x = 1 (indent 8) ← ANCHOR L4: y = 2 (indent 8) L5: return x + y (indent
+        // 8) L6: (blank, effective=8) L7: def other(self): (indent 4) L8: pass (indent 8) anchor=3, max_levels=2, min_indent = 8-8 = 0. Both
+        // directions try every iteration. Up first: class MyClass (indent 0, boundary counter=1, kept). All accepted because min_indent=0.
         let content = b"class MyClass:\n    def method(self):\n        x = 1\n        y = 2\n        return x + y\n\n    def other(self):\n        pass\n";
         let opts = make_opts(Some(3), 2, false, true, None);
         let result = read_block(content, 1, 2000, opts).unwrap();
@@ -494,20 +455,9 @@ mod tests {
 
     #[test]
     fn sibling_filter_at_nonzero_min_indent() {
-        // Layout:
-        //   L1:  class C:               (indent 0)
-        //   L2:      def a(self):       (indent 4, boundary)
-        //   L3:          pass            (indent 8)
-        //   L4:      def b(self):       (indent 4, boundary)
-        //   L5:          pass            (indent 8)
-        //   L6:      def anchor(self):  (indent 4, boundary)
-        //   L7:          x = 1          (indent 8) ← ANCHOR
-        //   L8:      def d(self):       (indent 4, boundary)
-        //   L9:          pass            (indent 8)
-        //   L10:     def e(self):       (indent 4, boundary)
-        //   L11:         pass            (indent 8)
-        //
-        // anchor=7, max_levels=1, min_indent = 8-4 = 4.
+        // Layout: L1: class C: (indent 0) L2: def a(self): (indent 4, boundary) L3: pass (indent 8) L4: def b(self): (indent
+        // 4, boundary) L5: pass (indent 8) L6: def anchor(self): (indent 4, boundary) L7: x = 1 (indent 8) ← ANCHOR L8: def
+        // d(self): (indent 4, boundary) L9: pass (indent 8) L10: def e(self): (indent 4, boundary) L11: pass (indent 8)
         let content = b"\
 class C:
     def a(self):
@@ -521,25 +471,9 @@ class C:
     def e(self):
         pass
 ";
-        // Without siblings: up hits def anchor (boundary, counter 0→1, kept),
-        // then def b (boundary, counter==1, can_take_line=false → REVERT anchor, stop).
-        // Wait: up goes from anchor_idx=6 upward. i starts at 5 (def anchor line).
-        // L6 (idx 5) = "    def anchor(self):" → eff=4 == min=4. counter==0, can_take=true.
-        // Push. counter=1. i=4.
-        // L5 (idx 4) = "        pass" → eff=8 > 4. Push. i=3.
-        // L4 (idx 3) = "    def b(self):" → eff=4 == min=4. counter==1, can_take=false.
-        // REVERT (pop front = L4 just pushed). Stop. i=-1.
-        // Wait that's not right. Let me retrace...
-        // Actually: push L4 first, THEN check. can_take_line = false (counter==1, not comment).
-        // Revert = pop front = L4 (the just-pushed one). i=-1.
-        //
-        // Down: j starts at 7 (def d).
-        // L8 (idx 7) = "    def d(self):" → eff=4 == min=4. counter==0 → kept. counter=1.
-        // L9 (idx 8) = "        pass" → eff=8>4 → kept.
-        // L10 (idx 9) = "    def e(self):" → eff=4 == min=4. counter>0 → REVERT L10, stop.
-        //
-        // Result (before trim): [L5:pass, L6:def anchor, L7:x=1, L8:def d, L9:pass]
-        // After blank trim (no blanks): same.
+        // Without siblings: up hits def anchor (boundary, counter 0→1, kept), then def b (boundary, counter==1, can_take_line=false → REVERT anchor,
+        // stop). Wait: up goes from anchor_idx=6 upward. i starts at 5 (def anchor line). L6 (idx 5) = " def anchor(self):" → eff=4 == min=4.
+        // counter==0, can_take=true. Push. counter=1. i=4. L5 (idx 4) = " pass" → eff=8 > 4. Push. i=3.
         let opts_no_sibs = make_opts(Some(7), 1, false, true, None);
         let result_no_sibs = read_block(content, 1, 2000, opts_no_sibs).unwrap();
 
@@ -566,13 +500,9 @@ class C:
 
     #[test]
     fn include_header_adds_comments() {
-        // L1: # Helper function   (indent 0, comment)
-        // L2: # for computation   (indent 0, comment)
-        // L3: def compute(x):     (indent 0)
-        // L4:     return x * 2    (indent 4) ← ANCHOR
-        //
-        // anchor=4, max_levels=1, min_indent = 4-4 = 0.
-        // With include_header=true: comments at indent 0 pass via allow_header_comment.
+        // L1: # Helper function (indent 0, comment) L2: # for computation (indent 0, comment) L3:
+        // def compute(x): (indent 0) L4: return x * 2 (indent 4) ← ANCHOR With include_header=true:
+        // comments at indent 0 pass via allow_header_comment.
         let content = b"# Helper function\n# for computation\ndef compute(x):\n    return x * 2\n";
 
         let opts_header = make_opts(Some(4), 1, false, true, None);
@@ -598,11 +528,9 @@ class C:
 
     #[test]
     fn limit_caps_output_size() {
-        // anchor=3 (b=2), max_levels=0, limit=3.
-        // Codex: both up+down each iteration. final_limit = min(3, 3, 6) = 3.
-        // Iter 1: up: push a=1 → [a,b,c...wait]
-        // out starts as [b]. Iter 1: up push foo → [foo, b]. down push c → [foo, b, c].
-        // out.len()=3 → done.
+        // anchor=3 (b=2), max_levels=0, limit=3. Codex: both up+down each iteration. final_limit =
+        // min(3, 3, 6) = 3. Iter 1: up: push a=1 → [a,b,c...wait] out starts as [b]. Iter 1: up
+        // push foo → [foo, b]. down push c → [foo, b, c]. out.len()=3 → done.
         let content = b"def foo():\n    a = 1\n    b = 2\n    c = 3\n    d = 4\n    e = 5\n";
         let opts = make_opts(Some(3), 0, false, true, Some(3));
         let result = read_block(content, 1, 3, opts).unwrap();

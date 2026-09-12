@@ -129,21 +129,6 @@ fn test_extract_user_query_ignores_nested_rules_query_before_outer_query() {
     assert_eq!(extract_user_query(input), "real request");
 }
 #[test]
-fn test_strip_fork_context_tag() {
-    let input = "<fork-context>\nYou inherited context.\n</fork-context>\n\nreal content";
-    assert_eq!(extract_user_query(input), "real content");
-}
-#[test]
-fn test_strip_system_reminder_tag() {
-    let input = "<system-reminder>\nFollow these instructions.\n</system-reminder>\n\nreal content";
-    assert_eq!(extract_user_query(input), "real content");
-}
-#[test]
-fn test_strip_agent_memory_tag() {
-    let input = "<agent-memory>\nPrevious context.\n</agent-memory>\n\nreal content";
-    assert_eq!(extract_user_query(input), "real content");
-}
-#[test]
 fn test_strip_system_underscore_reminder_tag() {
     let input = "<system_reminder>\nReminder text.\n</system_reminder>\n\nreal content";
     assert_eq!(extract_user_query(input), "real content");
@@ -967,12 +952,49 @@ async fn build_stores_and_for_compaction_preserves_todos() {
     );
     assert_eq!(compacted.todos[1].content, "do the other thing");
 }
-/// The compaction view drops the working transcript (`recent_messages`)
-/// while preserving the last real user query and all other live state.
-/// Built from a sub-agent-shaped conversation (ONE real user turn followed
-/// by assistant/tool turns) so the dropped tail is genuinely non-empty AND
-/// contains tool results — i.e. this would NOT pass if `for_compaction` were
-/// a no-op.
+#[tokio::test]
+async fn build_stores_and_for_compaction_preserves_loops_and_workflows() {
+    let conversation = vec![
+        ConversationItem::user("<user_query>\ntask\n</user_query>"),
+        ConversationItem::assistant("working"),
+    ];
+    let ctx = CompactionStateContext::build(
+        &conversation,
+        CompactionInputs {
+            scheduled_loops: vec![ScheduledLoopSummary {
+                task_id: "loop-1".into(),
+                interval: "every 5 minutes".into(),
+                next_fire_at: "2026-08-29T00:00:00Z".into(),
+                prompt: "check CI".into(),
+                recurring: true,
+                durable: false,
+            }],
+            workflows: vec![WorkflowRunSummary {
+                name: "review-changes".into(),
+                run_id: "wf-1".into(),
+                status: "active".into(),
+                objective: "review".into(),
+                current_phase: Some("Plan".into()),
+                agents_used: 1,
+                agent_budget: Some(8),
+                elapsed_ms: 4_000,
+            }],
+            workflow_tool_name: Some("workflow".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(ctx.scheduled_loops[0].task_id, "loop-1");
+    assert_eq!(ctx.workflows[0].run_id, "wf-1");
+    let compacted = ctx.for_compaction();
+    assert!(compacted.recent_messages.is_empty());
+    assert_eq!(compacted.scheduled_loops.len(), 1);
+    assert_eq!(compacted.workflows[0].name, "review-changes");
+    assert_eq!(compacted.workflow_tool_name.as_deref(), Some("workflow"));
+}
+/// The compaction view drops the working transcript while preserving the last real user query.
+/// Built from a single-real-user-turn conversation so the dropped tail is non-empty with tool results —
+/// this would fail if `for_compaction` were a no-op.
 #[tokio::test]
 async fn for_compaction_drops_recent_messages_preserves_query() {
     use xai_grok_sampling_types::ToolCall;
@@ -1601,10 +1623,8 @@ fn repair_history_strips_orphaned_tool_results() {
     assert_eq!(report.synthetic_results_inserted, 0);
     assert_eq!(items.len(), 4);
 }
-/// A result displaced past a user turn has a matching id *somewhere
-/// before*, so the compaction sanitizer would keep it — but providers
-/// require adjacency, so repair must strip it and synthesize a result
-/// for the now-unanswered call.
+/// A result displaced past a user turn may have a matching id somewhere before, so sanitizer would keep it.
+/// Providers require adjacency, so repair must strip it and synthesize a result for the unanswered call.
 #[test]
 fn repair_history_strips_displaced_result_and_backfills_call() {
     let mut items = vec![
@@ -1899,16 +1919,7 @@ async fn build_compacted_history_transcript_hint() {
     assert!(!summary.contains("transcript"));
 }
 /// Full multi-turn conversation with parallel tool calls, then compaction.
-///
-/// Simulates the exact conversation shape produced by xai-grok-shell:
-///
-/// Turn 1: user_query → assistant(2 tool calls) → 2 tool results
-/// Turn 2: user_query → assistant(2 tool calls) → 2 tool results
-/// → compaction fires
-///
-/// Verifies the exact structure and content of the compacted output,
-/// including how `<user_query>` tags appear and how tool calls/results
-/// are preserved or omitted.
+/// Locks the compacted output shape, including which tool calls/results are preserved.
 #[tokio::test]
 async fn build_compacted_history_multi_turn_with_parallel_tool_calls() {
     use xai_grok_sampling_types::{AssistantItem, ToolCall};
@@ -2124,6 +2135,9 @@ fn generation_zero_compaction_keeps_legacy_project_instructions() {
         running_subagents: vec![],
         connected_mcp_servers: vec![],
         todos: vec![],
+        scheduled_loops: vec![],
+        workflows: vec![],
+        workflow_tool_name: None,
     };
     let compacted = build_compacted_history(CompactedHistoryInput {
         system_message: ConversationItem::system("sys"),
@@ -2151,6 +2165,9 @@ fn relocated_compaction_uses_destination_project_instructions() {
         running_subagents: vec![],
         connected_mcp_servers: vec![],
         todos: vec![],
+        scheduled_loops: vec![],
+        workflows: vec![],
+        workflow_tool_name: None,
     };
     let compacted = build_compacted_history(CompactedHistoryInput {
         system_message: ConversationItem::system("sys"),
@@ -2178,6 +2195,9 @@ fn relocated_compaction_does_not_restore_source_instructions_when_destination_ha
         running_subagents: vec![],
         connected_mcp_servers: vec![],
         todos: vec![],
+        scheduled_loops: vec![],
+        workflows: vec![],
+        workflow_tool_name: None,
     };
     let compacted = build_compacted_history(CompactedHistoryInput {
         system_message: ConversationItem::system("sys"),
@@ -2208,6 +2228,9 @@ fn build_compacted_history_tags_agents_md_with_project_instructions() {
         running_subagents: vec![],
         connected_mcp_servers: vec![],
         todos: vec![],
+        scheduled_loops: vec![],
+        workflows: vec![],
+        workflow_tool_name: None,
     };
     let reminder = "some AGENTS.md body".to_string();
     let compacted = build_compacted_history(CompactedHistoryInput {
@@ -2252,6 +2275,9 @@ fn build_compacted_history_omits_agents_md_when_none() {
         running_subagents: vec![],
         connected_mcp_servers: vec![],
         todos: vec![],
+        scheduled_loops: vec![],
+        workflows: vec![],
+        workflow_tool_name: None,
     };
     let compacted = build_compacted_history(CompactedHistoryInput {
         system_message: ConversationItem::system("sys"),
@@ -2292,10 +2318,8 @@ fn conversation_item_drops_tool_results() {
             .any(|m| matches!(m, ConversationItem::ToolResult(_)))
     );
 }
-/// Load-bearing: documents the intentional contract that
-/// `strip_tool_messages_for_conversation_item` does NOT touch sibling
-/// `Reasoning` items. `prepare_conversation_for_summarization` composes
-/// against this guarantee by chaining `strip_reasoning_blocks` after.
+/// Load-bearing: `strip_tool_messages_for_conversation_item` does NOT touch sibling `Reasoning` items.
+/// `prepare_conversation_for_summarization` chains `strip_reasoning_blocks` after this.
 #[test]
 fn conversation_item_preserves_reasoning_siblings() {
     use xai_grok_sampling_types::{AssistantItem, rs};
@@ -2355,11 +2379,8 @@ fn strip_reasoning_blocks_passes_other_items_through() {
     assert!(matches!(result[1], ConversationItem::User(_)));
     assert!(matches!(result[2], ConversationItem::ToolResult(_)));
 }
-/// Reproduces the production failure that prompted this helper: an
-/// assistant turn with both signed `reasoning` and `tool_calls` triggers a
-/// provider "thinking blocks cannot be modified" 400 because the strip
-/// mutates the surrounding text. After `prepare_conversation_for_summarization`
-/// the message must have no `reasoning` left for the provider to validate.
+/// Reproduces the production 400: signed `reasoning` plus `tool_calls` fails after text mutation.
+/// After `prepare_conversation_for_summarization` no `reasoning` may remain for the provider to validate.
 #[test]
 fn prepare_for_summarization_drops_reasoning_sibling_on_mutated_assistant() {
     use xai_grok_sampling_types::{AssistantItem, ToolCall, rs};
@@ -2526,10 +2547,8 @@ fn prepare_for_summarization_handles_multi_assistant_mixed_conversation() {
         assistants[2].content
     );
 }
-/// Calling `prepare_conversation_for_summarization` twice must produce
-/// the same result as calling it once. Guarantees the transformation
-/// has no hidden state and is safe to apply defensively at multiple
-/// layers (e.g. memory flush + compaction both routing through it).
+/// Calling `prepare_conversation_for_summarization` twice must match calling it once.
+/// The transform is stateless and safe to apply defensively at multiple layers.
 #[test]
 fn prepare_for_summarization_is_idempotent() {
     use xai_grok_sampling_types::{AssistantItem, ToolCall, rs};

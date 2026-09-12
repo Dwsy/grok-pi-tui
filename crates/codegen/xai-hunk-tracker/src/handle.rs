@@ -39,12 +39,9 @@ impl HunkTrackerHandle {
         self.cmd_tx.is_closed()
     }
 
-    /// Record that an agent tool wrote to a file.
-    /// This is fire-and-forget - doesn't wait for processing.
-    ///
-    /// `previous_content` is the file content before this write (if known).
-    /// It is used as a fallback baseline when the file doesn't exist in git HEAD
-    /// (e.g., in worktrees created from dirty state).
+    /// Record that an agent tool wrote to a file. This is fire-and-forget - doesn't wait for processing. `previous_content`
+    /// is the file content before this write (if known). It is used as a fallback baseline when the file doesn't exist in git
+    /// HEAD (e.g., in worktrees created from dirty state).
     pub fn record_agent_write(
         &self,
         path: PathBuf,
@@ -58,6 +55,23 @@ impl HunkTrackerHandle {
             prompt_index,
             previous_content,
         });
+    }
+
+    /// Re-root the actor after a session cwd remount. Waits until in-memory hunk keys have been rewritten so a later
+    /// `record_agent_write` under the new cwd cannot be overwritten by the remount rekey.
+    pub async fn set_working_dir(&self, working_dir: PathBuf) {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(HunkTrackerCommand::SetWorkingDir {
+                working_dir,
+                reply: reply_tx,
+            })
+            .is_err()
+        {
+            return;
+        }
+        let _ = reply_rx.await;
     }
 
     /// Notify of file change from fs_notify.
@@ -195,15 +209,9 @@ impl HunkTrackerHandle {
         reply_rx.await.ok().flatten()
     }
 
-    /// Get all tracked file paths (agent + external), regardless of hunk state.
-    ///
-    /// Returns every path the hunk tracker knows about — agent writes,
-    /// fs_notify-detected external edits, and git-dirty files (in `AllDirty`
-    /// mode). Entries persist after the user accepts/rejects every hunk.
-    ///
-    /// Use this for worktree replication where ALL changes matter, not just
-    /// agent-attributed ones (the agent may have created files via terminal
-    /// commands like `echo`, `cp`, `mv`, etc.).
+    /// Get all tracked file paths (agent + external), regardless of hunk state. Entries persist after the user
+    /// accepts/rejects every hunk. Use this for worktree replication where ALL changes matter, not just agent-attributed ones
+    /// (the agent may have created files via terminal commands like `echo`, `cp`, `mv`, etc.).
     pub async fn get_all_tracked_paths(&self) -> Vec<PathBuf> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let _ = self
@@ -212,10 +220,8 @@ impl HunkTrackerHandle {
         reply_rx.await.unwrap_or_default()
     }
 
-    /// Get staged file paths (absolute) — files with HEAD→index changes in
-    /// git. In AllDirty mode this is repo-wide; in AgentOnly mode the
-    /// underlying scan is scoped to tracked paths, so only their staged
-    /// state is reported.
+    /// Get staged file paths (absolute) — files with HEAD→index changes in git. In AllDirty mode this is repo-wide; in
+    /// AgentOnly mode the underlying scan is scoped to tracked paths, so only their staged state is reported.
     pub async fn get_staged_files(&self) -> HashSet<PathBuf> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let _ = self
@@ -275,9 +281,7 @@ impl HunkTrackerHandle {
         let _ = self.cmd_tx.send(HunkTrackerCommand::RefreshAllBaselines);
     }
 
-    /// Take a snapshot of all hunk tracker state for preservation across
-    /// session kill/reload cycles (e.g., fork sync-back).
-    ///
+    /// Take a snapshot of all hunk tracker state for preservation across session kill/reload cycles (e.g., fork sync-back).
     /// Returns `None` if the actor has been shut down.
     pub async fn snapshot_state(&self) -> Option<HunkTrackerSnapshot> {
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -299,10 +303,8 @@ impl HunkTrackerHandle {
         reply_rx.await.ok()
     }
 
-    /// Restore a previously snapshotted state. Replaces all current file
-    /// states, turn index, and session stats in the actor.
-    ///
-    /// This is fire-and-forget — doesn't wait for processing.
+    /// Replaces all current file states, turn index, and session stats in the actor. This is fire-and-forget — doesn't wait
+    /// for processing.
     pub fn restore_state(&self, snapshot: HunkTrackerSnapshot) {
         let _ = self.cmd_tx.send(HunkTrackerCommand::RestoreState(snapshot));
     }

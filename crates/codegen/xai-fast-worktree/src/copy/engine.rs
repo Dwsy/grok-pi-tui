@@ -17,12 +17,8 @@ use crate::copy::types::{
 };
 use crate::copy::worker::{WorkerCtx, run_worker};
 
-/// Copy files from source to dest using parallel workers with hash-based sharding.
-///
-/// Returns both stats and the set of paths that were copied (for deduplication).
-/// Maximum worker threads to prevent FD exhaustion on macOS.
-/// macOS default ulimit is 256. With 8 workers + 8 walker threads = 16 threads,
-/// each can have ~10 FDs open (deeply nested dirs), leaving headroom for other uses.
+/// Cap workers to avoid FD exhaustion. macOS default ulimit is 256; 8 workers
+/// plus 8 walker threads, each with ~10 FDs on deep trees, still leave headroom.
 #[cfg(target_os = "macos")]
 const MAX_PARALLEL_WORKERS: usize = 8;
 
@@ -90,12 +86,8 @@ pub(crate) fn copy_parallel(
     // Collect senders for the walker.
     let senders: Vec<Sender<CopyEntry>> = channels.iter().map(|(tx, _)| tx.clone()).collect();
 
-    // Build the walker.
-    // IMPORTANT: Limit walker threads to match num_workers to avoid FD exhaustion.
-    // On macOS, the default FD limit (256) can easily be exceeded when:
-    // - num_cpus walker threads (default) × directories open per thread
-    // - Plus num_workers copy workers × files being copied
-    // Deep directory trees (15+ levels) amplify this significantly.
+    // Cap walker threads to num_workers: default num_cpus walkers plus copy
+    // workers exceed macOS's 256 FD limit on deep trees.
     let mut builder = WalkBuilder::new(source);
     builder
         .hidden(false) // Include hidden files.
@@ -103,10 +95,9 @@ pub(crate) fn copy_parallel(
         .git_global(false) // Never use global gitignore (~/.config/git/ignore) —
         // it contains personal preferences irrelevant to worktree creation.
         .git_exclude(false) // Never use .git/info/exclude — external tooling
-        // can append broad patterns (*.min.js, *.zip) that
-        // incorrectly skip git-tracked files. The `ignore` crate doesn't
-        // check tracking status, so tracked files matching these patterns
-        // get silently dropped during the copy.
+        // can append broad patterns (*.min.js, *.zip) that skip git-tracked
+        // files. `ignore` does not check tracking status, so those files
+        // would be silently dropped.
         .threads(num_workers) // Limit walker parallelism to avoid FD exhaustion
         .filter_entry(|entry| {
             // Always skip .git directory.

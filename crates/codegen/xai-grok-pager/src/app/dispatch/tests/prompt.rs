@@ -388,8 +388,7 @@ fn doctor_fix_all_cancel_keys_restore_prompt_without_effect() {
     }
 }
 
-/// `/history` dispatches `OpenHistorySearch`, which opens the search
-/// panel on the active agent with the session's prompt history.
+/// `/history` dispatches `OpenHistorySearch`, which opens the search panel on the active agent with the session's prompt history.
 #[test]
 fn open_history_search_activates_overlay_on_active_agent() {
     let mut app = test_app_with_agent();
@@ -424,9 +423,8 @@ fn send_bash_command_clears_active_ephemeral_tip() {
     );
 }
 
-/// `ShowUndoTip` on a never-drawn agent is refused by the renderability
-/// gate: no tip shown, no count burned, no effects. (Tip on so the
-/// renderability gate — not the per-tip gate — is what refuses.)
+/// `ShowUndoTip` on a never-drawn agent is refused by the renderability gate: no tip shown, no count burned, no effects.
+/// (Tip on so the renderability gate, not the per-tip gate, is what refuses.)
 #[test]
 fn show_undo_tip_refused_on_undrawn_agent() {
     let mut app = test_app_with_agent();
@@ -439,9 +437,8 @@ fn show_undo_tip_refused_on_undrawn_agent() {
     assert!(!app.agents[&id].ephemeral_tip.is_active());
 }
 
-/// `ShowUndoTip` on a drawable agent shows the tip and increments the
-/// per-session seen count in memory — emitting no effects (nothing is
-/// persisted to disk).
+/// `ShowUndoTip` on a drawable agent shows the tip and increments the per-session seen count in memory.
+/// It emits no effects (nothing is persisted to disk).
 #[test]
 fn show_undo_tip_shows_and_counts_in_memory() {
     use crate::tips::clear_detector::UNDO_TIP_SEEN_KEY;
@@ -459,8 +456,7 @@ fn show_undo_tip_shows_and_counts_in_memory() {
     );
 }
 
-/// `ShowUndoTip` is a no-op when its per-tip gate is off: no tip shown, no
-/// count burned — even on a drawable agent.
+/// `ShowUndoTip` is a no-op when its per-tip gate is off: no tip shown, no count burned, even on a drawable agent.
 #[test]
 fn show_undo_tip_no_op_when_flag_off() {
     let mut app = test_app_with_agent();
@@ -476,9 +472,8 @@ fn show_undo_tip_no_op_when_flag_off() {
 
 // ── Small-screen tip (`show_small_screen_tip` + its one-shot trigger) ──
 
-/// `show_small_screen_tip` on a drawable agent shows the tip and increments
-/// the per-session seen count in memory (nothing persisted — the fn returns
-/// nothing, so it cannot raise effects).
+/// `show_small_screen_tip` on a drawable agent shows the tip and increments the per-session seen count in memory.
+/// Nothing is persisted; the fn returns nothing, so it cannot raise effects.
 #[test]
 fn show_small_screen_tip_shows_and_counts_in_memory() {
     use crate::tips::small_screen::SMALL_SCREEN_TIP_SEEN_KEY;
@@ -492,8 +487,7 @@ fn show_small_screen_tip_shows_and_counts_in_memory() {
     assert_eq!(app.tip_seen_counts.get(SMALL_SCREEN_TIP_SEEN_KEY), Some(&1));
 }
 
-/// `show_small_screen_tip` is a no-op when its per-tip gate is off: no tip
-/// shown, no count burned — even on a drawable agent.
+/// `show_small_screen_tip` is a no-op when its per-tip gate is off: no tip shown, no count burned, even on a drawable agent.
 #[test]
 fn show_small_screen_tip_no_op_when_flag_off() {
     let mut app = test_app_with_agent();
@@ -506,9 +500,8 @@ fn show_small_screen_tip_no_op_when_flag_off() {
     assert!(!app.agents[&id].ephemeral_tip.is_active());
 }
 
-/// The trigger defers — WITHOUT consuming the one-shot — until the active
-/// view is an agent with a stable, draw-measured size; the first stable
-/// in-band measure then shows the tip exactly once.
+/// The trigger defers, WITHOUT consuming the one-shot, until the active view is an agent with a stable, draw-measured size.
+/// The first stable in-band measure then shows the tip exactly once.
 #[test]
 fn small_screen_trigger_waits_for_stable_agent_measure_then_fires_once() {
     let mut app = test_app_with_agent();
@@ -545,10 +538,9 @@ fn small_screen_trigger_waits_for_stable_agent_measure_then_fires_once() {
     assert!(!app.agents[&id].ephemeral_tip.is_active());
 }
 
-/// An in-band first measure whose banner row is occluded (session banner,
-/// permission ask, modal, open dropdown) defers WITHOUT consuming — the show
-/// gate would refuse it, and spending the one-shot invisibly would kill the
-/// hint for the run. Once the occluder clears, the next draw shows it.
+/// An in-band first measure whose banner row is occluded (session banner, permission ask, modal, open dropdown) defers WITHOUT consuming.
+/// The show gate would refuse it, and spending the one-shot invisibly would kill the hint for the run.
+/// Once the occluder clears, the next draw shows it.
 #[test]
 fn small_screen_trigger_defers_while_banner_row_occluded() {
     let mut app = test_app_with_agent();
@@ -571,8 +563,7 @@ fn small_screen_trigger_defers_while_banner_row_occluded() {
     assert!(app.agents[&id].ephemeral_tip.is_active());
 }
 
-/// An out-of-band first measure consumes the one-shot without showing, so a
-/// later resize INTO the band can never bring the tip back.
+/// An out-of-band first measure consumes the one-shot without showing, so a later resize INTO the band can never bring the tip back.
 #[test]
 fn small_screen_trigger_out_of_band_consumes_without_showing() {
     let mut app = test_app_with_agent();
@@ -590,11 +581,9 @@ fn small_screen_trigger_out_of_band_consumes_without_showing() {
     assert!(!app.agents[&id].ephemeral_tip.is_active());
 }
 
-/// The small-screen tip is ambient: submitting the promote prompt right
-/// after it shows must NOT retire it (a real turn takes seconds, so the
-/// submit-clear reduced the tip to a sub-second blink), while the
-/// edit-contextual tips keep their retire-on-submit behavior
-/// (`send_prompt_clears_active_ephemeral_tip` above pins that side).
+/// The small-screen tip is ambient: submitting the promote prompt right after it shows must NOT retire it.
+/// A real turn takes seconds, so the submit-clear reduced the tip to a sub-second blink.
+/// The edit-contextual tips keep their retire-on-submit behavior (`send_prompt_clears_active_ephemeral_tip` above pins that side).
 #[test]
 fn send_prompt_keeps_ambient_small_screen_tip() {
     use crate::tips::small_screen::SMALL_SCREEN_TIP_SEEN_KEY;
@@ -617,10 +606,9 @@ fn send_prompt_keeps_ambient_small_screen_tip() {
     );
 }
 
-/// Ambient TTL burns only while the tip row can paint: while the row is not
-/// renderable the tick is a frozen no-op (and reports no animation demand),
-/// then resumes with the remaining budget once the row can paint again.
-/// Edit-contextual tips keep burning regardless (pinned for contrast).
+/// Ambient TTL burns only while the tip row can paint.
+/// While the row is not renderable the tick is a frozen no-op (and reports no animation demand).
+/// The TTL resumes with the remaining budget once the row can paint again.
 #[test]
 fn ambient_tip_ttl_freezes_while_row_cannot_paint() {
     let mut app = test_app_with_agent();
@@ -668,9 +656,8 @@ fn ambient_tip_ttl_freezes_while_row_cannot_paint() {
     );
 }
 
-/// Whole-lifecycle once-only pin: show at promote, survive the submit, pause
-/// under occlusion, resume, expire on the visible-time budget — exactly one
-/// seen-count for the run and the spent one-shot never re-triggers.
+/// Pins the whole lifecycle: show at promote, survive the submit, pause under occlusion, resume, expire on the visible-time budget.
+/// Exactly one seen-count for the run, and the spent one-shot never re-triggers.
 #[test]
 fn small_screen_tip_lifecycle_shows_once_across_submit_and_occlusion() {
     use crate::tips::small_screen::SMALL_SCREEN_TIP_SEEN_KEY;
@@ -709,8 +696,7 @@ fn small_screen_tip_lifecycle_shows_once_across_submit_and_occlusion() {
     assert!(app.small_screen_tip_evaluated);
 }
 
-/// The user's compact setting being ON suppresses the tip (the hint would
-/// advertise a mode they already use) — the one-shot is still consumed.
+/// The user's compact setting being ON suppresses the tip (the hint would advertise a mode they already use); the one-shot is still consumed.
 #[test]
 fn small_screen_trigger_suppressed_when_user_compact_on() {
     let mut app = test_app_with_agent();
@@ -726,9 +712,8 @@ fn small_screen_trigger_suppressed_when_user_compact_on() {
 
 // ── SSH wrap tip (`show_ssh_wrap_tip` + its one-shot trigger) ──
 
-/// `show_ssh_wrap_tip` on a drawable agent shows the tip and increments the
-/// per-session seen count in memory (nothing persisted — the fn returns
-/// nothing, so it cannot raise effects).
+/// `show_ssh_wrap_tip` on a drawable agent shows the tip and increments the per-session seen count in memory.
+/// Nothing is persisted; the fn returns nothing, so it cannot raise effects.
 #[test]
 fn show_ssh_wrap_tip_shows_and_counts_in_memory() {
     use crate::tips::ssh_wrap::{SSH_WRAP_TIP_KEY, SSH_WRAP_TIP_SEEN_KEY};
@@ -745,8 +730,7 @@ fn show_ssh_wrap_tip_shows_and_counts_in_memory() {
     assert_eq!(app.tip_seen_counts.get(SSH_WRAP_TIP_SEEN_KEY), Some(&1));
 }
 
-/// `show_ssh_wrap_tip` is a no-op when `contextual_hints.ssh_wrap` is off:
-/// no tip shown, no count burned — even on a drawable agent.
+/// `show_ssh_wrap_tip` is a no-op when `contextual_hints.ssh_wrap` is off: no tip shown, no count burned, even on a drawable agent.
 #[test]
 fn show_ssh_wrap_tip_no_op_when_flag_off() {
     let mut app = test_app_with_agent();
@@ -759,8 +743,7 @@ fn show_ssh_wrap_tip_no_op_when_flag_off() {
     assert!(!app.agents[&id].ephemeral_tip.is_active());
 }
 
-/// The seen cap holds at one show per session even if the show fn re-runs
-/// after the first tip expired or was cleared.
+/// The seen cap holds at one show per session even if the show fn re-runs after the first tip expired or was cleared.
 #[test]
 fn show_ssh_wrap_tip_respects_once_per_session_cap() {
     use crate::tips::ssh_wrap::SSH_WRAP_TIP_SEEN_KEY;
@@ -778,9 +761,8 @@ fn show_ssh_wrap_tip_respects_once_per_session_cap() {
     assert_eq!(app.tip_seen_counts.get(SSH_WRAP_TIP_SEEN_KEY), Some(&1));
 }
 
-/// The trigger defers — WITHOUT consuming the one-shot — until the active
-/// view is an agent with a stable, draw-measured size; the first stable
-/// measure with the environment recommending wrap then shows it exactly once.
+/// The trigger defers, WITHOUT consuming the one-shot, until the active view is an agent with a stable, draw-measured size.
+/// The first stable measure with the environment recommending wrap then shows it exactly once.
 #[test]
 fn ssh_wrap_trigger_waits_for_stable_agent_measure_then_fires_once() {
     let mut app = test_app_with_agent();
@@ -805,7 +787,7 @@ fn ssh_wrap_trigger_waits_for_stable_agent_measure_then_fires_once() {
     app.maybe_trigger_ssh_wrap_tip_inner(true);
     assert!(!app.ssh_wrap_tip_evaluated);
 
-    // Stable measure + recommending environment: evaluates once and shows.
+    // Stable measure and recommending environment: evaluates once and shows
     app.agents.get_mut(&id).unwrap().terminal_size_stale = false;
     app.maybe_trigger_ssh_wrap_tip_inner(true);
     assert!(app.ssh_wrap_tip_evaluated);
@@ -820,9 +802,8 @@ fn ssh_wrap_trigger_waits_for_stable_agent_measure_then_fires_once() {
     assert!(!app.agents[&id].ephemeral_tip.is_active());
 }
 
-/// A not-recommending environment (local session, wrap sink already active,
-/// or a VS Code remote) consumes the one-shot without showing — the shape is
-/// process-constant, so there is nothing to re-evaluate later.
+/// A not-recommending environment (local session, wrap sink already active, or a VS Code remote) consumes the one-shot without showing.
+/// Whether the environment recommends wrap cannot change while the process runs, so there is nothing to re-evaluate later.
 #[test]
 fn ssh_wrap_trigger_env_not_recommending_consumes_without_showing() {
     let mut app = test_app_with_agent();
@@ -839,16 +820,13 @@ fn ssh_wrap_trigger_env_not_recommending_consumes_without_showing() {
     assert!(!app.agents[&id].ephemeral_tip.is_active());
 }
 
-/// A busy tip slot defers WITHOUT consuming — replacing would burn the other
-/// session-load tip's once-per-session show; once the slot frees, the next
-/// draw shows the wrap tip.
+/// A busy tip slot defers WITHOUT consuming: replacing would burn the other session-load tip's once-per-session show.
+/// Once the slot frees, the next draw shows the wrap tip.
 #[test]
 fn ssh_wrap_trigger_defers_while_tip_slot_busy() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
-    // In the small-screen band so the other session-load tip takes the slot
-    // first (mirrors the real draw order: the small-screen trigger runs
-    // first).
+    // In the small-screen band so the other session-load tip takes the slot first (mirrors the real draw order: the small-screen trigger runs first)
     app.agents.get_mut(&id).unwrap().last_terminal_size = (100, 24);
     app.maybe_trigger_small_screen_tip();
     assert!(app.agents[&id].ephemeral_tip.is_active());
@@ -900,13 +878,11 @@ fn send_prompt_produces_effect_and_clears_input() {
     assert!(app.agents[&id].prompt.text().is_empty());
     assert!(app.agents[&id].session.state.is_turn_running());
     assert_eq!(app.agents[&id].scrollback.len(), 1);
-    // Queue should be empty (drained).
     assert_eq!(app.agents[&id].session.queue_len(), 0);
 }
 
-/// Register `pr-workflow` as an ACP-advertised skill on the agent's slash
-/// registry, mirroring the shell's available-commands sync. Shared with the
-/// modes tests (`/plan <desc>` range forwarding).
+/// Register `pr-workflow` as an ACP-advertised skill on the agent's slash registry, mirroring the shell's available-commands sync.
+/// Shared with the modes tests (`/plan <desc>` range forwarding).
 pub(super) fn register_pr_workflow_skill(app: &mut AppView, id: AgentId) {
     let agent = app.agents.get_mut(&id).unwrap();
     let models = agent.session.models.clone();
@@ -926,9 +902,8 @@ pub(super) fn register_pr_workflow_skill(app: &mut AppView, id: AgentId) {
     );
 }
 
-/// A plain prompt with a mid-text recognized `/skill` token drains
-/// into a token-styled user block and carries the ranges on `SendPrompt`
-/// (stamped into wire meta for replay).
+/// A plain prompt with a mid-text recognized `/skill` token drains into a token-styled user block.
+/// It carries the ranges on `SendPrompt` (stamped into wire meta for replay).
 #[test]
 fn send_prompt_mid_text_skill_token_carries_ranges() {
     let mut app = test_app_with_agent();
@@ -961,8 +936,7 @@ fn send_prompt_mid_text_skill_token_carries_ranges() {
     }
 }
 
-/// An unrecognized `/word` mid-text stays a plain prompt: no ranges on the
-/// block or the effect.
+/// An unrecognized `/word` mid-text stays a plain prompt: no ranges on the block or the effect.
 #[test]
 fn send_prompt_unknown_token_has_empty_ranges() {
     let mut app = test_app_with_agent();
@@ -983,10 +957,8 @@ fn send_prompt_unknown_token_has_empty_ranges() {
     }
 }
 
-/// An image-bearing prompt with token ranges: the LOCAL echo styles the
-/// token, but the wire blocks stay unstamped — the image builder rewrites
-/// the text (placeholder stripping), which would shift byte offsets, so
-/// replay renders these plain (known limitation).
+/// An image-bearing prompt with token ranges: the LOCAL echo styles the token, but the wire blocks stay unstamped.
+/// The image builder rewrites the text (placeholder stripping), which would shift byte offsets, so replay renders these plain (known limitation).
 #[test]
 fn image_prompt_with_ranges_styles_echo_but_wire_meta_absent() {
     let mut app = test_app_with_agent();
@@ -1024,8 +996,7 @@ fn image_prompt_with_ranges_styles_echo_but_wire_meta_absent() {
     }
 }
 
-/// A leading skill invocation still takes the InjectSkill path: the drained
-/// block is a skill prompt (`display_as_skill`), not the mid-text styling.
+/// A leading skill invocation still takes the InjectSkill path: the drained block is a skill prompt (`display_as_skill`), not the mid-text styling.
 #[test]
 fn send_prompt_leading_skill_keeps_inject_skill_path() {
     let mut app = test_app_with_agent();
@@ -1070,8 +1041,7 @@ fn follow_up_chip_preserves_prompt_draft() {
 
 #[test]
 fn send_prompt_clears_follow_up_chips() {
-    // Production turn-start path: the local queue drain clears the
-    // previous response's chips.
+    // Production turn-start path: the local queue drain clears the previous response's chips
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     app.agents
@@ -1087,20 +1057,16 @@ fn send_prompt_clears_follow_up_chips() {
 
 #[test]
 fn chip_submit_while_enqueued_clears_follow_up_chips() {
-    // A chip click submitted while a turn is RUNNING *and* the local queue
-    // is non-empty takes the ENQUEUE path, not immediate-server-send:
-    // `immediate_server_send_eligible` is false whenever `pending_prompts`
-    // is non-empty. Before the fix, only the immediate-send branch cleared
-    // the chips, so this path left them on screen after the user had already
-    // acted on one. The clear now runs for every `SubmitFollowUp` path.
+    // A chip click submitted while a turn is RUNNING *and* the local queue is non-empty takes the ENQUEUE path, not immediate-server-send
+    // `immediate_server_send_eligible` is false whenever `pending_prompts` is non-empty
+    // Clearing only on the immediate-send branch would leave this path with chips on screen after the user had already acted on one
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {
         let agent = app.agents.get_mut(&id).unwrap();
         agent.apply_follow_ups("resp-1".into(), vec!["Summarize".into()]);
         assert!(agent.follow_ups.is_some(), "precondition: chips shown");
-        // Running turn + a non-empty local queue → NOT immediate-send
-        // eligible, so the submit is held in the local queue instead.
+        // A running turn plus a non-empty local queue is NOT immediate-send eligible, so the submit is held in the local queue instead
         agent.session.state = AgentState::TurnRunning;
         agent.session.enqueue_prompt("earlier".into());
         assert!(
@@ -1111,15 +1077,14 @@ fn chip_submit_while_enqueued_clears_follow_up_chips() {
 
     let effects = dispatch(Action::SubmitFollowUp("Summarize".into()), &mut app);
 
-    // Not immediate-sent: the chip text is enqueued locally (it does not
-    // produce a `SendPrompt` effect for the chip while a turn is running).
+    // Not immediate-sent: the chip text is enqueued locally (it does not produce a `SendPrompt` effect for the chip while a turn is running)
     assert!(
         !effects
             .iter()
             .any(|e| matches!(e, Effect::SendPrompt { text, .. } if text == "Summarize")),
         "chip must be enqueued, not immediate-sent, got {effects:?}"
     );
-    // The chips are cleared on the enqueue path too (the bug fix).
+    // The chips are cleared on the enqueue path too
     assert!(
         app.agents[&id].follow_ups.is_none(),
         "enqueue chip path must clear chips"
@@ -1130,14 +1095,12 @@ fn chip_submit_while_enqueued_clears_follow_up_chips() {
 fn send_prompt_while_running_queues_without_drain() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
-    // Simulate a running turn.
     app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnRunning;
 
     let effects = dispatch(Action::SendPrompt("queued".into()), &mut app);
 
-    // A plain prompt typed while a turn is running is sent to the
-    // agent IMMEDIATELY (server-authoritative) rather than held in the
-    // local drip-feed queue. It does NOT start a concurrent turn.
+    // A plain prompt typed while a turn is running is sent IMMEDIATELY (server-authoritative) rather than held in the local drip-feed queue
+    // It does NOT start a concurrent turn
     assert_eq!(effects.len(), 1);
     let pid = match &effects[0] {
         Effect::SendPrompt {
@@ -1210,13 +1173,12 @@ fn send_prompt_while_running_with_follow_up_queue_stays_local_when_not_leader() 
             .all(|e| !matches!(e, Effect::SendInterject { .. })),
         "Queue must not interject mid-turn, got {effects:?}"
     );
-    // Non-leader + Queue: local drip-feed path (not server-immediate).
+    // Non-leader and Queue mode: local drip-feed path (not server-immediate)
     assert_eq!(app.agents[&id].session.queue_len(), 1);
 }
 
-/// With Steer, an older local drip-feed row still blocks server-immediate
-/// send: newer Enter must not interject or jump the server queue ahead of
-/// the older local prompt.
+/// With Steer, an older local drip-feed row still blocks server-immediate send.
+/// Newer Enter must not interject or jump the server queue ahead of the older local prompt.
 #[test]
 fn send_while_running_with_pending_local_and_steer_preserves_fifo() {
     struct ResetFollowUp(crate::appearance::FollowUpBehavior);
@@ -1254,8 +1216,7 @@ fn send_while_running_with_pending_local_and_steer_preserves_fifo() {
     assert_eq!(order, vec!["two", "three"]);
 }
 
-/// Images never ride server-immediate; with Steer they still join the local
-/// queue (no interject-on-Enter with attachments).
+/// Images never ride server-immediate; with Steer they still join the local queue (no interject-on-Enter with attachments).
 #[test]
 fn send_prompt_with_images_while_running_and_steer_stays_local() {
     struct ResetFollowUp(crate::appearance::FollowUpBehavior);
@@ -1300,24 +1261,17 @@ fn send_prompt_with_images_while_running_and_steer_stays_local() {
     assert_eq!(app.agents[&id].session.queue_len(), 1);
 }
 
-/// Regression (queue reorder race): a plain prompt typed while a turn is
-/// running must NOT jump onto the server queue when an older prompt is still
-/// waiting in the local drip-feed queue — e.g. prompts queued during
-/// "Starting session…" before the turn began, where the first drains to
-/// start the turn and the rest are stranded locally. If the new prompt
-/// immediate-sent onto the server queue it would render/run AHEAD of the
-/// older local prompt (the merge is server-rows-first), so `[2, 3]` showed
-/// up as `[3, 2]`. The new prompt must instead join the local queue behind
-/// the older one, preserving FIFO.
+/// Regression (queue reorder race): a mid-turn plain prompt must NOT jump the server queue past an older local drip-feed prompt.
+/// An immediate-sent prompt would render/run AHEAD of the older local prompt (the merge is server-rows-first), so `[2, 3]` showed up as `[3, 2]`.
+/// The new prompt must instead join the local queue behind the older one, preserving FIFO.
 #[test]
 fn send_while_running_with_pending_local_prompt_preserves_fifo() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {
         let agent = app.agents.get_mut(&id).unwrap();
-        // A turn is running (prompt "1" already drained from the startup
-        // queue) and an older prompt ("2") is still stranded in the local
-        // drip-feed queue because it was enqueued before the turn began.
+        // A turn is running (prompt "1" already drained from the startup queue)
+        // An older prompt ("2") is still stranded in the local drip-feed queue because it was enqueued before the turn began
         agent.session.state = AgentState::TurnRunning;
         agent.session.enqueue_prompt("two".into());
         assert_eq!(agent.session.pending_prompts.len(), 1);
@@ -1326,8 +1280,7 @@ fn send_while_running_with_pending_local_prompt_preserves_fifo() {
     // Send "3" while the queue still holds "2": it must route LOCALLY.
     let effects = dispatch(Action::SendPrompt("three".into()), &mut app);
 
-    // No immediate server-authoritative send (no SendPrompt effect, and no
-    // drain since the turn is running).
+    // No immediate server-authoritative send (no SendPrompt effect, and no drain since the turn is running)
     assert!(
         effects.is_empty(),
         "must not immediate-send while a local prompt is pending, got {effects:?}"
@@ -1355,21 +1308,18 @@ fn send_while_running_with_pending_local_prompt_preserves_fifo() {
 
 #[test]
 fn turn_end_drains_next_queued_prompt() {
-    // A plain prompt typed while running is sent server-authoritatively
-    // and drained by the leader, not by the local queue. The leader's
-    // `running_prompt_id` broadcast (modeled here by a stashed adoption that
-    // arrived before the previous turn's PromptResponse) is adopted by the
-    // PromptResponse handler after `finish_turn`, rendering its user block.
+    // A plain prompt typed while running is sent server-authoritatively and drained by the leader, not by the local queue
+    // The leader's `running_prompt_id` broadcast is modeled here by a stashed adoption that arrived before the previous turn's PromptResponse
+    // The PromptResponse handler adopts it after `finish_turn`, rendering its user block
     let mut app = test_app_with_agent();
     let id = AgentId(0);
 
-    // Submit first prompt (drains immediately → Running).
+    // Submit first prompt (drains immediately and starts the turn)
     let effects = dispatch(Action::SendPrompt("first".into()), &mut app);
     assert_eq!(effects.len(), 1);
     assert!(app.agents[&id].session.state.is_turn_running());
 
-    // Submit second prompt while running → immediate server-authoritative
-    // send (no local queue entry).
+    // Submit second prompt while running: immediate server-authoritative send (no local queue entry)
     let effects = dispatch(Action::SendPrompt("second".into()), &mut app);
     let pid_second = match &effects[0] {
         Effect::SendPrompt {
@@ -1382,8 +1332,7 @@ fn turn_end_drains_next_queued_prompt() {
     };
     assert_eq!(app.agents[&id].session.queue_len(), 0);
 
-    // Model the leader's running=second broadcast arriving before first's
-    // PromptResponse: stash the adoption (FIFO handoff race).
+    // Model the leader's running=second broadcast arriving before first's PromptResponse: stash the adoption (FIFO handoff race)
     app.pending_running_adoptions.insert(
         id,
         crate::app::acp_handler::PendingRunningAdoption {
@@ -1395,8 +1344,7 @@ fn turn_end_drains_next_queued_prompt() {
         },
     );
 
-    // Turn ends → PromptResponse → finish_turn clears current_prompt_id,
-    // then the stashed adoption is applied (turn-start shim).
+    // The turn ends: PromptResponse runs `finish_turn`, clearing current_prompt_id, then the stashed adoption is applied (turn-start shim)
     let effects = dispatch(
         Action::TaskComplete(TaskResult::PromptResponse {
             agent_id: id,
@@ -1407,8 +1355,7 @@ fn turn_end_drains_next_queued_prompt() {
         &mut app,
     );
 
-    // No re-send (the prompt was already sent at enqueue time): only the
-    // billing refresh effect.
+    // No re-send (the prompt was already sent at enqueue time): only the billing refresh effect
     assert_eq!(effects.len(), 1);
     assert!(matches!(
         &effects[0],
@@ -1421,7 +1368,7 @@ fn turn_end_drains_next_queued_prompt() {
         Some(pid_second.as_str())
     );
     assert!(app.pending_running_adoptions.is_empty());
-    // Scrollback: user "first" + "Worked for" + user "second".
+    // Scrollback: user "first", then "Worked for", then user "second"
     assert_eq!(app.agents[&id].scrollback.len(), 3);
 }
 
@@ -1472,9 +1419,8 @@ fn prompt_response_fifo_handoff_paints_multi_bubble_combined() {
 
 #[test]
 fn turn_end_with_empty_queue_stays_idle() {
-    // Pin prompt suggestions OFF so the effect list below is deterministic
-    // regardless of the dev machine's `[ui].prompt_suggestions` config
-    // (thread-local cache; see `turn_end_fetches_prompt_suggestion_when_enabled`).
+    // Pin prompt suggestions OFF so the effect list below is deterministic regardless of the dev machine's `[ui].prompt_suggestions` config
+    // Thread-local cache; see `turn_end_fetches_prompt_suggestion_when_enabled`
     crate::appearance::cache::set_prompt_suggestions(false);
     let mut app = test_app_with_agent();
     let id = AgentId(0);
@@ -1504,7 +1450,7 @@ fn turn_end_with_empty_queue_stays_idle() {
 
 #[test]
 fn multiple_queued_prompts_drain_one_per_turn() {
-    // Deterministic effect lists — see `turn_end_with_empty_queue_stays_idle`.
+    // Deterministic effect lists; see `turn_end_with_empty_queue_stays_idle`
     crate::appearance::cache::set_prompt_suggestions(false);
     let mut app = test_app_with_agent();
     let id = AgentId(0);
@@ -1525,7 +1471,7 @@ fn multiple_queued_prompts_drain_one_per_turn() {
         })
     };
 
-    // Turn end → drain "b" + FetchBilling.
+    // Turn end: drain "b" and FetchBilling
     let effects = dispatch(end_turn(), &mut app);
     assert!(matches!(&effects[0], Effect::SendPrompt { text, .. } if text == "b"));
     assert!(matches!(
@@ -1534,7 +1480,7 @@ fn multiple_queued_prompts_drain_one_per_turn() {
     ));
     assert_eq!(app.agents[&id].session.queue_len(), 1);
 
-    // Turn end → drain "c" + FetchBilling.
+    // Turn end: drain "c" and FetchBilling
     let effects = dispatch(end_turn(), &mut app);
     assert!(matches!(&effects[0], Effect::SendPrompt { text, .. } if text == "c"));
     assert!(matches!(
@@ -1543,7 +1489,7 @@ fn multiple_queued_prompts_drain_one_per_turn() {
     ));
     assert_eq!(app.agents[&id].session.queue_len(), 0);
 
-    // Turn end → FetchBilling only.
+    // Turn end: FetchBilling only
     let effects = dispatch(end_turn(), &mut app);
     assert_eq!(effects.len(), 1);
     assert!(matches!(
@@ -1555,7 +1501,7 @@ fn multiple_queued_prompts_drain_one_per_turn() {
 
 #[test]
 fn prompt_response_resets_turn_state() {
-    // Deterministic effect lists — see `turn_end_with_empty_queue_stays_idle`.
+    // Deterministic effect lists; see `turn_end_with_empty_queue_stays_idle`
     crate::appearance::cache::set_prompt_suggestions(false);
     let mut app = test_app_with_agent();
     let id = AgentId(0);
@@ -1579,9 +1525,8 @@ fn prompt_response_resets_turn_state() {
     ));
     assert!(app.agents[&id].session.state.is_idle());
     assert!(app.agents[&id].turn_started_at.is_none());
-    // mark_turn_finished must stamp the activity anchor used by the
-    // dashboard relative-time label -- if this regresses, rows will show
-    // "now" forever instead of advancing.
+    // mark_turn_finished must stamp the activity anchor used by the dashboard relative-time label
+    // If this regresses, rows will show "now" forever instead of advancing
     assert!(
         app.agents[&id].last_active_at.is_some(),
         "mark_turn_finished must update last_active_at"
@@ -1590,9 +1535,8 @@ fn prompt_response_resets_turn_state() {
     assert_eq!(app.agents[&id].scrollback.len(), 1);
 }
 
-/// Turn end with prompt suggestions enabled fires the `x.ai/suggestPrompt`
-/// fetch (before the billing refresh), and the loaded suggestion routes back
-/// into the agent's controller by id + generation.
+/// Turn end with prompt suggestions enabled fires the `x.ai/suggestPrompt` fetch (before the billing refresh).
+/// The loaded suggestion routes back into the agent's controller by id and generation.
 #[test]
 fn turn_end_fetches_prompt_suggestion_when_enabled() {
     crate::appearance::cache::set_prompt_suggestions(true);
@@ -1623,9 +1567,8 @@ fn turn_end_fetches_prompt_suggestion_when_enabled() {
     };
     assert_eq!(*agent_id, id);
     assert!(session_id.is_some());
-    // No `grok-build-0.1` in the test catalog and no env override →
-    // `None` on the wire; the shell then uses its own `grok-build-0.1`
-    // default (suggestion calls never use the session model).
+    // No `grok-4.6` in the test catalog and no env override, so `None` on the wire; the shell then uses its own `grok-4.6` default
+    // Suggestion calls never use the session model
     assert_eq!(*model, None);
 
     // The loaded suggestion lands in the right agent's controller.
@@ -1644,8 +1587,7 @@ fn turn_end_fetches_prompt_suggestion_when_enabled() {
     );
 }
 
-/// A cancelled turn never suggests (the user interrupted — silence), and any
-/// previous suggestion is wiped at the turn boundary.
+/// A cancelled turn never suggests (the user interrupted; silence), and any previous suggestion is wiped at the turn boundary.
 #[test]
 fn cancelled_turn_does_not_fetch_prompt_suggestion() {
     crate::appearance::cache::set_prompt_suggestions(true);
@@ -1683,7 +1625,7 @@ fn cancelled_turn_does_not_fetch_prompt_suggestion() {
     );
 }
 
-/// A draft in the prompt means the user is already mid-thought — no fetch.
+/// A draft in the prompt means the user is already mid-thought: no fetch.
 #[test]
 fn turn_end_with_draft_does_not_fetch_prompt_suggestion() {
     crate::appearance::cache::set_prompt_suggestions(true);
@@ -1714,9 +1656,8 @@ fn turn_end_with_draft_does_not_fetch_prompt_suggestion() {
     );
 }
 
-/// The reconnect-pending early return skips the fetch gate, but the turn
-/// boundary must still wipe a stale ghost — the wipe runs before the early
-/// returns.
+/// The reconnect-pending early return skips the fetch gate, but the turn boundary must still wipe a stale ghost.
+/// The wipe runs before the early returns.
 #[test]
 fn reconnect_pending_turn_end_still_wipes_prompt_suggestion() {
     crate::appearance::cache::set_prompt_suggestions(true);
@@ -1755,8 +1696,8 @@ fn reconnect_pending_turn_end_still_wipes_prompt_suggestion() {
     );
 }
 
-/// A non-empty server-authoritative shared queue means more queued turns are
-/// coming — no suggestion fetch (mirrors the local `pending_prompts` guard).
+/// A non-empty server-authoritative shared queue means more queued turns are coming: no suggestion fetch.
+/// Mirrors the local `pending_prompts` guard.
 #[test]
 fn turn_end_with_shared_queue_does_not_fetch_prompt_suggestion() {
     crate::appearance::cache::set_prompt_suggestions(true);
@@ -1831,8 +1772,7 @@ fn stale_prompt_suggestion_generation_is_discarded() {
     assert!(!app.agents[&id].prompt.prompt_suggestion.has_suggestion());
 }
 
-/// A suggestion that loads onto an idle, empty prompt is immediately visible:
-/// its `shown` impression is latched right at load.
+/// A suggestion that loads onto an idle, empty prompt is immediately visible: its `shown` impression is latched right at load.
 #[test]
 fn prompt_suggestion_loaded_visible_latches_shown() {
     crate::appearance::cache::set_prompt_suggestions(true);
@@ -1863,10 +1803,9 @@ fn prompt_suggestion_loaded_visible_latches_shown() {
     );
 }
 
-/// A suggestion that arrives while the user has a divergent draft typed is
-/// NOT visible at load — no impression is latched. The latch stays armed so
-/// the `shown` fires at first actual visibility (via the prompt key path),
-/// keeping the funnel's `shown >= accepted + dismissed` invariant.
+/// A suggestion that arrives while the user has a divergent draft typed is NOT visible at load: no impression is latched.
+/// The latch stays armed so the `shown` fires at first actual visibility (via the prompt key path).
+/// That keeps the funnel's `shown >= accepted + dismissed` invariant.
 #[test]
 fn prompt_suggestion_loaded_behind_divergent_draft_defers_shown() {
     crate::appearance::cache::set_prompt_suggestions(true);
@@ -1899,16 +1838,14 @@ fn prompt_suggestion_loaded_behind_divergent_draft_defers_shown() {
         "hidden-at-load suggestion must not count an impression"
     );
 
-    // Clearing the draft makes the ghost visible; the next pass through the
-    // shared helper (key path / load path) latches the impression once.
+    // Clearing the draft makes the ghost visible; the next pass through the shared helper (key path / load path) latches the impression once
     agent.prompt.set_text("");
     agent.log_prompt_suggestion_shown_if_visible();
     assert!(agent.prompt.prompt_suggestion.shown_logged());
 }
 
-/// A context overflow (the `ContextTooLarge` block from the RetryState handler)
-/// suppresses both the redundant `TurnFailed` and the error toast. Derived from
-/// the scrollback, not a session flag; the control case proves it drives suppression.
+/// A context overflow (the `ContextTooLarge` block from the RetryState handler) suppresses both the redundant `TurnFailed` and the error toast.
+/// Derived from the scrollback, not a session flag; the control case proves it drives suppression.
 #[test]
 fn prompt_response_context_overflow_suppresses_turn_failed_and_toast() {
     fn run_failed_turn(context_overflow: bool) -> (bool, bool) {
@@ -1946,10 +1883,9 @@ fn prompt_response_context_overflow_suppresses_turn_failed_and_toast() {
         (has_turn_failed, app.deferred_notification.is_some())
     }
 
-    // Control: with no ContextTooLarge block, PromptResponse still ends the
-    // turn with TurnFailed + a toast. Overflow copy in the error string must
-    // not change that — only a prior ContextTooLarge banner (from RetryState
-    // `error_type=context_length`) suppresses the marker.
+    // Control: with no ContextTooLarge block, PromptResponse still ends the turn with TurnFailed and a toast
+    // Overflow copy in the error string must not change that Only a prior ContextTooLarge banner (from RetryState `error_type=context_length`) suppresses the marker
+    // Only a prior ContextTooLarge banner (from RetryState `error_type=context_length`) suppresses the marker
     let (failed_block, toast) = run_failed_turn(false);
     assert!(failed_block, "baseline: a failed turn pushes TurnFailed");
     assert!(toast, "baseline: a failed turn emits an error toast");
@@ -2017,9 +1953,8 @@ fn prompt_response_request_failed_banner_suppresses_turn_failed_and_toast() {
     );
 }
 
-/// The 401/402 race fallbacks must fire on the banner-formatted error text
-/// PromptResponse now carries (the RetryState notification may lose the race,
-/// so no ReAuthRequired block exists yet).
+/// The 401/402 race fallbacks must fire on the banner-formatted error text PromptResponse carries.
+/// The RetryState notification may lose the race, so no ReAuthRequired block exists yet.
 #[test]
 fn prompt_response_formatted_401_suppresses_turn_failed_and_stashes_prompt() {
     let mut app = test_app_with_agent();
@@ -2076,8 +2011,7 @@ fn prompt_response_formatted_402_takes_credit_limit_path() {
         agent.session.state = AgentState::TurnRunning;
         agent.turn_started_at = Some(std::time::Instant::now());
     }
-    // http_status field absent (older shell): the status must be recovered
-    // from the formatted text.
+    // http_status field absent (older shell): the status must be recovered from the formatted text
     dispatch(
         Action::TaskComplete(TaskResult::PromptResponse {
             agent_id: id,
@@ -2098,6 +2032,41 @@ fn prompt_response_formatted_402_takes_credit_limit_path() {
     assert!(
         !has_turn_failed,
         "a credit-limit 402 shows the upsell, not TurnFailed"
+    );
+}
+
+#[test]
+fn credit_limit_402_does_not_overwrite_stash_when_in_flight_cleared() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.state = AgentState::TurnRunning;
+        agent.turn_started_at = Some(std::time::Instant::now());
+        agent.session.in_flight_prompt = None;
+        agent.credit_limit_stashed_prompt = Some(crate::app::agent::InFlightPrompt {
+            text: "kept".into(),
+            images: Vec::new(),
+            scrollback_entry: crate::scrollback::EntryId::new(0),
+            combined_scrollback_entries: Vec::new(),
+            chip_elements: Vec::new(),
+        });
+    }
+    dispatch(
+        Action::TaskComplete(TaskResult::PromptResponse {
+            agent_id: id,
+            result: Err("Request failed (402): Grok Build usage balance exhausted".to_string()),
+            http_status: Some(402),
+            prompt_id: None,
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        app.agents[&id]
+            .credit_limit_stashed_prompt
+            .as_ref()
+            .map(|p| p.text.as_str()),
+        Some("kept")
     );
 }
 
@@ -2179,9 +2148,8 @@ fn prompt_response_routes_idle_title_through_frame_pipeline() {
         &mut app,
     );
 
-    // The stale busy-title escapes must be replaced with idle-title
-    // escapes so they go through the frame pipeline (writer thread)
-    // in the correct order, not contain the old busy title.
+    // The stale busy-title escapes must be replaced with idle-title escapes, not left holding the old busy title
+    // The replacement goes through the frame pipeline (writer thread) in the correct order
     assert!(
         app.pending_notification_escapes
             .as_ref()
@@ -2189,9 +2157,8 @@ fn prompt_response_routes_idle_title_through_frame_pipeline() {
         "stale notification escapes must be replaced on turn completion",
     );
 
-    // The notification must be deferred (not fired immediately) so the
-    // terminal has at least one render frame to apply the idle title
-    // before the notification reads the tab title for its subtitle.
+    // The notification must be deferred (not fired immediately) so the terminal has at least one render frame to apply the idle title
+    // The notification then reads the tab title for its subtitle
     assert!(
         app.deferred_notification.is_some(),
         "turn-complete notification must be deferred",
@@ -2213,15 +2180,13 @@ fn turn_complete_notification_suppressed_when_queue_non_empty() {
     assert_eq!(effects.len(), 1);
     assert!(app.agents[&id].session.state.is_turn_running());
 
-    // Send a second prompt while the first is running → immediate
-    // server-authoritative send.
+    // Send a second prompt while the first is running: immediate server-authoritative send
     let effects = dispatch(Action::SendPrompt("second".into()), &mut app);
     let pid_second = match &effects[0] {
         Effect::SendPrompt { prompt_id, .. } => prompt_id.clone(),
         other => panic!("expected immediate SendPrompt, got {other:?}"),
     };
-    // Model the leader's running=second broadcast arriving before first's
-    // PromptResponse (stashed adoption ⇒ next turn is about to start).
+    // Model the leader's running=second broadcast arriving before first's PromptResponse (a stashed adoption: the next turn is about to start)
     app.pending_running_adoptions.insert(
         id,
         crate::app::acp_handler::PendingRunningAdoption {
@@ -2233,8 +2198,7 @@ fn turn_complete_notification_suppressed_when_queue_non_empty() {
         },
     );
 
-    // First turn completes — a server prompt is about to start (pending
-    // adoption), so the TurnComplete notification must be suppressed.
+    // First turn completes; a server prompt is about to start (pending adoption), so the TurnComplete notification must be suppressed
     let effects = dispatch(
         Action::TaskComplete(TaskResult::PromptResponse {
             agent_id: id,
@@ -2260,7 +2224,7 @@ fn turn_complete_notification_suppressed_when_queue_non_empty() {
         "idle title escapes must also be suppressed while prompt queue is non-empty",
     );
 
-    // Second turn completes — queue is now empty, notification must fire.
+    // Second turn completes: queue is now empty, notification must fire
     dispatch(
         Action::TaskComplete(TaskResult::PromptResponse {
             agent_id: id,
@@ -2276,11 +2240,9 @@ fn turn_complete_notification_suppressed_when_queue_non_empty() {
     );
 }
 
-/// Regression: cancelling while prompts are queued must hand the queue to
-/// the agent untouched. The FRONT queued prompt runs next (promoted
-/// server-side), the rest stay queued in order, and the authoritative
-/// `x.ai/queue/changed` rebroadcast — not client-side prediction — updates
-/// the mirror. Nothing resurrects or reorders.
+/// Regression: cancelling while prompts are queued must hand the queue to the agent untouched.
+/// The FRONT queued prompt runs next (promoted server-side) and the rest stay queued in order.
+/// The authoritative `x.ai/queue/changed` rebroadcast (not client-side prediction) updates the mirror.
 #[test]
 fn cancel_hands_queue_to_agent_without_reordering() {
     use crate::app::prompt_queue::{QueueChanged, QueueEntryWire};
@@ -2289,10 +2251,9 @@ fn cancel_hands_queue_to_agent_without_reordering() {
     let id = AgentId(0);
     let sid = "test-session".to_string();
 
-    // Running turn (`p-run`) plus three prompts typed while running. They
-    // exist as optimistic echoes (no confirming broadcast yet) and are
-    // mirrored into `agent.shared_queue`, exactly as the immediate-send path
-    // leaves things.
+    // Running turn (`p-run`) plus three prompts typed while running
+    // They exist as optimistic echoes (no confirming broadcast yet) and are mirrored into `agent.shared_queue`
+    // That is exactly how the immediate-send path leaves things
     {
         let agent = app.agents.get_mut(&id).unwrap();
         agent.session.state = AgentState::TurnRunning;
@@ -2306,8 +2267,7 @@ fn cancel_hands_queue_to_agent_without_reordering() {
         app.agents.get_mut(&id).unwrap().shared_queue = snapshot;
     }
 
-    // Cancel: the input stays empty and no queued prompt is dropped
-    // client-side — the agent promotes the front (q1) and rebroadcasts.
+    // Cancel: the input stays empty and no queued prompt is dropped client-side; the agent promotes the front (q1) and rebroadcasts
     let effects = dispatch(Action::CancelTurn, &mut app);
     assert!(
         app.agents[&id].prompt.text().is_empty(),
@@ -2319,8 +2279,7 @@ fn cancel_hands_queue_to_agent_without_reordering() {
             .any(|e| matches!(e, Effect::CancelTurn { .. })),
         "must emit CancelTurn, got {effects:?}"
     );
-    // q1's optimistic echo is left in place — it runs next, and the
-    // broadcast (not a client-side retire) reconciles it.
+    // q1's optimistic echo is left in place: it runs next, and the broadcast (not a client-side retire) reconciles it
     assert!(
         app.optimistic_prompt_echoes
             .get(&sid)
@@ -2328,9 +2287,8 @@ fn cancel_hands_queue_to_agent_without_reordering() {
         "front prompt's optimistic echo must survive the cancel (it runs next)"
     );
 
-    // The agent tears down p-run, promotes q1 (the front) as the running
-    // turn, and rebroadcasts the authoritative remaining queue: [q2, q3]
-    // with q1 running (dropped from the pending list).
+    // The agent tears down p-run, promotes q1 (the front) as the running turn, and rebroadcasts the authoritative remaining queue
+    // That queue is [q2, q3] with q1 running (dropped from the pending list)
     app.apply_queue_changed(QueueChanged {
         session_id: sid.clone(),
         entries: vec![
@@ -2362,8 +2320,7 @@ fn cancel_hands_queue_to_agent_without_reordering() {
         running_combined_texts: None,
     });
 
-    // Post-broadcast the queue is exactly [q2, q3] in order — q1 is now the
-    // running turn, nothing resurrects or reorders.
+    // Post-broadcast the queue is exactly [q2, q3] in order; q1 is now the running turn, nothing resurrects or reorders
     let texts: Vec<String> = app
         .shared_prompt_queue(&sid)
         .cloned()
@@ -2378,12 +2335,9 @@ fn cancel_hands_queue_to_agent_without_reordering() {
     );
 }
 
-/// Regression for the "queued message renders 2×" dup: a shell/proxy that
-/// re-keys the prompt (the broadcast row and later `running_prompt_id` carry a
-/// DIFFERENT id than the pager's optimistic echo) must still reconcile the
-/// echo by kind+text. Without the fallback the echo is pinned forever — the
-/// message shows as a stale queue row alongside the server's copy, and then
-/// alongside the running turn's user block.
+/// Regression for the "queued message renders 2×" dup: a shell/proxy that re-keys the prompt must still reconcile the echo by kind+text.
+/// (Re-keyed: the broadcast row and later `running_prompt_id` carry a DIFFERENT id than the pager's optimistic echo.)
+/// Without the fallback the echo is pinned forever.
 #[test]
 fn rekeyed_broadcast_reconciles_optimistic_echo_by_text() {
     use crate::app::prompt_queue::{QueueChanged, QueueEntryWire};
@@ -2424,8 +2378,7 @@ fn rekeyed_broadcast_reconciles_optimistic_echo_by_text() {
         "the echo must be retired by the text-level reconcile"
     );
 
-    // Same for the promote broadcast: echo pending, then the re-keyed row
-    // starts running (dropped from entries, carried as running_prompt_id).
+    // Same for the promote broadcast: echo pending, then the re-keyed row starts running (dropped from entries, carried as running_prompt_id)
     app.push_optimistic_prompt_echo(&sid, "pager-id-2", "second message", "prompt");
     app.apply_queue_changed(QueueChanged {
         session_id: sid.clone(),
@@ -2459,9 +2412,8 @@ fn rekeyed_broadcast_reconciles_optimistic_echo_by_text() {
         "no stale echo row may survive the promote (the turn renders the block)"
     );
 
-    // Running-row fallback: the echo lands AFTER the broadcast that listed
-    // the re-keyed row (reconnect-replay shape) — the promote must retire it
-    // via the prior snapshot's kind+text, not leave it pinned forever.
+    // Running-row fallback: the echo lands AFTER the broadcast that listed the re-keyed row (reconnect-replay shape)
+    // The promote must retire it via the prior snapshot's kind+text, not leave it pinned forever
     app.apply_queue_changed(QueueChanged {
         session_id: sid.clone(),
         entries: vec![QueueEntryWire {
@@ -2502,8 +2454,7 @@ fn rekeyed_broadcast_reconciles_optimistic_echo_by_text() {
 
 #[test]
 fn prompt_response_disarms_pending_reconcile() {
-    // Healthy path: the RPC response arrives within the grace window —
-    // the marker must be disarmed so the reconcile can never double-fire.
+    // Healthy path: the RPC response arrives within the grace window; the marker must be disarmed so the reconcile can never double-fire
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {
@@ -2576,7 +2527,7 @@ fn cancel_with_queued_prompt_drains_on_completion() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
 
-    // Send "first" — drains immediately (agent was idle).
+    // Send "first": drains immediately (agent was idle)
     dispatch(Action::SendPrompt("first".into()), &mut app);
     assert!(app.agents[&id].session.state.is_turn_running());
 
@@ -2654,8 +2605,7 @@ fn send_prompt_stashes_in_flight_for_restore() {
 
 #[test]
 fn cancel_with_multiple_queued_prompts_drains_only_front_prompt() {
-    // Cancel completion should only resume the next queued prompt, not
-    // every queued prompt at once.
+    // Cancel completion should only resume the next queued prompt, not every queued prompt at once
     let mut app = test_app_with_agent();
     let id = AgentId(0);
 
@@ -2673,7 +2623,7 @@ fn cancel_with_multiple_queued_prompts_drains_only_front_prompt() {
         .session
         .enqueue_prompt("queued-2".into());
 
-    // PromptResponse arrives — should send only the front queued prompt.
+    // PromptResponse arrives; it should send only the front queued prompt
     let effects = dispatch(
         Action::TaskComplete(TaskResult::PromptResponse {
             agent_id: id,
@@ -2742,15 +2692,14 @@ fn cancel_drain_is_blocked_when_editing_front_prompt() {
     assert_eq!(app.agents[&id].session.pending_prompts[1].text, "queued-2");
 }
 
-/// An IDLE bash submit is UNCHANGED — local enqueue + drain
-/// (no optimistic shared-queue echo).
+/// An IDLE bash submit is UNCHANGED: local enqueue and drain (no optimistic shared-queue echo).
 #[test]
 fn bash_while_idle_stays_on_local_path() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
 
     let effects = dispatch(Action::SendBashCommand("ls -la".into()), &mut app);
-    // Idle → local enqueue + immediate drain → SendBashCommand from drain.
+    // An idle submit locally enqueues and immediately drains, emitting SendBashCommand
     assert!(matches!(
         effects.as_slice(),
         [Effect::SendBashCommand { .. }]
@@ -2762,8 +2711,8 @@ fn bash_while_idle_stays_on_local_path() {
     assert!(app.agents[&id].bash_turn);
 }
 
-/// A bash command submitted before the session binds is queued, clears the composer, and still lands
-/// in up-arrow history with its `! ` prefix. It waits for the drain rather than emitting an effect.
+/// A bash command submitted before the session binds is queued, clears the composer, and still lands in up-arrow history with its `! ` prefix.
+/// It waits for the drain rather than emitting an effect.
 #[test]
 fn bash_before_the_session_binds_is_queued_and_recorded() {
     let mut app = test_app_with_agent();
@@ -2796,9 +2745,7 @@ fn send_prompt_blocked_during_reconnect() {
 
     let effects = dispatch(Action::SendPrompt("hello".into()), &mut app);
     assert!(effects.is_empty());
-    // Prompt is not enqueued.
     assert_eq!(app.agents[&id].session.queue_len(), 0);
-    // Toast shown.
     assert!(app.agents[&id].toast.is_some());
 }
 
@@ -2856,7 +2803,7 @@ fn send_prompt_works_after_reconnect_clears() {
     let effects = dispatch(Action::SendPrompt("blocked".into()), &mut app);
     assert!(effects.is_empty());
 
-    // Clear reconnect_pending — prompt should work now.
+    // Clear reconnect_pending; prompt should work now
     app.reconnect_pending = false;
     let effects = dispatch(Action::SendPrompt("hello".into()), &mut app);
     assert_eq!(effects.len(), 1);
@@ -2912,8 +2859,13 @@ fn slash_compact_enqueues_command() {
     let effects = dispatch(Action::SendPrompt("/compact".into()), &mut app);
     // /compact enqueues as Command and drains immediately (agent was idle).
     assert_eq!(effects.len(), 1);
-    assert!(matches!(&effects[0], Effect::Compact { .. }));
-    // Prompt should be cleared.
+    assert!(matches!(
+        &effects[0],
+        Effect::Compact {
+            user_context: None,
+            ..
+        }
+    ));
     assert!(app.agents[&id].prompt.text().is_empty());
 }
 
@@ -2980,12 +2932,9 @@ fn typed_edit_prompt_command_opens_only_an_empty_draft() {
 
 #[test]
 fn palette_dispatch_preserves_prompt_draft() {
-    // Regression for the bug where picking a SlashCommand entry from
-    // the Ctrl-P palette wiped whatever the user had typed. The palette
-    // routes through Action::SendSlashCommandPreservingDraft instead of
-    // Action::SendPrompt; that arm calls dispatch_send_prompt_inner with
-    // clear_prompt=false, so the slash command still resolves and emits
-    // its effect but the textarea contents survive.
+    // Regression for the bug where picking a SlashCommand entry from the Ctrl-P palette wiped whatever the user had typed
+    // The palette routes through Action::SendSlashCommandPreservingDraft instead of Action::SendPrompt
+    // That arm calls dispatch_send_prompt_inner with clear_prompt=false
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     // User has a draft typed in the prompt.
@@ -3002,14 +2951,12 @@ fn palette_dispatch_preserves_prompt_draft() {
         &mut app,
     );
 
-    // The slash command still runs end-to-end: it produces the same
-    // Compact effect that Action::SendPrompt would.
+    // The slash command still runs end-to-end: it produces the same Compact effect that Action::SendPrompt would
     assert_eq!(effects.len(), 1);
     assert!(matches!(&effects[0], Effect::Compact { .. }));
     // But the user's draft text is intact.
     assert_eq!(app.agents[&id].prompt.text(), "hello");
-    // And the slash command was not inserted into prompt history,
-    // because the user didn't type it.
+    // And the slash command was not inserted into prompt history, because the user didn't type it
     assert_eq!(
         app.agents[&id].session.prompt_history.len(),
         initial_history_len,
@@ -3028,8 +2975,10 @@ fn slash_compact_with_context_enqueues_command() {
         &effects[0],
         Effect::Compact {
             custom_instructions: Some(instructions),
+            user_context: Some(ctx),
             ..
-        } if instructions == "focus on auth"
+        } if instructions == "focus on auth" && ctx == "focus on auth"
+
     ));
 }
 
@@ -3039,7 +2988,7 @@ fn slash_unknown_command_passthrough_enqueues_prompt() {
     let id = AgentId(0);
 
     let effects = dispatch(Action::SendPrompt("/unknown-cmd arg1".into()), &mut app);
-    // Unknown slash command → PassThrough → enqueue as prompt.
+    // An unknown slash command passes through and is enqueued as a prompt
     assert_eq!(effects.len(), 1);
     assert!(matches!(&effects[0], Effect::SendPrompt { text, .. } if text == "/unknown-cmd arg1"));
     assert!(app.agents[&id].prompt.text().is_empty());
@@ -3059,15 +3008,9 @@ fn non_slash_prompt_still_works() {
 
 #[test]
 fn submit_question_answers_cancel_clears_local_modal_and_restores_prompt() {
-    // Full-stack contract test: cancel through the
-    // public `submit_question_answers` entry point must
-    //   (a) take + drop the local question_view
-    //   (b) restore the stashed prompt text + cursor
-    //   (c) return InputOutcome::Changed (no Action)
-    // and silently drop the directive carried by LocalQuestionKind::Fork.
-    // This complements the inner `translate_local_submit_*` tests by
-    // exercising the prompt.restore + cleanup_question_state contract
-    // that lives in `submit_question_answers` itself.
+    // Full-stack contract test: cancel through the public `submit_question_answers` entry point must
+    // (b) restore the stashed prompt text and cursor
+    // (c) return InputOutcome::Changed (no Action) and silently drop the directive carried by LocalQuestionKind::Fork.
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
     use xai_grok_tools::implementations::grok_build::ask_user_question::{
         Question, QuestionOption,
@@ -3207,10 +3150,8 @@ fn prompt_history_loaded_refreshes_open_history_search_with_current_query() {
     agent.prompt.history_search.deactivate();
 }
 
-/// Paste-then-immediate-send race (agent prompt): an image Cmd+V'd into the
-/// prompt must not be dropped when Enter fires before the deferred probe
-/// completes. The send is stashed while the probe is in flight and re-issued
-/// on completion, so the sent content carries the image.
+/// Paste-then-immediate-send race (agent prompt): Enter fires before the deferred probe completes and the Cmd+V'd image must not be dropped.
+/// The send is stashed while the probe is in flight and re-issued on completion, so the sent content carries the image.
 #[test]
 fn agent_send_before_paste_probe_keeps_image() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -3221,7 +3162,7 @@ fn agent_send_before_paste_probe_keeps_image() {
         agent.set_active_pane(ActivePane::Prompt, true);
         agent.prompt.set_text("look at this");
     }
-    // Cmd+V an image → the probe defers (raster snapshot present).
+    // Cmd+V an image: the probe defers (raster snapshot present)
     crate::clipboard::set_clipboard_probe_hook(crate::clipboard::ClipboardProbeHook::with_raster(
         None,
     ));
@@ -3241,7 +3182,7 @@ fn agent_send_before_paste_probe_keeps_image() {
     crate::clipboard::clear_clipboard_probe_hook();
     assert_eq!(app.agents[&id].paste_probe_in_flight, 1);
 
-    // Enter before the probe completes → the send is stashed (no enqueue).
+    // Enter before the probe completes: the send is stashed (no enqueue)
     let effects = dispatch(Action::SendPrompt("look at this".into()), &mut app);
     assert!(
         effects.is_empty(),
@@ -3253,8 +3194,7 @@ fn agent_send_before_paste_probe_keeps_image() {
         "nothing enqueued before the image attaches"
     );
 
-    // Probe completes with the image → attach it AND re-issue the stashed
-    // send, which now carries the image content block.
+    // The probe completes with the image: attach it AND re-issue the stashed send, which now carries the image content block
     let pasted = crate::prompt_images::from_clipboard_data(&crate::clipboard::ImageData {
         data: vec![1, 2, 3],
         mime_type: "image/png".into(),
@@ -3285,10 +3225,8 @@ fn agent_send_before_paste_probe_keeps_image() {
     );
 }
 
-/// Paste-then-immediate-interject race: Ctrl+Enter while the pasted image's
-/// probe is still off-thread must stash the interject (draft untouched) and
-/// re-issue it on completion carrying the freshly attached image — mirroring
-/// the Enter/SendPrompt stash.
+/// Paste-then-immediate-interject race: Ctrl+Enter while the pasted image's probe is still off-thread must stash the interject (draft untouched).
+/// It is re-issued on completion carrying the freshly attached image, mirroring the Enter/SendPrompt stash.
 #[test]
 fn interject_before_paste_probe_keeps_image() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -3300,7 +3238,7 @@ fn interject_before_paste_probe_keeps_image() {
         agent.set_active_pane(ActivePane::Prompt, true);
         agent.prompt.set_text("look at this");
     }
-    // Cmd+V an image → the probe defers.
+    // Cmd+V an image: the probe defers
     crate::clipboard::set_clipboard_probe_hook(crate::clipboard::ClipboardProbeHook::with_raster(
         None,
     ));
@@ -3319,7 +3257,7 @@ fn interject_before_paste_probe_keeps_image() {
         .expect("Cmd+V of an image must defer a probe");
     crate::clipboard::clear_clipboard_probe_hook();
 
-    // Ctrl+Enter before the probe completes → stashed, draft untouched.
+    // Ctrl+Enter before the probe completes: stashed, draft untouched
     {
         let agent = app.agents.get_mut(&id).unwrap();
         let outcome =
@@ -3339,8 +3277,7 @@ fn interject_before_paste_probe_keeps_image() {
         "the stash must not consume the draft before the image attaches"
     );
 
-    // Probe completes with the image → attach it AND re-issue the interject,
-    // which now carries the image content block.
+    // The probe completes with the image: attach it AND re-issue the interject, which now carries the image content block
     let pasted = crate::prompt_images::from_clipboard_data(&crate::clipboard::ImageData {
         data: vec![1, 2, 3],
         mime_type: "image/png".into(),
@@ -3374,9 +3311,8 @@ fn interject_before_paste_probe_keeps_image() {
     assert!(app.agents[&id].prompt.images.is_empty());
 }
 
-/// Guard: a stashed send must NOT be re-issued to the wrong session when the
-/// user switched agents during the probe window. The image still attaches to
-/// the original target; the stale send is dropped, not sent to the new agent.
+/// Guard: a stashed send must NOT be re-issued to the wrong session when the user switched agents during the probe window.
+/// The image still attaches to the original target; the stale send is dropped, not sent to the new agent.
 #[test]
 fn agent_paste_completion_after_switch_does_not_send_to_other_agent() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -3388,7 +3324,7 @@ fn agent_paste_completion_after_switch_does_not_send_to_other_agent() {
     app.agents
         .insert(b, AgentView::new(session_b, ScrollbackState::new()));
 
-    // Cmd+V an image into A (active view A) → the probe defers.
+    // Cmd+V an image into A (active view A): the probe defers
     {
         let agent = app.agents.get_mut(&a).unwrap();
         agent.set_active_pane(ActivePane::Prompt, true);
@@ -3411,12 +3347,11 @@ fn agent_paste_completion_after_switch_does_not_send_to_other_agent() {
         })
         .expect("Cmd+V of an image must defer a probe");
     crate::clipboard::clear_clipboard_probe_hook();
-    // Model the event loop: `AppView::handle_input` drains the view's
-    // pending effects after the key event, before the completion arrives
-    // (the completion arm hands back anything still queued).
+    // Model the event loop: `AppView::handle_input` drains the view's pending effects after the key event, before the completion arrives
+    // The completion arm hands back anything still queued
     app.agents.get_mut(&a).unwrap().pending_effects.clear();
 
-    // Enter (still on A) → the send is stashed.
+    // Enter (still on A): the send is stashed
     let effects = dispatch(Action::SendPrompt("for agent A".into()), &mut app);
     assert!(effects.is_empty());
     assert!(app.agents[&a].deferred_send.is_some());
@@ -3446,8 +3381,8 @@ fn agent_paste_completion_after_switch_does_not_send_to_other_agent() {
     // (2) A's stash is cleared so it can't leak.
     assert!(app.agents[&a].deferred_send.is_none());
     assert_eq!(app.agents[&a].paste_probe_in_flight, 0);
-    // (3) No send is re-issued to the now-active B. The only returned effect
-    // prepares the image that was attached to A.
+    // (3) No send is re-issued to the now-active B
+    // The only returned effect prepares the image that was attached to A
     match effects.as_slice() {
         [Effect::PreparePromptImagePreview { preparation }] => assert_eq!(
             preparation.preview().identity(),
@@ -3492,9 +3427,8 @@ fn prompt_before_the_session_binds_is_queued() {
 
 // ── Screen-mode slash gate tests ────────────────────────────────────
 
-/// Returns true if any system block in agent 0's scrollback contains
-/// `needle`. Avoids `last_system_text`'s "last block must be System" panic
-/// for the allowed-command control (which may leave no system block).
+/// Returns true if any system block in agent 0's scrollback contains `needle`.
+/// Avoids `last_system_text`'s "last block must be System" panic for the allowed-command control (which may leave no system block).
 fn scrollback_has_system_text(app: &AppView, id: AgentId, needle: &str) -> bool {
     let sb = &app.agents[&id].scrollback;
     (0..sb.len()).any(
@@ -3555,8 +3489,8 @@ fn mode_switcher_in_its_own_mode_says_you_are_already_there() {
     );
 }
 
-/// Inline (`--no-alt-screen`) is a full TUI, so fullscreen-only commands run
-/// there — the gate keys off "is minimal", not "is `ScreenMode::Fullscreen`".
+/// Inline (`--no-alt-screen`) is a full TUI, so fullscreen-only commands run there.
+/// The gate keys off "is minimal", not "is `ScreenMode::Fullscreen`".
 #[test]
 fn non_minimal_mode_allows_fullscreen_pane_slash_command() {
     let mut app = test_app_with_agent();
@@ -3607,7 +3541,7 @@ fn show_queue_lists_local_prompts_in_order() {
     let text = last_system_text(&app, AgentId(0));
     assert!(text.contains("Queued prompts (2):"), "got: {text:?}");
     assert!(text.contains("#1  first prompt"), "got: {text:?}");
-    // Multi-line prompts collapse to the first line + a count suffix.
+    // Multi-line prompts collapse to the first line plus a count suffix
     assert!(text.contains("#2  second  (+1 more line)"), "got: {text:?}");
 }
 
@@ -3696,7 +3630,7 @@ fn plain_cancel_still_pushes_cancelled_marker() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     dispatch(Action::SendPrompt("first".into()), &mut app);
-    // Turn already produced output → Ctrl+C takes the standard cancel path, not the rewind.
+    // The turn already produced output, so Ctrl+C takes the standard cancel path, not the rewind
     app.agents.get_mut(&id).unwrap().session.in_flight_prompt = None;
     let _ = dispatch(Action::CancelTurn, &mut app);
     assert!(app.agents[&id].session.state.is_cancelling());
@@ -3769,8 +3703,7 @@ fn send_prompt_now_dispatch_arms_expectation_and_suppresses_marker() {
     );
 }
 
-/// Older-shell control: a plain `SendPrompt` during a held wait stays unarmed,
-/// so a meta-less cancel still renders its marker.
+/// Older-shell control: a plain `SendPrompt` during a held wait stays unarmed, so a meta-less cancel still renders its marker.
 #[test]
 fn plain_send_during_blocking_wait_does_not_arm_and_meta_less_cancel_is_visible() {
     use crate::app::agent_view::test_fixtures::simulate_task_output_wait;
@@ -3837,6 +3770,119 @@ fn plain_send_during_blocking_wait_trusts_wire_send_now_trigger() {
         count_completed_markers(&app, id),
         0,
         "no substitute completed marker for a wire send-now cancel"
+    );
+}
+
+fn count_user_prompts(app: &AppView, id: AgentId) -> usize {
+    let agent = &app.agents[&id];
+    (0..agent.scrollback.len())
+        .filter(|i| {
+            matches!(
+                agent.scrollback.entry(*i).map(|e| &e.block),
+                Some(RenderBlock::UserPrompt(_))
+            )
+        })
+        .count()
+}
+
+fn cancelled_removed_from_queue(id: AgentId, prompt_id: &str) -> Action {
+    let mut meta = serde_json::Map::new();
+    meta.insert("promptId".into(), prompt_id.into());
+    meta.insert(
+        crate::app::turn_completion::COMPLETION_KIND_KEY.into(),
+        crate::app::turn_completion::REMOVED_FROM_QUEUE_KIND.into(),
+    );
+    Action::TaskComplete(TaskResult::PromptResponse {
+        agent_id: id,
+        result: Ok(acp::PromptResponse::new(acp::StopReason::Cancelled).meta(Some(meta))),
+        http_status: None,
+        prompt_id: Some(prompt_id.into()),
+    })
+}
+
+#[test]
+fn send_during_wake_queues_without_starting_a_turn() {
+    use crate::app::agent_view::RunningWakeTurn;
+
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.running_wake_turn = Some(RunningWakeTurn {
+            prompt_id: "task-completed-wake".into(),
+            cancel_sent: false,
+        });
+    }
+
+    const TEXT: &str = "try again";
+    let effects = dispatch(Action::SendPrompt(TEXT.into()), &mut app);
+    match effects.as_slice() {
+        [Effect::SendPrompt { text, .. }] => assert_eq!(text, TEXT),
+        other => panic!("wake send must go to the server queue, got {other:?}"),
+    }
+    let agent = &app.agents[&id];
+    assert_eq!(
+        count_user_prompts(&app, id),
+        0,
+        "queued follow-up must not paint a scrollback bubble mid-wake"
+    );
+    assert!(
+        agent.session.state.is_idle(),
+        "must not start_turn over a non-adopted wake"
+    );
+    assert!(agent.session.current_prompt_id.is_none());
+    assert!(agent.running_wake_turn.is_some());
+}
+
+#[test]
+fn removed_from_queue_completion_kind_is_silent_without_wake_marker() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let effects = dispatch(Action::SendPrompt("try again".into()), &mut app);
+    let prompt_id = match effects.as_slice() {
+        [Effect::SendPrompt { prompt_id, .. }] => prompt_id.clone(),
+        other => panic!("idle drain starts a turn, got {other:?}"),
+    };
+
+    let _ = dispatch(cancelled_removed_from_queue(id, &prompt_id), &mut app);
+    assert_eq!(count_cancelled_markers(&app, id), 0);
+    assert_eq!(count_completed_markers(&app, id), 0);
+}
+
+#[test]
+fn cancelled_response_during_newer_wake_still_shows_cancel_marker() {
+    use crate::app::agent_view::RunningWakeTurn;
+
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let effects = dispatch(Action::SendPrompt("user turn".into()), &mut app);
+    let prompt_id = match effects.as_slice() {
+        [Effect::SendPrompt { prompt_id, .. }] => prompt_id.clone(),
+        other => panic!("idle drain starts a turn, got {other:?}"),
+    };
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.running_wake_turn = Some(RunningWakeTurn {
+            prompt_id: "task-completed-newer".into(),
+            cancel_sent: false,
+        });
+    }
+
+    let mut meta = serde_json::Map::new();
+    meta.insert("promptId".into(), prompt_id.clone().into());
+    let _ = dispatch(
+        Action::TaskComplete(TaskResult::PromptResponse {
+            agent_id: id,
+            result: Ok(acp::PromptResponse::new(acp::StopReason::Cancelled).meta(Some(meta))),
+            http_status: None,
+            prompt_id: Some(prompt_id),
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        count_cancelled_markers(&app, id),
+        1,
+        "ambient wake state must not hide a real cancel"
     );
 }
 
@@ -4027,9 +4073,8 @@ fn queue_interject_shared_arms_expectation_while_running() {
     assert!(app.agents[&id].is_self_originated_prompt("srv-row-1"));
 }
 
-/// During an active goal the shell promotes a send-now WITHOUT cancelling, so
-/// neither `SendPromptNow` nor a server-row send-now may arm the expectation —
-/// a stale arm would mute a later real cancel's marker.
+/// During an active goal the shell promotes a send-now WITHOUT cancelling.
+/// Neither `SendPromptNow` nor a server-row send-now may arm the expectation; a stale arm would mute a later real cancel's marker.
 #[test]
 fn send_now_during_active_goal_does_not_arm_expectation() {
     let mut app = test_app_with_agent();
@@ -4076,13 +4121,9 @@ fn send_now_during_active_goal_does_not_arm_expectation() {
     );
 }
 
-/// Bug 1 (Bugbot "Send Now block retired early"): an active-goal Send Now
-/// paints an optimistic user block and relies on the interjection notification
-/// to claim it in place. The prompt's RPC resolves as removed-without-running
-/// (the expected outcome of routing the Send Now as an interjection), taking
-/// the non-running `PromptResponse` path — but that must NOT retire the painted
-/// block before its interjection claim arrives, or the message is dropped and
-/// re-pushed at the scrollback end (flicker / reorder).
+/// The prompt's RPC resolves as removed-without-running (the expected outcome of routing the Send Now as an interjection).
+/// That takes the non-running `PromptResponse` path, but it must NOT retire the painted block before its interjection claim arrives.
+/// Otherwise the message is dropped and re-pushed at the scrollback end (flicker / reorder).
 #[test]
 fn goal_send_now_painted_block_survives_removed_from_queue_response() {
     let mut app = test_app_with_agent();
@@ -4141,10 +4182,8 @@ fn goal_send_now_painted_block_survives_removed_from_queue_response() {
     );
 }
 
-/// Bug 1 companion: a `queue/changed` broadcast that no longer lists a
-/// CONFIRMED active-goal Send Now row (the shell converted it into an
-/// interjection and dropped the queue row) must NOT retire its painted block
-/// before the interjection notification claims it.
+/// A `queue/changed` broadcast that no longer lists a CONFIRMED active-goal Send Now row must NOT retire its painted block.
+/// The shell converted it into an interjection and dropped the queue row; the block waits for the interjection notification's claim.
 #[test]
 fn goal_send_now_painted_block_survives_queue_changed_removal() {
     use xai_acp_lib::AcpClientMessage;
@@ -4171,9 +4210,8 @@ fn goal_send_now_painted_block_survives_queue_changed_removal() {
         other => panic!("goal send-now takes the immediate server send, got {other:?}"),
     };
     let block_entry = app.agents[&id].send_now_painted_blocks[&painted_pid].0;
-    // Model the row as CONFIRMED shell-side: the finding's race is a confirmed
-    // row (optimistic echo already cleared) that then disappears from a later
-    // broadcast when the Send Now is merged as an interjection.
+    // Model the row as CONFIRMED shell-side (optimistic echo already cleared)
+    // The race: a confirmed row disappears from a later broadcast when the Send Now is merged as an interjection
     app.agents
         .get_mut(&id)
         .unwrap()
@@ -4181,8 +4219,7 @@ fn goal_send_now_painted_block_survives_queue_changed_removal() {
         .remove(&painted_pid);
     assert!(app.agents[&id].is_send_now_awaiting_interjection_claim(&painted_pid));
 
-    // A broadcast that no longer lists the row, still naming the running goal
-    // turn (so no adoption side-effects fire).
+    // A broadcast that no longer lists the row, still naming the running goal turn (so no adoption side-effects fire)
     let params = serde_json::json!({
         "sessionId": "test-session",
         "entries": [],
@@ -4211,8 +4248,7 @@ fn goal_send_now_painted_block_survives_queue_changed_removal() {
     );
 }
 
-/// Send-now during a reconnect outage must not fire into the dead channel —
-/// the payload is requeued locally (the producer already consumed it).
+/// Send-now during a reconnect outage must not fire into the dead channel; the payload is requeued locally (the producer already consumed it).
 #[test]
 fn send_prompt_now_during_reconnect_requeues_locally() {
     let mut app = test_app_with_agent();
@@ -4254,6 +4290,8 @@ fn send_prompt_now_during_reconnect_requeues_locally() {
 /// the root cause of the duplicate-message bug: every rapid Send Now press
 /// minted a new echo that was never reconciled away, so phantom rows piled up.
 /// Asserting the echo is absent locks the fix in place.
+/// A failed send-now RPC requeues its payload (front) instead of silently dropping the message, and retires the optimistic queue echo.
+
 #[test]
 fn send_now_steers_without_optimistic_echo() {
     let mut app = test_app_with_agent();
@@ -4277,9 +4315,8 @@ fn send_now_steers_without_optimistic_echo() {
     );
 }
 
-/// An image-bearing prompt submitted during a parked sendable wait routes
-/// through send-now (images ride as content blocks) instead of silently
-/// holding in the local queue behind the wait.
+/// An image-bearing prompt submitted during a parked sendable wait routes through send-now (images ride as content blocks).
+/// It must not silently hold in the local queue behind the wait.
 #[test]
 fn image_prompt_during_sendable_wait_routes_to_send_now() {
     use crate::app::agent_view::test_fixtures::simulate_task_output_wait;
@@ -4295,8 +4332,7 @@ fn image_prompt_during_sendable_wait_routes_to_send_now() {
     });
     {
         let agent = app.agents.get_mut(&id).unwrap();
-        // A real chip insert: `drain_images` reconciles against live textarea
-        // elements, so a bare `images.push` would be dropped as stale.
+        // A real chip insert: `drain_images` reconciles against live textarea elements, so a bare `images.push` would be dropped as stale
         agent.prompt.insert_image(img).unwrap();
     }
 
@@ -4330,10 +4366,9 @@ fn image_prompt_during_sendable_wait_routes_to_send_now() {
     );
 }
 
-/// The local drip-feed drain must hold while a non-running server row exists —
-/// the shell owns the next turn (its `running_prompt_id` broadcast starts it).
-/// Draining locally would promote a bogus local turn that swallows the real
-/// turn's deltas.
+/// The local drip-feed drain must hold while a non-running server row exists.
+/// The shell owns the next turn (its `running_prompt_id` broadcast starts it).
+/// Draining locally would promote a bogus local turn that swallows the real turn's deltas.
 #[test]
 fn local_drain_holds_while_server_row_queued() {
     use crate::app::dispatch::queue::maybe_drain_queue;
@@ -4367,9 +4402,8 @@ fn local_drain_holds_while_server_row_queued() {
         "the local row must stay queued"
     );
 
-    // The running server row does NOT hold the drain (it is the in-flight
-    // turn, not a queued one) — once it's marked running and the turn ends,
-    // the local row drains normally.
+    // The running server row does NOT hold the drain (it is the in-flight turn, not a queued one)
+    // Once it's marked running and the turn ends, the local row drains normally
     agent.session.current_prompt_id = Some("srv-1".into());
     let effects = maybe_drain_queue(agent).effects;
     assert!(
@@ -4391,7 +4425,7 @@ fn stale_expectation_cleared_on_next_turn_start() {
         "turn start must clear a stale expectation"
     );
 
-    // Real Ctrl+C on the fresh turn keeps its marker (stash dropped → standard path).
+    // Real Ctrl+C on the fresh turn keeps its marker (stash dropped, so the standard path runs)
     app.agents.get_mut(&id).unwrap().session.in_flight_prompt = None;
     let _ = dispatch(Action::CancelTurn, &mut app);
     let _ = dispatch(cancelled_prompt_response(id, None), &mut app);
@@ -4424,8 +4458,7 @@ fn interactive_cancel_supersedes_send_now_expectation() {
     );
 }
 
-/// A modern send-now cancel out of a park leaves no markers: the park is
-/// markerless and wire `cancelTrigger=send_now` suppresses the cancel marker.
+/// A modern send-now cancel out of a park leaves no markers: the park is markerless and wire `cancelTrigger=send_now` suppresses the cancel marker.
 #[test]
 fn send_now_cancel_after_park_leaves_no_markers() {
     use crate::app::agent_view::test_fixtures::{count_turn_markers, simulate_task_output_wait};
@@ -4451,9 +4484,9 @@ fn send_now_cancel_after_park_leaves_no_markers() {
     );
 }
 
-/// Shell-suggestion async gate 1: a debounce expiring after the user left
-/// bash mode fetches nothing (a stale timer must not fire a suggest request
-/// for chat text). Positive control: still in bash mode, the fetch fires.
+/// Shell-suggestion async gate 1: a debounce expiring after the user left bash mode fetches nothing.
+/// A stale timer must not fire a suggest request for chat text.
+/// Positive control: still in bash mode, the fetch fires.
 #[test]
 fn suggestion_debounce_after_bash_exit_fetches_nothing() {
     let mut app = test_app_with_agent();
@@ -4503,9 +4536,8 @@ fn suggestion_debounce_after_bash_exit_fetches_nothing() {
     );
 }
 
-/// Shell-suggestion async gate 2: a response landing after the user left
-/// bash mode is dropped wholesale — no ghost, no dropdown items over the
-/// normal-mode chat draft.
+/// Shell-suggestion async gate 2: a response landing after the user left bash mode is dropped wholesale.
+/// No ghost, no dropdown items over the normal-mode chat draft.
 #[test]
 fn suggestions_landing_after_bash_exit_are_dropped() {
     use crate::views::suggestion_controller::{
@@ -4564,10 +4596,9 @@ fn suggestions_landing_after_bash_exit_are_dropped() {
     assert!(agent.prompt.suggestions.dropdown.items.is_empty());
 }
 
-/// The always-on pipeline end to end, with `GROK_SUGGESTIONS` semantics
-/// OFF: Tab fires a deterministic fetch, and the landing response runs the
-/// terminal Tab semantics — a single file candidate splices in place
-/// immediately and the drill-down refetch rides out with the dispatch.
+/// The always-on pipeline end to end, with the `GROK_SUGGESTIONS` env flag OFF.
+/// Tab fires a deterministic fetch, and the response that lands behaves like Tab in a terminal.
+/// A single file candidate splices in place immediately and the drill-down refetch rides out with the dispatch.
 #[test]
 fn tab_fetch_landing_insta_accepts_single_candidate_always_on() {
     use crate::views::suggestion_controller::{
@@ -4596,8 +4627,7 @@ fn tab_fetch_landing_insta_accepts_single_candidate_always_on() {
                 _ => None,
             })
             .expect("Tab must fire a deterministic fetch");
-        // The event loop would drain these into execution; clear for the
-        // landing assertion below.
+        // The event loop would drain these into execution; clear for the landing assertion below
         agent.pending_effects.clear();
         generation
     };
@@ -4645,10 +4675,8 @@ fn tab_fetch_landing_insta_accepts_single_candidate_always_on() {
     );
 }
 
-/// Same pipeline with an ambiguous candidate set: the landing opens the
-/// dropdown (and installs no ghost) — the user picks with arrows + Tab.
-/// History rows model an OLD shell (new shells honor `tokenOnly` and send
-/// none on Tab fetches); whole-line sets must keep plain-open semantics.
+/// Same pipeline with an ambiguous candidate set: the response that lands opens the dropdown (and installs no ghost); the user picks with arrows and Tab.
+/// History rows model an OLD shell (new shells honor `tokenOnly` and send none on Tab fetches); a whole-line set must still just open the dropdown.
 #[test]
 fn tab_fetch_landing_opens_dropdown_for_ambiguous_set_always_on() {
     use crate::views::suggestion_controller::{
@@ -4680,8 +4708,7 @@ fn tab_fetch_landing_opens_dropdown_for_ambiguous_set_always_on() {
         truncated: false,
     };
     let response = SuggestResponseParsed {
-        // The shell still sends a ghost for history matches; without the
-        // env flag it must not render.
+        // The shell still sends a ghost for history matches; without the env flag it must not render
         ghost: Some(GhostSuggestionParsed {
             suffix: "atus --porcelain-A".into(),
             source: ShellSuggestionSource::History,
@@ -4719,9 +4746,8 @@ fn tab_fetch_landing_opens_dropdown_for_ambiguous_set_always_on() {
     );
 }
 
-/// Landings route by the fetching agent, not the active view: a view
-/// switch mid-flight must still deliver the candidates to the agent that
-/// armed the Tab (and never to whatever is on screen).
+/// A response lands on the agent that fetched it, not on the active view.
+/// A view switch mid-flight must still deliver the candidates to the agent that armed the Tab (and never to whatever is on screen).
 #[test]
 fn suggestions_landing_routes_by_agent_id_not_active_view() {
     use crate::views::suggestion_controller::{
@@ -4776,10 +4802,8 @@ fn suggestions_landing_routes_by_agent_id_not_active_view() {
     assert_eq!(agent.prompt.suggestions.dropdown.request_text, "git st");
 }
 
-/// The debounce hop routes by the arming agent too (the timer carries
-/// `agent_id`, mirroring the landing hop): an expiry firing after a view
-/// switch still fetches for the arming agent instead of no-oping — or
-/// worse, reading another agent's state.
+/// The debounce expiry also routes by the arming agent (the timer carries `agent_id`, just as `ShellSuggestionsLoaded` does).
+/// An expiry firing after a view switch still fetches for the arming agent instead of no-oping, or worse, reading another agent's state.
 #[test]
 fn suggestion_debounce_routes_by_agent_id_not_active_view() {
     let mut app = test_app_with_agent();
@@ -4817,6 +4841,215 @@ fn suggestion_debounce_routes_by_agent_id_not_active_view() {
     );
 }
 
+/// Casual commenting parks its draft and keeps the composer live, the opposite of a permission.
+/// Closing a card over it therefore restores into the composer and leaves the parked draft alone.
+#[test]
+fn casual_commenting_keeps_its_parked_draft_when_a_card_closes() {
+    use crate::views::question_view::QuestionViewState;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use xai_grok_tools::implementations::grok_build::ask_user_question::Question;
+
+    let id = AgentId(0);
+    let mut app = test_app_with_agent();
+    let agent = app.agents.get_mut(&id).unwrap();
+    agent.active_pane = crate::app::agent_view::AgentPane::Prompt;
+    agent.prompt.set_text("pre-comment draft");
+    agent.casual_stashed_prompt = Some(agent.prompt.stash());
+    agent.prompt.set_text("the casual comment");
+
+    // A card open stashes the live comment and blanks the composer.
+    let stashed = agent.prompt.stash();
+    agent.question_view = Some(QuestionViewState::new(
+        "card-over-comment".into(),
+        vec![Question {
+            question: "busy?".into(),
+            options: vec![],
+            multi_select: Some(false),
+            id: None,
+        }],
+        stashed,
+    ));
+    agent.prompt.set_text("");
+    agent.handle_question_key_for_test(&KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+
+    assert_eq!(
+        agent.prompt.text(),
+        "the casual comment",
+        "the live comment comes back to the composer"
+    );
+    assert_eq!(
+        agent
+            .casual_stashed_prompt
+            .as_ref()
+            .map(|s| s.text.as_str()),
+        Some("pre-comment draft"),
+        "the parked pre-comment draft must survive"
+    );
+}
+
+mod prompt_history_recording_tests {
+    use super::test_app_with_agent;
+    use crate::app::actions::Action;
+    use crate::app::agent::AgentId;
+    use crate::app::dispatch::router::dispatch;
+
+    fn history(app: &crate::app::app_view::AppView) -> Vec<String> {
+        app.agents[&AgentId(0)].session.prompt_history.clone()
+    }
+
+    #[test]
+    fn a_typed_slash_command_lands_in_the_history() {
+        let mut app = test_app_with_agent();
+
+        dispatch(
+            Action::SendPrompt("/rename payment retries".into()),
+            &mut app,
+        );
+
+        assert_eq!(history(&app), ["/rename payment retries"]);
+    }
+
+    /// The shell returns prompts it was sent, including ones the local list already holds.
+    #[test]
+    fn the_fetch_does_not_reorder_what_the_shell_also_knows() {
+        let mut app = test_app_with_agent();
+        let id = AgentId(0);
+
+        dispatch(Action::SendPrompt("hello".into()), &mut app);
+        dispatch(Action::SendBashCommand("ls".into()), &mut app);
+        dispatch(Action::SendPrompt("/asim-skill".into()), &mut app);
+        dispatch(Action::SendPrompt("/session-info".into()), &mut app);
+
+        dispatch(
+            Action::TaskComplete(crate::app::actions::TaskResult::PromptHistoryLoaded {
+                agent_id: id,
+                prompts: vec!["/asim-skill".to_owned(), "hello".to_owned()],
+            }),
+            &mut app,
+        );
+
+        assert_eq!(
+            history(&app),
+            ["/session-info", "/asim-skill", "! ls", "hello"]
+        );
+    }
+
+    #[test]
+    fn an_immediate_repeat_collapses_but_an_interleaved_one_does_not() {
+        let mut app = test_app_with_agent();
+
+        dispatch(Action::SendPrompt("build it".into()), &mut app);
+        dispatch(Action::SendPrompt("build it".into()), &mut app);
+        dispatch(Action::SendPrompt("check it".into()), &mut app);
+        dispatch(Action::SendPrompt("build it".into()), &mut app);
+
+        assert_eq!(history(&app), ["build it", "check it", "build it"]);
+    }
+
+    /// `/notacommand` reaches the command recorder and then the prompt recorder.
+    #[test]
+    fn an_unknown_command_is_recorded_once() {
+        let mut app = test_app_with_agent();
+
+        dispatch(Action::SendPrompt("/notacommand".into()), &mut app);
+
+        assert_eq!(history(&app), ["/notacommand"]);
+    }
+
+    /// Bash, slash and note entries never reach the shell. The local list is their only copy.
+    #[test]
+    fn a_late_history_fetch_keeps_what_only_the_client_knows() {
+        let mut app = test_app_with_agent();
+        let id = AgentId(0);
+
+        dispatch(Action::SendBashCommand("git status".into()), &mut app);
+        dispatch(
+            Action::SendPrompt("/rename payment retries".into()),
+            &mut app,
+        );
+
+        dispatch(
+            Action::TaskComplete(crate::app::actions::TaskResult::PromptHistoryLoaded {
+                agent_id: id,
+                prompts: vec!["git status".to_owned(), "fetched from the shell".to_owned()],
+            }),
+            &mut app,
+        );
+
+        let after = history(&app);
+        assert!(
+            after.contains(&"! git status".to_owned()),
+            "the bash command survived the fetch: {after:?}"
+        );
+        assert!(
+            !after.contains(&"git status".to_owned()),
+            "the shell stores bash bare, so its copy must not double the prefixed one: {after:?}"
+        );
+        assert!(
+            after.contains(&"/rename payment retries".to_owned()),
+            "the slash command survived the fetch: {after:?}"
+        );
+        assert!(
+            after.contains(&"fetched from the shell".to_owned()),
+            "the fetched history is still merged in: {after:?}"
+        );
+    }
+
+    /// Storing the `#` would recall a prompt opening `# Context` as a note.
+    #[test]
+    fn a_remember_note_is_recorded_as_plain_text() {
+        let mut app = test_app_with_agent();
+
+        dispatch(
+            Action::SendRememberNote("deploys need the staging flag".into()),
+            &mut app,
+        );
+
+        assert_eq!(history(&app), ["deploys need the staging flag"]);
+    }
+
+    #[test]
+    fn a_refused_remember_note_records_nothing() {
+        let mut app = test_app_with_agent();
+
+        dispatch(Action::SendRememberNote("   ".into()), &mut app);
+
+        assert!(history(&app).is_empty());
+    }
+
+    /// A stashed draft is not history. Only the send that follows puts a row in the recall list.
+    #[test]
+    fn stashing_a_draft_adds_no_history_row() {
+        let mut app = test_app_with_agent();
+        let id = AgentId(0);
+        {
+            let agent = app.agents.get_mut(&id).unwrap();
+            agent.prompt.set_text("first draft");
+            agent.stash_prompt_draft(crate::app::agent_view::StashCause::ClearedDraft);
+            agent.prompt.set_text("second draft");
+            agent.stash_prompt_draft(crate::app::agent_view::StashCause::ClearedDraft);
+        }
+        assert!(history(&app).is_empty());
+
+        dispatch(Action::SendPrompt("a real send".into()), &mut app);
+
+        assert_eq!(history(&app), ["a real send"]);
+    }
+
+    /// `/remember foo` runs the command recorder and then `SendRememberNote(foo)`.
+    #[test]
+    fn a_slash_remember_records_only_the_typed_command() {
+        let mut app = test_app_with_agent();
+
+        dispatch(
+            Action::SendPrompt("/remember deploys need the staging flag".into()),
+            &mut app,
+        );
+
+        assert_eq!(history(&app), ["/remember deploys need the staging flag"]);
+    }
+}
+
 mod prompt_stash_dispatch_tests {
     use super::test_app_with_agent;
     use crate::app::actions::Action;
@@ -4824,7 +5057,7 @@ mod prompt_stash_dispatch_tests {
     use crate::app::agent_view::StashCause;
     use crate::app::dispatch::router::dispatch;
 
-    /// Esc-Esc clear hands the draft to the stash rather than dropping it. Ranking and restore semantics belong to `agent_view::prompt_stash`.
+    /// Esc-Esc clear hands the draft to the stash rather than dropping it. Ranking and restore behavior lives in `agent_view::prompt_stash`.
     #[test]
     fn clear_prompt_stashes_the_cleared_draft() {
         let mut app = test_app_with_agent();
@@ -4845,10 +5078,9 @@ mod prompt_stash_dispatch_tests {
         assert_eq!(stash.cause, StashCause::ClearedDraft);
     }
 
-    /// The clear records history and the stash contributes its own entry, so a `!` draft has to
-    /// be recorded with the same `! ` prefix or the Up browse lists it twice.
+    /// A cleared `!` draft lands in the slot with its shell mode and nowhere else: it was never sent.
     #[test]
-    fn clearing_a_shell_draft_leaves_one_history_entry() {
+    fn clearing_a_shell_draft_stashes_it_and_records_no_history() {
         let mut app = test_app_with_agent();
         let id = AgentId(0);
         {
@@ -4859,9 +5091,14 @@ mod prompt_stash_dispatch_tests {
 
         dispatch(Action::ClearPrompt, &mut app);
 
-        let history = app.agents[&id].combined_prompt_history();
-        let texts: Vec<&str> = history.iter().map(|e| e.text.as_str()).collect();
-        assert_eq!(texts, ["! git status"]);
+        let agent = app.agents.get(&id).unwrap();
+        assert!(agent.combined_prompt_history().is_empty());
+        let stash = agent.prompt_stash.as_ref().expect("draft was stashed");
+        assert_eq!(stash.prompt.text, "git status");
+        assert_eq!(
+            stash.input_mode,
+            crate::app::agent_view::PromptInputMode::Bash
+        );
     }
 
     #[test]
@@ -4929,8 +5166,8 @@ mod prompt_stash_dispatch_tests {
         assert!(agent.prompt_stash.is_some(), "the stash must stay put");
     }
 
-    /// A `#` note with no text is refused, so it never consumed a draft and must not hand the
-    /// stash back. The marker has to sit after the guard, not before it.
+    /// A `#` note with no text is refused, so it never consumed a draft and must not hand the stash back.
+    /// The marker has to sit after the guard, not before it.
     #[test]
     fn a_rejected_remember_note_does_not_restore_the_stash() {
         let mut app = test_app_with_agent();

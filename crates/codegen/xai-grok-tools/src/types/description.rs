@@ -13,11 +13,9 @@
 
 use std::collections::HashMap;
 
-/// Context for resolving tool description templates.
-///
-/// - `tools`: canonical name → `Some(model_facing_name)` if enabled, `None` if disabled.
-/// - `params`: canonical tool name → { canonical param → model_facing param }.
-/// - `skills`: available skills for the skill tool description.
+/// Context for resolving tool description templates. `tools`: canonical name → `Some(model_facing_name)` if enabled,
+/// `None` if disabled. `params`: canonical tool name → { canonical param → model_facing param }. `skills`: available
+/// skills for the skill tool description.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct DescriptionContext {
     /// Canonical tool name → `Some(model_facing_name)` (enabled) or `None` (disabled).
@@ -26,15 +24,9 @@ pub struct DescriptionContext {
     pub params: HashMap<String, HashMap<String, String>>,
 }
 
-/// Create a MiniJinja environment with custom delimiters.
-///
-/// Delimiters:
-/// - Variables: `${{ }}` (e.g., `${{ tools.read_file }}`)
-/// - Blocks: `${%  %}` (e.g., `${%- if tools.grep %}...${%- endif %}`)
-/// - Comments: `${#  #}` (e.g., `${# explanation #}`)
-///
-/// This avoids collisions with literal `{{ }}` that appear frequently in
-/// tool descriptions (e.g., JSON examples, Rust generics).
+/// Create a MiniJinja environment with custom delimiters. Variables: `${{ }}` (e.g., `${{ tools.read_file }}`) Blocks:
+/// `${% %}` (e.g., `${%- if tools.grep %}...${%- endif %}`) Comments: `${# #}` (e.g., `${# explanation #}`) This avoids
+/// collisions with literal `{{ }}` that appear frequently in tool descriptions (e.g., JSON examples, Rust generics).
 pub fn make_desc_env() -> minijinja::Environment<'static> {
     use minijinja::syntax::SyntaxConfig;
 
@@ -50,33 +42,9 @@ pub fn make_desc_env() -> minijinja::Environment<'static> {
     env
 }
 
-/// Render a tool description template with tool/param name resolution.
-///
-/// # Arguments
-///
-/// - `template` — the description template string (may contain `${{ tools.X }}`
-///   variables and `${%- if tools.X %}` conditionals).
-/// - `context` — the `DescriptionContext` with tool/param name mappings.
-///
-/// # Returns
-///
-/// The rendered description string. On render failure (syntax error in template),
-/// falls back to returning the raw template unchanged — this ensures tool
-/// registration never fails due to a template issue.
-///
-/// # Examples
-///
-/// ```ignore
-/// let mut ctx = DescriptionContext::default();
-/// ctx.tools.insert("read_file".into(), Some("Read".into()));
-/// ctx.tools.insert("grep".into(), None); // disabled
-///
-/// let desc = resolve_description(
-///     "Use ${{ tools.read_file }} to read. ${%- if tools.grep %} Also use ${{ tools.grep }}.${%- endif %}",
-///     &ctx,
-/// );
-/// assert_eq!(desc, "Use Read to read.");
-/// ```
+/// Render a tool description template with tool/param name resolution. `template` — the description template string (may contain `${{ tools.X
+/// }}` variables and `${%- if tools.X %}` conditionals). The rendered description string. On render failure (syntax error in template), falls
+/// back to returning the raw template unchanged — this ensures tool registration never fails due to a template issue.
 pub fn resolve_description(template: &str, context: &DescriptionContext) -> String {
     // Fast path: if the template doesn't contain any MiniJinja delimiters,
     // skip the render entirely.
@@ -96,11 +64,9 @@ pub fn resolve_description(template: &str, context: &DescriptionContext) -> Stri
         })
 }
 
-/// Render a Task description template that loops over `model_slugs`.
-///
-/// Sorts and deduplicates slugs, then renders with the standard `${{ }}` /
-/// `${% %}` description delimiters. Used when a harness embeds a sorted
-/// model-catalog list in a Task description template.
+/// Render a Task description template that loops over `model_slugs`. Sorts and deduplicates slugs,
+/// then renders with the standard `${{ }}` / `${% %}` description delimiters. Used when a harness
+/// embeds a sorted model-catalog list in a Task description template.
 pub fn render_with_model_slugs(template: &str, model_slugs: &[String]) -> String {
     let mut model_slugs = model_slugs.to_vec();
     model_slugs.sort_unstable();

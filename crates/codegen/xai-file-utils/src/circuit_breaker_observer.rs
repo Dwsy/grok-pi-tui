@@ -3,23 +3,9 @@
 use std::sync::Arc;
 use xai_circuit_breaker::{BreakerState, Observer, Outcome};
 
-/// `Observer` impl that emits `tracing` events matching the legacy
-/// in-tree `circuit_breaker.rs` so existing analytics queries
-/// (`target=circuit_breaker AND breaker=storage_breaker`) keep firing.
-///
-/// Event routing keys on the **new** state — keying on `(old, new)`
-/// tuples invites arm-ordering bugs (an early `(Open, _)` arm would
-/// catch `Open -> HalfOpen` and mis-label it "closed").
-///
-/// | new state | level | message                  |
-/// |-----------|-------|--------------------------|
-/// | `Open`    | warn  | "circuit breaker opened" |
-/// | `HalfOpen`| debug | "circuit breaker half-open" |
-/// | `Closed`  | info  | "circuit breaker closed" |
-///
-/// `on_outcome` emits a `tracing::trace!` per `Outcome::Failure` so
-/// downstream failure-rate dashboards have a per-401 signal.
-/// Successes are dropped (steady state would otherwise dominate log volume).
+/// `Observer` that emits `tracing` events matching the legacy breaker so existing analytics keep firing.
+/// Route on the **new** state only — `(old, new)` tuples mis-label `Open -> HalfOpen`.
+/// Failures are traced; successes are dropped so steady state does not dominate log volume.
 pub(crate) struct TracingObserver {
     name: &'static str,
 }

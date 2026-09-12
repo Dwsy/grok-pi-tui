@@ -27,7 +27,7 @@ pub fn format_doctor(report: &DiagnosticReport) -> String {
         RuntimeFact::NoReply | RuntimeFact::Unavailable => None,
     };
     if let Some(color_level) = color_level {
-        out.push_str(&format!("  color        {}\n", color_level.as_str()));
+        out.push_str(&format!("  color        {}\n", color_level.as_ref()));
     }
     if color_level.is_some() && facts.color.available_themes.len() == facts.color.total_themes {
         out.push_str("  themes       all\n");

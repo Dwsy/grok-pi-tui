@@ -1,22 +1,14 @@
 //! Default action definitions for the MVP.
 //!
-//! All key bindings are defined here — not scattered across event handlers.
+//! All key bindings are defined here, not scattered across event handlers.
 
 use crate::key;
 use crate::terminal::{TerminalName, terminal_context};
 
 use super::{ActionDef, ActionId, Category, When};
 
-/// True when `Ctrl+.` is not a reliable shortcuts-cheatsheet primary.
-///
-/// Callers pick a deliverable alternate primary (`Ctrl+X` on the agent
-/// screen, `?` on the dashboard). Both keys stay registered either way;
-/// this only chooses which the UI advertises.
-///
-/// Driven by [`crate::terminal::TerminalContext::ctrl_dot_unreliable`]
-/// (any KKP skip — brand, tmux `extended-keys off`, screen, unknown host),
-/// plus host-OS signals: native Windows on a non-branded console, or a
-/// Linux binary inside Win32's console pipeline (WSL).
+/// True when `Ctrl+.` is not a reliable primary key for the shortcuts cheatsheet. Both keys stay registered either
+/// way; this only chooses which the UI advertises.
 pub fn ctrl_dot_unreliable() -> bool {
     terminal_context().ctrl_dot_unreliable() || cfg!(target_os = "windows") || crate::host::is_wsl()
 }
@@ -60,15 +52,14 @@ fn mode_ctrl_g_action(screen_mode: crate::app::ScreenMode) -> ActionDef {
 
 /// Build the default action definitions for a screen mode.
 ///
-/// `mouse_reporting_toggle_enabled` gates the opt-in `ToggleMouseCapture`
-/// shortcut (see below); pass `false` for the standard set.
+/// `mouse_reporting_toggle_enabled` gates the opt-in `ToggleMouseCapture` shortcut (see below); pass `false` for the standard set.
 pub(super) fn default_actions(
     screen_mode: crate::app::ScreenMode,
     mouse_reporting_toggle_enabled: bool,
 ) -> Vec<ActionDef> {
     let ctx = terminal_context();
-    // xterm.js embeds: no KKP; host often steals Ctrl+I. Share one family flag for
-    // quit / half-page / interject so VS Code-family embeds match VS Code.
+    // xterm.js embeds have no KKP and the host often steals Ctrl+I
+    // Share one family flag for quit / half-page / interject so VS Code-family embeds match VS Code
     let in_vscode_family = ctx.brand.is_vscode_family();
     let in_vscode = in_vscode_family;
     let in_apple_terminal = ctx.brand == TerminalName::AppleTerminal;
@@ -137,8 +128,8 @@ pub(super) fn default_actions(
         },
         ActionDef {
             id: ActionId::NextResponse,
-            label: "response",
-            description: "Next response",
+            label: "turn",
+            description: "Jump to next turn at viewport top",
             default_key: key!('J'),
             alt_keys: vec![],
             category: Category::ConversationNav,
@@ -150,8 +141,8 @@ pub(super) fn default_actions(
         },
         ActionDef {
             id: ActionId::PrevResponse,
-            label: "response",
-            description: "Previous response",
+            label: "turn",
+            description: "Jump to previous turn at viewport top",
             default_key: key!('K'),
             alt_keys: vec![],
             category: Category::ConversationNav,
@@ -429,7 +420,7 @@ pub(super) fn default_actions(
             requires_confirmation: false,
             long_help: None,
         },
-        // ── Scrollback (contextual — block-type-dependent) ────────────
+        // ── Scrollback (contextual, block-type-dependent) ────────────
         ActionDef {
             id: ActionId::Rewind,
             label: "rewind",
@@ -573,7 +564,7 @@ pub(super) fn default_actions(
                 "Opens the session code-review modal (same as /review-session): left file list, right edit preview for write/edit tool changes in this session.",
             ),
         },
-        // ── Panes (agent-level — toggle side panes) ─────────────────
+        // ── Panes (agent-level: toggle side panes) ─────────────────
         mode_ctrl_g_action(screen_mode),
         ActionDef {
             id: ActionId::ToggleTodos,
@@ -594,16 +585,16 @@ pub(super) fn default_actions(
             id: ActionId::ToggleQueue,
             label: "queue",
             description: "Toggle prompt queue",
-            // Local macOS VS Code family only: ; / ' often never arrive (saw
-            // Ctrl+4 in input-debug). SSH and non-Mac keep ; (+ ' alt). Win/Linux
-            // VS maps Ctrl+4 to focusFourthEditorGroup.
+            // Local macOS VS Code family only: ; / ' often never arrive (saw Ctrl+4 in input-debug)
+            // SSH and non-Mac keep ; with ' as alt
+            // Win/Linux VS maps Ctrl+4 to focusFourthEditorGroup
             default_key: if local_mac_vscode {
                 key!('4', CONTROL)
             } else {
                 key!(';', CONTROL)
             },
-            // Apostrophe alt for consoles that drop Ctrl on `;`. Local Mac VS
-            // also keeps ; / ' as alts alongside primary Ctrl+4.
+            // Apostrophe alt for consoles that drop Ctrl on `;`
+            // Local Mac VS also keeps ; / ' as alts alongside primary Ctrl+4
             alt_keys: if local_mac_vscode {
                 vec![key!(';', CONTROL), key!('\'', CONTROL)]
             } else {
@@ -622,9 +613,9 @@ pub(super) fn default_actions(
             id: ActionId::OpenSessions,
             label: "sessions",
             description: "Open sessions",
-            default_key: key!(F(3)),
+            default_key: key!('r', CONTROL),
             alt_keys: vec![],
-            category: Category::Panels,
+            category: Category::Session,
             context: When::AgentScreen,
             hint_priority: None,
             hint_key_display: None,
@@ -666,9 +657,7 @@ pub(super) fn default_actions(
         // ── Prompt ───────────────────────────────────────────────────
         ActionDef {
             id: ActionId::InterjectPrompt,
-            // "send now" label: Enter queues a follow-up while a turn runs;
-            // this chord is cancel-and-send — stop the current turn and run
-            // the message as the next one ("send now").
+            // "send now" label: Enter queues a follow-up while a turn runs; this chord stops the current turn and runs the message as the next one
             label: "send now",
             description: "Send now while running (cancels the current turn)",
             // Ctrl+L is reserved for ModelPicker (Pi TUI alignment). VS Code
@@ -698,8 +687,7 @@ pub(super) fn default_actions(
             id: ActionId::EnableVoiceMode,
             label: "voice mode",
             description: "Start voice dictation (Ctrl+Space / F8)",
-            // No key binding (`KeyCode::Null`): dispatched directly by the voice
-            // chord's hold-to-talk press in the event loop, not via the registry.
+            // No key binding (`KeyCode::Null`): dispatched directly by the voice chord's hold-to-talk press in the event loop, not via the registry
             default_key: key!(Null),
             alt_keys: vec![],
             category: Category::Input,
@@ -710,21 +698,15 @@ pub(super) fn default_actions(
             long_help: None,
         },
         ActionDef {
-            // Voice capture chord (same surface as `/voice`; Esc/Enter stop).
-            // Bound to BOTH Ctrl+Space and F8 — Ctrl+Space decodes on every
-            // terminal (without the Kitty protocol it collapses to NUL, reported
-            // as `Char(' ')`+CONTROL), and F8 is a fallback for OSes/terminals
-            // that intercept Ctrl+Space (e.g. macOS input-source switching; use
-            // Fn+F8 on a laptop). The event loop maps a press to hold-to-talk or
-            // tap-toggle per `[ui].voice_capture_mode` before normal routing.
+            // Voice capture chord (the same capture as `/voice`; Esc/Enter stop). Ctrl+Space decodes on every terminal
+            // (without the Kitty protocol it collapses to NUL, reported as `Char(' ')`+CONTROL).
             id: ActionId::VoiceToggle,
             label: "mic",
             description: "Voice dictation (Ctrl+Space / F8)",
             default_key: key!(' ', CONTROL),
             alt_keys: vec![key!(F(8))],
             category: Category::Input,
-            // `Always` so the toggle key works on the agent screen AND the
-            // session-less dashboard (resolved via the global fallthrough).
+            // `Always` so the toggle key works on the agent screen and the session-less dashboard (resolved via the global fallthrough)
             context: When::Always,
             hint_priority: Some(11),
             hint_key_display: Some("Ctrl+Space / F8"),
@@ -733,7 +715,7 @@ pub(super) fn default_actions(
                 "Microphone capture for dictation, bound to Ctrl+Space (or F8: handy where Ctrl+Space is taken, e.g. macOS input-source switching; use Fn+F8 on a laptop).\nBehavior follows the Voice capture setting: toggle (press to start, press again to stop) or hold-to-talk (hold to record, release to stop), where hold needs a Kitty-protocol terminal and falls back to toggle elsewhere. `/voice` toggles everywhere.\nSpeech is transcribed straight into the prompt.",
             ),
         },
-        // Prompt history has no key chord (Ctrl+R is deliberately unbound):
+        // Prompt history has no key chord of its own:
         // `/history` opens the search panel; Up on an empty prompt browses.
         ActionDef {
             id: ActionId::ToggleMultiline,
@@ -904,15 +886,8 @@ pub(super) fn default_actions(
         },
     ];
 
-    // Toggle terminal mouse reporting (mouse capture). Opt-in via
-    // `[ui] mouse_reporting_toggle = true` in config.toml. Disabling capture
-    // hands mouse selection back to the terminal for native click-drag
-    // copy/paste; re-enabling restores in-app mouse support.
-    //
-    // Single binding: Ctrl+R on scrollback only (not prompt — Ctrl+R there
-    // remains prompt history search). Plain Ctrl+letter passes through Apple
-    // Terminal; avoids Ctrl+Shift+… chords that Terminal.app often swallows.
-    // Under Panels (not Essentials) — advanced/opt-in only.
+    // Toggle terminal mouse reporting (mouse capture). Single binding: Ctrl+R on scrollback only, which takes that
+    // chord from OpenSessions while scrollback is focused. Under Panels (not Essentials): advanced/opt-in only.
     if mouse_reporting_toggle_enabled {
         actions.push(ActionDef {
             id: ActionId::ToggleMouseCapture,
@@ -929,24 +904,17 @@ pub(super) fn default_actions(
         });
     }
 
-    // Agent Dashboard ----------------------------------------------------
-    //
-    // The `Ctrl+\` entry point AND every in-dashboard shortcut are registered
-    // here. They all share the dedicated `Category::Dashboard` section so the
-    // cheatsheet groups them under a single "Dashboard" header instead of
-    // scattering them through Panels / Session / Navigation.
-    //
-    // `Ctrl+\` (OpenDashboard) is registered against `Always` (global) so it
-    // works from any view — welcome, agent, or dashboard itself (which Esc
-    // closes). Configurable through the standard config.toml mechanism.
+    // They all share the dedicated `Category::Dashboard` section so the cheatsheet groups them under a single
+    // "Dashboard" header. `Ctrl+\` (OpenDashboard) is registered against `Always` (global) so it works from any view,
+    // including the dashboard itself (which Esc closes).
     actions.extend([
         ActionDef {
             id: ActionId::OpenDashboard,
             label: "dashboard",
             description: "Open the Agent Dashboard",
             default_key: key!('\\', CONTROL),
-            // Classic C0 FS (0x1c): without KKP, Ctrl+\ arrives as Char('4')+CONTROL
-            // (e.g. Apple Terminal). Omit when ToggleQueue already owns Ctrl+4.
+            // Classic C0 FS (0x1c): without KKP, Ctrl+\ arrives as Char('4')+CONTROL (e.g. Apple Terminal).
+            // Omit when ToggleQueue already owns Ctrl+4
             alt_keys: if local_mac_vscode {
                 vec![]
             } else {
@@ -961,10 +929,8 @@ pub(super) fn default_actions(
                 "Opens the Agent Dashboard: a list of all your running and recent agents to monitor and switch between.\nWorks from anywhere, including the welcome screen and inside a session.\nFrom there you can dispatch, attach, stop, group, and reorder agents.",
             ),
         },
-        // Register all in-dashboard shortcuts through
-        // the registry under `When::DashboardFocused`. The dispatch
-        // path in `dashboard::state::handle_key` looks these up via
-        // `registry.lookup(key, When::DashboardFocused)` so users can
+        // Register all in-dashboard shortcuts through the registry under `When::DashboardFocused`
+        // The dispatch path in `dashboard::state::handle_key` looks these up via `registry.lookup(key, When::DashboardFocused)` so users can
         // rebind any of them through `~/.grok/config.toml`.
         ActionDef {
             id: ActionId::DashboardSelectNext,
@@ -1064,11 +1030,9 @@ pub(super) fn default_actions(
             id: ActionId::DashboardToggleGrouping,
             label: "group",
             description: "Toggle row grouping",
-            // `Ctrl+G` ("group"). `Ctrl+S` was reassigned to the peek /
-            // dispatch "send + open" chord so `Shift+Enter` could be
-            // freed for newline insertion. (`Ctrl+G` also has a
-            // mode-specific `When::AgentScreen` action, a context that never
-            // overlaps the dashboard.)
+            // `Ctrl+G` ("group")
+            // `Ctrl+S` was reassigned to the peek / dispatch "send + open" chord so `Shift+Enter` could be freed for newline insertion
+            // (`Ctrl+G` also has a mode-specific `When::AgentScreen` action, a context that never overlaps the dashboard.)
             default_key: key!('g', CONTROL),
             alt_keys: vec![],
             category: Category::Dashboard,
@@ -1111,7 +1075,7 @@ pub(super) fn default_actions(
             label: "shortcuts",
             description: "Show shortcuts overlay",
             // Ctrl+. / `?` dual-bound; primary follows ctrl_dot_unreliable.
-            // Ctrl+X is DashboardStop — never an alt here.
+            // Ctrl+X is DashboardStop, never an alt here
             default_key: if ctrl_dot_unreliable {
                 key!('?')
             } else {
@@ -1129,18 +1093,9 @@ pub(super) fn default_actions(
             requires_confirmation: false,
             long_help: None,
         },
-        // `DashboardExit` is registered as a discoverable
-        // action with its DEFAULT key set to Esc, but the in-dashboard
-        // Esc behaviour is a multi-tier cascade (peek → input/filter
-        // → exit) that no single action can express. The Esc cascade
-        // in `state::handle_key` runs BEFORE this registry lookup so
-        // Esc always cascades. A user who REBINDS Esc to something
-        // else gains a discoverable exit shortcut for the rebound key,
-        // and the original Esc cascade still works because the
-        // cascade is keyed on `KeyCode::Esc` directly. The contract
-        // is therefore: "Esc always cascades; any other key bound to
-        // `DashboardExit` exits directly." The hint key shows the
-        // effective binding via `Esc` as a fallback.
+        // `DashboardExit` is registered as a discoverable action with its default key set to Esc. The Esc cascade in
+        // `state::handle_key` runs before this registry lookup, so Esc always cascades. The original Esc cascade still
+        // works because the cascade is keyed on `KeyCode::Esc` directly. The contract is therefore: "Esc always cascades.
         ActionDef {
             id: ActionId::DashboardExit,
             label: "exit",
@@ -1156,10 +1111,8 @@ pub(super) fn default_actions(
                 "Closes the dashboard and returns to where you were.\nEsc is a cascade: it first dismisses an open peek or clears an active filter, and only exits once nothing else is pending.\nRebind this action to a different key to exit directly.",
             ),
         },
-        // Mirror of `ToggleYolo` (Ctrl+O) but scoped to the
-        // dashboard — flips the selected row's agent's
-        // always-approve / YOLO mode. Reachable from the dashboard
-        // view (and from inside the session overlay).
+        // Mirror of `ToggleYolo` (Ctrl+O) but scoped to the dashboard: flips the selected row's agent's always-approve / YOLO mode
+        // Reachable from the dashboard view (and from inside the session overlay)
         ActionDef {
             id: ActionId::DashboardToggleAutoApprove,
             label: "always-approve",
@@ -1194,11 +1147,8 @@ pub(super) fn default_actions(
                 "Opens a picker to set the working directory that newly dispatched dashboard agents run in.\nLaunch agents against a different repo or folder without leaving the dashboard.\nAffects new dispatches only, not agents already running.",
             ),
         },
-        // Toggle worktree-dispatch mode. Ctrl+W ("worktree") arms the next
-        // dashboard-dispatched session to spawn in a fresh git worktree; the
-        // dispatcher gates it on the cwd being a git repo. Free under
-        // `DashboardFocused` (Ctrl+W only binds the overlay-exit fallback
-        // under `DashboardOverlay`, a different context).
+        // Toggle worktree-dispatch mode. Free under `DashboardFocused` (Ctrl+W only binds the overlay-exit fallback under
+        // `DashboardOverlay`, a different context).
         ActionDef {
             id: ActionId::DashboardToggleWorktree,
             label: "worktree",
@@ -1214,33 +1164,16 @@ pub(super) fn default_actions(
                 "Arms the next dashboard-dispatched agent to spawn in a fresh git worktree, isolating its work on a separate checkout.\nOnly applies when the working directory is a git repo.\nAffects newly dispatched agents, not ones already running.",
             ),
         },
-        // Session overlay (dashboard → agent attach)
-        // bindings. They use `When::DashboardOverlay`: the agent-side
-        // overlay intercept (`app_view`) looks them up in that context, and
-        // the cheatsheet uses it to dim them on the dashboard LIST (where
-        // they don't apply) while keeping them lit inside the overlay.
+        // Session overlay (attaching to an agent from the dashboard) bindings
+        // They use `When::DashboardOverlay`: the agent-side overlay intercept (`app_view`) looks them up in that context
+        // The cheatsheet uses it to dim them on the dashboard list (where they don't apply) while keeping them lit inside the overlay
         ActionDef {
             id: ActionId::DashboardOverlayExit,
             label: "close overlay",
             description: "Back to dashboard",
-            // The primary back-out shortcuts are reached through
-            // different routes:
-            //   - Ctrl+\\ → OpenDashboard (registered separately above);
-            //     the overlay-input intercept treats it as overlay-exit.
-            //   - `q` when scrollback is focused — handled by the
-            //     overlay intercept directly.
-            //   - Esc when the agent is in a "neutral" state
-            //     (no modals/viewers/overlays, no text selection,
-            //     no link highlight, no question/goal/rewind/
-            //     permission overlays). Per-pane Esc consumers
-            //     still take precedence — see `overlay_esc_*`
-            //     tests in `app_view`.
-            //   - `[✗]` click — routed via this action by the
-            //     mouse handler.
-            // The `default_key` mirrors the real primary route, Ctrl+\
-            // (OpenDashboard, treated as overlay-exit), so the cheatsheet hint
-            // is accurate. (Ctrl+W is NOT used here — it's the dashboard's
-            // worktree toggle.)
+            // The primary back-out shortcuts are reached through different routes. A `[✗]` click, routed via this action by
+            // the mouse handler The `default_key` mirrors the primary route, Ctrl+\ (OpenDashboard, treated as overlay-exit),
+            // so the cheatsheet hint is accurate (Ctrl+W is not used here.
             default_key: key!('\\', CONTROL),
             alt_keys: vec![],
             category: Category::Dashboard,
@@ -1278,11 +1211,8 @@ pub(super) fn default_actions(
             requires_confirmation: false,
             long_help: None,
         },
-        // Dashboard-parity stop inside the session overlay — state
-        // machine documented at `dispatch_dashboard_overlay_stop`.
-        // Intentionally shadows the agent view's `ShortcutsHelp` alt
-        // binding (Ctrl+X) inside the overlay; Ctrl+. still opens the
-        // cheatsheet there.
+        // Stop with dashboard parity inside the session overlay; the state machine is documented at `dispatch_dashboard_overlay_stop`
+        // Intentionally shadows the agent view's `ShortcutsHelp` alt binding (Ctrl+X) inside the overlay; Ctrl+. still opens the cheatsheet there.
         ActionDef {
             id: ActionId::DashboardOverlayStop,
             label: "stop",
@@ -1300,9 +1230,9 @@ pub(super) fn default_actions(
         },
     ]);
 
-    // Minimal has no interactive scrollback or dashboard surface. Keep its
-    // logical prompt, agent-screen, and legitimate global actions, but do not
-    // register bindings whose target UI cannot exist in this process mode.
+    // Minimal has no interactive scrollback and no dashboard
+    // Keep its logical prompt, agent-screen, and legitimate global actions
+    // Do not register bindings whose target UI cannot exist in this process mode
     if screen_mode.is_minimal() {
         actions.retain(|def| {
             !matches!(

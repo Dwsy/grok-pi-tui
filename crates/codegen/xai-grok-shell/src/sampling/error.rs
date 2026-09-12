@@ -1,56 +1,46 @@
 //! Sampling error types.
 //!
-//! The canonical error types now live in `xai_grok_sampling_types::error`.
-//! This module re-exports them and adds `map_sampling_err_to_acp` which
-//! depends on `agent_client_protocol::Error` (a grok-shell dependency).
+//! The canonical error types live in `xai_grok_sampling_types::error`.
+//! This module re-exports them and adds `map_sampling_err_to_acp`, which depends on `agent_client_protocol::Error` (a grok-shell dependency).
 
-// Re-export everything from the standalone crate.
 pub use xai_grok_sampling_types::error::*;
+
+// Clients carry this typed kind from parsing the wire error to choosing the user-facing copy; re-exported so the pager shares the exact type
+pub use xai_grok_sampler::SamplingErrorKind;
 
 use agent_client_protocol as acp;
 
-/// ACP error code for rate-limited requests (HTTP 429).
-/// Uses the JSON-RPC implementation-defined server error range (-32000 to -32099).
-///
-/// Contract: set only for actual HTTP 429 responses from the sampling client.
-/// Clients derive user-facing text via [`format_rate_limited_user_message`].
-/// The desktop path is unchanged: `prompt_complete_fields` still reports the
-/// stop reason with no detail.
+/// ACP error code for rate-limited requests (HTTP 429). Uses the JSON-RPC implementation-defined server error range (-32000 to -32099). Contract: set only for actual HTTP 429 responses from the sampling client.
+/// Clients derive user-facing text via [`format_rate_limited_user_message`]. The desktop path (`prompt_complete_fields`) reports the stop reason with no detail.
 pub const RATE_LIMITED_ERROR_CODE: i32 = -32003;
 
 /// OAuth / session rate-limit copy (personal plan upgrade path).
 pub const RATE_LIMITED_USER_MESSAGE_OAUTH: &str =
     "You\u{2019}ve hit the rate limit for your plan. Upgrade your account or try again later.";
 
-/// API key / team rate-limit copy. Personal grok.com upgrades do not raise API
-/// team limits; admins purchase credits or a higher spend-based tier.
+/// API key / team rate-limit copy.
+/// Personal grok.com upgrades do not raise API team limits; admins purchase credits or a higher spend-based tier.
 /// See https://docs.x.ai/developers/rate-limits#rate-limit-tiers
 pub const RATE_LIMITED_USER_MESSAGE_API_KEY: &str = "You\u{2019}ve hit your team\u{2019}s API rate limit. Ask a team admin to purchase more credits for higher limits, or try again later. See https://docs.x.ai/developers/rate-limits#rate-limit-tiers";
 
 /// Well-known free-usage exhaustion code CCP returns on HTTP 429.
 /// Matches `prod_util_well_known_errors::SUBSCRIPTION_FREE_USAGE_EXHAUSTED`.
-/// sampling-types' `parse_error_bytes` prepends the flat `code` to the
-/// flattened message, so this reaches clients embedded in error detail.
+/// sampling-types' `parse_error_bytes` prepends the flat `code` to the flattened message, so this reaches clients embedded in error detail.
 pub const FREE_USAGE_EXHAUSTED_ERROR_CODE: &str = "subscription:free-usage-exhausted";
 
-/// User-facing free-usage exhaustion copy (paywall). Deliberately promises no
-/// reset duration — the quota window is backend-config-driven.
+/// User-facing free-usage exhaustion copy (paywall).
+/// Promises no reset duration; the backend config drives the quota window.
 pub const FREE_USAGE_USER_MESSAGE: &str = "You\u{2019}ve reached your free Grok Build usage limit for now. Get SuperGrok for much higher limits, or try again later: https://grok.com/supergrok?referrer=grok-build";
 
-/// Whether flattened server detail is free-usage-quota exhaustion (paywall),
-/// not transient throttling. Sniffs the well-known code embedded by
-/// `parse_error_bytes`.
+/// Whether flattened server detail is free-usage-quota exhaustion (paywall), not transient throttling.
+/// Sniffs the well-known code embedded by `parse_error_bytes`.
 pub fn is_free_usage_exhausted_error(detail: &str) -> bool {
     detail.contains(FREE_USAGE_EXHAUSTED_ERROR_CODE)
 }
 
-/// User-facing text for an ACP -32003 rate-limit error.
-///
-/// Free-usage code first (consumer-only; intentional before API-key rewrite).
-/// API-key + personal SuperGrok upsell → team credits copy. Else the body
-/// after stripping `API error (status …):` (SamplingError Display prefix).
-/// Empty → OAuth vs API-key fallback. Callers that show this in UI should
-/// still run their usual sanitizer (scrub/cap).
+/// User-facing text for an ACP -32003 rate-limit error. The free-usage code wins first (consumer-only; checked before the API-key rewrite).
+/// An API-key caller whose detail pushes the personal SuperGrok upsell gets the team credits copy instead. Otherwise the body is shown after stripping the `API error (status …):` prefix (SamplingError Display).
+/// An empty detail falls back to the OAuth or API-key message. Callers that show this in UI should still run their usual sanitizer (scrub/cap).
 pub fn format_rate_limited_user_message(
     server_detail: Option<&str>,
     is_api_key_auth: bool,
@@ -74,8 +64,7 @@ pub fn format_rate_limited_user_message(
     .to_string()
 }
 
-/// Drop `SamplingError::Api`'s Display prefix so users see the IC body, not
-/// `API error (status 429 Too Many Requests): …`.
+/// Drop `SamplingError::Api`'s Display prefix so users see the IC body, not `API error (status 429 Too Many Requests): …`.
 fn strip_sampling_api_error_prefix(detail: &str) -> &str {
     const PREFIX: &str = "API error (status ";
     const SEP: &str = "): ";
@@ -87,26 +76,23 @@ fn strip_sampling_api_error_prefix(detail: &str) -> &str {
     detail.trim()
 }
 
-/// IC sometimes reuses OAuth free-tier upsell copy on 429s ("upgrade to a Grok
-/// subscription" / grok.com/supergrok). That is wrong for API-key / team auth:
-/// higher limits come from credits and spend-based rate-limit tiers, not a
-/// personal SuperGrok plan.
+/// IC sometimes reuses OAuth free-tier upsell copy on 429s ("upgrade to a Grok subscription" / grok.com/supergrok).
+/// That is wrong for API-key / team auth: higher limits come from credits and spend-based rate-limit tiers, not a personal SuperGrok plan.
 fn pushes_consumer_subscription_upsell(detail: &str) -> bool {
     let d = detail.to_ascii_lowercase();
     d.contains("grok.com/supergrok") || d.contains("upgrade to a grok subscription")
 }
 
-/// User-facing copy for capacity/overload failures (stream `overloaded_error`,
-/// HTTP 529, proxy-wrapped 5xx). See [`SamplingError::is_overloaded`].
+/// User-facing copy for capacity/overload failures (stream `overloaded_error`, HTTP 529, proxy-wrapped 5xx).
+/// See [`SamplingError::is_overloaded`].
 pub const OVERLOADED_USER_MESSAGE: &str = "Model is temporarily overloaded. Try again in a moment.";
 
 /// Map a `SamplingError` to an ACP `Error` for client-facing responses.
 /// This stays in xai-grok-shell because it depends on `agent_client_protocol::Error`.
 pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
     use reqwest::StatusCode;
-    // Capacity/overload gets the same short copy on every surface. Message
-    // only, `data` deliberately unset: `Display` appends JSON-encoded `data`,
-    // and this string is meant for direct display.
+    // Capacity/overload gets the same short copy everywhere
+    // Message only, `data` unset: `Display` appends JSON-encoded `data`, and this string is meant for direct display
     if err.is_overloaded() {
         return acp::Error::new(
             acp::ErrorCode::InternalError.into(),
@@ -116,6 +102,7 @@ pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
     match err {
         SamplingError::Auth { message, .. } => acp::Error::auth_required().data(message),
         SamplingError::InvalidConfiguration(msg) => acp::Error::invalid_params().data(msg),
+        SamplingError::MtlsConfiguration(msg) => acp::Error::invalid_params().data(msg),
         SamplingError::Http(e) => {
             acp::Error::internal_error().data(format!("http client init failed: {e}"))
         }
@@ -124,12 +111,9 @@ pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
             status, message, ..
         } => match status {
             StatusCode::UNAUTHORIZED => acp::Error::auth_required().data(message),
-            // 403 Forbidden is NOT an auth error — the request was
-            // authenticated, but the action is not permitted (content-safety
-            // blocks, ZDR-gated operations, remote-settings-blocked users).
-            // Surfacing the proxy's message via internal_error keeps the
-            // explanation visible to the user without triggering the client's
-            // re-auth flow on -32000.
+            // 403 Forbidden is not an auth error: the request was authenticated, but the action is not permitted
+            // Examples: content-safety blocks, ZDR-gated operations, remote-settings-blocked users
+            // Passing the proxy's message via internal_error keeps the explanation visible without triggering the client's re-auth flow on -32000
             StatusCode::FORBIDDEN => {
                 let message = if message.contains("requires a Grok subscription")
                     && crate::agent::auth_method::has_xai_api_key_env()
@@ -142,8 +126,7 @@ pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
                 } else {
                     message
                 };
-                // 403 is content-safety, never auth: on this setup path it stays
-                // `internal_error` → `server_error`.
+                // 403 is content-safety, never auth: on this setup path it stays `internal_error`, which maps to `server_error`
                 acp::Error::internal_error().data(message)
             }
             StatusCode::BAD_REQUEST => acp::Error::invalid_params().data(message),
@@ -152,8 +135,7 @@ pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
             StatusCode::TOO_MANY_REQUESTS => {
                 acp::Error::new(RATE_LIMITED_ERROR_CODE, "Rate limited".to_string()).data(message)
             }
-            // Preserve the HTTP status in data so the classifier folds capacity
-            // errors (503/529) into `rate_limit`.
+            // Preserve the HTTP status in data so the classifier folds capacity errors (503/529) into `rate_limit`
             _ => acp::Error::internal_error()
                 .data(error_data_with_status(message, Some(status.as_u16()))),
         },
@@ -180,8 +162,7 @@ pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
         SamplingError::IdleTimeout { elapsed_secs } => acp::Error::internal_error().data(format!(
             "No response from model for {elapsed_secs}s — the model may be stuck"
         )),
-        // Recovery consumes these inside the sampler's retry loop; a stray
-        // terminal one still renders its labels.
+        // Recovery consumes these inside the sampler's retry loop; a stray terminal one still renders its labels
         SamplingError::DoomLoopDetected { .. } => {
             acp::Error::internal_error().data(err.to_string())
         }
@@ -198,35 +179,122 @@ pub(crate) fn error_data_with_status(
     }
 }
 
-/// Terminal-failure `acp::Error.data`: max-tokens truncation carries an `error_kind` marker (the kind's stable `as_str` name); other kinds keep the legacy shape.
+pub(crate) fn local_error(code: &str, message: impl Into<String>) -> acp::Error {
+    let mut data = serde_json::json!({ "message": message.into() });
+    data[ERROR_CODE_DATA_KEY] = serde_json::json!(code);
+    acp::Error::internal_error().data(data)
+}
+
+/// `acp::Error.data` key of the typed terminal-error kind marker (stamped by [`terminal_error_data`]).
+/// Snake_case like its shipped `data` siblings (`http_status`); frozen wire format.
+/// The notification paths carry the kind under their own keys/fields (see `extensions::notification::PROMPT_COMPLETE_ERROR_KIND_KEY`).
+const ERROR_KIND_DATA_KEY: &str = "error_kind";
+
+/// `acp::Error.data` key for a local failure's stable `code`; shared by [`local_error`], [`error_code_from_data`], and `session::persistence::io_error_to_acp`.
+pub(crate) const ERROR_CODE_DATA_KEY: &str = "code";
+
+/// `salvage_cause` values stamped on mid-salvage terminal errors and forwarded onto the `shell.turn.length_empty_continuation` event.
+/// EMPTY covers every continuation that cannot be salvaged at the cap: nothing visible, or a truncated tool-call tail.
+/// The sampler folds both into `MaxTokensTruncation`; OVERFLOW means the request no longer fit.
+pub(crate) const SALVAGE_CAUSE_KEY: &str = "salvage_cause";
+pub(crate) const SALVAGE_CAUSE_EMPTY: &str = "empty_continuation";
+pub(crate) const SALVAGE_CAUSE_OVERFLOW: &str = "context_overflow";
+
+/// Terminal-failure `acp::Error.data`.
+/// Only max-tokens truncation opts into the object shape with an `error_kind` marker.
+/// Every other kind keeps the legacy string/status shape because old clients render `data` via `Display` and would show the raw JSON object.
 pub(crate) fn terminal_error_data(
     message: String,
     http_status: Option<u16>,
-    kind: xai_grok_sampler::SamplingErrorKind,
+    kind: SamplingErrorKind,
 ) -> serde_json::Value {
-    if kind != xai_grok_sampler::SamplingErrorKind::MaxTokensTruncation {
+    if kind != SamplingErrorKind::MaxTokensTruncation {
         return error_data_with_status(message, http_status);
     }
-    let mut data = serde_json::json!({ "message": message, "error_kind": kind.as_str() });
+    let mut data = serde_json::json!({ "message": message });
+    data[ERROR_KIND_DATA_KEY] = serde_json::json!(kind.as_ref());
     if let Some(sc) = http_status {
         data["http_status"] = serde_json::json!(sc);
     }
     data
 }
 
-/// `turn_result.json` stop_reason for a failed turn: "MaxTokens" when the marker is present, else "Error" (matches the success path's `acp::StopReason` names).
+/// The raw `error_kind` marker string from `acp::Error.data`, unparsed, for readers with their own vocabulary.
+/// The pager maps an unknown kind to its `Other`, keeping it immune to text recovery.
+pub fn error_kind_str_from_error(err: &acp::Error) -> Option<&str> {
+    err.data.as_ref()?.get(ERROR_KIND_DATA_KEY)?.as_str()
+}
+
+pub fn error_code_from_data(err: &acp::Error) -> Option<&str> {
+    err.data.as_ref()?.get(ERROR_CODE_DATA_KEY)?.as_str()
+}
+
+/// Typed view of [`error_kind_str_from_error`] for the shell's own classification, where an unknown kind degrading to `None` (generic) is correct.
+pub fn error_kind_from_error(err: &acp::Error) -> Option<SamplingErrorKind> {
+    error_kind_str_from_error(err)?.parse().ok()
+}
+
+/// Whether a mapped turn error carries the max-tokens truncation marker.
+pub(crate) fn is_max_tokens_turn_error(err: &acp::Error) -> bool {
+    error_kind_from_error(err) == Some(SamplingErrorKind::MaxTokensTruncation)
+}
+
+/// `turn_result.json` stop_reason for a failed turn: "MaxTokens" when the marker is present, else "Error".
+/// Matches the success path's `acp::StopReason` names.
 pub fn stop_reason_for_turn_error(err: &acp::Error) -> &'static str {
-    let is_max_tokens = err
-        .data
-        .as_ref()
-        .and_then(|d| d.get("error_kind"))
-        .and_then(|v| v.as_str())
-        .is_some_and(|k| k == xai_grok_sampler::SamplingErrorKind::MaxTokensTruncation.as_str());
-    if is_max_tokens { "MaxTokens" } else { "Error" }
+    if is_max_tokens_turn_error(err) {
+        "MaxTokens"
+    } else {
+        "Error"
+    }
 }
 
 fn error_message_from_data(data: &serde_json::Value) -> serde_json::Value {
     data.get("message").cloned().unwrap_or_else(|| data.clone())
+}
+
+/// Internal service names that upstream error bodies echo, rewritten to distinct sentence-friendly backend labels before display. The labels stay distinct so a user paste keeps the failing hop.
+/// Shared by shell and pager so the redaction cannot drift; apply via [`rewrite_service_names`] (case-insensitive, no cased variants here). No replacement value may re-match a pattern (pinned by test).
+pub const SERVICE_NAME_REWRITES: &[(&str, &str)] = &[
+    ("cli-chat-proxy", "build backend"),
+    ("cli_chat_proxy", "build backend"),
+    ("inference-api", "inference backend"),
+    ("inference_api", "inference backend"),
+    ("research-api", "research backend"),
+    ("research_api", "research backend"),
+    ("grok-code-backend", "code backend"),
+    ("grok_code_backend", "code backend"),
+];
+
+/// Scrub every [`SERVICE_NAME_REWRITES`] entry out of `text`, ASCII-case-insensitively (upstream bodies title-case service names).
+/// Each replacement keeps its own casing.
+pub fn rewrite_service_names(text: &str) -> String {
+    let mut result = text.to_owned();
+    for (pattern, replacement) in SERVICE_NAME_REWRITES {
+        result = replace_ascii_case_insensitive(&result, pattern, replacement);
+    }
+    result
+}
+
+/// ASCII-case-insensitive `replace`.
+/// Indices found on the lowercased copy map 1:1 onto `text`: `to_ascii_lowercase` never changes byte lengths.
+fn replace_ascii_case_insensitive(text: &str, pattern: &str, replacement: &str) -> String {
+    // An empty pattern would never advance `idx`; fail safe in release too.
+    if pattern.is_empty() {
+        return text.to_owned();
+    }
+    let lower_text = text.to_ascii_lowercase();
+    let lower_pattern = pattern.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut idx = 0;
+    while let Some(pos) = lower_text[idx..].find(&lower_pattern) {
+        let start = idx + pos;
+        out.push_str(&text[idx..start]);
+        out.push_str(replacement);
+        idx = start + pattern.len();
+    }
+    out.push_str(&text[idx..]);
+    out
 }
 
 pub fn error_detail_from_data(data: &serde_json::Value) -> Option<String> {
@@ -239,6 +307,14 @@ pub fn error_detail_from_data(data: &serde_json::Value) -> Option<String> {
     data.get("detail")
         .and_then(|v| v.as_str())
         .map(str::to_owned)
+}
+
+/// Detail an ACP error carries: `data` via [`error_detail_from_data`], else the JSON-RPC `message`, so foreign shapes classify as the safe `Other`.
+pub(crate) fn acp_error_message(err: &acp::Error) -> String {
+    err.data
+        .as_ref()
+        .and_then(error_detail_from_data)
+        .unwrap_or_else(|| err.message.clone())
 }
 
 pub fn http_status_from_error(err: &acp::Error) -> Option<u16> {
@@ -297,15 +373,18 @@ pub fn prompt_usage_from_error(
     serde_json::from_value(raw.clone()).ok()
 }
 
-/// Derive `(stopReason, agentResult)` JSON values for the `prompt_complete`
-/// notification from a prompt result. Rate-limit errors produce
-/// `("rate_limit", null)` so the client shows its own upgrade message;
-/// other errors produce `("error", <detail>)`.
+/// Derive `(stop reason, agent result, error kind)` for the turn-end payloads (`prompt_complete`, durable `TurnCompleted`) from a prompt result.
+/// Rate-limit errors produce `("rate_limit", null)` so the client shows its own upgrade message; other errors produce `("error", <detail>)`.
+/// The error kind ([`error_kind_from_error`]) is `None` for successes and errors without a kind marker.
 pub(crate) fn prompt_complete_fields(
     result: &std::result::Result<acp::StopReason, acp::Error>,
-) -> (serde_json::Value, serde_json::Value) {
+) -> (
+    serde_json::Value,
+    serde_json::Value,
+    Option<SamplingErrorKind>,
+) {
     match result {
-        Ok(reason) => (serde_json::json!(*reason), serde_json::Value::Null),
+        Ok(reason) => (serde_json::json!(*reason), serde_json::Value::Null, None),
         Err(err) => {
             let is_rate_limit = i32::from(err.code) == RATE_LIMITED_ERROR_CODE;
             let stop = if is_rate_limit { "rate_limit" } else { "error" };
@@ -317,7 +396,7 @@ pub(crate) fn prompt_complete_fields(
                     .map(error_message_from_data)
                     .unwrap_or_else(|| serde_json::Value::String(err.message.clone()))
             };
-            (serde_json::json!(stop), result)
+            (serde_json::json!(stop), result, error_kind_from_error(err))
         }
     }
 }
@@ -326,6 +405,43 @@ pub(crate) fn prompt_complete_fields(
 mod tests {
     use super::*;
     use reqwest::StatusCode;
+
+    #[test]
+    fn rewrite_service_names_is_ascii_case_insensitive() {
+        // Idempotency: no replacement value may re-match any pattern.
+        for (_, replacement) in SERVICE_NAME_REWRITES {
+            for (pattern, _) in SERVICE_NAME_REWRITES {
+                assert!(
+                    !replacement
+                        .to_ascii_lowercase()
+                        .contains(&pattern.to_ascii_lowercase()),
+                    "value {replacement:?} re-matches pattern {pattern:?}"
+                );
+            }
+        }
+        // Derive cased variants from the table so fixtures never respell a name.
+        for (pattern, replacement) in SERVICE_NAME_REWRITES {
+            let upper = pattern.to_ascii_uppercase();
+            let title: String = pattern
+                .split_inclusive(['-', '_'])
+                .map(|seg| {
+                    let mut chars = seg.chars();
+                    chars
+                        .next()
+                        .map(|f| f.to_ascii_uppercase().to_string() + chars.as_str())
+                        .unwrap_or_default()
+                })
+                .collect();
+            for variant in [pattern.to_string(), upper, title] {
+                let out = rewrite_service_names(&format!("error from {variant} upstream"));
+                assert_eq!(
+                    out,
+                    format!("error from {replacement} upstream"),
+                    "variant {variant:?} must scrub to the replacement's own casing"
+                );
+            }
+        }
+    }
 
     #[test]
     fn attach_prompt_usage_preserves_error_kind_and_round_trips() {
@@ -421,7 +537,7 @@ mod tests {
         assert_eq!(format_rate_limited_user_message(Some(&wire), false), body);
         assert_eq!(format_rate_limited_user_message(Some(&wire), true), body);
 
-        // Team console rate-limit copy has no personal SuperGrok upsell — surface as-is.
+        // Team console rate-limit copy has no personal SuperGrok upsell; it passes through as-is
         let team = "resource-exhausted: Too many requests for team abc. See https://console.x.ai/team/default/rate-limits.";
         let team_wire = format!("API error (status 429 Too Many Requests): {team}");
         assert_eq!(
@@ -442,7 +558,7 @@ mod tests {
         let wire = format!("API error (status 429 Too Many Requests): {body}");
         // OAuth keeps the IC body (personal plan upgrade is correct).
         assert_eq!(format_rate_limited_user_message(Some(&wire), false), body);
-        // API key must not push grok.com SuperGrok — team credits / rate-limit tiers.
+        // API key must not push grok.com SuperGrok; it gets the team credits / rate-limit tiers copy
         assert_eq!(
             format_rate_limited_user_message(Some(&wire), true),
             RATE_LIMITED_USER_MESSAGE_API_KEY
@@ -516,8 +632,7 @@ mod tests {
         let acp_err = map_sampling_err_to_acp(err);
         assert_eq!(acp_err.code, acp::ErrorCode::InternalError);
         assert_eq!(acp_err.message, OVERLOADED_USER_MESSAGE);
-        // Display appends JSON-encoded `data`; direct-display copy must not
-        // carry any.
+        // Display appends JSON-encoded `data`; direct-display copy must not carry any
         assert_eq!(acp_err.data, None);
 
         let err_529 = SamplingError::Api {
@@ -623,13 +738,9 @@ mod tests {
         assert_eq!(acp_err.code, acp::Error::auth_required().code);
     }
 
-    /// Regression test: 403 Forbidden must NOT map to auth_required.
-    /// The cli-chat-proxy returns 403 for policy denials that are unrelated to
-    /// the caller's credentials (content-safety blocks like
-    /// SAFETY_CHECK_TYPE_DATA_LEAKAGE, ZDR-gated operations, remote settings
-    /// blocks). Mapping these to auth_required causes the desktop app to
-    /// tear down the session and kick off silent re-auth on -32000, and
-    /// can race with invalid_grant_threshold to wipe auth.json.
+    /// Regression test: 403 Forbidden must not map to auth_required. The cli-chat-proxy returns 403 for policy denials unrelated to the caller's credentials.
+    /// Examples: content-safety blocks like SAFETY_CHECK_TYPE_DATA_LEAKAGE, ZDR-gated operations, remote settings blocks.
+    /// Mapping these to auth_required makes the desktop app tear down the session and start silent re-auth on -32000. That can race with invalid_grant_threshold to wipe auth.json.
     #[test]
     fn forbidden_does_not_map_to_auth_required() {
         let err = SamplingError::Api {
@@ -760,28 +871,36 @@ mod tests {
     #[test]
     fn prompt_complete_fields_ok_passes_through_stop_reason() {
         let result: std::result::Result<acp::StopReason, acp::Error> = Ok(acp::StopReason::EndTurn);
-        let (stop, agent_result) = prompt_complete_fields(&result);
+        let (stop, agent_result, error_kind) = prompt_complete_fields(&result);
         assert_eq!(stop, serde_json::json!("end_turn"));
         assert_eq!(agent_result, serde_json::Value::Null);
+        assert_eq!(error_kind, None);
     }
 
     #[test]
     fn prompt_complete_fields_rate_limit_omits_detail() {
         let err = acp::Error::new(RATE_LIMITED_ERROR_CODE, "Rate limited".to_string())
             .data("Rate limit exceeded");
-        let (stop, agent_result) = prompt_complete_fields(&Err(err));
+        let result = Err(err);
+        let (stop, agent_result, error_kind) = prompt_complete_fields(&result);
         assert_eq!(stop, serde_json::json!("rate_limit"));
         assert_eq!(agent_result, serde_json::Value::Null);
+        assert_eq!(error_kind, None);
     }
 
     #[test]
     fn prompt_complete_fields_generic_error_includes_detail() {
         let err = acp::Error::internal_error().data("connection reset");
-        let (stop, agent_result) = prompt_complete_fields(&Err(err));
+        let result = Err(err);
+        let (stop, agent_result, error_kind) = prompt_complete_fields(&result);
         assert_eq!(stop, serde_json::json!("error"));
         assert_eq!(
             agent_result,
             serde_json::Value::String("connection reset".into())
+        );
+        assert_eq!(
+            error_kind, None,
+            "errors without a kind marker carry no errorKind"
         );
     }
 
@@ -789,12 +908,32 @@ mod tests {
     fn prompt_complete_fields_error_without_data_falls_back_to_message() {
         let err = acp::Error::new(-32000, "something broke".to_string());
         assert!(err.data.is_none());
-        let (stop, agent_result) = prompt_complete_fields(&Err(err));
+        let result = Err(err);
+        let (stop, agent_result, error_kind) = prompt_complete_fields(&result);
         assert_eq!(stop, serde_json::json!("error"));
         assert_eq!(
             agent_result,
             serde_json::Value::String("something broke".into())
         );
+        assert_eq!(error_kind, None);
+    }
+
+    #[test]
+    fn error_kind_from_error_reads_typed_marker_only() {
+        let truncation = map_sampling_err_to_acp(SamplingError::MaxTokensTruncation);
+        assert_eq!(
+            error_kind_from_error(&truncation),
+            Some(SamplingErrorKind::MaxTokensTruncation)
+        );
+        // No data, string data, and object data without the marker all yield None.
+        assert_eq!(error_kind_from_error(&acp::Error::internal_error()), None);
+        assert_eq!(
+            error_kind_from_error(&acp::Error::internal_error().data("boom")),
+            None
+        );
+        let with_status = acp::Error::internal_error()
+            .data(error_data_with_status("bad gateway".into(), Some(502)));
+        assert_eq!(error_kind_from_error(&with_status), None);
     }
 
     #[test]
@@ -819,11 +958,13 @@ mod tests {
     fn prompt_complete_fields_extracts_message_from_status_data() {
         let err = acp::Error::internal_error()
             .data(error_data_with_status("model not found".into(), Some(404)));
-        let (stop, agent_result) = prompt_complete_fields(&Err(err));
+        let result = Err(err);
+        let (stop, agent_result, error_kind) = prompt_complete_fields(&result);
         assert_eq!(stop, serde_json::json!("error"));
         assert_eq!(
             agent_result,
             serde_json::Value::String("model not found".into())
         );
+        assert_eq!(error_kind, None);
     }
 }

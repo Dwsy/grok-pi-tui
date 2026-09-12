@@ -13,11 +13,9 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use async_lsp::lsp_types::Position;
 
-/// The version a document is opened at.
-///
-/// Deliberately above [`super::diagnostics::NO_VERSION`], which is what a
-/// report about a document we have never opened is credited: were they equal,
-/// such a report would count as a verdict on our first edit to that file.
+/// The version a document is opened at. Deliberately above [`super::diagnostics::NO_VERSION`],
+/// which is what a report about a document we have never opened is credited: were they equal, such
+/// a report would count as a verdict on our first edit to that file.
 pub const FIRST_VERSION: i32 = 1;
 const _: () = assert!(FIRST_VERSION > super::diagnostics::NO_VERSION);
 
@@ -51,10 +49,8 @@ impl Update {
     }
 }
 
-/// Open documents for one server connection.
-///
-/// Cheap to clone (shared handle). Lock poisoning is recovered from in one
-/// place: a panicking writer leaves the map structurally intact, and a stale
+/// Open documents for one server connection. Cheap to clone (shared handle). Lock poisoning is
+/// recovered from in one place: a panicking writer leaves the map structurally intact, and a stale
 /// version beats no version at all.
 #[derive(Debug, Clone, Default)]
 pub struct Documents {
@@ -66,13 +62,9 @@ impl Documents {
         Self::default()
     }
 
-    /// What to send for `uri`, without recording it as sent.
-    ///
-    /// Deliberately separate from [`Self::commit`]: what is recorded here
-    /// describes the text the *server* has, so a notification that failed to go
-    /// out must not advance it. Advancing it anyway would aim every later
-    /// incremental range at a revision the server never received — the same
-    /// protocol violation the range exists to avoid.
+    /// What to send for `uri`, without recording it as sent. Deliberately separate from [`Self::commit`]: what is recorded here describes the text
+    /// the *server* has, so a notification that failed to go out must not advance it. Advancing it anyway would aim every later incremental range
+    /// at a revision the server never received — the same protocol violation the range exists to avoid.
     pub fn plan(&self, uri: &str) -> Update {
         match self.read().get(uri) {
             Some(tracked) => Update::Change {
@@ -135,6 +127,11 @@ impl Documents {
     /// Forget everything, returning what was open so it can be closed.
     pub fn take_all(&self) -> Vec<String> {
         std::mem::take(&mut *self.write()).into_keys().collect()
+    }
+
+    /// Forget one document. Returns whether it was open.
+    pub fn take(&self, uri: &str) -> bool {
+        self.write().remove(uri).is_some()
     }
 
     fn read(&self) -> RwLockReadGuard<'_, HashMap<String, Tracked>> {

@@ -24,31 +24,14 @@ use crate::types::resources::SharedResources;
 use crate::types::skill_discovery_tracker::SkillManager;
 use crate::types::tool::{Reminder, ToolKind};
 
-/// Cross-cutting reminder that discovers skills in subdirectories
-/// near filesystem paths accessed by tools.
-///
-/// **Concise mode limitation (V1):** This reminder is globally disabled when
-/// `SystemRemindersEnabled(false)` is set (concise mode). This means dynamic
-/// skill discovery will NOT fire in concise mode. This is an intentional V1
-/// layering compromise — discovery is coupled to the Reminder delivery
-/// mechanism for expediency. If concise-mode support is later needed, migrate
-/// to a dedicated post-tool-call hook that is NOT gated by
-/// `SystemRemindersEnabled`.
-///
-/// Reacts to `ReadFile`, `ListDir`, and `SearchReplace` outputs by
-/// extracting the filesystem path the tool accessed, walking up toward
-/// cwd checking for skill directories, and emitting a reminder for any
-/// newly discovered skills.
-///
-/// This is a standalone struct — not attached to any specific tool.
-/// Register it alongside tools so it runs after every tool call.
+/// Cross-cutting reminder that discovers skills in subdirectories near filesystem paths accessed by tools. **Concise
+/// mode limitation (V1):** This reminder is globally disabled when `SystemRemindersEnabled(false)` is set (concise
+/// mode). This means dynamic skill discovery will NOT fire in concise mode.
 pub struct SkillDiscoveryReminder;
 
 impl SkillDiscoveryReminder {
-    /// Extract the filesystem path the tool accessed from the output.
-    ///
-    /// Returns `None` for tools that don't operate on filesystem paths,
-    /// or for error variants (no reliable path to extract).
+    /// Extract the filesystem path the tool accessed from the output. Returns `None` for tools that
+    /// don't operate on filesystem paths, or for error variants (no reliable path to extract).
     fn extract_target_path(tool_output: &ToolOutput) -> Option<&Path> {
         match tool_output {
             ToolOutput::ReadFile(ReadFileOutput::FileContent(fc)) => Some(&fc.absolute_path),
@@ -127,11 +110,9 @@ impl Reminder for SkillDiscoveryReminder {
             return vec![];
         };
 
-        // Direct SKILL.md detection: when a tool writes (or reads) a
-        // SKILL.md file, register it immediately. The normal upward-walk
-        // discovery cannot find these because it looks for `.grok/skills/`
-        // sub-directories in *ancestor* dirs, and user-scope skills
-        // (~/.grok/) are outside the git root so the walk breaks early.
+        // Direct SKILL.md detection: when a tool writes (or reads) a SKILL.md file, register it immediately. The normal
+        // upward-walk discovery cannot find these because it looks for `.grok/skills/` sub-directories in *ancestor* dirs, and
+        // user-scope skills (~/.grok/) are outside the git root so the walk breaks early.
         if target_path.file_name().is_some_and(|n| n == "SKILL.md")
             && Self::is_in_supported_skills_dir(target_path)
         {
@@ -195,10 +176,9 @@ impl Reminder for SkillDiscoveryReminder {
             return vec![];
         }
 
-        // 4. Re-acquire lock and merge results into tracker.
-        // The reminder does NOT produce announcement text. It just updates
-        // the tracker state. The session drains announcements from the
-        // tracker via take_pending_reconciliation() after each tool call.
+        // Re-acquire lock and merge results into tracker. The reminder does NOT produce
+        // announcement text. It just updates the tracker state. The session drains announcements
+        // from the tracker via take_pending_reconciliation() after each tool call.
         {
             let mut res = resources.lock().await;
             let tracker = match res.get_mut::<SkillManager>() {

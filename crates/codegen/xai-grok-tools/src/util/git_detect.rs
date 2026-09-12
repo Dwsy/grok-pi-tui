@@ -24,10 +24,9 @@ pub struct PrRef {
 }
 
 impl PrRef {
-    /// Find the last `http(s)://…/pull/<N>` URL in `text` — `gh pr create`
-    /// stdout, or an MCP create_pull_request result (URLs may be embedded in
-    /// JSON strings). Returns `None` when no PR URL is present (e.g.
-    /// `gh pr create --web`).
+    /// Find the last `http(s)://…/pull/<N>` URL in `text` — `gh pr create` stdout, or an MCP
+    /// create_pull_request result (URLs may be embedded in JSON strings). Returns `None` when no PR
+    /// URL is present (e.g. `gh pr create --web`).
     pub fn find_in(text: &str) -> Option<Self> {
         let mut last = None;
         for (start, _) in text.match_indices("http") {
@@ -59,10 +58,9 @@ impl PrRef {
     }
 }
 
-/// Strip invocation prefixes that precede the actual binary in a statement:
-/// `env` (with `-u NAME` args), `VAR=value` assignments, and an absolute /
-/// relative path on the binary itself (`/opt/homebrew/bin/gh` → `gh`).
-/// Covers common `env` / `VAR=value` / absolute-path wrappers around git/gh.
+/// Strip invocation prefixes that precede the actual binary in a statement: `env` (with `-u NAME` args), `VAR=value`
+/// assignments, and an absolute / relative path on the binary itself (`/opt/homebrew/bin/gh` → `gh`). Covers common
+/// `env` / `VAR=value` / absolute-path wrappers around git/gh.
 fn strip_invocation_prefixes(statement: &str) -> &str {
     let mut rest = statement.trim_start();
     loop {
@@ -100,14 +98,9 @@ fn strip_invocation_prefixes(statement: &str) -> &str {
     rest
 }
 
-/// Detect `git commit` / `gh pr create` / `gh pr merge` statements in a
-/// successful command. Matched per shell statement, anchored at the statement
-/// start (after invocation prefixes), so `echo "git commit"`, comments, and
-/// `git commit-graph` don't count.
-///
-/// `output_for_prompt` is scanned for the created PR's URL (`gh pr create`
-/// prints it as the last stdout line; absent for `--web`, leaving an empty
-/// [`PrRef`]). Callers must only pass exit-code-0 results.
+/// Detect `git commit` / `gh pr create` / `gh pr merge` statements in a successful command. Matched per shell
+/// statement, anchored at the statement start (after invocation prefixes), so `echo "git commit"`, comments, and `git
+/// commit-graph` don't count. Callers must only pass exit-code-0 results.
 pub fn detect_git_ops(command: &str, output_for_prompt: &str) -> Option<DetectedGitOps> {
     let statements = || {
         command

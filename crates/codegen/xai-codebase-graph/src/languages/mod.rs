@@ -18,9 +18,7 @@ pub use ts::ts_lang;
 pub use types::TSLanguageConfig;
 
 /// Registry of all supported languages.
-///
-/// Provides lookup by extension and language ID, and can check if two
-/// extensions belong to the same language family.
+/// Lookup by extension and language ID; can check whether two extensions share a family.
 pub struct LanguageRegistry {
     /// All registered language configs.
     configs: Vec<Arc<TSLanguageConfig>>,
@@ -111,15 +109,9 @@ impl LanguageRegistry {
         }
     }
 
-    /// Compute a hash of all tree-sitter queries across all languages.
-    ///
-    /// This is used to detect when queries change, which should trigger
-    /// a rebuild of the index even if file contents haven't changed.
-    ///
-    /// The hash is computed by:
-    /// 1. Sorting languages by their primary ID for deterministic ordering
-    /// 2. Hashing each language's query string in order
-    /// 3. Combining into a single u64 hash
+    /// Hash of all tree-sitter queries across all languages.
+    /// Used to rebuild the index when queries change even if file contents have not.
+    /// Languages are sorted by primary ID so the hash is deterministic.
     pub fn compute_query_hash(&self) -> u64 {
         use std::collections::hash_map::DefaultHasher;
 

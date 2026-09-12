@@ -1,18 +1,14 @@
-//! Status row telemetry: adoption for every session, health for the sessions
-//! that drew a row.
+//! Status row telemetry: adoption for every session, health for the sessions that drew a row.
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use xai_grok_status_line::{ResolvedStatusLine, StatusLineConfig, StatusLineItem, StatusLineType};
 
-use crate::app::ScreenMode;
-
 use super::draws_a_row;
 
-/// Process-wide counters, since a run records from a detached task and both
-/// health-reporting paths run with no view in scope. One row per process:
-/// `kind` latches once.
+/// Process-wide counters, since a run records from a detached task and both health-reporting paths run with no view in scope.
+/// One row per process: `kind` latches once.
 pub(crate) fn global() -> &'static StatusLineMetrics {
     static METRICS: StatusLineMetrics = StatusLineMetrics::new();
     &METRICS
@@ -51,22 +47,19 @@ impl StatusLineMetrics {
         self.had_content.store(true, Ordering::Relaxed);
     }
 
-    /// Called once per session at the config boundary, row or not: the
-    /// sessions that never touched the feature are adoption's denominator.
-    pub(crate) fn report_config(&self, cfg: &StatusLineConfig, screen_mode: ScreenMode) {
-        // `unset`, not `disabled`: no readable mode, whether the section named none
-        // or its `type` was rejected. `row_shows_a_problem` separates those.
+    /// Called once per session at the config boundary, row or not: the sessions that never touched the feature are adoption's denominator.
+    pub(crate) fn report_config(&self, cfg: &StatusLineConfig) {
+        // The label is `unset` rather than `disabled`: the mode is unreadable whether the section named none or its `type` was rejected
+        // `row_shows_a_problem` separates those
         let kind = cfg.declared_kind().map_or("unset", StatusLineType::as_str);
         if self.kind.set(kind).is_err() {
             return;
         }
-        self.draws_a_row
-            .store(draws_a_row(screen_mode, cfg), Ordering::Relaxed);
+        self.draws_a_row.store(draws_a_row(cfg), Ordering::Relaxed);
         xai_grok_telemetry::session_ctx::log_event(
             xai_grok_telemetry::events::StatusLineConfigured {
                 kind,
-                // The row's question, not the section's: a rejected value in a
-                // section already switched off reserves nothing.
+                // Answers for the row, not the section: a rejected value in a section already switched off reserves nothing
                 row_shows_a_problem: cfg.problem_to_paint().is_some(),
                 items: items_label(cfg),
                 custom_items: cfg.has_custom_items(),
@@ -86,8 +79,7 @@ impl StatusLineMetrics {
         self.record(&self.timed_out, duration_ms);
     }
 
-    /// A task that never answered rather than a slow one, so there is no
-    /// duration to record.
+    /// A task that never answered rather than a slow one, so there is no duration to record.
     pub(crate) fn record_abandoned(&self) {
         self.abandoned.fetch_add(1, Ordering::Relaxed);
     }
@@ -103,14 +95,12 @@ impl StatusLineMetrics {
         }
     }
 
-    /// `None` when there is nothing to report: both exit paths call this and
-    /// the first wins, and a session with no row would dilute the signal.
+    /// `None` when there is nothing to report: both exit paths call this and the first wins, and a session with no row would dilute the signal.
     fn health_event(&self) -> Option<xai_grok_telemetry::events::StatusLineHealth> {
         if !self.draws_a_row.load(Ordering::Relaxed) {
             return None;
         }
-        // Read before the latch: a session is allowed one report, and a swap
-        // above this would spend it on the event the `?` goes on to drop.
+        // Read before the latch: a session is allowed one report, and a swap above this would spend it on the event the `?` goes on to drop
         let kind = self.kind.get()?;
         if self.reported.swap(true, Ordering::Relaxed) {
             return None;

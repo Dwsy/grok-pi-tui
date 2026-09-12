@@ -7,10 +7,11 @@ use std::task::{Context, Poll};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use super::coordinator::active_message::{ActiveChildGeneration, ActiveMessageLifecycle};
 use super::types::{
-    ActiveSubagentSummary, SubagentCompletionSummary, SubagentDescribeOutcome, SubagentInspection,
-    SubagentRequest, SubagentResult, SubagentResumeLookup, SubagentSnapshot,
-    SubagentSnapshotStatus, SubagentValidateTypeOutcome,
+    ActiveAgentMessageDelivery, ActiveSubagentSummary, AgentAddress, SubagentCompletionSummary,
+    SubagentDescribeOutcome, SubagentInspection, SubagentRequest, SubagentResult,
+    SubagentResumeLookup, SubagentSnapshot, SubagentSnapshotStatus, SubagentValidateTypeOutcome,
 };
 
 /// Cap on retained completed-subagent entries before the oldest are evicted.
@@ -32,11 +33,43 @@ pub struct SubagentProgress {
     pub error_count: u32,
 }
 
+pub use super::active_message::ActiveMessageAdmission;
+
+/// Maximum host admissions retained for one active child.
+pub const MAX_ACTIVE_MESSAGE_ADMISSIONS_PER_CHILD: usize = 8;
+
+/// Default absolute active-message capacity for one coordinator.
+pub const MAX_ACTIVE_MESSAGE_ADMISSIONS: usize = 64;
+
+/// Maximum wait for a host to confirm or reject admission.
+pub const ACTIVE_MESSAGE_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Maximum wait for an owned spawning child to become active before a parked
+/// agent send is released. Session bootstrap routinely exceeds the admission
+/// timeout, so this backstop is separate and much longer.
+pub const ACTIVE_MESSAGE_SPAWN_READY_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(120);
+
+/// Maximum wait for the coordinator to drain selected admissions.
+pub const ACTIVE_MESSAGE_FINALIZATION_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(6);
+
 /// Runtime handle retained while a child is active.
 pub trait ChildControl: 'static {
     type ProgressFuture: Future<Output = SubagentProgress> + 'static;
 
     fn progress(&self) -> Self::ProgressFuture;
+
+    /// Admit a coordinator-authorized message to this child. `Admitted` is valid only when
+    /// protected-row insertion succeeds inside [`ActiveAgentMessageDelivery::commit_admission`].
+    /// The returned future must be `Send` so multithreaded hosts can spawn the coordinator.
+    fn send_active_message(
+        &self,
+        _delivery: ActiveAgentMessageDelivery,
+    ) -> SendBoxFuture<ActiveMessageAdmission> {
+        Box::pin(std::future::ready(ActiveMessageAdmission::Unsupported))
+    }
+
     fn cancel(&self);
 }
 
@@ -48,12 +81,18 @@ pub struct StartedChild<C> {
     pub child_cwd: String,
     pub worktree_path: Option<String>,
     pub effective_model_id: String,
-    /// The resolved agent definition declares `background: true`. Folded into
-    /// `Outstanding` accounting (background, never turn-blocking) while the
-    /// foreground await budget stays gated on the tool's own
-    /// `run_in_background` flag.
+    /// The resolved agent definition declares `background: true`. Folded into `Outstanding`
+    /// accounting (background, never turn-blocking) while the foreground await budget stays gated
+    /// on the tool's own `run_in_background` flag.
     pub definition_background: bool,
     pub control: C,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WakeOrigin {
+    pub agent_id: String,
+    pub source: super::types::ActiveAgentMessageSource,
+    pub message_id: String,
 }
 
 /// Input to one runtime-specific child run.
@@ -61,11 +100,19 @@ pub struct ChildRunRequest<C> {
     pub request: SubagentRequest,
     pub cancellation: CancellationToken,
     pub reporter: ChildReporter<C>,
+    pub attempt_id: xai_message_delivery_core::AttemptId,
+    pub wake_origin: Option<WakeOrigin>,
     /// Time parked in the admission queue; `None` if admitted immediately.
     pub queued_for: Option<std::time::Duration>,
     /// The session's running non-workflow children when this spawn started,
     /// including itself when it is one of them.
     pub session_running: usize,
+    /// Coordinator-minted address for this generation. Advertised at spawn
+    /// and resolvable on the pending record before promotion.
+    pub agent_address: Option<AgentAddress>,
+    /// Pre-reparent spawner session, when the live address must also be
+    /// advertised there. Cleared if that session cannot be targeted.
+    pub spawner_session_id: Option<String>,
 }
 
 /// Terminal output from one runtime-specific child run.
@@ -89,15 +136,14 @@ pub struct CompletionDisposition {
 pub struct ChildCompletion<D> {
     pub request: SubagentRequest,
     pub result: SubagentResult,
+    pub snapshot: SubagentSnapshot,
     pub completion_data: D,
     pub disposition: CompletionDisposition,
 }
 
-/// The only host-specific seam.
-///
-/// Associated future types intentionally carry no unconditional `Send` bound.
-/// A local runner may return non-`Send` futures, while a multithreaded runner
-/// may return `Send` futures.
+/// The only host-specific seam. Associated future types intentionally carry no unconditional `Send`
+/// bound. A local runner may return non-`Send` futures, while a multithreaded runner may return
+/// `Send` futures.
 pub trait ChildRunner: 'static {
     type Control: ChildControl;
     type CompletionData: Default + 'static;
@@ -120,7 +166,15 @@ pub trait ChildRunner: 'static {
         parent_session_id: String,
     ) -> Self::DescribeFuture;
 
-    fn on_completed(&self, completion: ChildCompletion<Self::CompletionData>);
+    /// Present the terminal lifecycle, then invoke `terminal_published`.
+    fn on_completed(
+        &self,
+        completion: ChildCompletion<Self::CompletionData>,
+        terminal_published: Box<dyn FnOnce() + Send>,
+    );
+
+    /// Whether `run` can continue a woken agent's persisted session in place.
+    fn supports_wake(&self) -> bool;
 
     fn running_count_changed(&self, _running: usize) {}
 
@@ -175,13 +229,9 @@ pub struct CoordinatorConfig {
     pub limit_sink: Option<SubagentLimitSink>,
     /// Whether the host drains completion summaries between turns.
     pub buffer_completions: bool,
-    /// Extra cap applied to BUFFERED summary outputs only (the request's own
-    /// `completion_output_cap` still applies first). Buffered entries pin the
-    /// child's output `Arc` until drained; hosts whose reminder rendering
-    /// never inlines the output (a polling tool exists, e.g. the callback
-    /// tools-server) should bound it. `None` keeps outputs verbatim — the
-    /// shell needs this for toolsets with no polling tool, where the inline
-    /// reminder is the model's only chance to see the output.
+    /// Extra cap applied to BUFFERED summary outputs only (the request's own `completion_output_cap` still applies first).
+    /// Buffered entries pin the child's output `Arc` until drained; hosts whose reminder rendering never inlines the output
+    /// (a polling tool exists, e.g. the callback tools-server) should bound it.
     pub buffered_completion_output_cap: Option<usize>,
 }
 
@@ -232,12 +282,27 @@ impl<C: 'static> ChildReporter<C> {
     /// cancel-at-promote race: `false` means cancellation won and the adapter
     /// must tear down the half-initialized runtime.
     pub async fn started(&self, child: StartedChild<C>) -> bool {
+        self.started_with_deferred_admission(child, false).await
+    }
+
+    /// Promote a wake while keeping its initial message parked until durable
+    /// start publication succeeds.
+    pub async fn started_deferred(&self, child: StartedChild<C>) -> bool {
+        self.started_with_deferred_admission(child, true).await
+    }
+
+    async fn started_with_deferred_admission(
+        &self,
+        child: StartedChild<C>,
+        defer_admission: bool,
+    ) -> bool {
         let (respond_to, response_rx) = oneshot::channel();
         if self
             .tx
             .send(InternalEvent::Started {
                 subagent_id: self.subagent_id.clone(),
                 child,
+                defer_admission,
                 respond_to,
             })
             .is_err()
@@ -245,6 +310,53 @@ impl<C: 'static> ChildReporter<C> {
             return false;
         }
         response_rx.await.unwrap_or(false)
+    }
+
+    /// Commit or reject a wake whose active promotion deferred message admission.
+    pub async fn settle_deferred_start(&self, is_committed: bool) -> bool {
+        let (respond_to, response_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(InternalEvent::SettleDeferredStart {
+                subagent_id: self.subagent_id.clone(),
+                is_committed,
+                respond_to,
+            })
+            .is_err()
+        {
+            return false;
+        }
+        response_rx.await.unwrap_or(false)
+    }
+
+    /// Close admission and wait a bounded interval for selected sends to settle.
+    pub async fn finalizing(&self) -> bool {
+        let Some(response_rx) = self.request_finalizing() else {
+            return false;
+        };
+        tokio::time::timeout(ACTIVE_MESSAGE_FINALIZATION_TIMEOUT, response_rx)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(false)
+    }
+
+    pub(super) fn request_finalizing(&self) -> Option<oneshot::Receiver<bool>> {
+        let (respond_to, response_rx) = oneshot::channel();
+        self.tx
+            .send(InternalEvent::Finalizing {
+                subagent_id: self.subagent_id.clone(),
+                respond_to,
+            })
+            .ok()
+            .map(|_| response_rx)
+    }
+
+    /// Stop advertising the live address to the spawner session; lineage is unaffected.
+    pub fn drop_spawner_claim(&self) {
+        let _ = self.tx.send(InternalEvent::DropSpawnerClaim {
+            subagent_id: self.subagent_id.clone(),
+        });
     }
 
     /// Resolve an in-memory resume source without sharing coordinator state.
@@ -273,6 +385,16 @@ pub(super) enum InternalEvent<C> {
     Started {
         subagent_id: String,
         child: StartedChild<C>,
+        defer_admission: bool,
+        respond_to: oneshot::Sender<bool>,
+    },
+    SettleDeferredStart {
+        subagent_id: String,
+        is_committed: bool,
+        respond_to: oneshot::Sender<bool>,
+    },
+    Finalizing {
+        subagent_id: String,
         respond_to: oneshot::Sender<bool>,
     },
     ResumeSource {
@@ -280,6 +402,16 @@ pub(super) enum InternalEvent<C> {
         parent_session_id: String,
         respond_to: oneshot::Sender<SubagentResumeLookup>,
     },
+    DropSpawnerClaim {
+        subagent_id: String,
+    },
+}
+
+/// Prior terminal record removed while a wake is pending or queued.
+/// The pending/queued wake owns restoration on every exit before `Started`;
+/// promotion permanently replaces this record, so restoration is no longer legal.
+pub(super) struct DisplacedCompletedChild {
+    pub(super) completed: Box<CompletedChild>,
 }
 
 pub(super) struct PendingChild {
@@ -290,6 +422,14 @@ pub(super) struct PendingChild {
     pub(super) foreground_deadline: Option<tokio::time::Instant>,
     pub(super) handle_only: bool,
     pub(super) explicitly_killed: bool,
+    /// False when the record was synthesized for a spawn that never reached
+    /// the runner (admission reject, cancelled while queued).
+    pub(super) launched: bool,
+    pub(super) agent_address: Option<AgentAddress>,
+    /// Pre-reparent spawner session for a nested spawn. Human sends from it
+    /// stay owned only while that session can be given the live address.
+    pub(super) spawner_session_id: Option<String>,
+    pub(super) wake_of: Option<DisplacedCompletedChild>,
 }
 
 pub(super) struct ActiveChild<C> {
@@ -309,10 +449,18 @@ pub(super) struct ActiveChild<C> {
     pub(super) child_cwd: String,
     pub(super) worktree_path: Option<String>,
     pub(super) effective_model_id: String,
+    pub(super) generation: ActiveChildGeneration,
+    pub(super) agent_address: Option<AgentAddress>,
+    /// See [`PendingChild::spawner_session_id`].
+    pub(super) spawner_session_id: Option<String>,
+    pub(super) active_messages: ActiveMessageLifecycle,
+    pub(super) deferred_wake: Option<DisplacedCompletedChild>,
     pub(super) control: C,
 }
 
 pub(super) struct CompletedChild {
+    pub(super) completion_age: u64,
+    pub(super) terminal_published: Arc<std::sync::atomic::AtomicBool>,
     pub(super) request: SubagentRequest,
     pub(super) started_at: std::time::Instant,
     pub(super) child_session_id: String,
@@ -323,6 +471,8 @@ pub(super) struct CompletedChild {
     pub(super) snapshot_ref: Option<String>,
     pub(super) persisted_output_ref: Option<String>,
     pub(super) effective_model_id: String,
+    pub(super) agent_address: Option<AgentAddress>,
+    pub(super) spawner_session_id: Option<String>,
     pub(super) result: SubagentResult,
 }
 
@@ -334,6 +484,12 @@ pub(super) struct BlockingWaiter {
 pub(super) struct BufferedCompletion {
     pub(super) parent_session_id: String,
     pub(super) summary: SubagentCompletionSummary,
+}
+
+impl BufferedCompletion {
+    pub(super) fn is_owned_by(&self, parent_session_id: Option<&str>) -> bool {
+        parent_session_id.is_none_or(|id| self.parent_session_id == id)
+    }
 }
 
 pub(super) struct TaggedFuture<F> {
@@ -430,6 +586,9 @@ pub(super) struct ListRequest {
     pub(super) respond_to: oneshot::Sender<Vec<SubagentInspection>>,
 }
 
+// Both variants already hold a full child record; boxing Active would
+// allocate on every promotion without shrinking the Pending case.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum ChildRecord<C> {
     Pending(PendingChild),
     Active(ActiveChild<C>),
@@ -447,6 +606,19 @@ impl<C> ChildRecord<C> {
         match self {
             Self::Pending(child) => child.explicitly_killed,
             Self::Active(child) => child.explicitly_killed,
+        }
+    }
+
+    pub(super) fn take_failed_pre_start_wake(
+        &mut self,
+        success: bool,
+    ) -> Option<DisplacedCompletedChild> {
+        if success {
+            return None;
+        }
+        match self {
+            Self::Pending(child) => child.wake_of.take(),
+            Self::Active(child) => child.deferred_wake.take(),
         }
     }
 }
@@ -553,22 +725,17 @@ pub(super) fn background_at_deadline(
         // Interim handoff, not a completion: keep `success: false` (default)
         // so `SubagentResult::status()` consumers cannot record a completed
         // status for a still-running child. Callers branch on `backgrounded`.
-        let _ = respond_to.send(SubagentResult {
-            backgrounded: true,
-            subagent_id: child.id().to_owned(),
-            child_session_id: child.child_session_id().to_owned(),
-            ..Default::default()
-        });
+        let _ = respond_to.send(SubagentResult::backgrounded(
+            child.id(),
+            child.child_session_id(),
+        ));
     }
     child.mark_backgrounded();
 }
 
-/// Handle a foreground child whose spawn caller dropped the result channel
-/// (parent turn stop / cancelled await). Task-owned children keep running and
-/// just leave the turn-blocking `Outstanding` set — shell `ParentGone` parity.
-/// Workflow-owned children are CANCELLED instead (old shell `ParentGone`
-/// cancelled workflow children); `ChannelBackend`'s drop-cancel arming remains
-/// defense in depth for hosts that go through it.
+/// Handle a foreground child whose spawn caller dropped the result channel (parent turn stop /
+/// cancelled await). Task-owned children keep running and just leave the turn-blocking
+/// `Outstanding` set — shell `ParentGone` parity.
 pub(super) fn background_if_caller_gone(child: &mut impl ForegroundChild) {
     if !child.caller_gone() {
         return;
@@ -715,41 +882,57 @@ pub(super) fn queued_inspection(
     }
 }
 
-pub(super) fn completed_snapshot(
-    child: &CompletedChild,
+/// `persona` must be the resolved one; the tool and the notices render this same snapshot.
+pub fn terminal_snapshot(
+    request: &SubagentRequest,
+    result: &SubagentResult,
     persisted_output: Option<&str>,
+    persona: Option<String>,
+    started_at_epoch_ms: u64,
 ) -> SubagentSnapshot {
-    let status = if child.result.cancelled {
+    let status = if result.cancelled {
         SubagentSnapshotStatus::Cancelled {
-            reason: child.result.error.clone(),
+            reason: result.error.clone(),
         }
-    } else if child.result.success {
+    } else if result.success {
         SubagentSnapshotStatus::Completed {
             output: persisted_output
                 .map(str::to_owned)
-                .unwrap_or_else(|| child.result.output.to_string()),
-            tool_calls: child.result.tool_calls,
-            turns: child.result.turns,
-            worktree_path: child.result.worktree_path.clone(),
+                .unwrap_or_else(|| result.output.to_string()),
+            tool_calls: result.tool_calls,
+            turns: result.turns,
+            worktree_path: result.worktree_path.clone(),
         }
     } else {
         SubagentSnapshotStatus::Failed {
-            error: child
-                .result
+            error: result
                 .error
                 .clone()
                 .unwrap_or_else(|| "Unknown error".to_owned()),
         }
     };
     SubagentSnapshot {
-        subagent_id: child.request.id.clone(),
-        description: child.request.description.clone(),
-        subagent_type: child.request.subagent_type.clone(),
+        subagent_id: request.id.clone(),
+        description: request.description.clone(),
+        subagent_type: request.subagent_type.clone(),
         status,
-        started_at_epoch_ms: instant_to_epoch_ms(child.started_at),
-        duration_ms: child.result.duration_ms,
-        persona: child.persona.clone(),
+        started_at_epoch_ms,
+        duration_ms: result.duration_ms,
+        persona,
     }
+}
+
+pub(super) fn completed_snapshot(
+    child: &CompletedChild,
+    persisted_output: Option<&str>,
+) -> SubagentSnapshot {
+    terminal_snapshot(
+        &child.request,
+        &child.result,
+        persisted_output,
+        child.persona.clone(),
+        instant_to_epoch_ms(child.started_at),
+    )
 }
 
 pub(super) fn completed_inspection(
@@ -765,22 +948,14 @@ pub(super) fn completed_inspection(
     }
 }
 
-/// Truncate `output` to `cap` bytes (UTF-8 safe) with a truncation footer.
-/// Returns a refcount clone when already within the cap.
+/// No marker here: the notice renders the cut from `full_output_bytes`.
 pub fn cap_completion_output(output: &Arc<str>, cap: usize) -> Arc<str> {
-    if output.len() <= cap {
-        return output.clone();
+    let head = crate::util::truncate::truncate_str(output, cap);
+    if head.len() == output.len() {
+        output.clone()
+    } else {
+        Arc::from(head)
     }
-    let mut end = cap;
-    while end > 0 && !output.is_char_boundary(end) {
-        end -= 1;
-    }
-    Arc::from(format!(
-        "{}\n[output truncated: {} of {} bytes shown]",
-        &output[..end],
-        end,
-        output.len()
-    ))
 }
 
 /// Model-facing summary for a finished child, honoring the request's
@@ -789,20 +964,41 @@ pub fn cap_completion_output(output: &Arc<str>, cap: usize) -> Arc<str> {
 pub fn completion_summary(
     request: &SubagentRequest,
     result: &SubagentResult,
+    snapshot: &SubagentSnapshot,
 ) -> SubagentCompletionSummary {
     let output = match request.runtime_overrides.completion_output_cap {
         Some(cap) => cap_completion_output(&result.output, cap),
         None => result.output.clone(),
     };
+    let status = match &snapshot.status {
+        // Buffered entries must not pin a second copy of the text.
+        SubagentSnapshotStatus::Completed {
+            tool_calls,
+            turns,
+            worktree_path,
+            ..
+        } => SubagentSnapshotStatus::Completed {
+            output: String::new(),
+            tool_calls: *tool_calls,
+            turns: *turns,
+            worktree_path: worktree_path.clone(),
+        },
+        status => status.clone(),
+    };
     SubagentCompletionSummary {
-        subagent_id: request.id.clone(),
-        subagent_type: request.subagent_type.clone(),
-        description: request.description.clone(),
-        success: result.success && !result.cancelled,
-        duration_ms: result.duration_ms,
+        snapshot: SubagentSnapshot {
+            subagent_id: snapshot.subagent_id.clone(),
+            description: snapshot.description.clone(),
+            subagent_type: snapshot.subagent_type.clone(),
+            status,
+            started_at_epoch_ms: snapshot.started_at_epoch_ms,
+            duration_ms: snapshot.duration_ms,
+            persona: snapshot.persona.clone(),
+        },
+        loop_task_id: request.runtime_overrides.loop_task_id.clone(),
         tool_calls: result.tool_calls,
-        turns: result.turns,
         output,
+        full_output_bytes: result.output.len(),
     }
 }
 

@@ -429,11 +429,9 @@ fn render_turn_signature(item: &ConversationItem, index: usize) -> String {
     }
 }
 
-/// Render one segment: header, metadata, stats, curated summary, and (unless
-/// `detail == None`) verbatim turns truncated at a whole-turn boundary before
-/// [`SEGMENT_MAX_BYTES`]. `summary` must already be cleaned of analysis tags;
-/// `items` is the segment view — tool calls + results kept, images/reasoning
-/// stripped (see `xai_chat_state::compaction_utils::prepare_conversation_for_segment`).
+/// Render one segment: header, metadata, stats, curated summary, and verbatim turns unless `detail == None`.
+/// Turns truncate at a whole-turn boundary before [`SEGMENT_MAX_BYTES`].
+/// `summary` must already be cleaned of analysis tags; `items` is the prepared segment view.
 pub fn render_segment_md(
     items: &[ConversationItem],
     summary: &str,
@@ -566,10 +564,9 @@ const KEYWORD_STOPWORDS: [&str; 28] = [
 /// "8. Current Work" section (falling back to the whole summary), minus
 /// stopwords, deduped, capped at 8. Heuristic only — feeds the INDEX table.
 pub fn extract_keywords(summary: &str) -> Vec<String> {
-    // Rust's regex has no look-ahead, so scope section 8 with two anchored
-    // matches: its header, then the next `N. Capital` header (or end of text).
-    // `#{0,6}` tolerates our `## 8. Current Work` markdown headers as well as
-    // the Python implementation's bare `8. Current Work`.
+    // Rust's regex has no look-ahead, so scope section 8 with two anchored matches.
+    // Header, then the next `N. Capital` header (or end of text).
+    // `#{0,6}` tolerates markdown headers as well as the bare Python form.
     let start_re =
         SECTION8_START_RE.get_or_init(|| Regex::new(r"(?m)^#{0,6}\s*8\.\s+Current Work").unwrap());
     let header_re =

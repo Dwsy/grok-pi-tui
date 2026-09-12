@@ -1,5 +1,4 @@
-//! Blocking interaction surfaces: permission prompts, the question view,
-//! and the cancel-turn confirm flow (keys, mouse, and submit paths).
+//! Blocking interaction cards: permission prompts, the question view, and the cancel-turn confirm flow (keys, mouse, and submit paths).
 #[cfg(test)]
 use super::test_fixtures;
 use super::{
@@ -25,10 +24,9 @@ enum QuestionSwitch {
     Prev,
 }
 impl AgentView {
-    /// Handle key input for the permission card. Like the question card it has
-    /// an option-row mode and text modes (a followup message to the agent, and
-    /// a hand-written always-allow pattern); `Esc` is the ladder back down
-    /// through them ([`AgentView::card_esc`]) and `Ctrl+C` is the only cancel.
+    /// Handle key input for the permission card.
+    /// Like the question card it has an option-row mode and text modes (a followup message to the agent, and a hand-written always-allow pattern).
+    /// `Esc` steps back down through them ([`AgentView::card_esc`]) and `Ctrl+C` is the only cancel.
     pub(super) fn handle_permission_key(&mut self, key: &KeyEvent) -> InputOutcome {
         use crate::views::permission_view::PermissionFocus;
         if key.code == KeyCode::Esc {
@@ -255,9 +253,9 @@ impl AgentView {
             _ => InputOutcome::Unchanged,
         }
     }
-    /// Mouse handler for the cancel-turn panel. `Moved` moves the
-    /// cursor onto the pointed row; `Down(Left)` dispatches the row's
-    /// `CancelTurnChoice`. All other events are consumed.
+    /// Mouse handler for the cancel-turn panel.
+    /// `Moved` moves the cursor onto the pointed row; `Down(Left)` dispatches the row's `CancelTurnChoice`.
+    /// All other events are consumed.
     pub(super) fn handle_cancel_turn_mouse(&mut self, mouse: &MouseEvent) -> InputOutcome {
         if self.cancel_turn_view.is_none() {
             return InputOutcome::Unchanged;
@@ -296,10 +294,9 @@ impl AgentView {
             _ => InputOutcome::Unchanged,
         }
     }
-    /// Save the free-text answer the composer is holding and return the card
-    /// to its answer rows. A non-blank answer becomes this question's
-    /// selection — exclusive with an option row, which single-select clears —
-    /// and a blank one is dropped along with the mark.
+    /// Save the free-text answer the composer is holding and return the card to its answer rows.
+    /// A non-blank answer becomes this question's selection, exclusive with an option row (single-select clears it).
+    /// A blank answer is dropped along with the mark.
     pub(super) fn commit_question_freeform(&mut self) {
         use crate::views::question_view::{QuestionFocus, QuestionSelection};
         let text = self.prompt.text().to_string();
@@ -321,19 +318,12 @@ impl AgentView {
         } else if let Some(slot) = qv.per_question_freeform.get_mut(idx) {
             slot.clear();
         }
-        if !qv.is_feedback_report() {
-            qv.focus = QuestionFocus::Navigation;
-        }
+        qv.focus = QuestionFocus::Navigation;
         self.last_prompt_click_ms = None;
     }
     /// Handle key input when the question view is active.
-    ///
-    /// Two modes:
-    /// - **Navigation**: j/k move the cursor between answers and Tab/Shift+Tab
-    ///   walk the same rows in a loop, Space toggles, Enter advances or edits
-    ///   freeform, h/l/[/] cycle questions, 1-9/a-f jump+toggle, Esc unselects,
-    ///   Shift-X kills the question tool.
-    /// - **InputMode**: all keys go to the prompt widget; Esc exits input mode.
+    /// **Navigation**: j/k move the cursor between answers and Tab/Shift+Tab walk the same rows in a loop.
+    /// Space toggles, Enter advances or edits freeform, h/l/[/] cycle questions, 1-9/a-f jump and toggle.
     pub(super) fn handle_question_key(&mut self, key: &KeyEvent) -> InputOutcome {
         use crate::views::question_view::{CursorMotion, QuestionFocus};
         if key.code == KeyCode::Esc {
@@ -362,9 +352,6 @@ impl AgentView {
                     return self.dismiss_question_view();
                 }
                 if key!('c', CONTROL).matches(key) {
-                    if qv.is_feedback_report() {
-                        return self.clear_feedback_then_dismiss();
-                    }
                     qv.focus = QuestionFocus::Navigation;
                     self.last_prompt_click_ms = None;
                     return InputOutcome::Changed;
@@ -384,23 +371,7 @@ impl AgentView {
                         return InputOutcome::Changed;
                     }
                     EnterOutcome::Submit => {
-                        if self.paste_probe_in_flight > 0
-                            && self.question_view.as_ref().is_some_and(
-                                crate::views::question_view::QuestionViewState::is_feedback_report,
-                            )
-                        {
-                            self.deferred_send =
-                                Some(crate::app::agent_view::AgentDeferredSend::SubmitFeedback);
-                            return InputOutcome::Changed;
-                        }
                         self.commit_question_freeform();
-                        if self
-                            .question_view
-                            .as_ref()
-                            .is_some_and(|qv| qv.is_feedback_report())
-                        {
-                            return self.submit_question_answers(false);
-                        }
                         let on_last = self
                             .question_view
                             .as_ref()
@@ -574,7 +545,7 @@ impl AgentView {
                         }
                     }
                     KeyCode::Char('y') if key.modifiers.is_empty() => {
-                        if !qv.is_on_freeform_row() {
+                        if !qv.is_prompt_blocked() && !qv.is_on_freeform_row() {
                             let cursor = qv.cursor();
                             let active = qv.active_tab;
                             if let Some(question) = qv.questions.get(active)
@@ -620,19 +591,9 @@ impl AgentView {
             }
         }
     }
-    /// The feedback pane has no navigation to return to, so it follows the composer: clear the report, then dismiss once it is empty.
-    fn clear_feedback_then_dismiss(&mut self) -> InputOutcome {
-        if self.prompt.text().trim().is_empty() {
-            return self.submit_question_answers(true);
-        }
-        self.prompt.set_text("");
-        self.commit_question_freeform();
-        InputOutcome::Changed
-    }
     /// Handle mouse events when the question view is active.
-    ///
-    /// Scroll wheel scrolls the options list. Clicks on option rows move
-    /// cursor and toggle/select. Everything else is consumed (modal-ish).
+    /// Scroll wheel scrolls the options list. Clicks on option rows move the cursor and toggle or select.
+    /// Everything else is consumed (modal-ish).
     pub(super) fn handle_question_mouse(&mut self, mouse: &MouseEvent) -> InputOutcome {
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             for &(key_ch, rect) in &self.question_nav_buttons {
@@ -926,8 +887,7 @@ impl AgentView {
     }
     /// Apply a scrollbar click/drag at the given screen row for the question view.
     ///
-    /// Uses [`scrollbar_click_to_offset`] (same math as `list_pane` and the
-    /// scrollback scrollbar) so click/drag is the exact inverse of the thumb.
+    /// Uses [`scrollbar_click_to_offset`] (same math as `list_pane` and the scrollback scrollbar) so click/drag is the exact inverse of the thumb.
     fn apply_question_scrollbar_click(&mut self, screen_y: u16) {
         use crate::render::scrollbar::{ScrollbarClickResult, scrollbar_click_to_offset};
         let Some(sb) = self.hit_question_scrollbar.rect else {
@@ -1051,9 +1011,8 @@ impl AgentView {
         )
         .filter(|&idx| !qv.no_freeform || idx < question.options.len())
     }
-    /// Save the current prompt text into `per_question_freeform[active_tab]`
-    /// and load the text for the new `active_tab` into the prompt widget.
-    /// Call this BEFORE changing `active_tab`.
+    /// Save the current prompt text into `per_question_freeform[active_tab]` and load the text for the new `active_tab` into the prompt widget.
+    /// Call this before changing `active_tab`.
     fn swap_question_freeform(&mut self) {
         let Some(ref mut qv) = self.question_view else {
             return;
@@ -1064,7 +1023,7 @@ impl AgentView {
         }
     }
     /// Load the freeform text for the current `active_tab` into the prompt.
-    /// Call this AFTER changing `active_tab`.
+    /// Call this after changing `active_tab`.
     fn load_question_freeform(&mut self) {
         let Some(ref qv) = self.question_view else {
             return;
@@ -1077,16 +1036,21 @@ impl AgentView {
         self.prompt.set_text_preserving(new_text);
     }
     /// Dismiss (hide) the question view without submitting answers.
-    ///
-    /// Restores the original prompt text that was stashed when the question
-    /// view opened, so typed "additional context" doesn't leak into the
-    /// main prompt. Also clears any stashed (tab-hidden) question view.
+    /// Restores the original prompt text that was stashed when the question view opened, so typed "additional context" doesn't leak into the main prompt. Also clears any stashed (tab-hidden) question view.
     fn dismiss_question_view(&mut self) -> InputOutcome {
+        if self.question_view.as_ref().is_some_and(|qv| {
+            matches!(
+                qv.local_kind,
+                Some(crate::views::question_view::LocalQuestionKind::PromptBlocked { .. })
+            )
+        }) {
+            self.show_toast("Your prompt is blocked — choose Edit, Resend, or Discard");
+            return InputOutcome::Changed;
+        }
         let follows_skip_submit = self.question_view.as_ref().is_some_and(|qv| {
             matches!(
                 qv.local_kind,
                 Some(crate::views::question_view::LocalQuestionKind::DoctorFix { .. })
-                    | Some(crate::views::question_view::LocalQuestionKind::FeedbackTrace { .. })
             )
         });
         if follows_skip_submit {
@@ -1097,20 +1061,14 @@ impl AgentView {
             self.restore_card_prompt(qv.stashed_prompt);
         }
         self.cleanup_question_state();
+        if self.question_view.is_none() {
+            crate::app::turn_completion::reopen_blocked_card_if_held(self);
+        }
         InputOutcome::Changed
     }
-    /// Retract an interaction modal (permission / question / plan-approval) that
-    /// another connected client already resolved.
-    ///
-    /// In a shared (leader-hosted) session the agent broadcasts the interactive
-    /// reverse-request to every pane and resolves first-answer-wins; when any
-    /// pane answers, the agent broadcasts `InteractionResolved{tool_call_id}` and
-    /// every other pane calls this to drop its copy. Returns `true` if a modal
-    /// was dismissed (so the caller redraws). Idempotent: a `tool_call_id` this
-    /// pane isn't showing is a silent no-op — including on the pane that
-    /// answered, which already cleared its own modal locally. Dropping a
-    /// dismissed modal's `response_tx` is harmless: the agent has already
-    /// resolved, so any late response for that id is ignored by its gateway.
+    /// Retract an interaction modal (permission, question, or plan approval) that another connected client already resolved.
+    /// Returns `true` if a modal was dismissed (so the caller redraws).
+    /// Idempotent: a `tool_call_id` this pane isn't showing is a silent no-op, including on the pane that answered.
     pub(crate) fn dismiss_resolved_interaction(&mut self, tool_call_id: &str) -> bool {
         if self
             .question_view
@@ -1174,10 +1132,8 @@ impl AgentView {
         }
         false
     }
-    /// Test-only access to [`submit_question_answers`] so dispatch tests
-    /// can verify the full submit/cancel pipeline (including
-    /// `prompt.restore` and `cleanup_question_state`) for local
-    /// questions, not just the inner `translate_local_submit` shim.
+    /// Test-only access to [`submit_question_answers`] so dispatch tests can verify the full submit/cancel pipeline for local questions.
+    /// That covers `prompt.restore` and `cleanup_question_state`, not just the inner `translate_local_submit` shim.
     #[cfg(test)]
     pub(crate) fn submit_question_answers_for_test(&mut self, skipped: bool) -> InputOutcome {
         self.submit_question_answers(skipped)
@@ -1186,19 +1142,9 @@ impl AgentView {
     pub(crate) fn handle_question_key_for_test(&mut self, key: &KeyEvent) -> InputOutcome {
         self.handle_question_key(key)
     }
-    #[cfg(test)]
-    pub(crate) fn handle_question_mouse_for_test(&mut self, mouse: &MouseEvent) -> InputOutcome {
-        self.handle_question_mouse(mouse)
-    }
-    /// Give back the draft a card displaced when it opened.
-    ///
-    /// Permission open: write into `permission_stashed_prompt`. Question open:
-    /// write into its stash — the question owns the live composer as freeform,
-    /// and its close puts the stash back (writing through would first clobber
-    /// the freeform and then be clobbered by the question's own restore).
-    /// Otherwise restore the live composer (plan freeform when approval is
-    /// parked is deliberate; the session draft is already on
-    /// `plan_approval_view.stashed_prompt`).
+    /// Question open: write into its stash, because the question owns the live composer as freeform and its close puts the stash back.
+    /// Writing through would first clobber the freeform and then be clobbered by the question's own restore.
+    /// Otherwise restore the live composer.
     pub(crate) fn restore_card_prompt(
         &mut self,
         stashed: crate::views::prompt_widget::StashedPrompt,
@@ -1211,100 +1157,33 @@ impl AgentView {
             self.prompt.restore(stashed);
         }
     }
-    /// Close out the `/feedback` report pane: Enter advances to the trace
-    /// question (when offered) or sends, Esc drops the report.
-    fn submit_feedback_pane(
-        &mut self,
-        mut qv: crate::views::question_view::QuestionViewState,
-        skipped: bool,
-    ) -> InputOutcome {
-        let report = qv.feedback_report();
-        if !skipped && report.is_empty() && self.prompt.images.is_empty() {
-            crate::unified_log::info(
-                "feedback.submit",
-                None,
-                Some(serde_json::json!({"branch": "empty"})),
-            );
-            let freeform = qv.activate_freeform_input();
-            self.prompt.set_text_preserving(&freeform);
-            self.question_view = Some(qv);
-            return InputOutcome::Changed;
-        }
-        if !skipped && qv.feedback_offer_trace {
-            let images = self.prompt.drain_images();
-            crate::unified_log::info(
-                "feedback.submit",
-                None,
-                Some(serde_json::json!({
-                    "branch": "trace_question",
-                    "chars": report.chars().count(),
-                    "images": images.len(),
-                })),
-            );
-            xai_grok_telemetry::session_ctx::log_event(
-                xai_grok_telemetry::events::FeedbackTraceCardShown {
-                    reenables_sharing: qv.feedback_offer_reenables_sharing,
-                },
-            );
-            qv.begin_feedback_trace_stage(report, images);
-            self.prompt.set_text_preserving("");
-            self.question_view = Some(qv);
-            return InputOutcome::Changed;
-        }
-        let images = if skipped {
-            Vec::new()
-        } else {
-            self.prompt.drain_images()
-        };
-        crate::unified_log::info(
-            "feedback.submit",
-            None,
-            Some(serde_json::json!({
-                "branch": "send",
-                "skipped": skipped,
-                "chars": report.chars().count(),
-                "images": images.len(),
-            })),
-        );
-        self.record_question_pause(&qv);
-        self.restore_card_prompt(qv.stashed_prompt);
-        self.cleanup_question_state();
-        if skipped {
-            return InputOutcome::Changed;
-        }
-        InputOutcome::Action(Action::SendFeedback {
-            text: report,
-            images: images.into(),
-            trace: None,
-        })
-    }
     pub(super) fn submit_question_answers(&mut self, skipped: bool) -> InputOutcome {
         use xai_grok_tools::implementations::grok_build::ask_user_question::AskUserQuestionExtResponse;
         self.swap_question_freeform();
         let Some(mut qv) = self.question_view.take() else {
             return InputOutcome::Changed;
         };
-        if qv.is_feedback_report() {
-            return self.submit_feedback_pane(qv, skipped);
-        }
         self.record_question_pause(&qv);
         if let Some(kind) = qv.local_kind.take() {
             use crate::views::question_view::LocalQuestionKind;
+            let answered_blocked_card = matches!(kind, LocalQuestionKind::PromptBlocked { .. });
             let outcome = match (skipped, kind) {
+                (true, kind @ LocalQuestionKind::PromptBlocked { .. }) => {
+                    qv.local_kind = Some(kind);
+                    self.question_view = Some(qv);
+                    self.show_toast("Your prompt is blocked — choose Edit, Resend, or Discard");
+                    return InputOutcome::Changed;
+                }
                 (true, LocalQuestionKind::DoctorFix { target, .. }) => {
                     InputOutcome::Action(Action::DoctorFixCancelled(target))
-                }
-                (true, LocalQuestionKind::FeedbackTrace { report, images }) => {
-                    InputOutcome::Action(Action::SendFeedback {
-                        text: report,
-                        images,
-                        trace: Some(crate::app::actions::FeedbackTraceChoice::NoUpload),
-                    })
                 }
                 (skipped, kind) => translate_local_submit(&qv, kind, skipped),
             };
             self.prompt.restore(qv.stashed_prompt);
             self.cleanup_question_state();
+            if !answered_blocked_card && self.question_view.is_none() {
+                crate::app::turn_completion::reopen_blocked_card_if_held(self);
+            }
             return outcome;
         }
         let response = if skipped {
@@ -1315,6 +1194,9 @@ impl AgentView {
         qv.send_ext_response(response);
         self.prompt.restore(qv.stashed_prompt);
         self.cleanup_question_state();
+        if self.question_view.is_none() {
+            crate::app::turn_completion::reopen_blocked_card_if_held(self);
+        }
         let action = if skipped {
             "interview_skip"
         } else {
@@ -1326,9 +1208,7 @@ impl AgentView {
         InputOutcome::Changed
     }
     /// Map a screen position to a permission option index.
-    ///
-    /// Uses the prompt area and permission chrome height to determine which
-    /// option row the mouse is over. Returns `None` if outside the options.
+    /// Uses the prompt area and permission chrome height to determine which option row the mouse is over. Returns `None` if outside the options.
     pub(super) fn permission_item_at(&self, _col: u16, row: u16) -> Option<usize> {
         let perm = self.permission_queue.front()?;
         let prompt_area = self.pane_areas.prompt;
@@ -1352,12 +1232,8 @@ impl AgentView {
             None
         }
     }
-    /// Clean up question-related visual state after the question view is
-    /// dismissed (submit, cancel, or replacement).
+    /// Clean up question-related visual state after the question view is dismissed (submit, cancel, or replacement).
     pub(crate) fn cleanup_question_state(&mut self) {
-        if self.deferred_send == Some(crate::app::agent_view::AgentDeferredSend::SubmitFeedback) {
-            self.deferred_send = None;
-        }
         self.hovered_question_item = None;
         self.question_scrollbar_dragging = false;
         self.hit_question_scrollbar.clear();
@@ -1365,19 +1241,9 @@ impl AgentView {
         self.last_question_click = None;
         self.last_prompt_click_ms = None;
     }
-    /// Answer the ACTIVE question of this agent's pending
-    /// `AskUserQuestion` from the dashboard peek panel.
-    ///
-    /// Mirrors the agent view's own Enter handling but sources the
-    /// freeform text from the peek (a `freeform` argument) instead of
-    /// this view's prompt: `option_idx` selects an option; `None` with
-    /// non-empty `freeform` records the "Other" free-text answer. When
-    /// more questions remain it advances to the next one
-    /// ([`PeekAnswerOutcome::Advanced`]); on the last question it builds +
-    /// sends the accepted ext-response, restores the stashed prompt, and
-    /// clears question state ([`PeekAnswerOutcome::Submitted`]). Only
-    /// valid for an ext ask (`None` `local_kind`); an empty "Other" or a
-    /// non-ext question is a [`PeekAnswerOutcome::NoOp`].
+    /// Answer the active question of this agent's pending `AskUserQuestion` from the dashboard peek panel.
+    /// Mirrors the agent view's own Enter handling but sources the freeform text from the peek (a `freeform` argument) instead of this view's prompt.
+    /// Only valid for an ext ask (`None` `local_kind`); an empty "Other" or a non-ext question is a [`PeekAnswerOutcome::NoOp`].
     pub(crate) fn dashboard_answer_question(
         &mut self,
         option_idx: Option<usize>,
@@ -1425,6 +1291,9 @@ impl AgentView {
         qv.send_ext_response(response);
         self.prompt.restore(qv.stashed_prompt);
         self.cleanup_question_state();
+        if self.question_view.is_none() {
+            crate::app::turn_completion::reopen_blocked_card_if_held(self);
+        }
         PeekAnswerOutcome::Submitted
     }
 }
@@ -1467,6 +1336,8 @@ mod cancel_turn_mouse_tests {
                 available_commands_generation: 0,
                 available_tools: None,
                 model_switch_pending: false,
+                hook_block_hold: false,
+                blocked_prompt: None,
                 user_model_preference: None,
                 deferred_model_switch: None,
                 bg_tasks: std::collections::BTreeMap::new(),
@@ -1616,8 +1487,7 @@ mod permission_mouse_tests {
         agent.pane_areas.prompt = Rect::new(0, 20, 80, 10);
         assert_eq!(agent.permission_item_at(10, OPTIONS_START_Y), Some(0));
     }
-    /// Option-row hit targets track the planned-args rows in both toggle
-    /// states (hit-testing and render share the row-budget fn).
+    /// Option-row hit targets track the planned-args rows in both toggle states (hit-testing and render share the row-budget fn).
     #[test]
     fn permission_item_at_tracks_args_rows_collapsed_and_expanded() {
         let mut agent = make_agent();
@@ -1728,8 +1598,7 @@ mod permission_scope_key_tests {
             kind,
         )
     }
-    /// Bash permission with both scoped rows and a 3-word primary command,
-    /// mirroring the prompter's `[allow-always, once, reject, reject-always]`.
+    /// Bash permission with both scoped rows and a 3-word primary command, mirroring the prompter's `[allow-always, once, reject, reject-always]`.
     fn setup_bash_permission(agent: &mut AgentView) {
         let mut perm = super::test_fixtures::make_followup_permission_state();
         perm.focus = crate::views::permission_view::PermissionFocus::Options;
@@ -1756,10 +1625,8 @@ mod permission_scope_key_tests {
         perm.bash_deny_selection_count = 2;
         agent.permission_queue.push_back(perm);
     }
-    /// ←/→ on the "Never allow" (RejectAlways) row must adjust the scope in
-    /// place — never yank the cursor onto the AllowAlways row, where Enter
-    /// would persist a whitelist for the words the user was narrowing a deny
-    /// for.
+    /// ←/→ on the "Never allow" (RejectAlways) row must adjust the scope in place.
+    /// Never yank the cursor onto the AllowAlways row, where Enter would persist a whitelist for the words the user was narrowing a deny for.
     #[test]
     fn scope_keys_keep_cursor_on_reject_always_row() {
         let mut agent = make_agent();
@@ -1779,9 +1646,8 @@ mod permission_scope_key_tests {
             "the allow scope is untouched from the deny row"
         );
     }
-    /// Dangerous commands pin the scope to the full command: ← must not
-    /// narrow below it, since enforcement ignores dangerous prefix grants and
-    /// a narrowed selection would save a rule that never matches.
+    /// Dangerous commands pin the scope to the full command: ← must not narrow below it.
+    /// Enforcement ignores dangerous prefix grants, so a narrowed selection would save a rule that never matches.
     #[test]
     fn scope_left_is_clamped_for_dangerous_commands() {
         let mut agent = make_agent();
@@ -1823,9 +1689,8 @@ mod permission_scope_key_tests {
             "arrows stay advertised while the deny row is adjustable"
         );
     }
-    /// The allow arrow skips an argv-ambiguous intermediate scope (a quoted
-    /// arg with a space) that would persist nothing, landing on the next
-    /// scope that saves a working grant.
+    /// The allow arrow skips an argv-ambiguous intermediate scope (a quoted arg with a space) that would persist nothing.
+    /// It lands on the next scope that saves a working grant.
     #[test]
     fn allow_scope_skips_ambiguous_intermediate() {
         let mut agent = make_agent();
@@ -1863,8 +1728,7 @@ mod permission_scope_key_tests {
             "← must skip the argv-ambiguous scope 4"
         );
     }
-    /// From a non-scoped row ←/→ still jump the cursor to the AllowAlways
-    /// row (the discoverability affordance).
+    /// From a non-scoped row ←/→ still jump the cursor to the AllowAlways row, so the scope feature is discoverable.
     #[test]
     fn scope_keys_still_jump_from_neutral_row() {
         let mut agent = make_agent();
@@ -1877,9 +1741,8 @@ mod permission_scope_key_tests {
         assert_eq!(perm.active_idx, 0, "cursor jumps to the AllowAlways row");
         assert_eq!(perm.bash_selection_count, 3, "→ must still expand scope");
     }
-    /// Stale bash selection meta without the scoped rows (multi-command
-    /// script, gate off, or an old client) must leave ←/→ inert: no cursor
-    /// jump and no selection change.
+    /// Stale bash selection meta without the scoped rows (multi-command script, gate off, or an old client) must leave ←/→ inert.
+    /// No cursor jump and no selection change.
     #[test]
     fn scope_keys_are_inert_without_scoped_rows() {
         let mut agent = make_agent();
@@ -1903,9 +1766,8 @@ mod permission_scope_key_tests {
             assert_eq!(perm.active_idx, 0, "cursor must not jump");
         }
     }
-    /// A decoy `AllowAlways`-kind option sitting before the exact bash allow
-    /// row must not capture the arrow jump, the `e` editor entry, or the
-    /// editor's Enter submit — all three must target `allow-always-command`.
+    /// A decoy `AllowAlways`-kind option sits before the exact bash allow row.
+    /// It must not capture the arrow jump, the `e` editor entry, or the editor's Enter submit; all three must target `allow-always-command`.
     #[test]
     fn scoped_actions_target_exact_allow_always_command_id() {
         let mut agent = make_agent();
@@ -1949,9 +1811,8 @@ mod permission_scope_key_tests {
             }
         }
     }
-    /// A catch-all pattern must not submit from the editor: the manager would
-    /// silently refuse to persist it, and the user would be re-prompted after
-    /// believing a rule was saved.
+    /// A catch-all pattern must not submit from the editor.
+    /// The manager would silently refuse to persist it, and the user would be re-prompted after believing a rule was saved.
     #[test]
     fn pattern_editor_refuses_catchall_submit() {
         let mut agent = make_agent();
@@ -1974,10 +1835,9 @@ mod permission_scope_key_tests {
             "editor stays open for the user to narrow the pattern"
         );
     }
-    /// With only the exact `reject-always-command` row present (the allow row
-    /// may be suppressed as unhonorable), ←/→ adjust the deny scope in place
-    /// on that row, and from a neutral row they land on the deny row — never
-    /// on an invisible allow count.
+    /// Only the exact `reject-always-command` row is present; the allow row may be suppressed as unhonorable.
+    /// ←/→ adjust the deny scope in place on that row.
+    /// From a neutral row they land on the deny row, never on an invisible allow count.
     #[test]
     fn reject_only_scoped_row_adjusts_in_place_without_allow_jump() {
         let mut agent = make_agent();
@@ -2017,9 +1877,8 @@ mod permission_scope_key_tests {
             "the invisible allow count is untouched"
         );
     }
-    /// Ctrl-F toggles args expansion in both focus modes when the prompt
-    /// shows planned MCP args — even when remember_tool_approvals=false
-    /// strips the always-allow row and leaves `mcp_scope` unset.
+    /// Ctrl-F toggles args expansion in both focus modes when the prompt shows planned MCP args.
+    /// It works even when remember_tool_approvals=false strips the always-allow row and leaves `mcp_scope` unset.
     #[test]
     fn ctrl_f_toggles_args_expansion_when_args_present() {
         let mut agent = make_agent();
@@ -2044,9 +1903,8 @@ mod permission_scope_key_tests {
         assert!(matches!(outcome, InputOutcome::Changed));
         assert!(!agent.permission_queue.front().unwrap().args_expanded);
     }
-    /// Protected-edit prompts reuse `description` for warning prose and
-    /// carry the session-edits row; with no MCP args and no long bash there
-    /// is nothing collapsible, so Ctrl-F must stay a no-op.
+    /// Protected-edit prompts reuse `description` for warning prose and carry the session-edits row.
+    /// With no MCP args and no long bash there is nothing collapsible, so Ctrl-F must stay a no-op.
     #[test]
     fn ctrl_f_is_noop_for_protected_edit_description() {
         let mut agent = make_agent();
@@ -2073,8 +1931,7 @@ mod permission_scope_key_tests {
             "protected-edit description must not toggle"
         );
     }
-    /// Ctrl-F toggles a bash script that wraps past the collapsed budget;
-    /// short scripts keep it a no-op (nothing collapsible).
+    /// Ctrl-F toggles a bash script that wraps past the collapsed budget; short scripts keep it a no-op (nothing collapsible).
     #[test]
     fn ctrl_f_toggles_bash_expansion_when_script_is_long() {
         let mut agent = make_agent();
@@ -2100,9 +1957,8 @@ mod permission_scope_key_tests {
         assert!(matches!(outcome, InputOutcome::Changed));
         assert!(!agent.permission_queue.front().unwrap().args_expanded);
     }
-    /// Ctrl-F is handled before the focus match, so it toggles in Options,
-    /// FollowupInput, and PatternEdit alike (the footer hint shows in all
-    /// three for the same reason).
+    /// Ctrl-F is handled before the focus match, so it toggles in Options, FollowupInput, and PatternEdit alike.
+    /// The footer hint shows in all three for the same reason.
     #[test]
     fn ctrl_f_toggles_in_every_focus_mode() {
         use crate::views::permission_view::PermissionFocus;
@@ -2137,10 +1993,9 @@ mod permission_scope_key_tests {
 }
 #[cfg(test)]
 mod question_no_freeform_tests {
-    //! Freeform ("Other") gating for `no_freeform` question modals — e.g.
-    //! the SuperGrok upsell. Regression tests for the bug where clicking
-    //! under the last option of the upsell selected the (hidden) freeform
-    //! row and let the user type into a modal that offers no free text.
+    //! Freeform ("Other") gating for `no_freeform` question modals, e.g. the SuperGrok upsell.
+    //! Regression tests for the bug where clicking under the last option of the upsell selected the (hidden) freeform row.
+    //! That let the user type into a modal that offers no free text.
     use super::super::test_fixtures::make_agent;
     use crate::actions::ActionRegistry;
     use crate::app::agent_view::AgentView;
@@ -2154,7 +2009,7 @@ mod question_no_freeform_tests {
     use xai_grok_tools::implementations::grok_build::ask_user_question::{
         Question, QuestionOption,
     };
-    /// Fixed options, single-select — shaped like the free-usage upsell.
+    /// Fixed options, single-select; shaped like the free-usage upsell.
     fn upsell_question() -> Question {
         let opt = |label: &str, desc: &str| QuestionOption {
             label: label.into(),
@@ -2184,8 +2039,7 @@ mod question_no_freeform_tests {
             state
         });
     }
-    /// Draw one 80x30 frame so `pane_areas` and `question_scroll_region`
-    /// hold the real rendered layout the mouse handler hit-tests against.
+    /// Draw one 80x30 frame so `pane_areas` and `question_scroll_region` hold the real rendered layout the mouse handler hit-tests against.
     pub(super) fn draw_frame(agent: &mut AgentView) {
         let area = Rect::new(0, 0, 80, 30);
         let reg = ActionRegistry::defaults();
@@ -2227,9 +2081,8 @@ mod question_no_freeform_tests {
     pub(super) fn qv(agent: &AgentView) -> &QuestionViewState {
         agent.question_view.as_ref().expect("question view open")
     }
-    /// Clicking the empty rows under the last option (option gap, footer)
-    /// must be inert on a `no_freeform` modal: no InputMode, no freeform
-    /// selection, no cursor move.
+    /// Clicking the empty rows under the last option (option gap, footer) must be inert on a `no_freeform` modal.
+    /// No InputMode, no freeform selection, no cursor move.
     #[test]
     fn click_below_last_option_is_inert_when_no_freeform() {
         let mut agent = make_agent();
@@ -2257,9 +2110,8 @@ mod question_no_freeform_tests {
             assert_eq!(state.cursor(), 0, "row {row}: cursor must not move");
         }
     }
-    /// The last option row of a `no_freeform` modal occupies the screen row
-    /// that hosts the sticky freeform row on regular modals — clicking it
-    /// must toggle that option, not freeform.
+    /// The last option row of a `no_freeform` modal occupies the screen row that hosts the sticky freeform row on regular modals.
+    /// Clicking it must toggle that option, not freeform.
     #[test]
     fn click_last_option_row_toggles_option_when_no_freeform() {
         let mut agent = make_agent();
@@ -2279,8 +2131,7 @@ mod question_no_freeform_tests {
         );
         assert!(!state.per_question_freeform_selected[0]);
     }
-    /// Hovering the rows below the options must not highlight the
-    /// (nonexistent) freeform row on a `no_freeform` modal.
+    /// Hovering the rows below the options must not highlight the (nonexistent) freeform row on a `no_freeform` modal.
     #[test]
     fn hover_below_last_option_is_inert_when_no_freeform() {
         let mut agent = make_agent();
@@ -2294,8 +2145,7 @@ mod question_no_freeform_tests {
             "no phantom freeform hover below the options"
         );
     }
-    /// The `z` shortcut (jump to freeform) must be inert on a `no_freeform`
-    /// modal.
+    /// The `z` shortcut (jump to freeform) must be inert on a `no_freeform` modal.
     #[test]
     fn z_key_is_inert_when_no_freeform() {
         let mut agent = make_agent();
@@ -2308,9 +2158,8 @@ mod question_no_freeform_tests {
         assert_eq!(state.cursor(), 0, "z must not move the cursor");
         assert!(!state.per_question_freeform_selected[0]);
     }
-    /// Control group: on a regular modal (freeform present) the sticky
-    /// freeform row sits one row below the options and clicking it still
-    /// selects freeform and enters InputMode, and `z` still works.
+    /// Control group: on a regular modal (freeform present) the sticky freeform row sits one row below the options.
+    /// Clicking it still selects freeform and enters InputMode, and `z` still works.
     #[test]
     fn freeform_modal_click_and_z_still_enter_input_mode() {
         let mut agent = make_agent();
@@ -2338,9 +2187,8 @@ mod question_no_freeform_tests {
 }
 #[cfg(test)]
 mod question_freeform_chip_tests {
-    //! Paste-chip round trip through the question freeform input:
-    //! re-entering input mode used to reload the unchanged draft with a
-    //! wholesale `set_text`, expanding every chip into raw text.
+    //! Paste-chip round trip through the question freeform input.
+    //! Re-entering input mode used to reload the unchanged draft with a wholesale `set_text`, expanding every chip into raw text.
     use super::super::test_fixtures::make_agent;
     use super::question_no_freeform_tests::{down, draw_frame, open_question, qv};
     use crate::app::agent_view::AgentView;
@@ -2357,9 +2205,8 @@ mod question_freeform_chip_tests {
             .filter(|e| e.kind == KIND_PASTE)
             .count()
     }
-    /// Multi-line paste folds into a chip; Esc out and Enter back in must
-    /// keep the chip folded (not raw expanded text), and the string slot
-    /// keeps the full paste for the submit payload.
+    /// Multi-line paste folds into a chip; Esc out and Enter back in must keep the chip folded (not raw expanded text).
+    /// The string slot keeps the full paste for the submit payload.
     #[test]
     fn paste_chip_survives_input_mode_round_trip() {
         let mut agent = make_agent();
@@ -2384,9 +2231,8 @@ mod question_freeform_chip_tests {
         );
         assert_eq!(agent.prompt.text(), PASTE, "buffer text must round-trip");
     }
-    /// A slot rewritten by another surface (e.g. the dashboard peek answer
-    /// path) no longer matches the live draft, so re-entry must take the
-    /// normal `set_text` path and show the rewritten slot.
+    /// A slot rewritten elsewhere (e.g. by the dashboard peek answer path) no longer matches the live draft.
+    /// Re-entry must then take the normal `set_text` path and show the rewritten slot.
     #[test]
     fn rewritten_slot_replaces_stale_draft() {
         let mut agent = make_agent();
@@ -2407,8 +2253,7 @@ mod question_freeform_chip_tests {
         );
         assert_eq!(paste_chip_count(&agent), 0);
     }
-    /// Double-click on the chip inside the question freeform input expands
-    /// it, exactly like the main prompt; a single click must not.
+    /// Double-click on the chip inside the question freeform input expands it, exactly like the main prompt; a single click must not.
     #[test]
     fn double_click_expands_chip_in_question_input() {
         let mut agent = make_agent();
@@ -2440,9 +2285,8 @@ mod question_freeform_chip_tests {
             "expanding must not leave input mode"
         );
     }
-    /// A textarea click from before leaving InputMode must not pair with
-    /// the first click after re-entry as a double-click (exits clear the
-    /// pairing timer).
+    /// A textarea click from before leaving InputMode must not pair with the first click after re-entry as a double-click.
+    /// Exits clear the pairing timer.
     #[test]
     fn click_before_exit_does_not_pair_with_click_after_reentry() {
         let mut agent = make_agent();
@@ -2464,9 +2308,8 @@ mod question_freeform_chip_tests {
 }
 #[cfg(test)]
 mod question_answer_focus_tests {
-    //! The question card's answer walk. Tab used to hand focus to the
-    //! scrollback while the card stayed drawn; these pin the walk that
-    //! replaced it.
+    //! The question card's answer walk.
+    //! Tab used to hand focus to the scrollback while the card stayed drawn; these tests pin the walk that replaced it.
     use super::super::test_fixtures::make_agent;
     use super::super::{AgentPane, AgentView};
     use super::question_no_freeform_tests::open_question;
@@ -2519,7 +2362,7 @@ mod question_answer_focus_tests {
     }
     fn hint_labels(agent: &AgentView) -> Vec<String> {
         agent
-            .current_shortcut_hints(&ActionRegistry::defaults(), false)
+            .current_shortcut_hints(&ActionRegistry::defaults())
             .iter()
             .map(|hint| hint.label.to_string())
             .collect()
@@ -2659,8 +2502,7 @@ mod question_answer_focus_tests {
         );
         assert_eq!(agent.active_pane, AgentPane::Prompt);
     }
-    /// The reported symptom was the bar promising one thing while Tab did
-    /// another, so the bar must name the walk at every stop.
+    /// The reported symptom was the bar promising one thing while Tab did another, so the bar must name the walk at every stop.
     #[test]
     fn shortcut_hints_name_the_answer_walk() {
         let mut agent = make_agent();

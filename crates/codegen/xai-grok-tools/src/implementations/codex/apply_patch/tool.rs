@@ -218,6 +218,80 @@ async fn compute_all_changes(
     Ok(changes)
 }
 
+/// Validate every memory v2 operation before any change is applied.
+///
+/// Create/replace checks are non-mutating and cover deterministic policy
+/// failures such as protected/nested paths and missing/stale read snapshots.
+/// The policy does not expose removal, so deletes and moves inside memory roots
+/// fail closed (including when classification itself fails).
+async fn preflight_memory_v2_changes(
+    resources: &SharedResources,
+    changes: &[FileChange],
+) -> Result<(), String> {
+    for change in changes {
+        match change {
+            FileChange::Add { path, content } => {
+                crate::types::memory_v2::preflight_memory_v2_write(
+                    resources,
+                    path,
+                    content.as_bytes(),
+                )
+                .await?;
+            }
+            FileChange::Update {
+                path, new_content, ..
+            } => {
+                crate::types::memory_v2::preflight_memory_v2_write(
+                    resources,
+                    path,
+                    new_content.as_bytes(),
+                )
+                .await?;
+            }
+            FileChange::Delete { path, .. } => {
+                reject_memory_v2_destructive_path(resources, path).await?;
+            }
+            FileChange::Move {
+                source_path,
+                dest_path,
+                ..
+            } => {
+                reject_memory_v2_destructive_path(resources, source_path).await?;
+                reject_memory_v2_destructive_path(resources, dest_path).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn reject_memory_v2_destructive_path(
+    resources: &SharedResources,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    if crate::types::memory_v2::validate_memory_v2_read(resources, path).await? {
+        return Err(format!(
+            "{} is inside a memory directory; apply_patch cannot delete or move memory files. Use \
+             the memory workflow instead: edit topic files in place or manage memories with the \
+             memory tools.",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Route a create/replace through memory v2. Returns `true` when the policy
+/// already persisted the file (skip the ordinary filesystem write).
+async fn write_via_memory_v2(
+    resources: &SharedResources,
+    path: &std::path::Path,
+    contents: &[u8],
+) -> Result<bool, String> {
+    match crate::types::memory_v2::write_memory_v2_file(resources, path, contents).await? {
+        crate::types::memory_v2::MemoryV2Write::Written { .. } => Ok(true),
+        crate::types::memory_v2::MemoryV2Write::Outside => Ok(false),
+    }
+}
+
 /// Read a file via AsyncFileSystem and convert to String.
 async fn read_file_as_string(
     fs: &Arc<dyn AsyncFileSystem>,
@@ -336,6 +410,9 @@ impl xai_tool_runtime::Tool for ApplyPatchTool {
             Ok(c) => c,
             Err(msg) => return Ok(ApplyPatchOutput::ApplicationError(msg)),
         };
+        if let Err(msg) = preflight_memory_v2_changes(&resources, &changes).await {
+            return Ok(ApplyPatchOutput::ApplicationError(msg));
+        }
 
         // ── Phase 3: Apply all changes (write to filesystem) ─────
         let mut file_results = Vec::new();
@@ -343,14 +420,21 @@ impl xai_tool_runtime::Tool for ApplyPatchTool {
         for change in &changes {
             match change {
                 FileChange::Add { path, content } => {
-                    // Create parent directories if needed.
-                    ensure_parent_dirs(path).await?;
-                    fs.write_file(path, content.as_bytes()).await.map_err(|e| {
-                        xai_tool_runtime::ToolError::execution(
-                            xai_tool_protocol::ToolId::new("apply_patch").expect("valid"),
-                            e.to_string(),
-                        )
-                    })?;
+                    let is_memory_write =
+                        match write_via_memory_v2(&resources, path, content.as_bytes()).await {
+                            Ok(is_memory_write) => is_memory_write,
+                            Err(msg) => return Ok(ApplyPatchOutput::ApplicationError(msg)),
+                        };
+                    if !is_memory_write {
+                        // Create parent directories if needed.
+                        ensure_parent_dirs(path).await?;
+                        fs.write_file(path, content.as_bytes()).await.map_err(|e| {
+                            xai_tool_runtime::ToolError::execution(
+                                xai_tool_protocol::ToolId::new("apply_patch").expect("valid"),
+                                e.to_string(),
+                            )
+                        })?;
+                    }
 
                     notification_handle.send_file_written(FileWritten {
                         tool_call_id: tool_call_id.clone(),
@@ -400,14 +484,21 @@ impl xai_tool_runtime::Tool for ApplyPatchTool {
                     original_content,
                     new_content,
                 } => {
-                    fs.write_file(path, new_content.as_bytes())
-                        .await
-                        .map_err(|e| {
-                            xai_tool_runtime::ToolError::execution(
-                                xai_tool_protocol::ToolId::new("apply_patch").expect("valid"),
-                                e.to_string(),
-                            )
-                        })?;
+                    let is_memory_write =
+                        match write_via_memory_v2(&resources, path, new_content.as_bytes()).await {
+                            Ok(is_memory_write) => is_memory_write,
+                            Err(msg) => return Ok(ApplyPatchOutput::ApplicationError(msg)),
+                        };
+                    if !is_memory_write {
+                        fs.write_file(path, new_content.as_bytes())
+                            .await
+                            .map_err(|e| {
+                                xai_tool_runtime::ToolError::execution(
+                                    xai_tool_protocol::ToolId::new("apply_patch").expect("valid"),
+                                    e.to_string(),
+                                )
+                            })?;
+                    }
 
                     notification_handle.send_file_written(FileWritten {
                         tool_call_id: tool_call_id.clone(),
@@ -676,6 +767,186 @@ mod tests {
             }
             other => panic!("Expected Success, got: {other:?}"),
         }
+    }
+
+    // ── Memory v2 jail ───────────────────────────────────────────
+
+    fn memory_resources(
+        cwd: &std::path::Path,
+    ) -> (
+        Resources,
+        Arc<
+            crate::implementations::grok_build_hashline::memory_v2_test_support::FakeMemoryV2Access,
+        >,
+    ) {
+        use crate::implementations::grok_build_hashline::memory_v2_test_support::FakeMemoryV2Access;
+        let access = Arc::new(FakeMemoryV2Access::new(&cwd.join("memory")));
+        let mut resources = test_resources(cwd);
+        resources.insert(crate::types::memory_v2::MemoryV2AccessResource(
+            access.clone(),
+        ));
+        (resources, access)
+    }
+
+    #[tokio::test]
+    async fn memory_v2_add_topic_goes_through_policy() {
+        let tmp = TempDir::new().unwrap();
+        let (resources, access) = memory_resources(tmp.path());
+        let topic = tmp.path().join("memory/topics/style.md");
+
+        let patch = wrap_patch("*** Add File: memory/topics/style.md\n+# Style");
+        let result = xai_tool_runtime::Tool::run(
+            &ApplyPatchTool,
+            test_ctx(resources.into_shared()),
+            make_input(&patch),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            matches!(result, ApplyPatchOutput::Success { .. }),
+            "got {result:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&topic).unwrap(), "# Style\n");
+        assert_eq!(access.policy_writes(), vec![topic]);
+        assert!(
+            std::fs::read_to_string(tmp.path().join("memory/MEMORY.md"))
+                .unwrap()
+                .contains("topics/style.md")
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_v2_update_manifest_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let (resources, _access) = memory_resources(tmp.path());
+        let manifest = tmp.path().join("memory/MEMORY.md");
+        let before = std::fs::read_to_string(&manifest).unwrap();
+
+        let patch = wrap_patch("*** Update File: memory/MEMORY.md\n@@\n-# Memory\n+# Hijacked");
+        let result = xai_tool_runtime::Tool::run(
+            &ApplyPatchTool,
+            test_ctx(resources.into_shared()),
+            make_input(&patch),
+        )
+        .await
+        .unwrap();
+
+        match result {
+            ApplyPatchOutput::ApplicationError(msg) => {
+                assert!(msg.contains("protected"), "got: {msg}");
+            }
+            other => panic!("Expected ApplicationError, got: {other:?}"),
+        }
+        assert_eq!(std::fs::read_to_string(&manifest).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn memory_v2_protected_add_is_rejected_before_ordinary_add() {
+        let tmp = TempDir::new().unwrap();
+        let (resources, access) = memory_resources(tmp.path());
+        let manifest = tmp.path().join("memory/MEMORY.md");
+        let manifest_before = std::fs::read_to_string(&manifest).unwrap();
+
+        let patch = wrap_patch(
+            "*** Add File: outside.txt\n+must not persist\n\
+             *** Add File: memory/MEMORY.md\n+# Hijacked",
+        );
+        let result = xai_tool_runtime::Tool::run(
+            &ApplyPatchTool,
+            test_ctx(resources.into_shared()),
+            make_input(&patch),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            matches!(result, ApplyPatchOutput::ApplicationError(ref msg) if msg.contains("protected")),
+            "got {result:?}"
+        );
+        assert!(
+            !tmp.path().join("outside.txt").exists(),
+            "ordinary add must not run before all memory writes pass preflight"
+        );
+        assert_eq!(std::fs::read_to_string(manifest).unwrap(), manifest_before);
+        assert!(access.policy_writes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn memory_v2_read_required_update_is_rejected_before_ordinary_update() {
+        let tmp = TempDir::new().unwrap();
+        let (resources, access) = memory_resources(tmp.path());
+        let outside = tmp.path().join("outside.txt");
+        let topic = tmp.path().join("memory/topics/rust.md");
+        std::fs::write(&outside, "before\n").unwrap();
+        std::fs::write(&topic, "old\n").unwrap();
+
+        let patch = wrap_patch(
+            "*** Update File: outside.txt\n@@\n-before\n+after\n\
+             *** Update File: memory/topics/rust.md\n@@\n-old\n+new",
+        );
+        let result = xai_tool_runtime::Tool::run(
+            &ApplyPatchTool,
+            test_ctx(resources.into_shared()),
+            make_input(&patch),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            matches!(result, ApplyPatchOutput::ApplicationError(ref msg) if msg.contains("read") && msg.contains("before editing")),
+            "got {result:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside).unwrap(),
+            "before\n",
+            "ordinary update must not run before all memory writes pass preflight"
+        );
+        assert_eq!(std::fs::read_to_string(topic).unwrap(), "old\n");
+        assert!(access.policy_writes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn memory_v2_delete_and_move_are_rejected_before_any_write() {
+        let tmp = TempDir::new().unwrap();
+        let (resources, access) = memory_resources(tmp.path());
+        let shared = resources.into_shared();
+        let topic = tmp.path().join("memory/topics/rust.md");
+        std::fs::write(&topic, "keep\n").unwrap();
+
+        let delete =
+            wrap_patch("*** Add File: outside.txt\n+x\n*** Delete File: memory/topics/rust.md");
+        let result = xai_tool_runtime::Tool::run(
+            &ApplyPatchTool,
+            test_ctx(shared.clone()),
+            make_input(&delete),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(result, ApplyPatchOutput::ApplicationError(ref msg) if msg.contains("memory workflow")),
+            "got {result:?}"
+        );
+        assert!(topic.exists());
+        assert!(
+            !tmp.path().join("outside.txt").exists(),
+            "rejection must happen before any change is applied"
+        );
+
+        let move_out = wrap_patch(
+            "*** Update File: memory/topics/rust.md\n*** Move to: stolen.md\n@@\n-keep\n+gone",
+        );
+        let result =
+            xai_tool_runtime::Tool::run(&ApplyPatchTool, test_ctx(shared), make_input(&move_out))
+                .await
+                .unwrap();
+        assert!(
+            matches!(result, ApplyPatchOutput::ApplicationError(_)),
+            "got {result:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&topic).unwrap(), "keep\n");
+        assert!(!tmp.path().join("stolen.md").exists());
+        assert!(access.policy_writes().is_empty());
     }
 
     // ── Parse error ──────────────────────────────────────────────

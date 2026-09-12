@@ -36,10 +36,9 @@ fn map_tool_outcome_cancellations() {
 #[test]
 fn turn_result_completed() {
     let result: Result<TurnOutcome, acp::Error> = Ok(TurnOutcome::Completed {
-        snapshot: Box::new(None),
         tools_called: vec![],
         structured_output: None,
-        refusal: None,
+        stop: CompletedStop::EndTurn,
     });
     assert_eq!(
         turn_result_to_hook_outcome(&result),
@@ -59,9 +58,7 @@ fn turn_result_cancelled() {
 }
 #[test]
 fn turn_result_stationarity_ended_is_completed() {
-    let result: Result<TurnOutcome, acp::Error> = Ok(TurnOutcome::StationarityEnded {
-        snapshot: Box::new(None),
-    });
+    let result: Result<TurnOutcome, acp::Error> = Ok(TurnOutcome::StationarityEnded);
     assert_eq!(
         turn_result_to_hook_outcome(&result),
         TurnHookOutcome::Completed

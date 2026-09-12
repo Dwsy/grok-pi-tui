@@ -8,7 +8,7 @@ description = "Grok tools library"
 [dependencies]
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
-dirs = { workspace = true }
+xai-dirs = { workspace = true }
 derive_more = { workspace = true, features = ["from", "try_into"] }
 dunce = { workspace = true }
 encoding_rs = { workspace = true, optional = true }
@@ -19,16 +19,18 @@ xai-tty-utils = { workspace = true }
 xai-grok-auth = { workspace = true }
 xai-grok-config = { path = "../xai-grok-config" }
 xai-grok-extra-ca = { workspace = true }
+xai-grok-feedback = { workspace = true }
 xai-grok-tools-api = { path = "../xai-grok-tools-api" }
 xai-grok-workspace-types = { path = "../xai-grok-workspace-types" }
 xai-grok-version = { workspace = true }
 xai-interjection-core = { workspace = true }
+xai-message-delivery-core = { workspace = true }
 xai-token-estimation = { workspace = true }
 async-lsp = { workspace = true }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
-crc32fast = { workspace = true }
+xai-grok-image = { workspace = true }
 ignore = { workspace = true }
 infer = { workspace = true }
 globset = { workspace = true }
@@ -90,7 +92,9 @@ chrono = { workspace = true }
 futures-util = { workspace = true }
 xai-grok-sandbox = { path = "../xai-grok-sandbox", default-features = false }
 xai-file-utils = { path = "../xai-file-utils" }
+xai-grok-otel = { workspace = true }
 dhat = { workspace = true, optional = true }
+zstd = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 command-fds = { version = "0.3", features = ["tokio"] }
@@ -106,7 +110,6 @@ libc = { workspace = true }
 windows = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
-dirs = { workspace = true }
 pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
@@ -119,6 +122,7 @@ reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 flate2 = { workspace = true }
 sha2 = { workspace = true }
 tar = { workspace = true }
+zstd = { workspace = true }
 
 [lints]
 workspace = true

@@ -53,10 +53,20 @@ pub enum CompactionSampleError {
     Start(String),
     /// The model produced no response-channel content. Transient.
     EmptyResponse,
+    /// Structurally-detected size overflow (context window or transport
+    /// payload limit). Deterministic; hosts with an input ladder step down
+    /// instead of retrying.
+    ContextOverflow(String),
     /// Anything else — classified by string matching for backward
     /// compatibility with samplers that pre-date the structured variants.
     Other(anyhow::Error),
 }
+
+/// Prefix [`CompactionSampleError::Build`]'s Display stamps; user-facing
+/// normalizers strip it.
+pub const SAMPLER_BUILD_FAILED_PREFIX: &str = "Compaction sampler build failed: ";
+/// Prefix [`CompactionSampleError::Start`]'s Display stamps; see above.
+pub const SAMPLER_START_FAILED_PREFIX: &str = "Compaction sampler start failed: ";
 
 impl std::fmt::Display for CompactionSampleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -69,13 +79,15 @@ impl std::fmt::Display for CompactionSampleError {
                 "Compaction sampling timed out after {}s (collected {} bytes so far)",
                 timeout_secs, collected_bytes
             ),
-            Self::Build(msg) => write!(f, "Compaction sampler build failed: {}", msg),
-            Self::Start(msg) => write!(f, "Compaction sampler start failed: {}", msg),
+            Self::Build(msg) => write!(f, "{SAMPLER_BUILD_FAILED_PREFIX}{msg}"),
+            Self::Start(msg) => write!(f, "{SAMPLER_START_FAILED_PREFIX}{msg}"),
             // Keep the "no response channel content" literal — the intra
             // orchestrator's `Other(_)` fallback string-matches it.
             Self::EmptyResponse => {
                 write!(f, "Compaction sampler returned no response channel content")
             }
+            // Verbatim: callers surface this to users and telemetry.
+            Self::ContextOverflow(msg) => write!(f, "{msg}"),
             Self::Other(e) => write!(f, "{}", e),
         }
     }
@@ -93,13 +105,18 @@ impl CompactionSampleError {
     pub fn is_deterministic(&self) -> bool {
         match self {
             Self::Timeout { .. } | Self::EmptyResponse => false,
-            Self::Build(_) | Self::Start(_) => true,
+            Self::Build(_) | Self::Start(_) | Self::ContextOverflow(_) => true,
             Self::Other(err) => {
                 let msg = err.to_string();
                 msg.contains("Failed to build AgenticScheduler")
                     || msg.contains("Failed to start compaction sample")
             }
         }
+    }
+
+    /// Structurally-detected size overflow — the input-ladder step-down signal.
+    pub fn is_context_overflow(&self) -> bool {
+        matches!(self, Self::ContextOverflow(_))
     }
 }
 
@@ -155,6 +172,14 @@ mod tests {
         assert!(!CompactionSampleError::EmptyResponse.is_deterministic());
         assert!(CompactionSampleError::Build("bad config".into()).is_deterministic());
         assert!(CompactionSampleError::Start("no stream".into()).is_deterministic());
+        assert!(
+            CompactionSampleError::ContextOverflow("request too large".into()).is_deterministic()
+        );
+        assert!(
+            CompactionSampleError::ContextOverflow("request too large".into())
+                .is_context_overflow()
+        );
+        assert!(!CompactionSampleError::Build("bad config".into()).is_context_overflow());
         // Legacy string-matching fallback.
         assert!(
             CompactionSampleError::Other(anyhow::anyhow!(
@@ -180,5 +205,16 @@ mod tests {
     fn empty_response_display_keeps_match_literal() {
         let msg = CompactionSampleError::EmptyResponse.to_string();
         assert!(msg.contains("no response channel content"), "got: {msg}");
+    }
+
+    /// Pins the verbatim Display pass-through.
+    #[test]
+    fn context_overflow_display_passes_message_through() {
+        let msg = "compact failed: API error (status 413 Payload Too Large): Request failed \
+                   (HTTP 413).";
+        assert_eq!(
+            CompactionSampleError::ContextOverflow(msg.into()).to_string(),
+            msg
+        );
     }
 }

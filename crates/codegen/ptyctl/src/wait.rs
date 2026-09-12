@@ -55,14 +55,8 @@ pub struct WaitDiagnostics {
 }
 
 /// Handles needed to wait on screen conditions without holding any outer session lock.
-///
-/// The HTTP server wraps `PtySession` in a mutex; a long-poll must clone
-/// this handle and drop the session guard, or it would block send/screen
-/// for the whole wait.
-///
-/// TODO: the next verb needing lock-free session access must instead make
-/// `stop()` take `&self` and switch the server state to `Arc<PtySession>`,
-/// deleting this handle — do not clone another field trio.
+/// A long-poll must clone this handle and drop the session guard, or it blocks send/screen.
+/// TODO: next lock-free verb should make `stop()` take `&self` and delete this handle — do not clone another field trio.
 pub struct WaitHandle {
     pub(crate) terminal: Arc<Mutex<Terminal>>,
     pub(crate) generation_rx: watch::Receiver<u64>,
@@ -71,9 +65,8 @@ pub struct WaitHandle {
 
 impl WaitHandle {
     /// Wait until `condition` is met or `timeout` elapses.
-    ///
-    /// Event-driven: the grid is re-checked only when the feeder bumps the
-    /// generation. Errors only on an invalid regex pattern.
+    /// Event-driven: the grid is re-checked only when the feeder bumps the generation.
+    /// Errors only on an invalid regex pattern.
     pub async fn wait_for(
         mut self,
         condition: WaitCondition,

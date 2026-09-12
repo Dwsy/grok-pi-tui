@@ -80,10 +80,9 @@ pub fn seek_sequence(
         }
     }
 
-    // ── Pass 4: Unicode normalise ────────────────────────────────────
-    // Normalise common Unicode punctuation to ASCII equivalents so that
-    // diffs authored with plain ASCII characters can still be applied to
-    // source files that contain typographic dashes / quotes, etc.
+    // Pass 4: Unicode normalise Normalise common Unicode punctuation to ASCII equivalents so that
+    // diffs authored with plain ASCII characters can still be applied to source files that contain
+    // typographic dashes / quotes, etc.
     fn normalise(s: &str) -> String {
         s.trim()
             .chars()

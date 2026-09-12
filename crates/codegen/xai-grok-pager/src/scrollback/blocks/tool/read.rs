@@ -1,5 +1,3 @@
-//! ReadToolCallBlock - reads a file with syntax highlighting.
-
 use std::path::Path;
 
 use ratatui::style::{Modifier, Style};
@@ -30,18 +28,17 @@ pub enum ReadMediaKind {
     Pdf { pages: usize },
 }
 
-/// Read file tool call.
 #[derive(Debug, Clone)]
 pub struct ReadToolCallBlock {
     /// Path to the file being read.
     pub path: String,
     /// Line range if specified: [start, end] (1-based, inclusive).
     pub line_range: Option<LineRange>,
-    /// Error message if the tool call failed (None = success).
+    /// Error message if the tool call failed (None means success).
     pub error: Option<String>,
-    /// When the tool started running (Phase 2: time tracking).
+    /// When the tool started running.
     pub started_at: Option<std::time::Instant>,
-    /// Elapsed time in ms after completion (Phase 2: time tracking).
+    /// Elapsed time in ms after completion.
     pub elapsed_ms: Option<i64>,
     /// Raw file content (unformatted). `None` for errors, images, PDFs.
     pub content: Option<String>,
@@ -51,14 +48,13 @@ pub struct ReadToolCallBlock {
     pub image_ref: Option<ScrollbackImageRef>,
     /// Non-text media kind (image, PDF).
     pub media_kind: Option<ReadMediaKind>,
+    /// Whether this ordinary read targets a memory v2 scope.
+    pub is_memory_activity: bool,
 }
 
 impl ReadToolCallBlock {
-    /// Create a new read block.
-    ///
-    /// Pre-completed blocks have no meaningful local timing — `started_at`
-    /// is `None`. Timing is only set for blocks that enter a running UI
-    /// state (via `set_last_running(true)` in `ScrollbackState`).
+    /// Pre-completed blocks have no meaningful local timing, so `started_at` is `None`.
+    /// Timing is only set for blocks that enter a running UI state (via `set_last_running(true)` in `ScrollbackState`).
     pub fn new(path: impl Into<String>) -> Self {
         Self {
             path: path.into(),
@@ -70,16 +66,20 @@ impl ReadToolCallBlock {
             total_lines: None,
             image_ref: None,
             media_kind: None,
+            is_memory_activity: false,
         }
     }
 
-    /// Set line range.
+    pub fn with_memory_activity(mut self) -> Self {
+        self.is_memory_activity = true;
+        self
+    }
+
     pub fn with_line_range(mut self, range: LineRange) -> Self {
         self.line_range = Some(range);
         self
     }
 
-    /// Set file content and total line count.
     pub fn with_content(mut self, content: String, total_lines: usize) -> Self {
         self.content = Some(content);
         self.total_lines = Some(total_lines);
@@ -92,7 +92,6 @@ impl ReadToolCallBlock {
         self
     }
 
-    /// Check if successful (no error).
     pub fn is_success(&self) -> bool {
         self.error.is_none()
     }
@@ -103,7 +102,7 @@ impl ReadToolCallBlock {
     }
 
     /// Skill name when this read targets a skill definition (`SKILL.md`).
-    /// Single source of truth for skill-read detection.
+    /// All skill-read detection goes through here.
     pub fn skill_name(&self) -> Option<&str> {
         skill_name_from_path(&self.path)
     }
@@ -113,7 +112,7 @@ impl ReadToolCallBlock {
         self.skill_name().is_some()
     }
 
-    /// Set error (mutable) — compute elapsed time if not already set (Phase 2).
+    /// Set the error, computing elapsed time if not already set.
     pub fn set_error(&mut self, error: Option<String>) {
         if self.elapsed_ms.is_none()
             && let Some(start) = self.started_at
@@ -125,8 +124,7 @@ impl ReadToolCallBlock {
 
     /// Finalize elapsed time from `started_at`.
     ///
-    /// Idempotent: no-op if `started_at` is `None` (pre-completed block)
-    /// or if `elapsed_ms` is already set (already finalized).
+    /// Idempotent: no-op if `started_at` is `None` (pre-completed block) or if `elapsed_ms` is already set (already finalized).
     pub fn finish(&mut self) {
         if self.elapsed_ms.is_some() {
             return;
@@ -136,7 +134,6 @@ impl ReadToolCallBlock {
         }
     }
 
-    /// Get elapsed time in ms (Phase 2).
     pub fn elapsed_ms(&self) -> Option<i64> {
         match self.elapsed_ms {
             Some(ms) => Some(ms),
@@ -231,10 +228,6 @@ impl ReadToolCallBlock {
     }
 
     /// Header line with only the path (or skill name) span selectable.
-    ///
-    /// Spans: `["Read ", path, optional_range_suffix, optional_extra_suffix]`
-    /// or `["Skill ", skill_name]`. Prefix/suffixes excluded (no `selection_text`
-    /// override). Attaches a semantic filesystem target for non-skill paths.
     fn header_block_line(&self, line: Line<'static>, cwd: Option<&std::path::Path>) -> BlockLine {
         let path_end = 2.min(line.spans.len()).max(1);
         let link_target = if self.skill_name().is_some() {
@@ -253,7 +246,7 @@ impl ReadToolCallBlock {
 
     /// Render content lines with absolute line numbers in the gutter.
     ///
-    /// Wraps all lines first, then applies truncation -- matching ExecuteToolCallBlock.
+    /// Wraps all lines first, then applies truncation, matching ExecuteToolCallBlock.
     fn render_content_lines(
         &self,
         theme: &Theme,
@@ -270,8 +263,7 @@ impl ReadToolCallBlock {
         let gutter_width = digit_count(base_line + raw_lines.len().saturating_sub(1));
         let content_width = width.saturating_sub(gutter_width + 2).max(20);
 
-        // Use Theme::dim/primary so terminal-native (minimal) maps grays to
-        // SGR dim / default fg instead of raw gray_dim slots.
+        // Use Theme::dim/primary so terminal-native (minimal) maps grays to SGR dim / default fg instead of raw gray_dim slots
         let gutter_style = theme.dim();
         let text_style = theme.primary();
 
@@ -559,9 +551,8 @@ mod tests {
 
     #[test]
     fn content_preview_shading_is_marked_panel() {
-        // The preview's bg_dark band is decorative chrome, not semantic
-        // shading — it must be flagged `background_is_panel` so minimal
-        // mode's flat rendering can drop it (EntryRenderer::flat_background).
+        // The preview's bg_dark band is decoration, not meaningful shading
+        // It must be flagged `background_is_panel` so minimal mode's flat rendering can drop it (EntryRenderer::flat_background)
         let block = ReadToolCallBlock::new("notes.txt").with_content("alpha\nbravo".to_string(), 2);
         let mut ctx = make_ctx();
         ctx.mode = DisplayMode::Expanded;
@@ -716,7 +707,7 @@ mod tests {
             ..make_ctx()
         };
         let output = block.output(&ctx);
-        // Header + blank separator + FIRST_LINES + ellipsis + LAST_LINES
+        // Header, blank separator, FIRST_LINES, ellipsis, LAST_LINES
         assert!(
             output.lines.len() > 1,
             "truncated should have content lines"

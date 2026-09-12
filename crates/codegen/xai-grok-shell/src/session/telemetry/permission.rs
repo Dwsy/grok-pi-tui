@@ -8,10 +8,9 @@ use xai_grok_workspace::permission::{
     AUTO_DENY_CONSECUTIVE_LIMIT, AUTO_DENY_TOTAL_LIMIT, Decision, PermissionEvent,
 };
 
-/// Content-free analytics fields projected from the manager's authoritative
-/// [`PermissionEvent`] onto `PermissionDecisionPayload`. Every field is `None`
-/// when the manager returned no event, so the shell omits manager-only analytics
-/// rather than fabricating them from its pre-await snapshot.
+/// Content-free analytics fields projected from the manager's authoritative [`PermissionEvent`] onto `PermissionDecisionPayload`.
+/// Every field is `None` when the manager returned no event.
+/// The shell then omits manager-only analytics rather than fabricating them from its pre-await snapshot.
 #[derive(Default)]
 pub(crate) struct ManagerPermissionAnalytics {
     pub manager_prompt_attempted: Option<bool>,
@@ -27,8 +26,8 @@ pub(crate) struct ManagerPermissionAnalytics {
     pub auto_denials_total: Option<u32>,
 }
 
-/// Map a manager string through a closed telemetry enum. Unknown values are
-/// dropped with a fixed local diagnostic category and never exported.
+/// Map a manager string through a closed telemetry enum.
+/// Unknown values are dropped with a fixed local diagnostic category and never exported.
 fn try_enum<T>(field: &'static str, raw: &str) -> Option<T>
 where
     for<'a> T: TryFrom<&'a str>,
@@ -46,11 +45,9 @@ where
     }
 }
 
-/// All-or-nothing conversion of finding tokens. `Some([])` is preserved only when
-/// the source vector was truly empty (classifier route ran, empty assessment). On
-/// the FIRST unknown token the ENTIRE field is omitted (`None`) with a fixed
-/// diagnostic, so an older shell never exports a misleadingly "clean" or partial
-/// subset of a newer manager's findings (truthful missingness for eval curation).
+/// `Some([])` is preserved only when the source vector was truly empty (classifier route ran, empty assessment).
+/// On the FIRST unknown token the ENTIRE field is omitted (`None`) with a fixed diagnostic.
+/// An older shell thus never exports a misleadingly "clean" or partial subset of a newer manager's findings (truthful missingness for eval curation).
 fn convert_findings(tokens: &[String]) -> Option<Vec<PermissionSecurityFinding>> {
     let mut out = Vec::with_capacity(tokens.len());
     for token in tokens {
@@ -69,8 +66,8 @@ fn convert_findings(tokens: &[String]) -> Option<Vec<PermissionSecurityFinding>>
     Some(out)
 }
 
-/// Pure projection of the manager event onto the additive content-free analytics
-/// fields. No I/O, no shell state; unknown strings are omitted.
+/// Pure projection of the manager event onto the additive content-free analytics fields.
+/// No I/O, no shell state; unknown strings are omitted.
 pub(crate) fn manager_permission_analytics(
     event: Option<&PermissionEvent>,
 ) -> ManagerPermissionAnalytics {
@@ -100,12 +97,11 @@ pub(crate) fn manager_permission_analytics(
             .classifier_verdict
             .as_deref()
             .and_then(|s| try_enum("classifier_verdict", s)),
-        // None = never classified; Some([]) = classifier route ran with an empty
-        // assessment; any unknown token omits the whole field (see convert_findings).
+        // None means never classified; Some([]) means the classifier route ran with an empty assessment
+        // Any unknown token omits the whole field (see convert_findings)
         security_findings: ev.security_findings.as_deref().and_then(convert_findings),
         classifier_latency_ms: ev.classifier_latency_ms,
-        // Clamp to the manager's own budget (defense-in-depth) using the owner's
-        // constants, so a budget change cannot silently desync this clamp.
+        // Clamp to the manager's own budget (defense-in-depth) using the owner's constants, so a budget change cannot silently desync this clamp
         auto_denials_consecutive: ev
             .auto_denials_consecutive
             .map(|n| n.min(AUTO_DENY_CONSECUTIVE_LIMIT)),
@@ -122,10 +118,9 @@ pub(crate) fn permission_mode_label(is_yolo: bool) -> &'static str {
     }
 }
 
-/// Telemetry `source` label for a permission [`Decision`] on the `tool.decision`
-/// span. `is_yolo` collapses auto-approvals to `config`. `Decision::Allow`/`Ask`
-/// carry no provenance, so a config/policy allow is indistinguishable from a
-/// user click — report neutral `allowed` rather than guessing `user_temporary`.
+/// Telemetry `source` label for a permission [`Decision`] on the `tool.decision` span.
+/// `Decision::Allow`/`Ask` carry no provenance, so a config/policy allow is indistinguishable from a user click.
+/// Report neutral `allowed` rather than guessing `user_temporary`.
 pub(crate) fn permission_decision_source(decision: &Decision, is_yolo: bool) -> &'static str {
     match decision {
         Decision::PolicyDeny(_) => "config",
@@ -137,10 +132,9 @@ pub(crate) fn permission_decision_source(decision: &Decision, is_yolo: bool) -> 
     }
 }
 
-/// Provenance for the analytics `source` field, honoring the event-less
-/// invariant: when the manager returned no event a `Reject` is a channel failure
-/// (`manager_unavailable`), NOT a human choice, so provenance is omitted rather
-/// than mislabeled `user_reject`. With an event present, behavior is unchanged.
+/// Provenance for the analytics `source` field.
+/// When the manager returned no event, a `Reject` is a channel failure (`manager_unavailable`), NOT a human choice.
+/// Provenance is then omitted rather than mislabeled `user_reject`; with an event present, [`permission_decision_source`] labels as usual.
 pub(crate) fn resolved_decision_source(
     manager_event_present: bool,
     decision: &Decision,
@@ -153,22 +147,19 @@ pub(crate) fn resolved_decision_source(
     }
 }
 
-/// One manager-authoritative telemetry snapshot for a resolved decision. Both the
-/// `tool.decision` span and the product `PermissionDecisionPayload` are fed from
-/// this so the two rails can never disagree on mode / wait / source.
+/// One manager-authoritative telemetry snapshot for a resolved decision.
+/// Both the `tool.decision` span and the product `PermissionDecisionPayload` are fed from this, so they can never disagree on mode, wait, or source.
 pub(crate) struct ResolvedDecisionTelemetry {
     pub permission_mode: PermissionMode,
     pub wait_ms: u64,
-    /// Product-payload/span provenance; `None` (omit / neutral) for an event-less
-    /// synthetic manager failure so it is never mislabeled `user_reject`.
+    /// Provenance for the product payload and the span.
+    /// `None` (omitted) for an event-less synthetic manager failure, so it is never mislabeled `user_reject`.
     pub source: Option<String>,
 }
 
-/// Derive the resolved snapshot. The manager event's frozen mode, wait time, and
-/// yolo state win when present; the shell's pre-await snapshot is used only when
-/// the manager returned no event. Deriving yolo from the frozen event mode (not
-/// the post-await handle state) prevents a mode/always-approve change around an
-/// open prompt from retroactively rewriting the source.
+/// The shell's pre-await snapshot is used only when the manager returned no event.
+/// Yolo derives from the frozen event mode, not the post-await handle state.
+/// A mode or always-approve change around an open prompt thus cannot retroactively rewrite the source.
 pub(crate) fn resolved_decision_telemetry(
     manager_event: Option<&PermissionEvent>,
     decision: &Decision,
@@ -192,7 +183,6 @@ pub(crate) fn resolved_decision_telemetry(
     }
 }
 
-/// Coarse product outcome for a decision (allow/deny/cancel/followup).
 pub(crate) fn permission_outcome(decision: &Decision) -> PermissionOutcome {
     match decision {
         Decision::Allow | Decision::Ask => PermissionOutcome::Allow,
@@ -202,12 +192,15 @@ pub(crate) fn permission_outcome(decision: &Decision) -> PermissionOutcome {
     }
 }
 
-/// The single production event→payload projection, used by both `tool_calls.rs`
-/// and the cohort tests so the tested path is exactly the shipped one. Callers
-/// pass the ONE [`ResolvedDecisionTelemetry`] they already built (and fed to the
-/// `tool.decision` span), so mode/wait/source are never re-derived — the span and
-/// product rails cannot observe different shell state. Content-free analytics
-/// come from [`manager_permission_analytics`].
+/// The single production event-to-payload projection, used by `tool_calls.rs` and the cohort tests so the tested path is exactly the shipped one.
+/// Mode, wait, and source are never re-derived, so the span and product rails cannot observe different shell state.
+/// Content-free analytics come from [`manager_permission_analytics`].
+pub(crate) fn canonical_permission_tool_name(
+    access: &xai_grok_workspace::permission::AccessKind,
+) -> String {
+    xai_grok_workspace::permission::prompter_tool_name_for_access(access)
+}
+
 pub(crate) fn permission_decision_payload(
     tool_name: String,
     access_kind: events::AccessKind,
@@ -287,9 +280,8 @@ mod permission_analytics_tests {
         }
     }
 
-    /// A `Decision` consistent with the event's decision string, so the cohort
-    /// smoke drives the *production* `permission_decision_payload` (the shipped
-    /// projection), not a test-only copy.
+    /// A `Decision` consistent with the event's decision string.
+    /// The cohort test thus drives the *production* `permission_decision_payload` (the shipped projection), not a test-only copy.
     fn decision_for(ev: &PermissionEvent) -> Decision {
         match ev.decision.as_str() {
             "allow" | "ask" => Decision::Allow,
@@ -299,9 +291,8 @@ mod permission_analytics_tests {
         }
     }
 
-    /// Project via the exact production call site: build the one resolved snapshot
-    /// (as `tool_calls.rs` does), then feed it to the payload projection. Shell
-    /// fallbacks are ignored because the manager event is present.
+    /// Project via the exact production call site: build the one resolved snapshot (as `tool_calls.rs` does), then feed it to the payload projection.
+    /// Shell fallbacks are ignored because the manager event is present.
     fn payload(ev: &PermissionEvent) -> PermissionDecisionPayload {
         let decision = decision_for(ev);
         let resolved =
@@ -314,6 +305,108 @@ mod permission_analytics_tests {
             Some(ev),
             resolved,
         )
+    }
+
+    #[test]
+    fn renamed_agent_message_keeps_canonical_product_and_external_identity() {
+        let access = xai_grok_workspace::permission::AccessKind::AgentMessage {
+            subagent_id: "sub-1".into(),
+        };
+        let canonical = canonical_permission_tool_name(&access);
+        assert_eq!(canonical, "send_subagent_message");
+        assert_ne!(canonical, "relay_to_subagent");
+
+        let event = PermissionEvent {
+            tool_id: "tc-message".into(),
+            tool_name: canonical.clone(),
+            access_kind: "agent_message".into(),
+            access_detail: Some("sub-1".into()),
+            yolo_mode: false,
+            auto_approved: false,
+            user_prompted: true,
+            decision: "allow".into(),
+            prompt_outcome: Some("allow_once".into()),
+            reject_reason: None,
+            timestamp: Utc::now(),
+            subagent_session_id: None,
+            subagent_type: None,
+            subagent_description: None,
+            permission_mode: Some("ask".into()),
+            decision_reason: Some("needs_user".into()),
+            classifier_source: None,
+            classifier_latency_ms: None,
+            auto_denials_consecutive: None,
+            auto_denials_total: None,
+            wait_ms: Some(1),
+            queue_depth: Some(1),
+            security_findings: None,
+            classifier_verdict: None,
+            remember_tool_approvals: Some(true),
+        };
+        let decision = Decision::Allow;
+        let resolved =
+            resolved_decision_telemetry(Some(&event), &decision, PermissionMode::Ask, 0, false);
+        let payload = permission_decision_payload(
+            canonical,
+            events::AccessKind::AgentMessage,
+            &decision,
+            None,
+            Some(&event),
+            resolved,
+        );
+        assert_eq!(payload.tool_name, "send_subagent_message");
+        assert_eq!(
+            serde_json::to_value(payload.access_kind).unwrap(),
+            serde_json::json!("agent_message")
+        );
+    }
+
+    #[test]
+    fn agent_message_payload_keeps_dedicated_identity() {
+        let event = PermissionEvent {
+            tool_id: "tc-message".into(),
+            tool_name: "send_subagent_message".into(),
+            access_kind: "agent_message".into(),
+            access_detail: Some("sub-1".into()),
+            yolo_mode: false,
+            auto_approved: false,
+            user_prompted: true,
+            decision: "allow".into(),
+            prompt_outcome: Some("allow_once".into()),
+            reject_reason: None,
+            timestamp: Utc::now(),
+            subagent_session_id: None,
+            subagent_type: None,
+            subagent_description: None,
+            permission_mode: Some("ask".into()),
+            decision_reason: Some("needs_user".into()),
+            classifier_source: None,
+            classifier_latency_ms: None,
+            auto_denials_consecutive: None,
+            auto_denials_total: None,
+            wait_ms: Some(1),
+            queue_depth: Some(1),
+            security_findings: None,
+            classifier_verdict: None,
+            remember_tool_approvals: Some(true),
+        };
+        let decision = Decision::Allow;
+        let resolved =
+            resolved_decision_telemetry(Some(&event), &decision, PermissionMode::Ask, 0, false);
+        let payload = permission_decision_payload(
+            event.tool_name.clone(),
+            events::AccessKind::AgentMessage,
+            &decision,
+            None,
+            Some(&event),
+            resolved,
+        );
+
+        assert_eq!(payload.tool_name, "send_subagent_message");
+        assert_eq!(
+            serde_json::to_value(payload.access_kind).unwrap(),
+            serde_json::json!("agent_message")
+        );
     }
 
     #[test]
@@ -355,8 +448,7 @@ mod permission_analytics_tests {
         let mut ev = denial_limit_event("allow", "allow_once", "auto_denial_limit", "block");
         ev.decision_reason = Some("brand_new_reason".into());
         ev.classifier_verdict = Some("mystery".into());
-        // Known + unknown token: all-or-nothing omits the ENTIRE findings field
-        // (never a misleading partial/"clean" subset).
+        // Known and unknown tokens mixed: all-or-nothing omits the ENTIRE findings field (never a misleading partial or "clean" subset)
         ev.security_findings = Some(vec!["opaque_shell".into(), "made_up_token".into()]);
         let a = manager_permission_analytics(Some(&ev));
         assert!(a.decision_reason.is_none(), "unknown reason omitted");
@@ -365,7 +457,7 @@ mod permission_analytics_tests {
             a.security_findings.is_none(),
             "any unknown finding token omits the whole field"
         );
-        // All-known tokens still project fully; empty stays Some([]).
+        // All-known tokens still project fully
         ev.security_findings = Some(vec!["opaque_shell".into(), "file_write".into()]);
         assert_eq!(
             manager_permission_analytics(Some(&ev)).security_findings,
@@ -414,9 +506,8 @@ mod permission_analytics_tests {
         assert_eq!(a.auto_denials_total, Some(AUTO_DENY_TOTAL_LIMIT));
     }
 
-    /// Drift guard: the telemetry reason enum is a bijection with the manager's
-    /// owned `reasons::ALL` vocabulary. Adding a reason on either side without the
-    /// other fails this (unlike the previous hand-copied cross-crate list).
+    /// Drift guard: the telemetry reason enum is a bijection with the manager's owned `reasons::ALL` vocabulary.
+    /// Adding a reason on either side without the other fails this.
     #[test]
     fn decision_reason_enum_matches_manager_vocabulary() {
         use std::collections::BTreeSet;
@@ -469,13 +560,9 @@ mod permission_analytics_tests {
         );
     }
 
-    /// Drift guard: every prompt-outcome wire the manager can emit — the
-    /// structurally-generated owner projection `PromptOutcomeKind::ALL` (the
-    /// enum/`ALL`/`wire_str` the manager itself emits via
-    /// `PromptOutcome::kind().wire_str()`) — normalizes to a telemetry category.
-    /// A new owner kind (one `wire_enum!` list entry) that lacks a
-    /// `PermissionPromptOutcome` mapping fails here rather than being silently
-    /// omitted by the shell.
+    /// Drift guard: every prompt-outcome wire in `PromptOutcomeKind::ALL` normalizes to a telemetry category.
+    /// That list is what the manager itself emits via `PromptOutcome::kind().wire_str()`.
+    /// A new owner kind (one `wire_enum!` list entry) that lacks a `PermissionPromptOutcome` mapping fails here rather than being silently omitted.
     #[test]
     fn prompt_outcome_covers_manager_vocabulary() {
         use xai_grok_workspace::permission::PromptOutcomeKind;
@@ -488,9 +575,8 @@ mod permission_analytics_tests {
         }
     }
 
-    /// Drift guard: the outcome-detail enum is a bijection with the manager's
-    /// `PromptOutcomeKind::ALL` wire vocabulary, so a new "Always allow"
-    /// surface cannot be silently dropped from adoption analytics.
+    /// Drift guard: the outcome-detail enum is a bijection with the manager's `PromptOutcomeKind::ALL` wire vocabulary.
+    /// A new "Always allow" prompt option thus cannot be silently dropped from adoption analytics.
     #[test]
     fn prompt_outcome_detail_matches_manager_vocabulary() {
         use std::collections::BTreeSet;
@@ -517,10 +603,9 @@ mod permission_analytics_tests {
         );
     }
 
-    /// Drift guard: the classifier-source enum is a bijection with the workspace
-    /// owner projection `ClassifierSourceKind::ALL` (the full source vocabulary —
-    /// classifier provenances plus `fast_path`/`not_wired` — generated from one
-    /// list). A new owner kind not mirrored by the telemetry enum fails here.
+    /// Drift guard: the classifier-source enum is a bijection with the workspace owner projection `ClassifierSourceKind::ALL`.
+    /// That vocabulary covers classifier provenances plus `fast_path` and `not_wired`, generated from one list.
+    /// A new owner kind not mirrored by the telemetry enum fails here.
     #[test]
     fn classifier_source_enum_matches_manager_vocabulary() {
         use std::collections::BTreeSet;
@@ -546,8 +631,7 @@ mod permission_analytics_tests {
         );
     }
 
-    /// Drift guard: the classifier-verdict enum is a bijection with the workspace
-    /// owner projection `ClassifierVerdict::ALL` (generated from one list).
+    /// Drift guard: the classifier-verdict enum is a bijection with the workspace owner's `ClassifierVerdict::ALL` (generated from one list).
     #[test]
     fn classifier_verdict_enum_matches_manager_vocabulary() {
         use std::collections::BTreeSet;
@@ -575,8 +659,7 @@ mod permission_analytics_tests {
 
     #[test]
     fn resolved_snapshot_uses_frozen_event_mode_and_wait() {
-        // Manager event froze always-approve; the shell's post-await snapshot says
-        // non-yolo Ask. The resolved snapshot must trust the event.
+        // Manager event froze always-approve; the shell's post-await snapshot says non-yolo Ask
         let mut ev = denial_limit_event("allow", "allow_once", "yolo", "unavailable");
         ev.permission_mode = Some("always-approve".into());
         ev.wait_ms = Some(4321);
@@ -623,8 +706,7 @@ mod permission_analytics_tests {
         assert!(resolved_decision_source(false, &Decision::Allow, false).is_some());
     }
 
-    /// Four real manager events → production projection → KPI predicate.
-    /// Denominator 2, alignment/disagreement 50/50; Cancel and timeout excluded.
+    /// Four real manager events run through the production projection and then the KPI predicate.
     #[test]
     fn four_event_cohort_smoke_denominator_and_rates() {
         let events = [
@@ -655,7 +737,7 @@ mod permission_analytics_tests {
             .count();
         assert_eq!((alignments, disagreements), (1, 1), "50/50");
 
-        // Content-free: no command/path/free text on the projected payload JSON.
+        // Content-free: no command, path, or free text on the projected payload JSON
         let json = serde_json::to_string(&payloads[0]).unwrap();
         assert!(!json.contains("$X") && !json.contains("bash -c"));
         assert_eq!(

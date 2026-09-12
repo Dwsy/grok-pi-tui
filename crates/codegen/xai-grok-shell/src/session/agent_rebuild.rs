@@ -1,43 +1,33 @@
-//! `AgentRebuildSpec` — the canonical recipe for constructing an
-//! [`xai_grok_agent::Agent`] for a given session.
+//! `AgentRebuildSpec` is the canonical recipe for constructing an [`xai_grok_agent::Agent`] for a given session.
 //!
-//! INVARIANT: This is the **only** place in the shell crate that calls
-//! [`xai_grok_agent::AgentBuilder::new`]. Both initial session spawn
-//! ([`crate::session::acp_session::spawn_session_actor`]) and zero-turn
-//! harness rebuild
-//! ([`crate::session::acp_session::SessionActor::handle_rebuild_agent_for_definition`])
-//! go through [`AgentRebuildSpec::build_agent`].
+//! INVARIANT: This is the **only** place in the shell crate that calls [`xai_grok_agent::AgentBuilder::new`].
+//! Initial session spawn ([`crate::session::acp_session::spawn_session_actor`]) goes through [`AgentRebuildSpec::build_agent`].
+//! So does the zero-turn harness rebuild ([`crate::session::acp_session::SessionActor::handle_rebuild_agent_for_definition`]).
 //!
 //! ## Why this exists
 //!
-//! [`xai_grok_agent::Agent`] owns an [`xai_grok_tools::bridge::ToolBridge`]
-//! that carries session-scoped channels (notification handle, terminal/fs
-//! backends, subagent senders, scheduler set, plugin registry, attribution
-//! callback). The Agent is therefore session-bound — it cannot be shared
-//! across sessions and cannot be re-rendered from outside its session
-//! context. To rebuild it (e.g. when the user picks a model with a
-//! different `agent_type` before sending any user message), we need to
-//! retain every input that the original `AgentBuilder` chain consumed.
+//! [`xai_grok_agent::Agent`] owns an [`xai_grok_tools::bridge::ToolBridge`] that carries session-scoped channels.
+//! Those are the notification handle, terminal/fs backends, subagent senders, scheduler set, plugin registry, and attribution callback.
+//! The Agent is therefore session-bound: it cannot be shared across sessions and cannot be re-rendered from outside its session context.
+//! A rebuild happens, for example, when the user picks a model with a different `agent_type` before sending any user message.
+//! To rebuild, we must retain every input that the original `AgentBuilder` chain consumed.
 //! `AgentRebuildSpec` is exactly that retained bag of inputs.
 //!
 //! ## WHEN ADDING A NEW [`xai_grok_agent::AgentBuilder`]`::with_*` KNOB
 //!
 //! 1. Add the corresponding field to [`AgentRebuildSpec`].
-//! 2. Pass it through in [`AgentRebuildSpec::build_agent`]. The destructure
-//!    pattern at the top of `build_agent` forces every field to be used —
-//!    drift is a compile error (`#[deny(unused_variables)]`).
+//! 2. Pass it through in [`AgentRebuildSpec::build_agent`].
+//!    The destructure pattern at the top of `build_agent` forces every field to be used.
+//!    A forgotten field is a compile error (`#[deny(unused_variables)]`).
 //! 3. Populate the field at the call site in `spawn_session_actor`.
 //!
 //! ## Why some fields are channel senders
 //!
-//! Several `ToolBridge` resources (e.g. `UserQuestionSender`,
-//! `SubagentBackendResource`) are backed by the `tx` half of channels
-//! whose `rx` halves are owned by long-lived coordinator tasks spawned
-//! in `spawn_session_actor`. The subagent channels are wrapped in a
-//! `ChannelBackend` behind `SubagentBackendResource`. On rebuild, we
-//! must reuse the **same** senders so the existing coordinator keeps
-//! receiving requests; we cannot mint a fresh channel without orphaning
-//! the running coordinator.
+//! Several `ToolBridge` resources (e.g. `UserQuestionSender`, `SubagentBackendResource`) are backed by the `tx` halves of channels.
+//! The `rx` halves are owned by long-lived coordinator tasks spawned in `spawn_session_actor`.
+//! The subagent channels are wrapped in a `ChannelBackend` behind `SubagentBackendResource`.
+//! On rebuild, we must reuse the **same** senders so the existing coordinator keeps receiving requests.
+//! A fresh channel would orphan the running coordinator.
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -61,9 +51,8 @@ use xai_grok_tools::notification::ToolNotificationHandle;
 use xai_grok_tools::types::SharedApiKeyProvider;
 use xai_grok_tools::types::compat::CompatConfig;
 use xai_grok_tools::types::memory_backend::MemoryBackend;
-/// Shell-resolved per-tool `ToolConfig.params` JSON maps, bundled into one
-/// named struct so the spawn telescopes carry a single argument instead of
-/// adjacent identically-typed positionals that a caller could transpose.
+/// Shell-resolved per-tool `ToolConfig.params` JSON maps.
+/// The struct keeps the spawn functions to a single argument instead of adjacent identically-typed positional arguments a caller could transpose.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ResolvedToolParamsJson {
     /// `[toolset.bash]` overrides for the bash tool(s).
@@ -72,11 +61,8 @@ pub(crate) struct ResolvedToolParamsJson {
     pub ask_user_question: Option<serde_json::Map<String, serde_json::Value>>,
 }
 /// Cached recipe for building a session-scoped [`Agent`].
-///
-/// See module docs for the invariant: this is the only construction
-/// site for `Agent` in the shell crate. Cloning is intentionally not
-/// derived — the spec lives behind an [`Arc`] and is shared by clone of
-/// that `Arc`.
+/// See module docs for the invariant: this is the only construction site for `Agent` in the shell crate.
+/// Cloning is intentionally not derived; the spec lives behind an [`Arc`] and is shared by cloning that `Arc`.
 pub(crate) struct AgentRebuildSpec {
     pub working_directory: PathBuf,
     pub terminal_backend: Arc<dyn TerminalBackend>,
@@ -84,17 +70,17 @@ pub(crate) struct AgentRebuildSpec {
     pub tools_notification_handle: ToolNotificationHandle,
     pub bridge_state_path: PathBuf,
     pub session_env: Arc<HashMap<String, String>>,
-    pub models_manager: crate::agent::models::ModelsManager,
+    pub models_manager: crate::agent::remote_config::ModelsManager,
     pub compaction_policy: CompactionPolicy,
     pub reminder_policy: ReminderPolicy,
     pub memory_enabled: bool,
     pub memory_global_path: Option<String>,
     pub memory_workspace_path: Option<String>,
     pub memory_backend: Option<Arc<dyn MemoryBackend>>,
+    pub memory_v2_access: Option<xai_grok_tools::types::memory_v2::MemoryV2AccessResource>,
     pub web_search_config: WebSearchConfig,
-    /// `[toolset.web_search]` domain policy, resolved once at spawn and applied
-    /// to both search paths (the hosted `tool_overrides` merge and the
-    /// client-side `WebSearchConfig`) so they never diverge.
+    /// `[toolset.web_search]` domain policy, resolved once at spawn.
+    /// It is applied to both search paths (the hosted `tool_overrides` merge and the client-side `WebSearchConfig`) so they never diverge.
     pub web_search_domains: Option<xai_grok_sampling_types::WebSearchOptions>,
     pub backend_search: bool,
     pub web_fetch_config: WebFetchConfig,
@@ -103,6 +89,7 @@ pub(crate) struct AgentRebuildSpec {
     pub app_builder_deployer_config: AppBuilderDeployerConfig,
     pub media_gen_batch_limits: xai_grok_tools::media_gen_limits::MediaGenBatchLimits,
     pub write_file_enabled: bool,
+    pub active_agent_messages_enabled: bool,
     pub subagents_enabled: bool,
     pub subagent_toggle: HashMap<String, bool>,
     pub background_workflows_enabled: bool,
@@ -112,8 +99,7 @@ pub(crate) struct AgentRebuildSpec {
     pub role_instructions: Option<String>,
     pub persona_instructions: Option<String>,
     pub skills_config: SkillsConfig,
-    /// Resolved vendor-compat config (from `Config::compat_resolved`), threaded
-    /// into skills / rules / AGENTS.md discovery via the builder.
+    /// Resolved vendor-compat config (from `Config::compat_resolved`), threaded into skills / rules / AGENTS.md discovery via the builder.
     pub compat: CompatConfig,
     pub context_window_tokens: u64,
     pub prompt_working_directory: Option<String>,
@@ -123,6 +109,9 @@ pub(crate) struct AgentRebuildSpec {
     pub attribution_callback: Option<xai_grok_tools::SharedAttributionCallback>,
     pub tool_params_json: ResolvedToolParamsJson,
     pub subagent_event_tx: Option<UnboundedSender<SubagentEvent>>,
+    pub subagent_coordinator_sender: Option<
+        xai_grok_tools::implementations::grok_build::task::backend::SubagentCoordinatorSender,
+    >,
     pub monitor_event_buffer: Option<MonitorEventBuffer>,
     pub user_question_tx: UnboundedSender<UserQuestionRequest>,
     pub subagent_depth: u32,
@@ -131,10 +120,8 @@ pub(crate) struct AgentRebuildSpec {
     pub blocking_wait_depth: Arc<crate::tools::tool_context::BlockingWaitState>,
     pub respect_gitignore: bool,
     pub path_not_found_hints: bool,
-    /// Fire side of the scheduler mode. The spawn copies the same resolution
-    /// onto [`SessionHandle::scheduler_background_loops`](crate::session::SessionHandle),
-    /// which is what clients read — keep the two on one resolve.
-    pub scheduler_background_loops: bool,
+    /// Fire side of the scheduler mode.
+    /// Keep the two on one resolve.
     pub mcp_state: Arc<tokio::sync::Mutex<crate::session::mcp_servers::McpState>>,
     pub managed_gateway_tool_client:
         Option<xai_grok_tools::types::resources::ManagedGatewayToolClient>,
@@ -145,12 +132,7 @@ pub(crate) struct AgentRebuildSpec {
         Option<xai_grok_tools::implementations::grok_build::scheduler::types::SchedulerHandle>,
 }
 impl AgentRebuildSpec {
-    /// Build a fresh [`Agent`] from this spec and an [`AgentDefinition`].
-    ///
-    /// This is the canonical construction path; see module docs for the
-    /// invariant. The destructure pattern below is intentional —
-    /// `#[deny(unused_variables)]` ensures any newly added spec field is
-    /// used here, otherwise compilation fails.
+    /// This is the canonical construction path; see module docs for the invariant.
     #[deny(unused_variables)]
     pub(crate) async fn build_agent(
         self: &Arc<Self>,
@@ -159,21 +141,9 @@ impl AgentRebuildSpec {
         let (agent, _build_elapsed) = self.build_agent_inner(definition, None, None).await?;
         Ok(agent)
     }
-    /// Build an agent with optional one-shot overrides for initial spawn.
-    ///
-    /// `persisted_skill_names`: restored into the `SkillManager` before
-    /// `seed()` to prevent duplicate system-reminder injection on resume.
-    ///
-    /// `preloaded_skills`: parent-discovered skills passed to
-    /// `AgentBuilder::with_preloaded_skills()` to bypass filesystem
-    /// discovery in subagents.
-    ///
-    /// Both are consumed once — the rebuild path (`build_agent`) passes
-    /// `None` for both so zero-turn model switches get fresh discovery.
-    /// Returns the built agent and the pure construction time (entry to
-    /// `SB_BUILDER_DONE`, before the batched resource seed), so the caller can
-    /// attribute `AgentBuild` and `ToolSetup` phases to the same boundaries the
-    /// waterfall marks use.
+    /// `persisted_skill_names`: restored into the `SkillManager` before `seed()` to prevent duplicate system-reminder injection on resume.
+    /// `preloaded_skills`: parent-discovered skills passed to `AgentBuilder::with_preloaded_skills()` to bypass filesystem discovery in subagents.
+    /// Returns the built agent and the pure construction time (entry to `SB_BUILDER_DONE`, before the batched resource seed).
     pub(crate) async fn build_agent_with_initial_overrides(
         self: &Arc<Self>,
         definition: AgentDefinition,
@@ -205,6 +175,7 @@ impl AgentRebuildSpec {
             memory_global_path,
             memory_workspace_path,
             memory_backend,
+            memory_v2_access,
             web_search_config,
             web_search_domains,
             backend_search,
@@ -214,6 +185,7 @@ impl AgentRebuildSpec {
             app_builder_deployer_config,
             media_gen_batch_limits: _,
             write_file_enabled,
+            active_agent_messages_enabled,
             subagents_enabled,
             subagent_toggle,
             background_workflows_enabled,
@@ -232,6 +204,7 @@ impl AgentRebuildSpec {
             attribution_callback,
             tool_params_json,
             subagent_event_tx,
+            subagent_coordinator_sender,
             monitor_event_buffer,
             user_question_tx,
             subagent_depth,
@@ -240,7 +213,6 @@ impl AgentRebuildSpec {
             blocking_wait_depth,
             respect_gitignore,
             path_not_found_hints,
-            scheduler_background_loops,
             mcp_state,
             managed_gateway_tool_client,
             is_non_interactive,
@@ -274,6 +246,7 @@ impl AgentRebuildSpec {
         .with_reminder_policy(reminder_policy.clone())
         .with_memory_enabled(*memory_enabled)
         .with_memory_paths(memory_global_path.clone(), memory_workspace_path.clone())
+        .with_memory_v2_access(memory_v2_access.clone())
         .with_is_non_interactive(*is_non_interactive)
         .with_system_prompt_label(system_prompt_label.clone())
         .with_session_env(session_env.clone())
@@ -285,6 +258,7 @@ impl AgentRebuildSpec {
         .with_app_builder_deployer_config(app_builder_deployer_config.clone())
         .with_web_fetch_config(web_fetch_config.clone())
         .with_write_file_enabled(*write_file_enabled)
+        .with_active_agent_messages_enabled(*active_agent_messages_enabled)
         .with_fs(fs_backend.clone())
         .with_subagents_enabled(*subagents_enabled)
         .with_subagent_toggle(subagent_toggle.clone())
@@ -303,6 +277,9 @@ impl AgentRebuildSpec {
         .with_persona_instructions(persona_instructions.clone())
         .with_skills_config(skills_config.clone())
         .with_compat_config(*compat)
+        .with_project_trusted(crate::agent::folder_trust::project_scope_allowed(
+            working_directory,
+        ))
         .with_context_window(*context_window_tokens)
         .with_mcp_max_output_bytes(
             crate::util::config::resolve_max_mcp_output_bytes_for_cwd(working_directory),
@@ -368,10 +345,18 @@ impl AgentRebuildSpec {
                         .insert(
                             SubagentBackendResource(
                                 Arc::new(
-                                    ChannelBackend::for_session(
-                                        event_tx.clone(),
-                                        session_id_str.clone(),
-                                    ),
+                                    subagent_coordinator_sender
+                                        .as_ref()
+                                        .map_or_else(
+                                            || ChannelBackend::for_session(
+                                                event_tx.clone(),
+                                                session_id_str.clone(),
+                                            ),
+                                            |sender| ChannelBackend::for_coordinator_session(
+                                                sender.clone(),
+                                                session_id_str.clone(),
+                                            ),
+                                        ),
                                 ),
                             ),
                         );
@@ -397,12 +382,6 @@ impl AgentRebuildSpec {
                     );
                 resources
                     .insert(
-                        xai_grok_tools::types::resources::SchedulerBackgroundLoops(
-                            *scheduler_background_loops,
-                        ),
-                    );
-                resources
-                    .insert(
                         xai_grok_tools::types::resources::PathNotFoundHints(
                             *path_not_found_hints,
                         ),
@@ -419,10 +398,7 @@ impl AgentRebuildSpec {
         Ok((agent, agent_build_elapsed))
     }
 }
-/// Build a stub [`AgentRebuildSpec`] for unit tests.
-///
-/// Every field is set to a minimal default suitable for test `SessionActor`
-/// literals and focused `build_agent` tests.
+/// Every field is set to a minimal default suitable for test `SessionActor` literals and focused `build_agent` tests.
 #[cfg(test)]
 pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
     let (uq_tx, _uq_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -437,13 +413,14 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         tools_notification_handle: ToolNotificationHandle::noop(),
         bridge_state_path: std::env::temp_dir().join("test_tool_state.json"),
         session_env: Arc::new(HashMap::new()),
-        models_manager: crate::agent::models::ModelsManager::default(),
+        models_manager: crate::agent::remote_config::ModelsManager::default(),
         compaction_policy: CompactionPolicy::default(),
         reminder_policy: ReminderPolicy::default(),
         memory_enabled: false,
         memory_global_path: None,
         memory_workspace_path: None,
         memory_backend: None,
+        memory_v2_access: None,
         web_search_config: WebSearchConfig::default(),
         web_search_domains: None,
         backend_search: false,
@@ -453,6 +430,7 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         app_builder_deployer_config: AppBuilderDeployerConfig::default(),
         media_gen_batch_limits: xai_grok_tools::media_gen_limits::MediaGenBatchLimits::default(),
         write_file_enabled: true,
+        active_agent_messages_enabled: false,
         subagents_enabled: false,
         subagent_toggle: HashMap::new(),
         background_workflows_enabled: false,
@@ -471,6 +449,7 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         attribution_callback: None,
         tool_params_json: ResolvedToolParamsJson::default(),
         subagent_event_tx: None,
+        subagent_coordinator_sender: None,
         monitor_event_buffer: None,
         user_question_tx: uq_tx,
         subagent_depth: 0,
@@ -478,7 +457,6 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         session_id_str: "test-session".to_string(),
         blocking_wait_depth: Arc::new(crate::tools::tool_context::BlockingWaitState::new()),
         respect_gitignore: false,
-        scheduler_background_loops: true,
         path_not_found_hints: false,
         mcp_state: Arc::new(tokio::sync::Mutex::new(
             crate::session::mcp_servers::McpState::new(vec![]),
@@ -509,11 +487,8 @@ mod tests {
             .and_then(|definition| definition.function.description)
             .expect("GrokBuild Task description should be present")
     }
-    /// The `[toolset.web_search]` policy is authoritative on the backend-hosted
-    /// path: agent frontmatter is model-writable (`.grok/agents/*.md`), so a
-    /// configured blocklist must survive a frontmatter allowlist, matching the
-    /// client-side `resolve_filters`. With no configured policy, frontmatter
-    /// still applies.
+    /// The `[toolset.web_search]` policy is authoritative on the backend-hosted path.
+    /// Agent frontmatter is model-writable (`.grok/agents/*.md`), so a configured blocklist must survive a frontmatter allowlist.
     #[tokio::test(flavor = "current_thread")]
     async fn config_web_search_domains_beat_agent_frontmatter() {
         use xai_grok_sampling_types::{HostedTool, ToolOverrides, WebSearchOptions};

@@ -20,10 +20,10 @@ ${%- if tools.by_kind.read == "hashline_read" and tools.by_kind.edit and tools.b
 ${%- endif %}
 - `<system-reminder>` tags in tool results are automated context.
 </tool_calling>
-${%- if tools.by_kind.execute and tools.by_kind.background_task_action %}
+${%- if tools.by_kind.execute %}
 
 <background_tasks>
-For long-running commands, use `${%- if params is defined and params.execute is defined and params.execute.is_background %}${{ params.execute.is_background }}${%- else %}background${%- endif %}: true` in ${{ tools.by_kind.execute }}, then continue independent work; use `${{ tools.by_kind.background_task_action }}` for a snapshot or one bounded wait — do not poll repeatedly.
+For long-running commands, use `${%- if params is defined and params.execute is defined and params.execute.is_background %}${{ params.execute.is_background }}${%- else %}background${%- endif %}: true` in ${{ tools.by_kind.execute }}, then continue independent work.
 </background_tasks>
 ${%- endif %}
 ${%- if tools.by_kind.edit %}

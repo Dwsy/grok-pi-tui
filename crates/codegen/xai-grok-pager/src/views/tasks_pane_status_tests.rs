@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 fn workflow_run(name: &str, status: &str) -> crate::views::workflows::WorkflowRunSnapshot {
@@ -82,10 +82,10 @@ fn mixed_workflows_coalesce_children_and_keep_standalone_work_running() {
     let pane = TasksPane::new();
     let mut workflow_child_a =
         crate::app::agent_view::test_fixtures::running_subagent_info("workflow-child-a");
-    workflow_child_a.workflow_run_id = Some("wf_active".into());
+    workflow_child_a.attempt.workflow_run_id = Some("wf_active".into());
     let mut workflow_child_b =
         crate::app::agent_view::test_fixtures::running_subagent_info("workflow-child-b");
-    workflow_child_b.workflow_run_id = Some("wf_paused".into());
+    workflow_child_b.attempt.workflow_run_id = Some("wf_paused".into());
     let standalone = crate::app::agent_view::test_fixtures::running_subagent_info("standalone");
     let subagents = HashMap::from([
         ("workflow-child-a".to_owned(), workflow_child_a),
@@ -110,37 +110,16 @@ fn mixed_workflows_coalesce_children_and_keep_standalone_work_running() {
 fn active_to_paused_stays_visible_without_ticks_then_terminal_closes() {
     let mut pane = TasksPane::new();
     let active = [workflow_run("gate", "active")];
-    pane.sync(
-        &BTreeMap::new(),
-        &HashMap::new(),
-        &HashMap::new(),
-        None,
-        &HashSet::new(),
-        &active,
-    );
+    pane.sync(&BTreeMap::new(), &HashMap::new(), &HashMap::new(), &active);
     assert!(pane.is_visible());
     assert!(pane.needs_tick());
     pane.overlay.focused = false;
 
     let paused = [workflow_run("gate", "user_paused")];
-    pane.sync(
-        &BTreeMap::new(),
-        &HashMap::new(),
-        &HashMap::new(),
-        None,
-        &HashSet::new(),
-        &paused,
-    );
+    pane.sync(&BTreeMap::new(), &HashMap::new(), &HashMap::new(), &paused);
     assert!(pane.is_visible());
     assert!(!pane.needs_tick());
-    pane.sync(
-        &BTreeMap::new(),
-        &HashMap::new(),
-        &HashMap::new(),
-        None,
-        &HashSet::new(),
-        &paused,
-    );
+    pane.sync(&BTreeMap::new(), &HashMap::new(), &HashMap::new(), &paused);
     assert!(pane.is_visible(), "paused-only syncs must not auto-close");
 
     let terminal = [workflow_run("gate", "complete")];
@@ -148,8 +127,6 @@ fn active_to_paused_stays_visible_without_ticks_then_terminal_closes() {
         &BTreeMap::new(),
         &HashMap::new(),
         &HashMap::new(),
-        None,
-        &HashSet::new(),
         &terminal,
     );
     assert!(!pane.is_visible());

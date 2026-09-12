@@ -7,25 +7,17 @@ use xai_grok_auth::bearer_suffix;
 pub use xai_grok_auth::bearer_fragment::BEARER_SUFFIX_LEN;
 
 /// Which tool endpoint produced the 401.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
 pub enum ToolConsumer {
+    #[strum(serialize = "ImageGen")]
     ImageGen,
+    #[strum(serialize = "VideoGen.start")]
     VideoGenStart,
+    #[strum(serialize = "VideoGen.poll")]
     VideoGenPoll,
+    #[strum(serialize = "WebSearch")]
     WebSearch,
 }
-
-impl ToolConsumer {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::ImageGen => "ImageGen",
-            Self::VideoGenStart => "VideoGen.start",
-            Self::VideoGenPoll => "VideoGen.poll",
-            Self::WebSearch => "WebSearch",
-        }
-    }
-}
-
 /// 401 attribution callback. Shell wires this to emit telemetry.
 pub trait Auth401AttributionCallback: Send + Sync + std::fmt::Debug {
     /// `sent_bearer_suffix` is truncated to [`BEARER_SUFFIX_LEN`]
@@ -55,9 +47,9 @@ mod tests {
 
     #[test]
     fn tool_consumer_as_str_stable_identifiers() {
-        assert_eq!(ToolConsumer::ImageGen.as_str(), "ImageGen");
-        assert_eq!(ToolConsumer::VideoGenStart.as_str(), "VideoGen.start");
-        assert_eq!(ToolConsumer::VideoGenPoll.as_str(), "VideoGen.poll");
-        assert_eq!(ToolConsumer::WebSearch.as_str(), "WebSearch");
+        assert_eq!(ToolConsumer::ImageGen.as_ref(), "ImageGen");
+        assert_eq!(ToolConsumer::VideoGenStart.as_ref(), "VideoGen.start");
+        assert_eq!(ToolConsumer::VideoGenPoll.as_ref(), "VideoGen.poll");
+        assert_eq!(ToolConsumer::WebSearch.as_ref(), "WebSearch");
     }
 }

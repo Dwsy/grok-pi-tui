@@ -8,7 +8,7 @@
 /// Wire representation is the snake-cased variant name (`default`, `plan`,
 /// `ask`) via [`strum`]. Unknown ids parse back to [`SessionMode::Default`]
 /// so newer modes added on the agent side don't brick older pagers.
-#[derive(Debug, Clone, PartialEq, Eq, strum::EnumString, strum::IntoStaticStr)]
+#[derive(Debug, Clone, PartialEq, Eq, strum::EnumString, strum::AsRefStr, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum SessionMode {
     Default,

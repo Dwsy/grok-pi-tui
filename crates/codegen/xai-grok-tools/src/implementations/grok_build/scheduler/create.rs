@@ -8,7 +8,7 @@ use super::types::{ScheduledTask, SchedulerCommand, SchedulerHandle, scheduler_t
 // Canonical /loop wording lives in the light API crate so other consumers can
 // link it without the tools implementation crate; re-exported to keep paths stable.
 pub use xai_grok_tools_api::slash_commands::{
-    LoopFireMode, SCHEDULER_CREATE_TOOL_NAME, loop_schedule_instruction, loop_usage_message,
+    SCHEDULER_CREATE_TOOL_NAME, loop_schedule_instruction, loop_usage_message,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -50,17 +50,6 @@ pub struct SchedulerCreateInput {
                        Create-only: ignored with task_id"
     )]
     pub durable: Option<bool>,
-
-    #[serde(
-        default,
-        deserialize_with = "crate::types::schema::deserialize_lenient_option_bool"
-    )]
-    #[schemars(
-        description = "Run each fire as a main-conversation turn instead of a background \
-                       subagent; set true only when runs need the conversation's context. \
-                       Default: false. Create-only: ignored with task_id"
-    )]
-    pub foreground: Option<bool>,
 
     /// Whether to fire immediately on creation. Default false (wait for the
     /// first interval — a "scheduled" task should not run on creation unless
@@ -110,6 +99,8 @@ impl crate::types::tool_metadata::ToolMetadata for SchedulerCreateTool {
             format!(
                 r#"Create a scheduled task that runs a prompt on a recurring interval, or update an existing one in place.
 
+Use this tool when a user asks you to loop, repeat, or schedule a prompt or a task.
+
 Set fire_immediately: true to also fire once on creation; by default the first run waits for the interval.
 
 To change an existing task, pass its task_id: provided fields replace old values, omitted ones are unchanged, and the schedule keeps its phase. An unknown id errors.
@@ -133,7 +124,7 @@ Usage notes:
     }
 
     fn requires_expr(&self) -> Expr<ToolRequirement> {
-        Expr::True
+        super::scheduler_bundle_requires_expr()
     }
 }
 
@@ -255,14 +246,13 @@ impl xai_tool_runtime::Tool for SchedulerCreateTool {
         })?;
 
         let durable = input.durable.unwrap_or(false);
-        let mut task = ScheduledTask::with_fire_immediately(
+        let task = ScheduledTask::with_fire_immediately(
             interval_secs,
             prompt,
             true,
             durable,
             input.fire_immediately,
         );
-        task.foreground = input.foreground.unwrap_or(false);
 
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let created = send_and_wait(
@@ -483,7 +473,7 @@ mod tests {
     #[test]
     fn loop_schedule_instruction_holds_invariants() {
         let args = "every 30 minutes do x";
-        let instr = loop_schedule_instruction(args, LoopFireMode::Detached);
+        let instr = loop_schedule_instruction(args);
         assert!(
             !instr.contains("10m"),
             "instruction must not default: {instr}"

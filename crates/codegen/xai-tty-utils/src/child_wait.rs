@@ -8,16 +8,9 @@ use std::time::{Duration, Instant};
 // Forty milliseconds balances responsive exit detection against polling load.
 const CHILD_EXIT_POLL_QUANTUM: Duration = Duration::from_millis(40);
 
-/// Poll `child` for up to one monotonic `timeout`, reaping it on exit.
-///
-/// `Some` means reaped; `None` leaves the child running and caller-owned. Errors
-/// perform no cleanup. Unix `ECHILD` makes numeric PID/process-group identity
-/// uncertain, so callers must not signal either. A zero timeout still performs
-/// initial and final deadline polls.
-///
-/// # Errors
-///
-/// Returns the first error from [`Child::try_wait`].
+/// Poll `child` for up to one monotonic `timeout`, reaping it on exit. `Some` means reaped; `None` leaves the child
+/// running and caller-owned. Errors perform no cleanup. Unix `ECHILD` makes numeric PID/process-group identity uncertain,
+/// so callers must not signal either. A zero timeout still performs initial and final deadline polls.
 pub fn wait_child_bounded(child: &mut Child, timeout: Duration) -> io::Result<Option<ExitStatus>> {
     let started = Instant::now();
     // Not thread::sleep: a foreign SIGCHLD handler can overwrite EINTR and trip its errno assert (GB-5008).
@@ -37,11 +30,8 @@ pub fn wait_child_bounded(child: &mut Child, timeout: Duration) -> io::Result<Op
     )
 }
 
-/// Transfer child/group ownership to a named eventual reaper, or return both.
-///
-/// # Errors
-///
-/// Returns thread-spawn failure together with the untransferred owners.
+/// Transfer child/group ownership to a named eventual reaper, or return both. Returns thread-spawn failure together with
+/// the untransferred owners.
 pub fn spawn_child_reaper(
     name: &str,
     child: Child,

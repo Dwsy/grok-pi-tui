@@ -135,8 +135,8 @@ async fn test_jsonl_round_trip() {
     assert_eq!(loaded.updates.len(), 1);
     assert!(loaded.plan_state.is_some());
 }
-/// Resume from updates.jsonl alone: when chat_history.jsonl is missing, load
-/// rebuilds it from the ACP update stream (the durable source of truth).
+/// Resume from updates.jsonl alone: when chat_history.jsonl is missing, load rebuilds it from the ACP update stream.
+/// The update stream is the durable source of truth.
 #[tokio::test]
 async fn load_rebuilds_chat_history_from_updates() {
     use agent_client_protocol::{
@@ -316,8 +316,7 @@ async fn workflow_restore_rejects_symlinks_and_caps_run_count() {
                 .all(|run| run.manifest.state.run_id != "wf_symlink")
         );
 }
-/// `load_session_without_updates` always defers rewind points while the full
-/// `load_session` / `load_rewind_points` still return them.
+/// `load_session_without_updates` always defers rewind points while the full `load_session` / `load_rewind_points` still return them.
 #[tokio::test]
 async fn load_session_without_updates_defers_rewind_points() {
     use xai_grok_workspace::session::file_state::RewindPoint;
@@ -334,8 +333,7 @@ async fn load_session_without_updates_defers_rewind_points() {
     let path = adapter.rewind_points_file_path(&info).unwrap();
     assert!(path.ends_with("rewind_points.jsonl"));
 }
-/// The disk-authoritative ConversationOnly merge persists the correct
-/// merged/truncated set.
+/// The disk-authoritative ConversationOnly merge persists the correct merged/truncated set.
 #[tokio::test]
 async fn merge_rewind_points_from_persists_merged_set() {
     use xai_grok_workspace::session::file_state::RewindPoint;
@@ -351,8 +349,7 @@ async fn merge_rewind_points_from_persists_merged_set() {
     assert_eq!(after.len(), 1);
     assert_eq!(after[0].prompt_index, 0);
 }
-/// A malformed on-disk line makes the STRICT merge read abort BEFORE writing,
-/// leaving `rewind_points.jsonl` untouched (never drop the line).
+/// A malformed on-disk line makes the STRICT merge read abort BEFORE writing, leaving `rewind_points.jsonl` untouched (never drop the line).
 #[tokio::test]
 async fn merge_rewind_points_from_aborts_on_malformed_without_writing() {
     let temp_dir = TempDir::new().unwrap();
@@ -370,8 +367,7 @@ async fn merge_rewind_points_from_aborts_on_malformed_without_writing() {
             "rewind_points.jsonl must be preserved when the merge aborts"
         );
 }
-/// File-content `file_snapshots` must round-trip through the on-disk
-/// read-modify-write merge (not just index/count).
+/// File-content `file_snapshots` must round-trip through the on-disk read-modify-write merge (not just index/count).
 #[tokio::test]
 async fn merge_rewind_points_from_round_trips_file_snapshots() {
     use xai_grok_paths::RelPathBuf;
@@ -408,8 +404,7 @@ async fn merge_rewind_points_from_round_trips_file_snapshots() {
             Some("b-v1".into())
         );
 }
-/// A `write_jsonl`-backed rewrite (here `truncate_rewind_points_from`) renames
-/// the target into place and leaves NO `*.jsonl.tmp` behind.
+/// A `write_jsonl`-backed rewrite (here `truncate_rewind_points_from`) renames the target into place and leaves NO `*.jsonl.tmp` behind.
 #[tokio::test]
 async fn write_jsonl_leaves_no_temp_and_renames_target() {
     use xai_grok_workspace::session::file_state::RewindPoint;
@@ -438,8 +433,7 @@ async fn write_jsonl_leaves_no_temp_and_renames_target() {
             "no *.tmp should remain after write_jsonl: {leftover_tmps:?}"
         );
 }
-/// The resume/read paths must not mutate the on-disk `updates.jsonl` or
-/// `rewind_points.jsonl`, and ACU lines stay on disk.
+/// The resume/read paths must not mutate the on-disk `updates.jsonl` or `rewind_points.jsonl`, and ACU lines stay on disk.
 #[tokio::test]
 async fn reads_never_modify_rewind_or_updates_files() {
     use xai_grok_workspace::session::file_state::{FileStateTracker, RewindPoint};
@@ -551,8 +545,7 @@ async fn test_xai_session_update_round_trip() {
         _ => panic!("Expected ACP update as second item"),
     }
 }
-/// SubagentSpawned and SubagentFinished must survive JSONL round-trip
-/// with exact field preservation.
+/// SubagentSpawned and SubagentFinished must survive JSONL round-trip with exact field preservation.
 #[tokio::test]
 async fn test_subagent_notifications_round_trip() {
     use crate::extensions::notification::{
@@ -566,6 +559,7 @@ async fn test_subagent_notifications_round_trip() {
     let spawned = XaiSessionNotification {
         session_id: acp::SessionId::new("parent-session"),
         update: XaiSessionUpdateType::SubagentSpawned {
+            attempt_id: None,
             subagent_id: "child-001".to_string(),
             parent_session_id: "parent-session".to_string(),
             parent_prompt_id: Some("turn-123".to_string()),
@@ -580,6 +574,7 @@ async fn test_subagent_notifications_round_trip() {
             model: None,
             resumed_from: None,
             workflow_run_id: None,
+            agent_address: None,
         },
         meta: None,
     };
@@ -587,6 +582,7 @@ async fn test_subagent_notifications_round_trip() {
     let finished = XaiSessionNotification {
         session_id: acp::SessionId::new("parent-session"),
         update: XaiSessionUpdateType::SubagentFinished {
+            attempt_id: None,
             subagent_id: "child-001".to_string(),
             child_session_id: "child-001".to_string(),
             status: "completed".to_string(),
@@ -684,6 +680,7 @@ async fn test_subagent_spawned_resumed_roundtrip() {
     let spawned = XaiSessionNotification {
         session_id: acp::SessionId::new("resume-parent"),
         update: XaiSessionUpdateType::SubagentSpawned {
+            attempt_id: None,
             subagent_id: "child-resumed".to_string(),
             parent_session_id: "resume-parent".to_string(),
             parent_prompt_id: Some("turn-5".to_string()),
@@ -698,6 +695,7 @@ async fn test_subagent_spawned_resumed_roundtrip() {
             model: None,
             resumed_from: Some("source-agent-id".to_string()),
             workflow_run_id: None,
+            agent_address: None,
         },
         meta: None,
     };
@@ -802,8 +800,7 @@ async fn test_load_prompts_only_nonexistent_session() {
     let prompts = adapter.load_prompts_only(&info).await.unwrap();
     assert!(prompts.is_empty());
 }
-/// A user prompt streamed as two consecutive `UserMessageChunk` updates
-/// must be merged into a single prompt string, not split into two.
+/// A user prompt streamed as two consecutive `UserMessageChunk` updates must be merged into a single prompt string, not split into two.
 #[tokio::test]
 async fn test_load_prompts_only_merges_multi_chunk_prompt() {
     let temp_dir = TempDir::new().unwrap();
@@ -851,8 +848,7 @@ async fn test_load_prompts_only_merges_multi_chunk_prompt() {
         );
     assert_eq!(prompts[0], "Hello world");
 }
-/// `RewindMarker` updates must truncate dead-branch prompts so only the
-/// current timeline's prompts are returned.
+/// `RewindMarker` updates must truncate dead-branch prompts so only the current timeline's prompts are returned.
 #[tokio::test]
 async fn test_load_prompts_only_applies_rewind_truncation() {
     use crate::extensions::notification::{
@@ -943,8 +939,7 @@ async fn test_load_prompts_only_applies_rewind_truncation() {
             "dead-branch prompt should have been removed by rewind"
         );
 }
-/// Malformed JSON lines between valid chunks must not break the extraction
-/// of surrounding prompts.
+/// Malformed JSON lines between valid chunks must not break the extraction of surrounding prompts.
 #[tokio::test]
 async fn test_load_prompts_only_robust_to_malformed_lines() {
     let temp_dir = TempDir::new().unwrap();
@@ -1004,9 +999,8 @@ async fn test_load_prompts_only_robust_to_malformed_lines() {
             "malformed line should not drop surrounding valid prompts"
         );
 }
-/// A large synthetic session with interleaved tool calls extracts
-/// correctly; the selective parser never allocates full notifications
-/// for the non-user updates that dominate a real file.
+/// A large synthetic session with interleaved tool calls extracts correctly.
+/// The selective parser never allocates full notifications for the non-user updates that dominate a real file.
 #[tokio::test]
 async fn test_load_prompts_only_large_session() {
     let temp_dir = TempDir::new().unwrap();
@@ -1194,6 +1188,8 @@ fn write_test_summary(
             id: acp::SessionId::new(session_id),
             cwd: urlencoding::decode(cwd_encoded).unwrap().into_owned(),
         },
+        agent_id: None,
+        attempt_id: None,
         cwd_generation: 0,
         previous_cwd: None,
         pending_cwd_switch_reminder: None,
@@ -1288,6 +1284,20 @@ fn scan_session_dirs_skips_non_directory_entries() {
     assert_eq!(dirs.len(), 1);
     assert!(dirs[0].ends_with("real-session"));
 }
+#[test]
+fn scan_session_dirs_continues_when_a_cwd_bucket_is_gone() {
+    let tmp = TempDir::new().unwrap();
+    let now = chrono::Utc::now();
+    let keep = crate::util::grok_home::encode_cwd_dirname("/keep");
+    write_test_summary(tmp.path(), &keep, "s1", now, None, None, None);
+    let gone = tmp.path().join("sessions").join("gone-bucket");
+    std::fs::create_dir_all(&gone).unwrap();
+    std::fs::remove_dir_all(&gone).unwrap();
+    let adapter = JsonlStorageAdapter::with_root(tmp.path().to_path_buf());
+    let dirs = adapter.scan_session_dirs(None).unwrap();
+    assert_eq!(dirs.len(), 1);
+    assert!(dirs[0].ends_with("s1"));
+}
 #[tokio::test]
 async fn list_sessions_recent_returns_most_recent_by_mtime() {
     let tmp = TempDir::new().unwrap();
@@ -1327,6 +1337,72 @@ async fn list_sessions_recent_excludes_hidden_sessions() {
     let recent = adapter.list_sessions_recent(100).await.unwrap();
     assert_eq!(recent.len(), 1);
     assert_eq!(recent[0].info.id, acp::SessionId::new("visible"));
+}
+#[tokio::test]
+async fn list_sessions_recent_excludes_unused_optimistic_husks() {
+    let tmp = TempDir::new().unwrap();
+    let cwd = crate::util::grok_home::encode_cwd_dirname("/workspace");
+    let now = chrono::Utc::now();
+    write_test_summary(tmp.path(), &cwd, "real", now, None, None, None);
+    let husk_dir = write_test_summary(tmp.path(), &cwd, "husk", now, None, None, None);
+    let husk_path = husk_dir.join("summary.json");
+    let mut husk: Summary = serde_json::from_slice(&std::fs::read(&husk_path).unwrap())
+        .unwrap();
+    husk.num_messages = 0;
+    husk.num_chat_messages = 0;
+    husk.session_summary.clear();
+    std::fs::write(&husk_path, serde_json::to_vec_pretty(&husk).unwrap()).unwrap();
+    let adapter = JsonlStorageAdapter::with_root(tmp.path().to_path_buf());
+    let recent = adapter.list_sessions_recent(100).await.unwrap();
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].info.id, acp::SessionId::new("real"));
+}
+#[tokio::test]
+async fn list_sessions_recent_skips_headless_without_shorting_the_page() {
+    let tmp = TempDir::new().unwrap();
+    let cwd = crate::util::grok_home::encode_cwd_dirname("/workspace");
+    let now = chrono::Utc::now();
+    let times: Vec<_> = (0..4).map(|i| now - chrono::Duration::hours(i)).collect();
+    for (i, (id, kind)) in [
+        ("h-new", Some("headless")),
+        ("h-mid", Some("headless")),
+        ("i-old", None),
+        ("i-older", None),
+    ]
+        .into_iter()
+        .enumerate()
+    {
+        let dir = write_test_summary(tmp.path(), &cwd, id, times[i], None, None, kind);
+        set_mtime(&dir.join("summary.json"), times[i]);
+    }
+    let adapter = JsonlStorageAdapter::with_root(tmp.path().to_path_buf());
+    let recent = adapter.list_sessions_recent(2).await.unwrap();
+    let ids: Vec<&str> = recent.iter().map(|s| s.info.id.0.as_ref()).collect();
+    assert_eq!(
+            ids,
+            ["i-old", "i-older"],
+            "headless rows are skipped and their slots refilled from older candidates"
+        );
+}
+#[tokio::test]
+async fn list_sessions_recent_bounds_reads_on_headless_dominated_store() {
+    let tmp = TempDir::new().unwrap();
+    let cwd = crate::util::grok_home::encode_cwd_dirname("/workspace");
+    let now = chrono::Utc::now();
+    let newest_interactive = 40;
+    for i in 0..50 {
+        let id = format!("s{i}");
+        let kind = (i != newest_interactive).then_some("headless");
+        let ts = now - chrono::Duration::minutes(i);
+        let dir = write_test_summary(tmp.path(), &cwd, &id, ts, None, None, kind);
+        set_mtime(&dir.join("summary.json"), ts);
+    }
+    let adapter = JsonlStorageAdapter::with_root(tmp.path().to_path_buf());
+    let recent = adapter.list_sessions_recent(2).await.unwrap();
+    assert!(
+            recent.is_empty(),
+            "interactive rows past the read bound must not force a full scan"
+        );
 }
 #[tokio::test]
 async fn list_sessions_recent_empty_dir() {
@@ -1416,7 +1492,6 @@ async fn list_sessions_recent_skips_corrupt_summary() {
     assert_eq!(recent.len(), 1);
     assert_eq!(recent[0].info.id, acp::SessionId::new("good"));
 }
-/// Helper: set the mtime of a file to a specific chrono DateTime.
 fn set_mtime(path: &std::path::Path, time: chrono::DateTime<chrono::Utc>) {
     use std::time::{Duration, UNIX_EPOCH};
     let secs = time.timestamp() as u64;
@@ -1582,9 +1657,8 @@ fn strip_invalid_images_non_user_items_untouched() {
     assert_eq!(strip_invalid_images(&mut items), 0);
     assert_eq!(items.len(), 3);
 }
-/// The read_file inline-attach shape: the poisoned
-/// image lives in `ToolResultItem.images`, not in a user part. Invalid
-/// entries are removed; valid ones survive.
+/// The read_file inline-attach shape: the poisoned image lives in `ToolResultItem.images`, not in a user part.
+/// Invalid entries are removed; valid ones survive.
 #[test]
 fn strip_invalid_images_heals_tool_result_images() {
     let mut png16 = Vec::new();
@@ -1641,8 +1715,7 @@ fn strip_invalid_images_case_insensitive_base64_marker() {
             ConversationItem::User(u) if matches!(&u.content[0], ContentPart::Image { .. })
         ));
 }
-/// Regression: a truncated JPEG persisted into history must be
-/// stripped at load so resuming recovers.
+/// Regression: a truncated JPEG persisted into history must be stripped at load so resuming recovers.
 #[test]
 fn strip_invalid_images_truncated_jpeg_stripped() {
     let mut jpeg = test_jpeg_bytes();
@@ -1679,8 +1752,7 @@ fn strip_invalid_images_complete_jpeg_kept() {
         ])];
     assert_eq!(strip_invalid_images(&mut items), 0);
 }
-/// Regression: a below-floor image persisted into history must be
-/// stripped at load.
+/// Regression: an image below the pixel floor persisted into history must be stripped at load.
 #[test]
 fn strip_invalid_images_below_pixel_floor_stripped() {
     use image::{ImageBuffer, Rgba};
@@ -1697,11 +1769,9 @@ fn strip_invalid_images_below_pixel_floor_stripped() {
         ])];
     assert_eq!(strip_invalid_images(&mut items), 1);
 }
-/// Write a chat_history.jsonl with the given lines into a fresh
-/// session dir, then call `read_chat_history_sync` and return the
-/// resulting `ConversationItem`s. Exercises the real on-read upgrade
-/// path end-to-end (loader + serde + xai_grok_sampling_types::
-/// upgrade_legacy_reasoning).
+/// Write a chat_history.jsonl with the given lines into a fresh session dir.
+/// Then call `read_chat_history_sync` and return the resulting `ConversationItem`s.
+/// Exercises the real on-read upgrade path end-to-end (loader, serde, and xai_grok_sampling_types::upgrade_legacy_reasoning).
 fn load_lines(lines: &[&str]) -> Vec<ConversationItem> {
     let temp_dir = TempDir::new().unwrap();
     let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
@@ -1712,10 +1782,8 @@ fn load_lines(lines: &[&str]) -> Vec<ConversationItem> {
     adapter.read_chat_history_sync(chat_path, CHAT_FORMAT_VERSION).unwrap()
 }
 /// Real-shape legacy fixture from a web-search session.
-/// The assistant carries `reasoning: { text, encrypted, id }` inline —
-/// the legacy grok-build / Opus / chat-completions shape.
-/// BackendToolCall sits as its own sibling line (it was already a
-/// sibling variant in the legacy shape).
+/// The assistant carries `reasoning: { text, encrypted, id }` inline, the legacy grok-build / Opus / chat-completions shape.
+/// BackendToolCall sits as its own sibling line (it was already a sibling variant in the legacy shape).
 #[test]
 fn read_chat_history_upgrades_legacy_singular_reasoning_to_sibling() {
     let items = load_lines(
@@ -1743,8 +1811,7 @@ fn read_chat_history_upgrades_legacy_singular_reasoning_to_sibling() {
     assert!(matches!(items[4], ConversationItem::Assistant(_)));
 }
 /// The `raw_output`-era shape: `raw_output: Vec<OutputItem>` on the assistant.
-/// N parallel `tco_*` reasoning blobs survive as N sibling items, in
-/// emission order, interleaved with backend tool calls.
+/// N parallel `tco_*` reasoning blobs survive as N sibling items, in emission order, interleaved with backend tool calls.
 #[test]
 fn read_chat_history_upgrades_raw_output_parallel_tco_reasoning() {
     let lines = [
@@ -1788,20 +1855,9 @@ fn read_chat_history_upgrades_raw_output_parallel_tco_reasoning() {
         .collect();
     assert_eq!(reasoning_ids, vec!["tco_1", "tco_2", "rs_main"]);
 }
-/// Hybrid file — legacy-shape turns at the front of the file, new-shape
-/// turns appended at the back (the realistic shape when a user loads an
-/// old session with a new binary and takes another turn). Verifies:
-///
-/// 1. The legacy turn's `reasoning` field is reconstructed as a sibling
-///    *before* the legacy assistant.
-/// 2. The post-PR sibling Reasoning row passes through unchanged and
-///    lands before the post-PR assistant (no double-emission).
-/// 3. `sibling_btc_ids_seen` correctly tracks ids across the boundary:
-///    a BackendToolCall that appears as a sibling row in the post-PR
-///    section does not get re-emitted by a (hypothetical) later legacy
-///    assistant's raw_output that lists the same id.
-/// 4. Final item order is a uniform sibling-shape `Vec<ConversationItem>`
-///    that downstream code can replay without knowing about the seam.
+/// The legacy turn's `reasoning` field is reconstructed as a sibling *before* the legacy assistant.
+/// The post-PR sibling Reasoning row passes through unchanged and lands before the post-PR assistant (no double-emission).
+/// Final item order is a uniform sibling-shape `Vec<ConversationItem>` that downstream code can replay without knowing about the seam.
 #[test]
 fn read_chat_history_handles_hybrid_legacy_and_post_pr_lines() {
     let items = load_lines(
@@ -1879,8 +1935,7 @@ fn read_chat_history_handles_hybrid_legacy_and_post_pr_lines() {
         .summary[0];
     assert_eq!(s.text, "legacy thinking");
 }
-/// Already-new-shape sessions are unchanged by the loader.
-/// Idempotent: re-loading the file produces the same items.
+/// Sessions already in the new shape are unchanged by the loader.
 #[test]
 fn read_chat_history_is_idempotent_on_post_pr_sessions() {
     let items = load_lines(
@@ -1904,8 +1959,7 @@ fn read_chat_history_is_idempotent_on_post_pr_sessions() {
         .collect();
     assert_eq!(kinds, vec!["system", "user", "reasoning", "assistant"]);
 }
-/// Set up a session dir with a raw `chat_history.jsonl` and return
-/// (adapter, chat path, loaded items).
+/// Set up a session dir with a raw `chat_history.jsonl` and return (adapter, chat path, loaded items).
 fn load_raw_chat(
     temp_dir: &TempDir,
     raw: &[u8],
@@ -1936,9 +1990,8 @@ fn user_text(items: &[ConversationItem]) -> Vec<String> {
         })
         .collect()
 }
-/// A record torn mid-object (crash / ENOSPC mid-append) is skipped;
-/// every other record loads, and the damaged original is quarantined
-/// as `chat_history.jsonl.corrupt`.
+/// A record torn mid-object (crash / ENOSPC mid-append) is skipped.
+/// Every other record loads, and the damaged original is quarantined as `chat_history.jsonl.corrupt`.
 #[test]
 fn read_chat_history_skips_torn_line_and_quarantines_original() {
     let good_1 = r#"{"type":"user","content":[{"type":"text","text":"first"}]}"#;
@@ -1960,10 +2013,8 @@ fn read_chat_history_skips_torn_line_and_quarantines_original() {
             "original file must be preserved byte-for-byte for recovery"
         );
 }
-/// An image strip is destructive (re-persisted on spawn) and its
-/// verdicts are client-side heuristics — so the pre-strip original must
-/// be quarantined exactly like a torn-line load, keeping a false drop
-/// recoverable.
+/// An image strip is destructive (re-persisted on spawn) and its verdicts are client-side heuristics.
+/// The pre-strip original must therefore be quarantined exactly like a torn-line load, keeping a false drop recoverable.
 #[test]
 fn read_chat_history_quarantines_original_on_image_strip() {
     use base64::Engine as _;
@@ -1995,8 +2046,7 @@ fn read_chat_history_quarantines_original_on_image_strip() {
             "pre-strip original must be preserved for recovery"
         );
 }
-/// The pre-strip backup copies the live file once; the first copy wins
-/// so a later strip cannot overwrite the earliest (fullest) backup.
+/// The pre-strip backup copies the live file once; the first copy wins so a later strip cannot overwrite the earliest (fullest) backup.
 #[tokio::test]
 async fn backup_chat_history_before_strip_copies_once() {
     let original = r#"{"type":"user","content":[{"type":"text","text":"with image"}]}"#;
@@ -2021,9 +2071,8 @@ async fn backup_chat_history_before_strip_copies_once() {
             "first backup wins; a later strip must not overwrite it"
         );
 }
-/// The gate itself: when the backup cannot be written, the destructive
-/// rewrite must not run: the live file keeps its images and the error
-/// surfaces to the caller.
+/// The gate itself: when the backup cannot be written, the destructive rewrite must not run.
+/// The live file keeps its images and the error surfaces to the caller.
 #[tokio::test]
 async fn strip_rewrite_gated_skips_rewrite_when_backup_fails() {
     let original = r#"{"type":"user","content":[{"type":"text","text":"with image"}]}"#;
@@ -2047,8 +2096,7 @@ async fn strip_rewrite_gated_skips_rewrite_when_backup_fails() {
             "the rewrite must not run when the backup failed"
         );
 }
-/// A missing chat file (fresh session, strip before first write) must
-/// not error or create a backup.
+/// A missing chat file (fresh session, strip before first write) must not error or create a backup.
 #[tokio::test]
 async fn backup_chat_history_before_strip_noops_without_file() {
     let temp_dir = TempDir::new().unwrap();
@@ -2062,10 +2110,9 @@ async fn backup_chat_history_before_strip_noops_without_file() {
                 .exists()
         );
 }
-/// The exact incident shape: a partial record with the next record
-/// appended straight onto it (no newline in between — the log-and-continue
-/// append path pre-heal). The merged line fails with "expected `,` or `}`"
-/// and is skipped; the load succeeds.
+/// The exact incident shape: a partial record with the next record appended straight onto it, no newline in between.
+/// That is what the log-and-continue append path wrote before self-healing appends existed.
+/// The merged line fails with "expected `,` or `}`" and is skipped; the load succeeds.
 #[test]
 fn read_chat_history_skips_merged_line_from_interrupted_append() {
     let good_1 = r#"{"type":"user","content":[{"type":"text","text":"kept"}]}"#;
@@ -2081,9 +2128,8 @@ fn read_chat_history_skips_merged_line_from_interrupted_append() {
             matches!(&items[1], ConversationItem::Assistant(a) if a.content.as_ref() == "after")
         );
 }
-/// A line torn in the middle of a multi-byte UTF-8 codepoint must poison
-/// only itself — not the whole file (the old `read_to_string` failed the
-/// entire load with InvalidData on any invalid UTF-8 byte).
+/// A line torn in the middle of a multi-byte UTF-8 codepoint must poison only itself, not the whole file.
+/// (The old `read_to_string` failed the entire load with InvalidData on any invalid UTF-8 byte.)
 #[test]
 fn read_chat_history_skips_line_torn_mid_utf8_codepoint() {
     let good = r#"{"type":"user","content":[{"type":"text","text":"survives"}]}"#;
@@ -2098,9 +2144,8 @@ fn read_chat_history_skips_line_torn_mid_utf8_codepoint() {
     assert_eq!(user_text(&items), vec!["survives"]);
     assert_eq!(items.len(), 1);
 }
-/// Structurally valid JSON that decodes as neither ConversationItem nor
-/// legacy ChatRequestMessage (schema drift / foreign writer) is skipped,
-/// not fatal.
+/// Structurally valid JSON that decodes as neither ConversationItem nor legacy ChatRequestMessage is skipped, not fatal.
+/// This covers schema drift and foreign writers.
 #[test]
 fn read_chat_history_skips_undecodable_but_valid_json_line() {
     let good = r#"{"type":"user","content":[{"type":"text","text":"kept"}]}"#;
@@ -2110,8 +2155,7 @@ fn read_chat_history_skips_undecodable_but_valid_json_line() {
     assert_eq!(user_text(&items), vec!["kept"]);
     assert_eq!(items.len(), 1);
 }
-/// A record torn at EOF with no trailing newline (crash artifact before
-/// any healing append ran) is skipped on read.
+/// A record torn at EOF with no trailing newline (crash artifact before any healing append ran) is skipped on read.
 #[test]
 fn read_chat_history_skips_torn_tail_without_trailing_newline() {
     let good = r#"{"type":"user","content":[{"type":"text","text":"kept"}]}"#;
@@ -2121,8 +2165,7 @@ fn read_chat_history_skips_torn_tail_without_trailing_newline() {
     assert_eq!(user_text(&items), vec!["kept"]);
     assert_eq!(items.len(), 1);
 }
-/// First detection wins: a later read of a (differently) corrupt file
-/// must not clobber the original quarantine evidence.
+/// First detection wins: a later read of a (differently) corrupt file must not clobber the original quarantine evidence.
 #[test]
 fn read_chat_history_quarantine_preserves_first_evidence() {
     let good = r#"{"type":"user","content":[{"type":"text","text":"kept"}]}"#;
@@ -2192,10 +2235,8 @@ fn read_chat_history_clean_file_writes_no_quarantine() {
             "no corruption detected → no quarantine copy"
         );
 }
-/// Self-healing append: a torn trailing line (previous append crashed
-/// mid-write, no trailing newline) is terminated before the new record is
-/// written, so the new record lands on its own line and only the torn
-/// record is lost on the next load.
+/// Self-healing append: before writing the new record, a torn trailing line (a previous append crashed mid-write, no newline) is terminated.
+/// The new record lands on its own line, and only the torn record is lost on the next load.
 #[tokio::test]
 async fn append_chat_message_terminates_torn_trailing_line() {
     let temp_dir = TempDir::new().unwrap();
@@ -2291,12 +2332,16 @@ async fn retry_after_lost_ack_converges_memory_and_disk_to_authoritative_item() 
         vec![],
         xai_grok_sampling_types::SamplingConfig {
             base_url: String::new(),
+            mtls_cert_dir: None,
             model: String::new(),
             max_completion_tokens: None,
             temperature: None,
             top_p: None,
+            max_retries: None,
+            rate_limit_retry_threshold: None,
             api_backend: Default::default(),
             extra_headers: Default::default(),
+            conversation_group_id: None,
             query_params: Default::default(),
             env_http_headers: Default::default(),
             context_window: std::num::NonZeroU64::new(128_000).unwrap(),
@@ -2364,8 +2409,7 @@ async fn acknowledged_chat_append_preserves_existing_file_bytes_and_appends_once
     assert_eq!(loaded.len(), 3);
     assert_eq!(loaded[2].working_directory_switch_generation(), Some(4));
 }
-/// Same self-healing for `updates.jsonl` appends, and the lenient reader
-/// skips the isolated torn line.
+/// Same self-healing for `updates.jsonl` appends, and the lenient reader skips the isolated torn line.
 #[tokio::test]
 async fn append_update_terminates_torn_trailing_line() {
     let temp_dir = TempDir::new().unwrap();
@@ -2405,13 +2449,9 @@ async fn append_update_terminates_torn_trailing_line() {
     let updates = adapter.read_updates_jsonl(updates_path).unwrap();
     assert_eq!(updates.len(), 2, "torn line skipped, real updates kept");
 }
-/// End-to-end resume-path regression for the incident: a live session
-/// whose `chat_history.jsonl` contains a merged record (crash mid-append,
-/// then log-and-continue appended the next record onto the partial line)
-/// must still load via `load_session_without_updates` — previously this
-/// returned InvalidData ("expected `,` or `}` at line 1 column N"),
-/// surfacing to the user as "Couldn't load session: … FS_OTHER" and
-/// permanently bricking the session.
+/// End-to-end resume-path regression for the incident: a live session with a merged record in `chat_history.jsonl` must still load.
+/// (Merged record: crash mid-append, then log-and-continue appended the next record onto the partial line.).
+/// Previously `load_session_without_updates` returned.
 #[tokio::test]
 async fn load_session_without_updates_survives_merged_chat_line() {
     let temp_dir = TempDir::new().unwrap();
@@ -2525,4 +2565,54 @@ async fn explicit_session_dir_does_not_tighten_parent() {
             0o755,
             "caller-owned parent must not be chmod'd in Explicit mode"
         );
+}
+#[tokio::test]
+async fn usage_json_rewrites_session_and_appends_turns() {
+    use crate::session::usage_file::{SessionUsageFile, UsageSummary};
+    use xai_chat_state::UsageLedger;
+    use xai_grok_sampling_types::TokenUsage;
+    let temp_dir = TempDir::new().unwrap();
+    let info = create_test_info();
+    let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
+    adapter.init_session(&info, default_model_id()).await.unwrap();
+    let tu = |prompt, completion| TokenUsage {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        total_tokens: prompt + completion,
+        reasoning_tokens: 0,
+        cached_prompt_tokens: 0,
+        cache_creation_prompt_tokens: 0,
+    };
+    let mut ledger = UsageLedger::default();
+    ledger.record_main_loop_call("grok-4", &tu(100, 20), Some(10), Some(50));
+    let mut file = SessionUsageFile::new(info.id.to_string());
+    let first = UsageSummary::from_ledger(&ledger);
+    file.apply_turn(1, "t1", &first, None);
+    adapter.write_usage(&info, &file).await.unwrap();
+    ledger.record_main_loop_call("grok-4", &tu(40, 10), Some(10), Some(20));
+    let mut loaded = adapter.read_usage(&info).await.unwrap().unwrap();
+    loaded.apply_turn(2, "t2", &UsageSummary::from_ledger(&ledger), Some(&first));
+    adapter.write_usage(&info, &loaded).await.unwrap();
+    let persisted = adapter.read_usage(&info).await.unwrap().unwrap();
+    assert_eq!(persisted.turns.len(), 2);
+    assert_eq!(persisted.turns[0].usage.input_tokens, 100);
+    assert_eq!(persisted.turns[1].usage.input_tokens, 40);
+    assert_eq!(persisted.session.input_tokens, 140);
+    assert_eq!(persisted.session.turn_count, 2);
+    let raw = std::fs::read_to_string(adapter.session_dir(&info).join("usage.json"))
+        .unwrap();
+    assert!(raw.contains("\"turns\""));
+    assert!(raw.contains("\"session\""));
+}
+#[tokio::test]
+async fn corrupt_usage_json_does_not_read_as_missing() {
+    let temp_dir = TempDir::new().unwrap();
+    let info = create_test_info();
+    let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
+    adapter.init_session(&info, default_model_id()).await.unwrap();
+    let path = adapter.session_dir(&info).join("usage.json");
+    std::fs::write(&path, "{not-json").unwrap();
+    let err = adapter.read_usage(&info).await.unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not-json");
 }

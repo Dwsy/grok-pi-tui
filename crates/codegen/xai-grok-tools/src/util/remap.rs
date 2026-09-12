@@ -2,13 +2,9 @@
 
 use std::collections::HashMap;
 
-/// Remap top-level keys in a JSON object using a reverse map (model-facing → canonical).
-///
-/// Used to transform incoming tool input from the model (which may use randomized
-/// parameter names) back to canonical names before deserialization.
-///
-/// Only remaps top-level keys. Nested objects are not affected.
-/// Keys not in the map are passed through unchanged.
+/// Remap top-level keys in a JSON object using a reverse map (model-facing → canonical). Used to transform incoming
+/// tool input from the model (which may use randomized parameter names) back to canonical names before deserialization.
+/// Only remaps top-level keys. Nested objects are not affected. Keys not in the map are passed through unchanged.
 pub fn remap_json_keys(
     raw: serde_json::Value,
     reverse_map: &HashMap<String, String>,
@@ -26,10 +22,9 @@ pub fn remap_json_keys(
     }
 }
 
-/// Build a reverse map (model-facing → canonical) from a canonical → model-facing map.
-///
-/// Panics in debug mode if two canonical names map to the same model-facing
-/// name (collision would silently drop one mapping).
+/// Build a reverse map (model-facing → canonical) from a canonical → model-facing map. Panics in
+/// debug mode if two canonical names map to the same model-facing name (collision would silently
+/// drop one mapping).
 pub fn reverse_map(map: &HashMap<String, String>) -> HashMap<String, String> {
     let reversed: HashMap<_, _> = map.iter().map(|(k, v)| (v.clone(), k.clone())).collect();
     debug_assert_eq!(
@@ -40,10 +35,8 @@ pub fn reverse_map(map: &HashMap<String, String>) -> HashMap<String, String> {
     reversed
 }
 
-/// Remap property names in a JSON Schema object.
-///
-/// Renames keys in the `"properties"` object and updates entries in the
-/// `"required"` array according to the given map (canonical → model-facing).
+/// Remap property names in a JSON Schema object. Renames keys in the `"properties"` object and
+/// updates entries in the `"required"` array according to the given map (canonical → model-facing).
 /// Properties/required entries not in the map keep their canonical names.
 pub fn remap_schema_properties(
     schema: &serde_json::Value,

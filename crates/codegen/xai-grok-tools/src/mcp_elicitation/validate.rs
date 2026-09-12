@@ -9,9 +9,8 @@ use super::schema::{ElicitFieldKind, ElicitFieldSpec, ElicitTextFormat};
 /// [`ElicitFieldSpec`]. Selections are indexes into the spec's options.
 #[derive(Debug, Clone)]
 pub enum ElicitFieldValue<'a> {
-    /// String / Number / Integer fields: the raw text draft. An empty
-    /// draft means "not provided"; anything else is validated and
-    /// submitted **verbatim** — JSON Schema string values and length
+    /// String / Number / Integer fields: the raw text draft. An empty draft means "not provided";
+    /// anything else is validated and submitted **verbatim** — JSON Schema string values and length
     /// constraints do not trim whitespace.
     Draft(&'a str),
     Bool(bool),
@@ -104,10 +103,9 @@ pub fn validate_field(
             {
                 return Err(format!("select at most {max}"));
             }
-            // JSON Schema semantics (reviewer-confirmed): `required` only
-            // demands the property be present and `minItems` defaults to 0,
-            // so an empty required multi-select submits `[]`. Only an
-            // optional field with nothing selected is omitted.
+            // JSON Schema semantics (reviewer-confirmed): `required` only demands the property be
+            // present and `minItems` defaults to 0, so an empty required multi-select submits `[]`.
+            // Only an optional field with nothing selected is omitted.
             if values.is_empty() && !spec.required {
                 return Ok(None);
             }

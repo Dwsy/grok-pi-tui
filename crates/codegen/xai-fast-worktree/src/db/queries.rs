@@ -49,7 +49,7 @@ pub fn register(conn: &Connection, record: &WorktreeRecord) -> Result<()> {
             path_str.as_ref(),
             source_str.as_ref(),
             record.repo_name,
-            record.kind.as_str(),
+            record.kind.as_ref(),
             record.creation_mode,
             record.git_ref,
             record.head_commit,
@@ -57,7 +57,7 @@ pub fn register(conn: &Connection, record: &WorktreeRecord) -> Result<()> {
             record.creator_pid.map(|p| p as i64),
             record.created_at,
             record.last_accessed_at,
-            record.status.as_str(),
+            record.status.as_ref(),
             metadata_str,
         ],
     )
@@ -138,8 +138,8 @@ pub fn list(conn: &Connection, filter: &ListFilter) -> Result<Vec<WorktreeRecord
     let mut sql = String::from("SELECT * FROM worktrees WHERE 1=1");
     let mut idx = 0usize;
 
-    let status_str = filter.status.map(|s| s.as_str());
-    let kind_str = filter.kind.map(|k| k.as_str());
+    let status_str = filter.status.map(Into::<&'static str>::into);
+    let kind_str = filter.kind.map(Into::<&'static str>::into);
     let source_repo_str = filter
         .source_repo
         .as_ref()

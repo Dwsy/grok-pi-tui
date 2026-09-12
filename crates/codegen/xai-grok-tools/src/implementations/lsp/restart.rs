@@ -11,10 +11,9 @@ use super::manager::LspManager;
 use super::{DiagnosticsNotify, file_uri};
 use crate::util::ProcessScope;
 
-/// Waits for the current lifecycle to exit. Returns `None` (stop monitoring)
-/// when the manager is gone or the server's client has been removed.
-///
-/// See `restart_monitor` for the Weak/lifetime argument.
+/// Waits for the current lifecycle to exit. Returns `None` (stop monitoring) when the manager is
+/// gone or the server's client has been removed. See `restart_monitor` for the Weak/lifetime
+/// argument.
 async fn wait_for_crashed_lifecycle(
     lsp_manager: &Weak<tokio::sync::Mutex<LspManager>>,
     server_name: &str,
@@ -32,10 +31,9 @@ async fn wait_for_crashed_lifecycle(
     }
 }
 
-/// Replays tracked documents, returning each URI with the document version its
-/// replay was sent as — what the manager needs to tell a verdict on the replay
-/// from a leftover one. Documents the fresh server was never told about are
-/// left out, so nothing waits on a verdict that was never asked for.
+/// Replays tracked documents, returning each URI with the document version its replay was sent as — what the manager
+/// needs to tell a verdict on the replay from a leftover one. Documents the fresh server was never told about are left
+/// out, so nothing waits on a verdict that was never asked for.
 pub(super) fn replay_tracked_documents(
     restarted_client: &mut LspClient,
     tracked_docs: &[(String, String)],
@@ -223,10 +221,9 @@ async fn restart_lsp_with_retries(
                 }
                 let replayed_doc_count = tracked_docs.len();
                 let replayed_uris = replay_tracked_documents(&mut restarted_client, &tracked_docs);
-                // Re-check after the replay window: a `kill_all` between enroll
-                // and install has already SIGKILLed the enrolled child, and
-                // `install` only checks `shutting_down` (never set by
-                // `kill_all`) — installing here would mark a dead server ready.
+                // Re-check after the replay window: a `kill_all` between enroll and install has
+                // already SIGKILLed the enrolled child, and `install` only checks `shutting_down`
+                // (never set by `kill_all`) — installing here would mark a dead server ready.
                 if process_scope.as_ref().is_some_and(|s| s.is_closed()) {
                     tracing::info!(server = %server_name, "session scope closed during restart, dropping restarted server");
                     return RestartOutcome::Shutdown;
@@ -284,12 +281,9 @@ async fn restart_lsp_with_retries(
     }
 }
 
-/// Monitors one server entry and replaces crashed lifecycles.
-///
-/// Takes a `Weak` to the manager so the monitor never keeps the `LspManager`
-/// (and its child processes) alive past the owning session: it upgrades only
-/// briefly per poll and for the duration of a single restart. When the manager
-/// is dropped at session teardown, the next upgrade fails and the monitor exits.
+/// Monitors one server entry and replaces crashed lifecycles. Takes a `Weak` to the manager so the monitor never keeps the `LspManager` (and
+/// its child processes) alive past the owning session: it upgrades only briefly per poll and for the duration of a single restart. When the
+/// manager is dropped at session teardown, the next upgrade fails and the monitor exits.
 pub async fn restart_monitor(
     lsp_manager: Weak<tokio::sync::Mutex<LspManager>>,
     server_name: String,

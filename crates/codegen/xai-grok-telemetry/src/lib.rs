@@ -1,10 +1,8 @@
-//! Telemetry engine for Grok Build sessions: product events + Mixpanel emission +
-//! Sentry error reporting + OpenTelemetry tracing + structured unified log.
+//! Telemetry engine for Grok Build sessions.
+//! Covers product events, Mixpanel emission, Sentry error reporting, OpenTelemetry tracing, and the structured unified log.
 //!
-//! Extracted from `xai-file-utils` per review feedback so telemetry has
-//! its own ownership boundary (see CODEOWNERS) and so downstream consumers
-//! that only want event tracking + inference metrics no longer pull in
-//! Mixpanel/HTTP/identity dependencies.
+//! Extracted from `xai-file-utils` so telemetry has its own ownership boundary (see CODEOWNERS).
+//! Consumers that only want event tracking and inference metrics no longer pull in Mixpanel/HTTP/identity dependencies.
 
 pub mod activity;
 mod appender;
@@ -22,17 +20,24 @@ pub mod instrumentation;
 pub mod memory_log;
 pub mod memory_telemetry;
 pub mod otel_layer;
-pub(crate) mod otlp_http;
+// OTLP HTTP client now lives in the low-level foundation crate; re-export keeps `crate::otlp` paths working.
+pub(crate) use xai_grok_otel::otlp;
 pub mod process_info;
 pub mod process_metrics;
 pub mod prompt_timing;
-pub(crate) mod redact_common;
+// Shared redaction utils now live in the foundation crate; re-export keeps `crate::redact_common` paths working.
+pub(crate) use xai_grok_otel::redact_common;
+pub use xai_grok_otel::redact_common::redact_error_detail;
+pub mod region;
 pub mod sampling_log;
 pub mod sentry;
 pub mod session_ctx;
+pub mod session_end;
 pub mod session_metrics;
+pub mod span_profile;
 pub mod startup;
 pub mod subagent_spawn;
+pub mod turn_phases;
 pub mod unified_log;
 
 pub use client::{
@@ -42,5 +47,5 @@ pub use client::{
 pub use events::TelemetryEvent;
 pub use session_ctx::{
     EmitterOrigin, TelemetryCtx, emit_event, emit_event_with_origin, log_event, log_session_event,
-    log_session_event_with_origin, with_session_ctx,
+    log_session_event_with_origin, spawn_local_in_session_ctx, with_session_ctx,
 };

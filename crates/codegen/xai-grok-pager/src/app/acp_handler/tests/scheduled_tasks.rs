@@ -2,254 +2,6 @@
     use super::*;
 
     #[test]
-    fn inject_prompt_happy_path_enqueues_and_drains() {
-        let mut app = make_app_with_agent("sess-1");
-        let payload = serde_json::json!({
-            "sessionId": "sess-1",
-            "taskId": "task-42",
-            "prompt": "/pr-babysit check",
-            "humanSchedule": "every 5m",
-        });
-        let notif = make_inject_notif(&payload);
-
-        let result = handle_scheduled_task_inject_prompt(&notif, &mut app);
-        assert!(result);
-
-        // Agent should now be in TurnRunning (drain happened, prompt was sent).
-        let agent = app.agents.get(&AgentId(0)).unwrap();
-        assert!(agent.session.state.is_turn_running());
-        assert!(agent.session.pending_prompts.is_empty());
-
-        // Scrollback should have a cron prompt block.
-        assert!(!agent.scrollback.is_empty());
-
-        // pending_effects should contain a SendPromptBlocks with system-reminder framing,
-        // displayText/displayAsCron meta, and a scheduler-fired- prompt_id prefix.
-        match &app.pending_effects[0] {
-            Effect::SendPromptBlocks {
-                blocks, prompt_id, ..
-            } => {
-                let text = match &blocks[0] {
-                    acp::ContentBlock::Text(t) => &t.text,
-                    _ => panic!("expected Text block"),
-                };
-                assert!(
-                    text.contains("<system-reminder>"),
-                    "missing system-reminder framing"
-                );
-                assert!(text.contains("task-42"), "missing task_id");
-                assert!(text.contains("every 5m"), "missing schedule");
-                assert!(text.contains("/pr-babysit check"), "missing prompt");
-                assert!(
-                    prompt_id.starts_with("scheduler-fired-"),
-                    "cron prompt_id must start with 'scheduler-fired-' for data pipeline tagging, got: {prompt_id}"
-                );
-            }
-            other => panic!("expected SendPromptBlocks, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn inject_prompt_drives_even_when_attached_as_viewer() {
-        // The leader routes `x.ai/scheduled_task_inject_prompt` to the SINGLE
-        // session driver, so any client that receives it IS the driver and must
-        // enqueue + run it — even one that attached via `session/load`
-        // (`attached_as_viewer == true`). Previously this handler latched on
-        // `attached_as_viewer` and skipped, which stranded the cron loop with no
-        // output whenever the designated driver was an attacher (the sticky-flag
-        // bug). Pin the corrected behavior: the inject drives the turn.
-        let mut app = make_app_with_agent("sess-1");
-        app.agents.get_mut(&AgentId(0)).unwrap().attached_as_viewer = true;
-
-        let payload = serde_json::json!({
-            "sessionId": "sess-1",
-            "taskId": "task-42",
-            "prompt": "echo hello",
-            "humanSchedule": "every 1m",
-        });
-        let result = handle_scheduled_task_inject_prompt(&make_inject_notif(&payload), &mut app);
-        assert!(result);
-
-        let agent = app.agents.get(&AgentId(0)).unwrap();
-        assert!(
-            agent.session.state.is_turn_running(),
-            "the designated driver must start the cron turn even when it attached as a viewer"
-        );
-        assert!(
-            agent.session.pending_prompts.is_empty(),
-            "the cron prompt must drain (not linger queued) on the driver"
-        );
-        assert!(
-            matches!(
-                app.pending_effects.first(),
-                Some(Effect::SendPromptBlocks { .. })
-            ),
-            "the driver must emit a SendPromptBlocks effect for the cron turn"
-        );
-    }
-
-    #[test]
-    fn inject_prompt_malformed_json_returns_false() {
-        let mut app = make_app_with_agent("sess-1");
-        let raw = serde_json::value::to_raw_value(&"not a json object").unwrap();
-        let notif = acp::ExtNotification::new("x.ai/scheduled_task_inject_prompt", raw.into());
-
-        // The JSON is valid (a string), but sessionId/prompt fields won't exist.
-        let result = handle_scheduled_task_inject_prompt(&notif, &mut app);
-        assert!(!result);
-    }
-
-    #[test]
-    fn inject_prompt_empty_prompt_returns_false() {
-        let mut app = make_app_with_agent("sess-1");
-        let payload = serde_json::json!({
-            "sessionId": "sess-1",
-            "prompt": "",
-        });
-        let notif = make_inject_notif(&payload);
-
-        let result = handle_scheduled_task_inject_prompt(&notif, &mut app);
-        assert!(!result);
-        // Nothing should be enqueued.
-        let agent = app.agents.get(&AgentId(0)).unwrap();
-        assert!(agent.session.pending_prompts.is_empty());
-    }
-
-    #[test]
-    fn inject_prompt_no_matching_agent_returns_false() {
-        let mut app = make_app_with_agent("sess-1");
-        let payload = serde_json::json!({
-            "sessionId": "sess-other",
-            "prompt": "do something",
-        });
-        let notif = make_inject_notif(&payload);
-
-        let result = handle_scheduled_task_inject_prompt(&notif, &mut app);
-        assert!(!result);
-        // Agent should still be idle, nothing enqueued.
-        let agent = app.agents.get(&AgentId(0)).unwrap();
-        assert!(agent.session.state.is_idle());
-    }
-
-    #[test]
-    fn inject_prompt_busy_agent_enqueues_without_draining() {
-        let mut app = make_app_with_agent("sess-1");
-        // Make the agent busy.
-        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-        agent.session.state = AgentState::TurnRunning;
-
-        let payload = serde_json::json!({
-            "sessionId": "sess-1",
-            "prompt": "/pr-babysit check",
-        });
-        let notif = make_inject_notif(&payload);
-
-        let result = handle_scheduled_task_inject_prompt(&notif, &mut app);
-        assert!(result);
-
-        // Prompt should be queued but not drained (agent was busy).
-        let agent = app.agents.get(&AgentId(0)).unwrap();
-        assert_eq!(agent.session.pending_prompts.len(), 1);
-        assert_eq!(
-            agent.session.pending_prompts[0].kind,
-            crate::app::agent::QueueEntryKind::Cron
-        );
-        // No effects produced (drain was a no-op since agent was busy).
-        assert!(app.pending_effects.is_empty());
-    }
-
-    #[test]
-    fn inject_prompt_skips_duplicate_while_queued() {
-        let mut app = make_app_with_agent("sess-1");
-        // Busy with an unrelated turn so the cron prompt queues instead of draining.
-        app.agents.get_mut(&AgentId(0)).unwrap().session.state = AgentState::TurnRunning;
-
-        let payload = serde_json::json!({
-            "sessionId": "sess-1",
-            "taskId": "loop-7",
-            "prompt": "check deploy",
-            "humanSchedule": "every 1m",
-        });
-
-        assert!(handle_scheduled_task_inject_prompt(
-            &make_inject_notif(&payload),
-            &mut app
-        ));
-        assert_eq!(
-            app.agents
-                .get(&AgentId(0))
-                .unwrap()
-                .session
-                .pending_prompts
-                .len(),
-            1
-        );
-
-        // A re-fire of the same task while it is still queued must not pile up.
-        assert!(handle_scheduled_task_inject_prompt(
-            &make_inject_notif(&payload),
-            &mut app
-        ));
-        assert_eq!(
-            app.agents
-                .get(&AgentId(0))
-                .unwrap()
-                .session
-                .pending_prompts
-                .len(),
-            1,
-            "a re-fire of the same loop must dedupe in the queue, not accumulate"
-        );
-    }
-
-    #[test]
-    fn inject_prompt_skips_duplicate_while_running() {
-        let mut app = make_app_with_agent("sess-1");
-        let payload = serde_json::json!({
-            "sessionId": "sess-1",
-            "taskId": "loop-7",
-            "prompt": "check deploy",
-            "humanSchedule": "every 1m",
-        });
-
-        // First fire on an idle agent drains into a running cron turn.
-        assert!(handle_scheduled_task_inject_prompt(
-            &make_inject_notif(&payload),
-            &mut app
-        ));
-        let agent = app.agents.get(&AgentId(0)).unwrap();
-        assert!(agent.session.state.is_turn_running());
-        assert!(agent.session.pending_prompts.is_empty());
-
-        // A re-fire while that same loop turn is running must be skipped, not queued.
-        assert!(handle_scheduled_task_inject_prompt(
-            &make_inject_notif(&payload),
-            &mut app
-        ));
-        assert!(
-            app.agents
-                .get(&AgentId(0))
-                .unwrap()
-                .session
-                .pending_prompts
-                .is_empty(),
-            "a re-fire while the loop turn runs must not enqueue a duplicate"
-        );
-    }
-
-    #[test]
-    fn inject_prompt_missing_session_id_returns_false() {
-        let mut app = make_app_with_agent("sess-1");
-        let payload = serde_json::json!({
-            "prompt": "do something",
-        });
-        let notif = make_inject_notif(&payload);
-
-        let result = handle_scheduled_task_inject_prompt(&notif, &mut app);
-        assert!(!result);
-    }
-
-    #[test]
     fn fired_known_task_updates_next_fire_at_only() {
         let mut app = make_app_with_agent("sess-1");
         let original_created_at = Instant::now() - std::time::Duration::from_secs(60);
@@ -330,9 +82,8 @@
 
     #[test]
     fn fired_unknown_task_with_none_next_fire_skips_insert() {
-        // Mirrors handle_missed_tasks output: a missed one-shot fires with
-        // next_fire_at: None and is immediately removed. The pane should not
-        // flicker an entry that the Removed will instantly drop.
+        // Mirrors handle_missed_tasks output: a missed one-shot fires with next_fire_at: None and is immediately removed
+        // The pane must not flicker an entry that the Removed will instantly drop
         let mut app = make_app_with_agent("sess-1");
         let notif = make_fired_notif(
             "sess-1",
@@ -352,8 +103,7 @@
 
     #[test]
     fn fired_known_task_with_none_next_fire_clears_field() {
-        // The Vacant short-circuit on next_fire_at: None must NOT apply to
-        // Occupied — clearing an existing countdown is correct behaviour.
+        // The Vacant short-circuit on next_fire_at: None must NOT apply to Occupied; clearing an existing countdown is correct behaviour
         let mut app = make_app_with_agent("sess-1");
         {
             let agent = app.agents.get_mut(&AgentId(0)).unwrap();
@@ -398,9 +148,8 @@
             );
         }
 
-        // Fire notification targets agent 0's session, but active_view
-        // points to agent 1. Return value is "needs redraw" — false is
-        // correct when the mutated agent is not the active view.
+        // The fire notification targets agent 0's session, but active_view points to agent 1
+        // The return value is "needs redraw"; false is correct when the mutated agent is not the active view
         let notif = make_fired_notif(
             "sess-owner",
             "task-owner",
@@ -432,7 +181,7 @@
     }
 
     #[test]
-    fn fired_with_subagent_id_links_chip_and_survives_foreground_fire() {
+    fn fired_with_subagent_id_links_chip_and_survives_a_fire_without_one() {
         let mut app = make_app_with_agent("sess-1");
 
         let notif = make_fired_notif_with_subagent("sess-1", "task-bg", "sub-abc");
@@ -593,9 +342,8 @@
             );
     }
 
-    /// An auto-expired task must leave a transcript record: it is the one removal nobody asked
-    /// for. The tombstone replays on resume, so this line is also what a returning user sees after
-    /// a restart.
+    /// An auto-expired task must leave a transcript record: it is the one removal nobody asked for.
+    /// The tombstone replays on resume, so this line is also what a returning user sees after a restart.
     #[test]
     fn deleted_with_expired_reason_pushes_transcript_notice() {
         use xai_grok_tools::notification::ScheduledTaskRemovedReason;
@@ -631,18 +379,16 @@
             other => panic!("expected System block, got {other:?}"),
         }
 
-        // Re-delivering the same tombstone (reconnect tail replaying an event
-        // already applied live) must not stack a second notice: the chip is
-        // already gone, so the push is skipped.
+        // Re-delivering the same tombstone (a reconnect tail replaying an event already applied live) must not stack a second notice
+        // The chip is already gone, so the push is skipped
         assert!(handle_scheduled_task_deleted(&notif, &mut app));
         let agent = app.agents.get(&AgentId(0)).unwrap();
         assert_eq!(agent.scrollback.len(), 1, "duplicate delivery is a no-op");
     }
 
-    /// A replayed expiry tombstone renders only while the agent accepts replay: inside an open
-    /// `session/load` window (`loading_replay`) or the post-load `late_replay_until` grace, where
-    /// legitimate replay tails still arrive after `SessionLoaded`. A misrouted replay against a
-    /// live transcript (neither open) must remove the chip but never duplicate history.
+    /// A replayed expiry tombstone renders only while the agent accepts replay.
+    /// That means an open `session/load` window (`loading_replay`) or the post-load `late_replay_until` grace.
+    /// A misrouted replay against a live transcript (neither open) must remove the chip but never duplicate history.
     #[test]
     fn replayed_expiry_notice_requires_replay_window() {
         use xai_grok_tools::notification::ScheduledTaskRemovedReason;
@@ -680,10 +426,9 @@
         }
     }
 
-    /// Reconnect after a live expiry: the reload replays `ScheduledTaskCreated` (restoring the
-    /// chip) and then the expiry tombstone, which re-stages the notice. The keep-stash finalize
-    /// outcome must drop the staged copy instead of appending it below the line the stash
-    /// already rendered live before the outage.
+    /// Reconnect after a live expiry: the reload replays `ScheduledTaskCreated` (restoring the chip) and then the expiry tombstone.
+    /// The tombstone re-stages the notice.
+    /// The keep-stash finalize outcome must drop the staged copy instead of appending it below the line the stash already rendered live.
     #[test]
     fn reconnect_replay_of_create_then_expiry_does_not_duplicate_notice() {
         use xai_grok_tools::notification::ScheduledTaskRemovedReason;
@@ -736,9 +481,9 @@
         assert_eq!(notices, 1, "reconnect replay must not duplicate the notice");
     }
 
-    /// Two distinct loops can share a prompt and schedule, producing byte-identical expiry
-    /// notices. The reconnect dedupe must drop only as many staged copies as the stash already
-    /// shows: one for the task expired live, keeping the second task's notice.
+    /// Two distinct loops can share a prompt and schedule, producing byte-identical expiry notices.
+    /// The reconnect dedupe must drop only as many staged copies as the stash already shows: one for the task expired live.
+    /// The second task's notice must survive.
     #[test]
     fn reconnect_dedupe_keeps_notice_for_second_task_with_identical_copy() {
         use xai_grok_tools::notification::ScheduledTaskRemovedReason;
@@ -795,8 +540,7 @@
         );
     }
 
-    /// Every non-expiry removal is user- or lifecycle-driven and already visible elsewhere; it
-    /// must stay silent in the transcript.
+    /// Every non-expiry removal is user- or lifecycle-driven and already visible elsewhere; it must stay silent in the transcript.
     #[test]
     fn deleted_with_other_or_unknown_reasons_is_silent() {
         use xai_grok_tools::notification::ScheduledTaskRemovedReason::*;

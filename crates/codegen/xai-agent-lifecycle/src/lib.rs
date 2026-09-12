@@ -12,7 +12,7 @@ pub use local::{
 pub use send::{
     AnalyticsClass, CommandAction, CommandContributor, CommandInvocation, CommandSpec,
     CompactionClass, ExtensionRegistry, ExtensionRegistryBuilder, InputAuthority, InputPolicy,
-    QueuePolicy, SessionIdleInput, SessionLifecycleContributor, ShutdownPolicy, TurnAbortInput,
-    TurnAbortReason, TurnBoundary, TurnDoneInput, TurnErrorInput, TurnInputContext,
+    QueuePolicy, SessionIdleInput, SessionLifecycleContributor, ShutdownPolicy, SlashAuthority,
+    TurnAbortInput, TurnAbortReason, TurnBoundary, TurnDoneInput, TurnErrorInput, TurnInputContext,
     TurnInputContributor, TurnInputFragment, TurnLifecycleContributor, TurnStartInput,
 };

@@ -7,17 +7,9 @@ use crate::types::memory_backend::MemoryBackend;
 use crate::types::output::ToolOutput;
 use crate::types::tool::{ToolKind, ToolNamespace};
 
-/// Format content with line numbers: `{line_num}→{line}`.
-///
-/// Extracted as a free function so it can be unit-tested independently of
-/// the async tool infrastructure.  `first_line_num` is the 1-based number
-/// for the first line of `content` (accounts for `from` offset).
-///
-/// Uses `split('\n')` rather than `lines()` so that content ending with a
-/// newline (`"a\n"`) emits a trailing blank numbered line, matching the
-/// behavior of the standard `read_file` tool.  `lines()` would silently drop
-/// that trailing element, causing off-by-one line references for files
-/// (virtually all Markdown memory files) that end with a newline.
+/// Format content with line numbers: `{line_num}→{line}`. Extracted as a free function so it can be unit-tested
+/// independently of the async tool infrastructure. Uses `split('\n')` rather than `lines()` so that content ending with
+/// a newline (`"a\n"`) emits a trailing blank numbered line, matching the behavior of the standard `read_file` tool.
 pub(crate) fn format_with_line_numbers(content: &str, first_line_num: usize) -> String {
     if content.is_empty() {
         return String::new();
@@ -48,7 +40,9 @@ impl crate::types::tool_metadata::ToolMetadata for MemoryGetImpl {
          Use after `memory_search` returns a relevant result and you need the full context \
          around a snippet, or to read a specific MEMORY.md file in full.\n\n\
          Line numbers are 1-based and match the line offsets accepted by the `from` parameter, \
-         so targeted follow-up reads or edits can reference exact positions."
+         so targeted follow-up reads or edits can reference exact positions.\n\n\
+         Memory is historical context, not automatically the current plan. Verify recalled facts \
+         against live sources before relying on them."
     }
 }
 
@@ -166,12 +160,9 @@ mod tests {
         assert!(out.starts_with("1000000→"), "got: {out}");
     }
 
-    /// Content ending with `\n` emits a trailing blank numbered line.
-    ///
-    /// Regression test for the `lines()` vs `split('\n')` difference.
-    /// Virtually all Markdown memory files end with a trailing newline, so
-    /// without this fix `memory_get` line numbers are off-by-one relative to
-    /// `read_file` for any file that ends with a newline.
+    /// Content ending with `\n` emits a trailing blank numbered line. Regression test for the `lines()` vs `split('\n')`
+    /// difference. Virtually all Markdown memory files end with a trailing newline, so without this fix `memory_get` line
+    /// numbers are off-by-one relative to `read_file` for any file that ends with a newline.
     #[test]
     fn test_format_trailing_newline_emits_blank_line() {
         let out = format_with_line_numbers("alpha\n", 1);

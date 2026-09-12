@@ -1,45 +1,26 @@
-//! Feedback request heuristics for Grok Code sessions.
-//!
-//! This module implements the feedback request decision logic based on session signals.
-//! It uses tiered probability sampling to request feedback at appropriate moments
-//! without overwhelming users.
+//! Session signals are checked against tiered criteria, and probability sampling keeps requests rare enough not to overwhelm users.
 
 use serde::{Deserialize, Serialize};
 
 use super::signals::SessionSignals;
 use crate::util::probabilistic_sample;
 
-// Re-export shared feedback API wire types to avoid duplication
 pub use prod_mc_cli_chat_proxy_types::feedback_types::{
     FeedbackHeuristicsConfig, FeedbackMode, TierConfig,
 };
 
-/// Feedback request tier with associated probability and criteria.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FeedbackTier {
-    /// Tier 1: Standard engagement (0.05% sample rate)
-    /// Triggered after sustained engagement without issues
+    /// Sustained engagement without issues (0.05% sample rate)
     Tier1,
-    /// Tier 2: Complex session (0.02% sample rate)
-    /// Triggered after complex sessions with some friction
+    /// Complex session with some friction (0.02% sample rate)
     Tier2,
-    /// Tier 3: Recovery/completion (0.01% sample rate)
-    /// Triggered after recovery from issues or session end
+    /// Recovery from issues or session end (0.01% sample rate)
     Tier3,
 }
 
 impl FeedbackTier {
-    /// Get the sample rate for this tier (as a fraction, e.g., 0.0005 for 0.05%)
-    pub fn sample_rate(&self) -> f64 {
-        match self {
-            FeedbackTier::Tier1 => 0.0005, // 0.05%
-            FeedbackTier::Tier2 => 0.0002, // 0.02%
-            FeedbackTier::Tier3 => 0.0001, // 0.01%
-        }
-    }
-
-    /// Get the trigger type identifier for this tier.
     pub fn trigger_type(&self) -> &'static str {
         match self {
             FeedbackTier::Tier1 => "tier1_engagement",
@@ -49,19 +30,15 @@ impl FeedbackTier {
     }
 }
 
-/// Describes the specific condition that triggered a feedback request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TriggerCondition {
-    /// Tier that was triggered
     pub tier: FeedbackTier,
     /// Specific condition that was met (e.g., "turns >= 10 AND tool_calls >= 5 AND compactions >= 2 AND cancellations == 0")
     pub condition: String,
-    /// Actual signal values at trigger time
     pub signal_snapshot: TriggerSignalSnapshot,
 }
 
-/// Snapshot of signal values at the time feedback was triggered.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TriggerSignalSnapshot {
@@ -74,7 +51,6 @@ pub struct TriggerSignalSnapshot {
 }
 
 impl TriggerCondition {
-    /// Create a Tier 1 trigger condition.
     pub fn tier1(signals: &SessionSignals) -> Self {
         Self {
             tier: FeedbackTier::Tier1,
@@ -85,7 +61,6 @@ impl TriggerCondition {
         }
     }
 
-    /// Create a Tier 2 trigger condition.
     pub fn tier2(signals: &SessionSignals) -> Self {
         Self {
             tier: FeedbackTier::Tier2,
@@ -95,7 +70,6 @@ impl TriggerCondition {
         }
     }
 
-    /// Create a Tier 3 trigger condition.
     pub fn tier3(signals: &SessionSignals, had_cancellation: bool, had_revert: bool) -> Self {
         let recovery_condition = if had_cancellation && had_revert {
             "(cancellations > 0 OR has_reverted)"
@@ -112,7 +86,6 @@ impl TriggerCondition {
         }
     }
 
-    /// Get a human-readable trigger reason.
     pub fn trigger_reason(&self) -> String {
         let snapshot = &self.signal_snapshot;
         match self.tier {
@@ -148,29 +121,21 @@ impl TriggerSignalSnapshot {
     }
 }
 
-/// Result of evaluating feedback heuristics.
 #[derive(Debug, Clone)]
 pub struct FeedbackEvaluation {
     /// The trigger condition if criteria were met
     pub trigger_condition: Option<TriggerCondition>,
     /// Whether feedback should actually be requested (after sampling)
     pub should_request: bool,
-    /// Human-readable reason for the decision
     pub reason: String,
 }
 
-/// Feedback heuristics evaluator.
-///
-/// Evaluates session signals against tiered criteria to determine
-/// when to request user feedback.
 #[derive(Debug, Clone)]
 pub struct FeedbackHeuristics {
     /// Whether feedback collection is globally enabled
     enabled: bool,
 
-    /// Cooldown period between feedback requests (seconds)
     cooldown_seconds: u64,
-    /// Maximum feedback requests per session
     max_requests_per_session: u32,
 
     /// Tier 1 configuration
@@ -209,11 +174,9 @@ pub struct FeedbackHeuristics {
     tier3_prompt: String,
     tier3_max_triggers: u32,
 
-    /// Per-tier trigger counts (replaces the old HashSet<FeedbackTier> dedup).
-    /// A tier can trigger up to its configured max_triggers times (0 = unlimited).
+    /// A tier can trigger up to its configured max_triggers times (0 means unlimited).
     trigger_counts: std::collections::HashMap<FeedbackTier, u32>,
 
-    /// Number of feedback requests sent this session
     requests_sent: u32,
     /// Time of the last feedback request (for cooldown tracking)
     last_request_time: Option<std::time::Instant>,
@@ -228,7 +191,6 @@ impl Default for FeedbackHeuristics {
 }
 
 impl FeedbackHeuristics {
-    /// Create a new heuristics evaluator with default thresholds.
     pub fn new() -> Self {
         Self {
             enabled: true,
@@ -286,61 +248,6 @@ impl FeedbackHeuristics {
         }
     }
 
-    /// Create a heuristics evaluator from a remote feedback-heuristics config.
-    pub fn from_config(config: &FeedbackHeuristicsConfig) -> Self {
-        use prod_mc_cli_chat_proxy_types::feedback_types::parse_feedback_mode_str;
-
-        Self {
-            enabled: config.enabled,
-
-            // Global limits
-            cooldown_seconds: config.cooldown_seconds as u64,
-            max_requests_per_session: config.max_requests_per_session as u32,
-
-            // Tier 1
-            tier1_enabled: config.tier1_enabled,
-            tier1_sample_rate: config.tier1_sample_rate,
-            tier1_min_turns: config.tier1_min_turns as u32,
-            tier1_min_tool_calls: config.tier1_min_tool_calls as u32,
-            tier1_min_compactions: config.tier1_min_compactions as u32,
-            tier1_no_cancellations: config.tier1_no_cancellations,
-            tier1_feedback_mode: parse_feedback_mode_str(&config.tier1_feedback_mode),
-            tier1_dismissible: config.tier1_dismissible,
-            tier1_prompt: config.tier1_prompt.clone(),
-            tier1_max_triggers: config.tier1_max_triggers as u32,
-
-            // Tier 2
-            tier2_enabled: config.tier2_enabled,
-            tier2_sample_rate: config.tier2_sample_rate,
-            tier2_min_turns: config.tier2_min_turns as u32,
-            tier2_min_tool_calls: config.tier2_min_tool_calls as u32,
-            tier2_min_compactions: config.tier2_min_compactions as u32,
-            tier2_min_errors: config.tier2_min_errors as u32,
-            tier2_feedback_mode: parse_feedback_mode_str(&config.tier2_feedback_mode),
-            tier2_dismissible: config.tier2_dismissible,
-            tier2_prompt: config.tier2_prompt.clone(),
-            tier2_max_triggers: config.tier2_max_triggers as u32,
-
-            // Tier 3
-            tier3_enabled: config.tier3_enabled,
-            tier3_sample_rate: config.tier3_sample_rate,
-            tier3_min_turns: config.tier3_min_turns as u32,
-            tier3_requires_cancellation: config.tier3_requires_cancellation,
-            tier3_requires_revert: config.tier3_requires_revert,
-            tier3_requires_recovery: config.tier3_requires_recovery,
-            tier3_feedback_mode: parse_feedback_mode_str(&config.tier3_feedback_mode),
-            tier3_dismissible: config.tier3_dismissible,
-            tier3_prompt: config.tier3_prompt.clone(),
-            tier3_max_triggers: config.tier3_max_triggers as u32,
-
-            trigger_counts: std::collections::HashMap::new(),
-            requests_sent: 0,
-            last_request_time: None,
-            last_request_at: None,
-        }
-    }
-
-    /// Update the heuristics configuration from a loaded config.
     /// Preserves the triggered_tiers state and request tracking.
     pub fn update_config(&mut self, config: &FeedbackHeuristicsConfig) {
         use prod_mc_cli_chat_proxy_types::feedback_types::parse_feedback_mode_str;
@@ -388,12 +295,10 @@ impl FeedbackHeuristics {
         self.tier3_max_triggers = config.tier3_max_triggers as u32;
     }
 
-    /// Check if feedback collection is globally enabled.
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
-    /// Get the sample rate for a tier.
     pub fn sample_rate(&self, tier: FeedbackTier) -> f64 {
         match tier {
             FeedbackTier::Tier1 => self.tier1_sample_rate,
@@ -402,7 +307,6 @@ impl FeedbackHeuristics {
         }
     }
 
-    /// Get the feedback mode for a tier.
     pub(crate) fn feedback_mode(&self, tier: FeedbackTier) -> FeedbackMode {
         match tier {
             FeedbackTier::Tier1 => self.tier1_feedback_mode,
@@ -411,7 +315,6 @@ impl FeedbackHeuristics {
         }
     }
 
-    /// Get whether feedback requests for a tier are dismissible.
     pub fn dismissible(&self, tier: FeedbackTier) -> bool {
         match tier {
             FeedbackTier::Tier1 => self.tier1_dismissible,
@@ -420,7 +323,6 @@ impl FeedbackHeuristics {
         }
     }
 
-    /// Get the prompt text for a tier.
     pub fn prompt(&self, tier: FeedbackTier) -> &str {
         match tier {
             FeedbackTier::Tier1 => &self.tier1_prompt,
@@ -429,12 +331,8 @@ impl FeedbackHeuristics {
         }
     }
 
-    /// Evaluate session signals and determine if feedback should be requested.
-    ///
-    /// Returns the evaluation result including whether feedback should be requested
-    /// and the reason. Uses probabilistic sampling based on tier rates.
+    /// Uses probabilistic sampling based on tier rates.
     pub fn evaluate(&mut self, signals: &SessionSignals) -> FeedbackEvaluation {
-        // Check if feedback is globally enabled
         if !self.enabled {
             return FeedbackEvaluation {
                 trigger_condition: None,
@@ -443,7 +341,6 @@ impl FeedbackHeuristics {
             };
         }
 
-        // Check if we've reached the max requests for this session
         if self.requests_sent >= self.max_requests_per_session {
             return FeedbackEvaluation {
                 trigger_condition: None,
@@ -455,7 +352,6 @@ impl FeedbackHeuristics {
             };
         }
 
-        // Check cooldown period
         if let Some(last_time) = self.last_request_time {
             let elapsed = last_time.elapsed();
             let cooldown = std::time::Duration::from_secs(self.cooldown_seconds);
@@ -492,24 +388,14 @@ impl FeedbackHeuristics {
         }
     }
 
-    /// Check if a specific tier should trigger (without sampling).
-    /// Used for testing or when sampling is done externally.
-    pub fn check_tier(&self, tier: FeedbackTier, signals: &SessionSignals) -> bool {
+    /// Tier criteria without the sampling step.
+    #[cfg(test)]
+    fn check_tier(&self, tier: FeedbackTier, signals: &SessionSignals) -> bool {
         match tier {
             FeedbackTier::Tier1 => self.check_tier1(signals).is_some(),
             FeedbackTier::Tier2 => self.check_tier2(signals).is_some(),
             FeedbackTier::Tier3 => self.check_tier3(signals).is_some(),
         }
-    }
-
-    /// Mark a tier as triggered (increments trigger count).
-    pub fn mark_triggered(&mut self, tier: FeedbackTier) {
-        *self.trigger_counts.entry(tier).or_insert(0) += 1;
-    }
-
-    /// Reset trigger counts (e.g., for a new session).
-    pub fn reset(&mut self) {
-        self.trigger_counts.clear();
     }
 
     fn tier_exhausted(&self, tier: FeedbackTier) -> bool {
@@ -522,7 +408,6 @@ impl FeedbackHeuristics {
     }
 
     fn check_tier1(&self, signals: &SessionSignals) -> Option<TriggerCondition> {
-        // Check if tier is enabled
         if !self.tier1_enabled {
             return None;
         }
@@ -532,10 +417,6 @@ impl FeedbackHeuristics {
         }
 
         // Tier 1: Sustained engagement without major issues
-        // - At least N turns
-        // - At least M tool calls
-        // - At least K compactions (shows extended use)
-        // - No recent cancellations (if configured)
         let cancellation_check = if self.tier1_no_cancellations {
             signals.cancellation_count == 0
         } else {
@@ -554,7 +435,6 @@ impl FeedbackHeuristics {
     }
 
     fn check_tier2(&self, signals: &SessionSignals) -> Option<TriggerCondition> {
-        // Check if tier is enabled
         if !self.tier2_enabled {
             return None;
         }
@@ -564,10 +444,6 @@ impl FeedbackHeuristics {
         }
 
         // Tier 2: Complex session with some friction but recovery
-        // - More turns than Tier 1
-        // - More tool calls
-        // - Has encountered errors but continued
-        // - Multiple compactions
         if signals.turn_count >= self.tier2_min_turns
             && signals.tool_call_count >= self.tier2_min_tool_calls
             && signals.compaction_count >= self.tier2_min_compactions
@@ -580,7 +456,6 @@ impl FeedbackHeuristics {
     }
 
     fn check_tier3(&self, signals: &SessionSignals) -> Option<TriggerCondition> {
-        // Check if tier is enabled
         if !self.tier3_enabled {
             return None;
         }
@@ -590,15 +465,10 @@ impl FeedbackHeuristics {
         }
 
         // Tier 3: Recovery from significant issues
-        // - Extended session
-        // - Had cancellations OR reverts (shows friction then recovery)
-        // - Still using the session (didn't abandon)
         let had_cancellation = signals.cancellation_count > 0;
         let had_revert = signals.has_reverted;
 
-        // Determine if recovery signal is present based on config
         let has_recovery_signal = if self.tier3_requires_recovery {
-            // Any recovery signal (cancellation OR revert) satisfies the requirement
             had_cancellation || had_revert
         } else {
             // Check specific requirements
@@ -620,7 +490,6 @@ impl FeedbackHeuristics {
 
     fn maybe_request(&mut self, condition: TriggerCondition) -> FeedbackEvaluation {
         let tier = condition.tier;
-        // Perform probabilistic sampling using configured sample rate
         let should_sample = probabilistic_sample(self.sample_rate(tier));
 
         if should_sample {
@@ -652,7 +521,6 @@ impl FeedbackHeuristics {
         self.requests_sent
     }
 
-    /// Wall-clock timestamp of the last feedback request sent this session.
     pub(crate) fn last_request_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         self.last_request_at
     }
@@ -662,43 +530,23 @@ impl FeedbackHeuristics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeedbackRequest {
-    /// Unique ID for this feedback request
     pub request_id: String,
-    /// The session this request is for
     pub session_id: String,
-    /// The tier that triggered this request
     pub tier: FeedbackTier,
-    /// What kind of feedback to collect
     pub feedback_mode: FeedbackMode,
     pub stars: bool,
     pub thumbs: bool,
     pub text: bool,
-    /// Human-readable prompt to show the user
     pub prompt: String,
-    /// Whether this is a non-intrusive/dismissible request
     pub dismissible: bool,
     /// Trigger type identifier (e.g., "tier1_engagement", "tier2_complex_recovery")
     pub trigger_type: String,
-    /// The specific condition that triggered this request (includes actual signal values)
     pub trigger_condition: TriggerCondition,
-    /// Additional context for the client
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<serde_json::Value>,
 }
 
 impl FeedbackRequest {
-    /// Create a new feedback request with the signals that triggered it.
-    pub fn new(session_id: String, trigger_condition: TriggerCondition) -> Self {
-        Self::with_mode(
-            session_id,
-            trigger_condition,
-            FeedbackMode::Thumbs,
-            true,
-            None,
-        )
-    }
-
-    /// Create a new feedback request with a specific feedback mode.
     pub fn with_mode(
         session_id: String,
         trigger_condition: TriggerCondition,
@@ -747,12 +595,6 @@ impl FeedbackRequest {
             text,
         }
     }
-
-    /// Add context to the feedback request.
-    pub fn with_context(mut self, context: serde_json::Value) -> Self {
-        self.context = Some(context);
-        self
-    }
 }
 
 #[cfg(test)]
@@ -782,15 +624,15 @@ mod tests {
     fn test_tier1_criteria() {
         let heuristics = FeedbackHeuristics::new();
 
-        // Below threshold - should not trigger
+        // Below threshold
         let signals = make_signals(5, 3, 1, 0, 0);
         assert!(!heuristics.check_tier(FeedbackTier::Tier1, &signals));
 
-        // Meets threshold - should trigger (if no cancellations)
+        // Meets threshold, no cancellations
         let signals = make_signals(10, 5, 2, 0, 0);
         assert!(heuristics.check_tier(FeedbackTier::Tier1, &signals));
 
-        // Has cancellations - should not trigger Tier 1
+        // Has cancellations
         let signals = make_signals(10, 5, 2, 0, 1);
         assert!(!heuristics.check_tier(FeedbackTier::Tier1, &signals));
     }
@@ -799,15 +641,15 @@ mod tests {
     fn test_tier2_criteria() {
         let heuristics = FeedbackHeuristics::new();
 
-        // Below threshold - should not trigger
+        // Below threshold
         let signals = make_signals(10, 5, 2, 0, 0);
         assert!(!heuristics.check_tier(FeedbackTier::Tier2, &signals));
 
-        // Meets threshold - should trigger (requires errors)
+        // Meets threshold with the required error
         let signals = make_signals(15, 10, 3, 1, 0);
         assert!(heuristics.check_tier(FeedbackTier::Tier2, &signals));
 
-        // No errors - should not trigger
+        // No errors
         let signals = make_signals(15, 10, 3, 0, 0);
         assert!(!heuristics.check_tier(FeedbackTier::Tier2, &signals));
     }
@@ -816,20 +658,20 @@ mod tests {
     fn test_tier3_criteria() {
         let heuristics = FeedbackHeuristics::new();
 
-        // Below turn threshold - should not trigger
+        // Below the turn threshold
         let signals = make_signals(15, 10, 3, 1, 1);
         assert!(!heuristics.check_tier(FeedbackTier::Tier3, &signals));
 
-        // Meets threshold with cancellation - should trigger
+        // Meets threshold with cancellation
         let signals = make_signals(20, 10, 3, 1, 1);
         assert!(heuristics.check_tier(FeedbackTier::Tier3, &signals));
 
-        // Meets threshold with revert - should trigger
+        // Meets threshold with revert
         let mut signals = make_signals(20, 10, 3, 1, 0);
         signals.has_reverted = true;
         assert!(heuristics.check_tier(FeedbackTier::Tier3, &signals));
 
-        // No recovery signal - should not trigger
+        // No recovery signal
         let signals = make_signals(20, 10, 3, 1, 0);
         assert!(!heuristics.check_tier(FeedbackTier::Tier3, &signals));
     }
@@ -840,7 +682,7 @@ mod tests {
 
         let signals = make_signals(10, 5, 2, 0, 0);
 
-        // First evaluation should find Tier 1
+        // First evaluation finds Tier 1
         let eval = heuristics.evaluate(&signals);
         assert!(eval.trigger_condition.is_some());
         assert_eq!(
@@ -848,10 +690,13 @@ mod tests {
             FeedbackTier::Tier1
         );
 
-        // Mark as triggered (simulating that we sent the request)
-        heuristics.mark_triggered(FeedbackTier::Tier1);
+        // Simulate that the request was sent
+        *heuristics
+            .trigger_counts
+            .entry(FeedbackTier::Tier1)
+            .or_insert(0) += 1;
 
-        // Second evaluation with same signals should not trigger Tier 1 again
+        // Second evaluation with the same signals does not trigger Tier 1 again
         let eval = heuristics.evaluate(&signals);
         assert!(
             eval.trigger_condition.is_none()
@@ -863,13 +708,18 @@ mod tests {
     fn test_feedback_request_creation() {
         let signals = make_signals(10, 5, 2, 0, 0);
         let condition = TriggerCondition::tier1(&signals);
-        let request = FeedbackRequest::new("session-123".to_string(), condition);
+        let request = FeedbackRequest::with_mode(
+            "session-123".to_string(),
+            condition,
+            FeedbackMode::Thumbs,
+            true,
+            None,
+        );
 
         assert!(!request.request_id.is_empty());
         assert_eq!(request.session_id, "session-123");
         assert_eq!(request.tier, FeedbackTier::Tier1);
         assert!(request.dismissible);
-        assert!(request.prompt.contains("productively"));
         assert_eq!(request.trigger_type, "tier1_engagement");
         assert_eq!(
             request.trigger_condition.condition,
@@ -891,7 +741,13 @@ mod tests {
         // Test Tier2
         let signals2 = make_signals(15, 10, 3, 1, 0);
         let condition2 = TriggerCondition::tier2(&signals2);
-        let request2 = FeedbackRequest::new("session-456".to_string(), condition2);
+        let request2 = FeedbackRequest::with_mode(
+            "session-456".to_string(),
+            condition2,
+            FeedbackMode::Thumbs,
+            true,
+            None,
+        );
         assert_eq!(request2.trigger_type, "tier2_complex_recovery");
         assert_eq!(
             request2.trigger_condition.condition,
@@ -902,16 +758,15 @@ mod tests {
         let mut signals3 = make_signals(20, 10, 3, 1, 2);
         signals3.has_reverted = true;
         let condition3 = TriggerCondition::tier3(&signals3, true, true);
-        let request3 = FeedbackRequest::new("session-789".to_string(), condition3);
+        let request3 = FeedbackRequest::with_mode(
+            "session-789".to_string(),
+            condition3,
+            FeedbackMode::Thumbs,
+            true,
+            None,
+        );
         assert_eq!(request3.trigger_type, "tier3_friction_recovery");
         assert!(request3.trigger_condition.condition.contains("turns >= 20"));
-    }
-
-    #[test]
-    fn test_sample_rate_values() {
-        assert_eq!(FeedbackTier::Tier1.sample_rate(), 0.0005);
-        assert_eq!(FeedbackTier::Tier2.sample_rate(), 0.0002);
-        assert_eq!(FeedbackTier::Tier3.sample_rate(), 0.0001);
     }
 
     #[test]
@@ -967,7 +822,7 @@ mod tests {
 
         let signals = make_signals(5, 3, 1, 0, 0);
 
-        // With max_triggers=0 (unlimited), tier should fire on every evaluation
+        // With max_triggers=0 (unlimited), the tier fires on every evaluation
         for i in 0..5 {
             let eval = h.evaluate(&signals);
             assert!(
@@ -1000,12 +855,11 @@ mod tests {
 
         let signals = make_signals(5, 3, 1, 0, 0);
 
-        // Should fire exactly 3 times
+        // The tier fires exactly 3 times
         for i in 0..3 {
             let eval = h.evaluate(&signals);
             assert!(eval.should_request, "iteration {i}: should trigger");
         }
-        // 4th should be blocked
         let eval = h.evaluate(&signals);
         assert!(!eval.should_request, "4th trigger should be blocked");
     }
@@ -1063,7 +917,7 @@ mod tests {
 
         let signals = make_signals(10, 5, 2, 1, 0);
 
-        // Tier 3 should exhaust after 1 trigger (evaluate checks tiers in 3→2→1 order)
+        // Tier 3 exhausts after 1 trigger (evaluate checks tier 3 first, then 2, then 1)
         let eval = h.evaluate(&signals);
         assert!(eval.should_request);
         assert_eq!(
@@ -1071,7 +925,7 @@ mod tests {
             FeedbackTier::Tier3
         );
 
-        // Tier 2 should fire next (tier3 exhausted)
+        // Tier 2 fires next (tier3 exhausted)
         let eval = h.evaluate(&signals);
         assert!(eval.should_request);
         assert_eq!(
@@ -1087,7 +941,7 @@ mod tests {
             FeedbackTier::Tier2
         );
 
-        // Tier 2 exhausted → falls through to tier 1 (unlimited)
+        // Tier 2 is exhausted, so evaluation falls through to tier 1 (unlimited)
         let eval = h.evaluate(&signals);
         assert!(eval.should_request);
         assert_eq!(

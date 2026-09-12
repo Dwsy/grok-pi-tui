@@ -1,8 +1,7 @@
 //! Dropdown renderer for shell command completion suggestions.
 //!
-//! Mirrors `slash_dropdown.rs` layout: aligned label column, description,
-//! selection highlight, mouse hover, and scrollbar when items exceed
-//! `MAX_VISIBLE_ROWS`.
+//! Mirrors the `slash_dropdown.rs` layout: aligned label column, description, selection highlight, and mouse hover.
+//! A scrollbar appears when items exceed `MAX_VISIBLE_ROWS`.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -16,13 +15,11 @@ use crate::render::scrollbar::render_scrollbar_styled;
 use crate::theme::Theme;
 use crate::views::suggestion_controller::{CompletionDropdownState, CompletionItemParsed};
 
-/// Maximum visible rows in the completion dropdown.
 pub const MAX_VISIBLE_ROWS: u16 = 6;
 
 /// Hard cap on label column width.
 const LABEL_CAP: usize = 40;
 
-/// Gap between label and description columns.
 const LABEL_DESC_GAP: usize = 2;
 
 /// Prefix width (`"❯ "` or `"  "`).
@@ -62,7 +59,7 @@ fn compute_label_column_w(items: &[CompletionItemParsed], content_w: usize) -> u
     max_w.min(budget)
 }
 
-/// Render completion dropdown items into `area` (no borders — caller draws chrome).
+/// Render completion dropdown items into `area`; the caller draws the borders.
 pub fn render_dropdown(
     buf: &mut Buffer,
     area: Rect,
@@ -122,6 +119,14 @@ pub fn render_dropdown(
         };
         buf.set_style(row_rect, Style::default().bg(row_bg));
         buf.set_line_safe(area.x, y, &line, row_w as u16);
+        // Terminal theme (Reset bands): reverse video; no-op on RGB themes.
+        if crate::views::modal_window::embedded_row_style(theme, is_selected).is_none() {
+            if is_selected {
+                buf.set_style(row_rect, theme.selection_overlay());
+            } else if is_hovered {
+                buf.set_style(row_rect, theme.hover_overlay());
+            }
+        }
     }
 
     if needs_scrollbar {
@@ -165,12 +170,16 @@ fn build_item_line(
     };
     let embed = crate::views::modal_window::embedded_row_style(theme, is_selected);
     let primary_fg = embed.map_or(theme.text_primary, |e| e.fg(theme.text_primary));
-    let desc_fg = embed.map_or(theme.gray, |e| e.fg(theme.gray));
     let normal = Style::default()
         .fg(primary_fg)
         .bg(row_bg)
         .add_modifier(bold);
-    let desc_style = Style::default().fg(desc_fg).bg(row_bg);
+    // muted(): DIM on the terminal theme, where `gray` is Reset and the
+    // description would render as heavy as the label.
+    let desc_style = match embed {
+        Some(e) => Style::default().fg(e.fg(theme.gray)).bg(row_bg),
+        None => theme.muted().bg(row_bg),
+    };
     let bg_style = Style::default().bg(row_bg);
 
     let prefix = if is_selected {
@@ -209,6 +218,28 @@ fn build_item_line(
 mod tests {
     use super::*;
     use crate::views::suggestion_controller::SuggestionSource;
+
+    /// Menu descriptions render via `muted()`: DIM on the terminal theme
+    /// (where `gray` is Reset and the description would be as heavy as the
+    /// label), plain gray fg on RGB themes.
+    #[test]
+    fn description_is_muted_on_terminal_theme() {
+        let item = make_item("theme", "Switch the color theme", "/theme");
+
+        let theme = Theme::terminal();
+        let line = build_item_line(&item, false, 10, 60, theme.bg_light, &theme);
+        let desc = line.spans.last().unwrap().style;
+        assert!(
+            desc.add_modifier.contains(Modifier::DIM),
+            "terminal theme description must be dim, got {desc:?}"
+        );
+
+        let theme = Theme::groknight();
+        let line = build_item_line(&item, false, 10, 60, theme.bg_light, &theme);
+        let desc = line.spans.last().unwrap().style;
+        assert_eq!(desc.fg, Some(theme.gray), "RGB keeps the gray fg");
+        assert!(!desc.add_modifier.contains(Modifier::DIM));
+    }
 
     fn make_item(display: &str, desc: &str, insert: &str) -> CompletionItemParsed {
         CompletionItemParsed {
@@ -269,7 +300,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert_eq!(dropdown_height(&state), 3); // 1 separator + 2 items
+        assert_eq!(dropdown_height(&state), 3); // One separator row plus two item rows
     }
 
     #[test]
@@ -348,8 +379,7 @@ mod tests {
         assert!(state.accept().is_none());
     }
 
-    /// `accept` is independent of the `open` render flag: the
-    /// single-candidate insta-accept consumes an item that was never shown.
+    /// `accept` is independent of the `open` render flag: a single candidate is accepted instantly, consuming an item that was never shown.
     #[test]
     fn accept_works_on_closed_dropdown_with_items() {
         let mut state = CompletionDropdownState {
@@ -404,10 +434,10 @@ mod tests {
         assert!(!state.open);
         assert_eq!(state.selected, 0);
         assert!(state.hovered.is_none());
-        assert_eq!(state.generation, 5); // generation preserved
+        assert_eq!(state.generation, 5);
         assert!(state.items.is_empty());
-        // Anchor left in place (inert without items); the next landing
-        // overwrites it atomically with the new items.
+        // `request_text` and `request_cursor` stay; they are inert without items
+        // The next batch of results overwrites them atomically with the new items
         assert_eq!(state.request_text, "a");
         assert_eq!(state.request_cursor, 1);
     }

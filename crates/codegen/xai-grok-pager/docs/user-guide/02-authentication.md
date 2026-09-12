@@ -300,6 +300,14 @@ During a session, the active method handles all mid-session refreshes.
 
 ---
 
+## Grove Git credentials (not this page's `grok login`)
+
+Everything on this page authenticates Grok to the model API. Git remotes behind a Grove mount -- what [`grok clone`](27-grok-clone.md) fetches from -- are a separate world, owned by the Grove daemon.
+
+**`~/.grok/auth.json` is never read for Git.** `grok login` does not create a Git credential and `grok logout` does not revoke one; the daemon builds its own credential cell from `auth_mode` in Grove config. Those credentials are managed with `grove status` and `grove reload-credentials` -- see [grok clone](27-grok-clone.md#authentication) for the failure classes and their next steps.
+
+---
+
 ## Related settings
 
 Coding-data sharing — **Coding data, retention, and training** in Settings,
@@ -315,7 +323,8 @@ On team accounts, only a team admin can change coding-data sharing.
 Team admins can also enable or disable Zero Data Retention (ZDR) for their team.
 See [How to enable ZDR](https://docs.x.ai/developers/faq/security#how-to-enable-zdr).
 When ZDR is on, coding-data sharing cannot be changed at all — the settings
-row shows `ZDR` in place of the value.
+row shows `ZDR` in place of the value. ZDR does not turn off external OTEL
+or `user.email` — see [ZDR and this stream](24-monitoring-usage.md#zdr-and-this-stream).
 
 See [Monitoring Usage](24-monitoring-usage.md#related-settings) and [Configuration](05-configuration.md#telemetry).
 

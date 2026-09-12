@@ -1,28 +1,21 @@
 //! Roster types for the multi-client FleetView dashboard.
 //!
-//! The roster is a list
-//! of dashboard-sized summaries of every session the leader hosts (resident
-//! actors) plus recently-touched on-disk (`Dormant`) sessions. Clients read it
-//! two ways:
+//! The roster is a list of dashboard-sized summaries of every session the leader hosts (resident actors).
+//! It also carries recently-touched on-disk (`Dormant`) sessions.
+//! Clients read it two ways:
 //!
-//!   - request/response `x.ai/sessions/list` → `{ "sessions": [RosterEntry, …] }`
-//!   - broadcast notification `x.ai/sessions/changed` →
-//!     `{ "upserted": [RosterEntry, …], "removed": ["sess-abc", …] }`
+//!   - request/response `x.ai/sessions/list` returns `{ "sessions": [RosterEntry, …] }`
+//!   - broadcast notification `x.ai/sessions/changed` carries `{ "upserted": [RosterEntry, …], "removed": ["sess-abc", …] }`
 //!
-//! The wire shape is intentionally small and current-state only — no event
-//! fold or materialized snapshot is required (the snapshot is deferred).
+//! The wire shape is intentionally small and current-state only; no event fold or materialized snapshot is required (the snapshot is deferred).
 
 use serde::{Deserialize, Serialize};
 use xai_grok_sampling_types::ReasoningEffort;
 
 use crate::session::persistence::Summary;
 
-/// Coarse activity of a session as rendered in the dashboard's status column.
-///
-/// Mirrors the design's `SessionActivity` at dashboard granularity. A full
-/// background-work breakdown (bg tasks / monitors / scheduler / subagents)
-/// lands with a richer `SessionActivity`; the dashboard only needs this
-/// coarse signal to pick a status glyph.
+/// Coarse activity of a session as rendered in the dashboard's status column. Mirrors the design's `SessionActivity` at dashboard granularity.
+/// A full background-work breakdown (bg tasks / monitors / scheduler / subagents) lands with a richer `SessionActivity`. The dashboard only needs this coarse signal to pick a status glyph.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RosterActivity {
@@ -40,8 +33,8 @@ pub enum RosterActivity {
     Dead,
 }
 
-/// Where the session lives. Only `Local` is produced today; `Remote` is
-/// reserved for cross-machine roster aggregation.
+/// Where the session lives.
+/// Only `Local` is produced today; `Remote` is reserved for cross-machine roster aggregation.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum RosterOrigin {
@@ -61,16 +54,15 @@ pub struct RosterEntry {
     pub is_worktree: bool,
     #[serde(default)]
     pub model_id: Option<String>,
-    /// Per-session reasoning effort for `model_id`. Carried alongside the model
-    /// so clients can render the session's effort in the roster without a
-    /// separate `model_state` fetch. `None` means "use the model/global
-    /// default" (or the session predates per-session effort persistence).
+    /// Per-session reasoning effort for `model_id`.
+    /// Carried alongside the model so clients can render the session's effort in the roster without a separate `model_state` fetch.
+    /// `None` means "use the model/global default" (or the session predates per-session effort persistence).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
     pub yolo: bool,
     pub activity: RosterActivity,
-    /// Ultra-short summary of the session's most recent turn, for the row's
-    /// secondary line. From `summary.json`; absent until the first turn ends.
+    /// Ultra-short summary of the session's most recent turn, for the row's secondary line.
+    /// From `summary.json`; absent until the first turn ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_turn_summary: Option<String>,
     /// `true` while a resident actor hosts the session (vs. read from disk).
@@ -99,20 +91,22 @@ pub struct RosterChanged {
 pub const SESSIONS_LIST_METHOD: &str = "x.ai/sessions/list";
 pub const SESSIONS_CHANGED_METHOD: &str = "x.ai/sessions/changed";
 
-/// Merge live `resident` rows with on-disk `summaries` into the sorted roster.
-/// Pure, so it is unit-testable without disk or a live actor.
-///
-/// Resident rows own the live state but carry no title or last-active time, so
-/// each adopts those from its summary — except a `Working` row keeps its "now"
-/// timestamp. Summaries with no resident row become `Dormant`; keying by id
-/// dedups them. Hidden summaries are excluded.
+/// Merge live `resident` rows with on-disk `summaries` into the sorted roster. Pure, so it is unit-testable without disk or a live actor.
+/// Resident rows own the live state but carry no title or last-active time, so each adopts those from its summary. A `Working` row keeps its "now" timestamp instead.
+/// Summaries with no resident row become `Dormant`; keying by id dedups them. Hidden and headless summaries are excluded, including resident rows whose persisted summary is headless.
 pub(crate) fn merge_roster(
     mut entries: Vec<RosterEntry>,
     summaries: Vec<Summary>,
 ) -> Vec<RosterEntry> {
+    let excluded_ids: std::collections::HashSet<String> = summaries
+        .iter()
+        .filter(|summary| summary.is_hidden() || summary.is_headless())
+        .map(|summary| summary.info.id.0.to_string())
+        .collect();
+    entries.retain(|entry| !excluded_ids.contains(&entry.session_id));
     let mut by_id: std::collections::HashMap<String, Summary> = summaries
         .into_iter()
-        .filter(|s| !s.is_hidden())
+        .filter(|summary| !excluded_ids.contains(summary.info.id.0.as_ref()))
         .map(|s| (s.info.id.0.to_string(), s))
         .collect();
 
@@ -124,9 +118,8 @@ pub(crate) fn merge_roster(
         if let Some(title) = summary.display_title_opt() {
             entry.title = Some(title);
         }
-        // Copied through even when `None`: disk is authoritative, so a
-        // rewind-cleared summary.json also clears a resident row whose
-        // cache still holds the old value.
+        // Copied through even when `None`: disk is authoritative
+        // A rewind-cleared summary.json also clears a resident row whose cache still holds the old value
         entry.last_turn_summary = summary.last_turn_summary.clone();
         if entry.activity != RosterActivity::Working {
             entry.last_change_unix_ms = summary.last_change_unix_ms();
@@ -279,6 +272,17 @@ mod merge_roster_tests {
     }
 
     #[test]
+    fn headless_summaries_exclude_dormant_and_resident_rows() {
+        let mut headless = summary("oneshot", Some("grok -p run"), 5_000);
+        headless.session_kind = Some("headless".into());
+        let out = merge_roster(
+            vec![resident("oneshot", RosterActivity::Working, 9_000)],
+            vec![headless],
+        );
+        assert!(out.is_empty(), "headless one-shots make no roster rows");
+    }
+
+    #[test]
     fn dormant_row_carries_persisted_reasoning_effort() {
         let mut s = summary("dorm", Some("Dormant"), 1_000);
         s.reasoning_effort = Some(ReasoningEffort::Xhigh);
@@ -288,8 +292,7 @@ mod merge_roster_tests {
 
     #[test]
     fn resident_effort_is_taken_from_the_live_row_not_the_summary() {
-        // The live handle is authoritative for a resident session, so the
-        // resident row's effort must survive the summary backfill.
+        // The live handle is authoritative for a resident session, so the resident row's effort must survive the summary backfill
         let mut live = resident("a", RosterActivity::Idle, 9_000);
         live.reasoning_effort = Some(ReasoningEffort::High);
         let mut s = summary("a", Some("Title"), 1_234);
@@ -323,9 +326,8 @@ mod merge_roster_tests {
         assert_eq!(by_id("c").last_turn_summary, None);
     }
 
-    /// Disk is authoritative: a rewind-cleared `summary.json` clears a
-    /// resident row whose delta cache still carries the old value
-    /// (self-healing poll).
+    /// Disk is authoritative: a rewind-cleared `summary.json` clears a resident row whose delta cache still carries the old value.
+    /// The poll is self-healing.
     #[test]
     fn last_turn_summary_cleared_disk_clears_resident_row() {
         let mut entry = resident("a", RosterActivity::Idle, 9_000);

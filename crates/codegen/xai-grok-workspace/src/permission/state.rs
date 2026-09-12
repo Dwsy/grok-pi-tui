@@ -15,28 +15,25 @@ pub struct PermissionState {
     pub allow_bash_execute: bool,
     pub allowed_bash_commands: HashSet<String>,
     pub disallowed_bash_commands: HashSet<String>,
-    /// Glob patterns the user authored via the "Always allow" pattern editor
-    /// (e.g. `gh api repos/owner/*`). Matched with glob semantics, unlike the
-    /// literal-prefix [`Self::allowed_bash_commands`]; kept separate so a command
-    /// grant that happens to contain shell metacharacters is never a wildcard.
+    /// Glob patterns the user authored via the "Always allow" pattern editor (e.g. `gh api repos/owner/*`).
+    /// Matched as globs, unlike the literal-prefix [`Self::allowed_bash_commands`].
+    /// Kept separate so a command grant that happens to contain shell metacharacters is never a wildcard.
     pub allowed_bash_globs: HashSet<String>,
-    /// Domains the user has approved for `web_fetch`. Persisted per project
-    /// like every other grant in this store (not session-scoped).
+    /// Domains the user has approved for `web_fetch`.
+    /// Persisted per project like every other grant in this store (not session-scoped).
     pub allowed_web_fetch_domains: HashSet<String>,
-    /// Exact MCP tool names (e.g. `"grok_com_notion__notion-fetch"`)
-    /// the user has granted "always allow" for. Lookup is exact.
+    /// Exact MCP tool names (e.g. `"grok_com_notion__notion-fetch"`) the user has granted "always allow" for.
+    /// Lookup is exact.
     pub allowed_mcp_tools: HashSet<String>,
-    /// Server components of valid qualified MCP IDs (e.g. `"grok_com_notion"`)
-    /// for which the user has granted "always allow" to every tool. Lookup
-    /// validates and parses the complete qualified ID before matching.
+    /// Server components of valid qualified MCP IDs (e.g. `"grok_com_notion"`) for which the user has granted "always allow" to every tool.
+    /// Lookup validates and parses the complete qualified ID before matching.
     pub allowed_mcp_servers: HashSet<String>,
-    /// Exact MCP tool names the user has denied with "never allow". Checked
-    /// before every MCP grant (deny wins). Always tool-scoped — there is
-    /// deliberately no server-scope deny.
+    /// Exact MCP tool names the user has denied with "never allow".
+    /// Checked before every MCP grant (deny wins).
+    /// Always tool-scoped; there is deliberately no server-scope deny.
     pub disallowed_mcp_tools: HashSet<String>,
-    /// Host keys the user has denied for `web_fetch` (lowercased, `www.` kept
-    /// — never collapsed to a parent domain). Checked before every web-fetch
-    /// grant (deny wins); a deny also covers subdomains of the entry.
+    /// Host keys the user has denied for `web_fetch` (lowercased, `www.` kept, never collapsed to a parent domain).
+    /// Checked before every web-fetch grant (deny wins); a deny also covers subdomains of the entry.
     pub disallowed_web_fetch_domains: HashSet<String>,
     /// Version proving server-wide grants were minted from validated qualified IDs.
     /// Missing or malformed markers are legacy; future integer versions are preserved.
@@ -81,20 +78,9 @@ impl Default for PermissionState {
 }
 
 impl PermissionState {
-    /// Union `other`'s grants/denies into `self`. Set-valued fields merge, and
-    /// so does `allow_bash_execute` (`|=`): it is a persisted blanket *grant*,
-    /// so it follows grant semantics — additive until an explicit reset.
-    /// Scalar policy fields keep `self`'s values (the in-memory session is
-    /// authoritative for them, and `edit_policy` is migrated to `Ask` at
-    /// manager startup regardless).
-    ///
-    /// Merging is deliberately additive in both directions: denies persist
-    /// like grants, so an accepted "never allow" holds repo-wide until an
-    /// explicit reset ([`replace_state_on_disk`], the non-merging path) —
-    /// nothing removed only in one session's memory can win a merge.
-    ///
-    /// Exhaustive destructure: adding a `PermissionState` field breaks this
-    /// fn until the merge decision for it is made explicitly.
+    /// Union `other`'s grants and denies into `self`. Sets merge, including `allow_bash_execute` (`|=`); scalars keep `self` (session-authoritative).
+    /// Denies persist like grants until [`replace_state_on_disk`]; a memory-only removal cannot win a merge. `edit_policy` is migrated to `Ask` at startup regardless.
+    /// Exhaustive destructure: a new `PermissionState` field must get an explicit merge decision.
     pub(crate) fn merge_grants_from(&mut self, other: PermissionState) {
         let PermissionState {
             edit_policy: _,
@@ -124,46 +110,34 @@ impl PermissionState {
     }
 }
 
-/// The directory that keys the persistent permission store. Grants accepted
-/// anywhere inside a git repository apply repo-wide; keying on the exact cwd
-/// would hide a grant accepted at the repo root from a session started in a
-/// subdirectory. Root discovery is [`RepoDirChain`] — the same resolver
-/// folder trust and project-config discovery use, so all three agree on
-/// where a project starts (including its home-directory exception: a
-/// dotfiles-style repo at `$HOME` keys per-cwd, not repo-wide).
-///
-/// Synchronous filesystem work (git discovery + canonicalize): call from the
-/// blocking pool via [`resolve_store_dirs`] on the async paths.
+/// Directory key for the persistent permission store: grants apply repo-wide, not per-cwd, except a `$HOME` dotfiles repo which keys per-cwd.
+/// Root discovery is [`RepoDirChain`], shared with folder trust and project-config so all three agree where a project starts.
+/// Synchronous filesystem work: call from the blocking pool via [`resolve_store_dirs`] on async paths.
 fn permission_scope_root(cwd: &AbsPathBuf) -> std::path::PathBuf {
     match xai_grok_agent::repo::RepoDirChain::resolve(cwd.as_path()).git_root {
-        // git2 workdirs can carry a trailing separator; re-collecting the
-        // components drops it so the encoded store key matches the plain
-        // spelling of the same directory.
+        // git2 workdirs can carry a trailing separator
+        // Re-collecting the components drops it so the encoded store key matches the plain spelling of the same directory
         Some(root) => root.components().collect(),
         None => cwd.as_path().to_path_buf(),
     }
 }
 
-/// Test-only; production resolves the scope root once in
-/// [`resolve_store_dirs`] and derives everything from it.
+/// Test-only; production resolves the scope root once in [`resolve_store_dirs`] and derives everything from it.
 #[cfg(test)]
 fn state_dir_for_cwd(cwd: &AbsPathBuf) -> std::path::PathBuf {
     xai_grok_config::sessions_cwd_dir(&permission_scope_root(cwd).to_string_lossy())
 }
 
-/// The pre-repo-root store location (exact-cwd keyed), when it differs from
-/// the pre-resolved repo-root store `dir`. Read-only migration source:
-/// grants saved by older builds in a subdirectory still load until the
-/// repo-root store exists, and the next persist carries them into it.
+/// The store location from before repo-root keying (keyed on the exact cwd), when it differs from the resolved repo-root store `dir`.
+/// Read-only migration source: grants saved by older builds in a subdirectory still load until the repo-root store exists.
+/// The next persist carries them into it.
 fn legacy_state_dir(cwd: &AbsPathBuf, dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let legacy = xai_grok_config::sessions_cwd_dir(cwd.as_str());
     (legacy != dir).then_some(legacy)
 }
 
-/// Both store locations for `cwd`, resolved once per call on the blocking
-/// pool: root discovery walks the filesystem and, on the persist path,
-/// `ensure` creates + chmods the sessions dir — none of it belongs on the
-/// async worker. Falls back to exact-cwd keying if the blocking task dies.
+/// Both store locations for `cwd`, resolved once on the blocking pool (discovery walks the filesystem; persist `ensure` creates and chmods).
+/// Falls back to exact-cwd keying if the blocking task dies.
 struct StoreDirs {
     dir: std::path::PathBuf,
     legacy_dir: Option<std::path::PathBuf>,
@@ -173,14 +147,12 @@ async fn resolve_store_dirs(cwd: &AbsPathBuf, ensure: bool) -> StoreDirs {
     let cwd = cwd.clone();
     let fallback_dir = xai_grok_config::sessions_cwd_dir(cwd.as_str());
     tokio::task::spawn_blocking(move || {
-        // Resolve the scope root ONCE: discovery walks the filesystem, and the
-        // store dir, its ensure fallback, and the legacy compare all derive
-        // from this single resolution (state_dir_for_cwd would re-resolve).
+        // Resolve the scope root ONCE: discovery walks the filesystem
+        // The store dir, its ensure fallback, and the legacy compare all derive from this single resolution
         let root = permission_scope_root(&cwd).to_string_lossy().into_owned();
         let dir = if ensure {
-            // Canonical creator: tighten the sessions root this write may
-            // create. Falls back to the computed path (persist_state_to_dir
-            // re-creates it owner-only) so a failed ensure still gets a write.
+            // Canonical creator: tighten the sessions root this write may create
+            // Falls back to the computed path (persist_state_to_dir re-creates it owner-only) so a failed ensure still gets a write
             xai_grok_config::ensure_sessions_cwd_dir(&root).unwrap_or_else(|e| {
                 tracing::warn!(?e, "failed ensuring sessions cwd dir for permission state");
                 xai_grok_config::sessions_cwd_dir(&root)
@@ -266,12 +238,11 @@ async fn load_state_from_dir(
         .unwrap_or_default()
 }
 
-/// Whether `dir` holds a store file this client's load would read: the
-/// per-client file or the shared fallback. Mirrors `load_state_from_dir`.
+/// Whether `dir` holds a store file this client's load would read: the per-client file or the shared fallback.
+/// Mirrors `load_state_from_dir`.
 async fn state_dir_has_store(dir: &std::path::Path, client_identifier: Option<&str>) -> bool {
-    // Fail closed: an IO error must count as "store present" — resolving it
-    // to absent would reopen the legacy fallback and could re-seed grants a
-    // reset cleared.
+    // Fail closed: an IO error must count as "store present"
+    // Resolving it to absent would reopen the legacy fallback and could re-seed grants a reset cleared
     let present =
         |p: std::path::PathBuf| async move { !matches!(tokio::fs::try_exists(p).await, Ok(false)) };
     if let Some(id) = client_identifier
@@ -282,10 +253,8 @@ async fn state_dir_has_store(dir: &std::path::Path, client_identifier: Option<&s
     present(state_file_path(dir, None)).await
 }
 
-/// Load with legacy fallback — a fallback seed, never a merge: the exact-cwd
-/// legacy store is consulted only while no scope-root store exists. Any root
-/// write (a new grant or a reset) supersedes every legacy file, so a reset
-/// cannot be undone by a stale legacy file in another subdirectory.
+/// Load with legacy fallback, a fallback seed, never a merge: the exact-cwd legacy store is consulted only while no scope-root store exists.
+/// Any root write (a new grant or a reset) supersedes every legacy file, so a reset cannot be undone by a stale legacy file in another subdirectory.
 async fn load_state_with_fallback(
     dir: &std::path::Path,
     legacy_dir: Option<&std::path::Path>,
@@ -305,6 +274,61 @@ pub(crate) async fn load_state_from_disk(
 ) -> PermissionState {
     let dirs = resolve_store_dirs(cwd, false).await;
     load_state_with_fallback(&dirs.dir, dirs.legacy_dir.as_deref(), client_identifier).await
+}
+
+/// Lets the permission actor pick up a concurrent session's grants.
+/// It avoids re-walking the repo root or re-parsing an unchanged store on every request.
+pub(crate) struct CachedStateStore {
+    dir: std::path::PathBuf,
+    legacy_dir: Option<std::path::PathBuf>,
+    client_identifier: Option<String>,
+    /// `(mtime, len)` at the last read; size pairs with mtime to catch a same-tick write that coarse-granularity filesystems would hide.
+    last_sig: Option<(std::time::SystemTime, u64)>,
+}
+
+impl CachedStateStore {
+    /// The signature is snapshotted BEFORE the content read.
+    /// A concurrent persist between the two can only cause a redundant reload later, never leave the cache ahead of the loaded state.
+    pub(crate) async fn resolve_and_load(
+        cwd: &AbsPathBuf,
+        client_identifier: Option<&str>,
+    ) -> (Self, PermissionState) {
+        let dirs = resolve_store_dirs(cwd, false).await;
+        let mut store = Self {
+            dir: dirs.dir,
+            legacy_dir: dirs.legacy_dir,
+            client_identifier: client_identifier.map(str::to_owned),
+            last_sig: None,
+        };
+        store.last_sig = store.current_sig().await;
+        let state = store.read().await;
+        (store, state)
+    }
+
+    async fn current_sig(&self) -> Option<(std::time::SystemTime, u64)> {
+        let path = state_file_path(&self.dir, self.client_identifier.as_deref());
+        let meta = tokio::fs::metadata(path).await.ok()?;
+        Some((meta.modified().ok()?, meta.len()))
+    }
+
+    async fn read(&self) -> PermissionState {
+        load_state_with_fallback(
+            &self.dir,
+            self.legacy_dir.as_deref(),
+            self.client_identifier.as_deref(),
+        )
+        .await
+    }
+
+    /// Grants on disk when the file signature changed since the last read, else `None`; an unchanged store costs only the `stat`.
+    pub(crate) async fn reload_if_changed(&mut self) -> Option<PermissionState> {
+        let sig = self.current_sig().await;
+        if sig == self.last_sig {
+            return None;
+        }
+        self.last_sig = sig;
+        Some(self.read().await)
+    }
 }
 
 async fn persist_state_to_path_with_writer<F>(
@@ -330,8 +354,8 @@ async fn persist_state_to_dir(
 ) {
     let path = state_file_path(dir, client_identifier);
     let dir = dir.to_path_buf();
-    // Owner-only dir creation rides the writer's spawn_blocking: GROK_HOME may
-    // sit on a slow filesystem, so no blocking fs work on the async worker.
+    // Owner-only dir creation runs inside the writer's spawn_blocking
+    // GROK_HOME may sit on a slow filesystem, so no blocking fs work on the async worker
     let result = persist_state_to_path_with_writer(&path, state, move |path, contents| {
         xai_grok_config::create_dir_all_owner_only(&dir)?;
         xai_grok_config::fs_atomic::write_atomically(path, contents, None)
@@ -342,12 +366,9 @@ async fn persist_state_to_dir(
     }
 }
 
-/// Merge-on-write: a concurrent session in the same project may have
-/// persisted new grants since this actor loaded its snapshot at spawn.
-/// A whole-file replace would silently erase them (last-writer-wins);
-/// union the on-disk grants back in before writing. Not a lock — the
-/// read-modify-write race window remains — but it turns "other session's
-/// grants always lost" into "lost only on a same-instant write".
+/// Merge-on-write: a concurrent session in the same project may have persisted new grants since this actor loaded its snapshot at spawn.
+/// A whole-file replace would silently erase them (last-writer-wins); union the on-disk grants back in before writing.
+/// Not a lock (the read-modify-write race window remains): it turns "other session's grants always lost" into "lost only on a same-instant write".
 async fn persist_state_merging_to_dir(
     dir: &std::path::Path,
     state: &PermissionState,
@@ -369,10 +390,9 @@ pub(crate) async fn persist_state(
     persist_state_merging_to_dir(&dirs.dir, state, client_identifier).await
 }
 
-/// Replace the on-disk state without merging — reset semantics, where the
-/// whole point is discarding grants. Writing the scope-root store also ends
-/// the legacy fallback for every subdirectory of the repository (see
-/// [`load_state_with_fallback`]), so no legacy cleanup is needed.
+/// Replace the on-disk state without merging: this is the reset path, where the whole point is discarding grants.
+/// Writing the scope-root store also ends the legacy fallback for every subdirectory of the repository (see [`load_state_with_fallback`]).
+/// So no legacy cleanup is needed.
 pub(crate) async fn replace_state_on_disk(
     cwd: &AbsPathBuf,
     state: &PermissionState,
@@ -472,8 +492,7 @@ mod tests {
         assert_eq!(denied.len(), 2);
     }
 
-    /// Pre-deny stores (no `disallowed_mcp_tools` / `disallowed_web_fetch_domains`
-    /// keys on disk) must load with empty deny sets.
+    /// Pre-deny stores (no `disallowed_mcp_tools` / `disallowed_web_fetch_domains` keys on disk) must load with empty deny sets.
     #[test]
     fn missing_deny_fields_default_empty() {
         let restored: PermissionState = toml::from_str(
@@ -489,8 +508,6 @@ allowed_mcp_tools = ["linear__list"]
 
     #[test]
     fn roundtrip_with_both_allowed_and_disallowed() {
-        // Simulate a real scenario: some commands explicitly allowed,
-        // others explicitly denied.
         let mut state = PermissionState::default();
         state.allow_bash_execute = false;
         state.allowed_bash_commands.insert("cargo test".to_string());
@@ -550,7 +567,6 @@ allowed_mcp_tools = ["linear__list"]
 
     #[test]
     fn deserialize_partial_toml() {
-        // Only some fields present — others should default.
         let toml_str = r#"allow_bash_execute = true"#;
         let state: PermissionState = toml::from_str(toml_str).unwrap();
         assert!(state.allow_bash_execute);
@@ -641,8 +657,6 @@ allowed_mcp_tools = ["linear__list"]
 
     #[test]
     fn deserialize_old_state_without_mcp_fields() {
-        // A state file from a binary that predates this design has
-        // neither MCP field. #[serde(default)] should yield empty sets.
         let toml_str = r#"
 allow_bash_execute = true
 allowed_bash_commands = ["cargo test"]
@@ -668,12 +682,7 @@ allowed_web_fetch_domains = ["github.com"]
 
     #[test]
     fn deserialize_unknown_fields_tolerated() {
-        // PermissionState uses #[serde(default)] which provides defaults for
-        // missing fields. It does NOT use #[serde(deny_unknown_fields)], so
-        // unknown keys in TOML are silently ignored. This is important for
-        // forward compatibility: older versions of the binary should be able
-        // to read state files written by newer versions that may have added
-        // new fields.
+        // No #[serde(deny_unknown_fields)]: an older binary must still read a state file a newer binary wrote with extra fields
         let toml_str = r#"
 allow_bash_execute = false
 unknown_field = "should be ignored"
@@ -1025,8 +1034,7 @@ allowed_mcp_servers = ["a"]
 
     // ── merge-on-write / concurrent sessions ─────────────────────
 
-    /// Two managers in the same project persist independently; the second
-    /// write must not erase grants the first one saved (last-writer-wins).
+    /// Two managers in the same project persist independently; the second write must not erase grants the first one saved (last-writer-wins).
     #[tokio::test]
     async fn persist_merges_grants_already_on_disk() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1099,9 +1107,8 @@ allowed_mcp_servers = ["a"]
         assert_eq!(a.edit_policy, EditPolicy::Ask);
     }
 
-    /// The MCP/domain deny sets merge additively in both directions, like
-    /// `disallowed_bash_commands`: a deny persisted by another session
-    /// survives a merge with this session's state and vice versa.
+    /// The MCP/domain deny sets merge additively in both directions, like `disallowed_bash_commands`.
+    /// A deny persisted by another session survives a merge with this session's state and vice versa.
     #[test]
     fn merge_grants_unions_mcp_and_domain_denies_both_directions() {
         let mut a = PermissionState::default();
@@ -1131,9 +1138,8 @@ allowed_mcp_servers = ["a"]
 
     // ── repo-root store keying ───────────────────────────────────
 
-    /// A grant accepted at the repo root must be visible to a session started
-    /// in a subdirectory of the same repository, and vice versa: both key the
-    /// store to the repository root, not the exact cwd.
+    /// A grant accepted at the repo root must be visible to a session started in a subdirectory of the same repository, and vice versa.
+    /// Both key the store to the repository root, not the exact cwd.
     #[test]
     fn scope_root_unifies_repo_subdirectories() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1147,15 +1153,13 @@ allowed_mcp_servers = ["a"]
         assert_eq!(permission_scope_root(&root_cwd), root);
         assert_eq!(permission_scope_root(&sub_cwd), root);
         assert_eq!(state_dir_for_cwd(&root_cwd), state_dir_for_cwd(&sub_cwd));
-        // The subdirectory keeps a distinct legacy (exact-cwd) location to
-        // migrate old grants from; the root has none.
+        // The subdirectory keeps a distinct legacy (exact-cwd) location to migrate old grants from; the root has none
         assert!(legacy_state_dir(&sub_cwd, &state_dir_for_cwd(&sub_cwd)).is_some());
         assert!(legacy_state_dir(&root_cwd, &state_dir_for_cwd(&root_cwd)).is_none());
     }
 
-    /// Linked worktrees must not share a grant store: discovery resolves each
-    /// worktree to its own `workdir`, so a grant accepted in one never
-    /// auto-allows in another.
+    /// Linked worktrees must not share a grant store.
+    /// Discovery resolves each worktree to its own `workdir`, so a grant accepted in one never auto-allows in another.
     #[test]
     fn scope_root_is_per_worktree() {
         let main = tempfile::tempdir().unwrap();
@@ -1170,8 +1174,7 @@ allowed_mcp_servers = ["a"]
                 .unwrap();
         }
         let wt_parent = tempfile::tempdir().unwrap();
-        // Canonicalize BEFORE creation so git2 records the canonical spelling
-        // (macOS tempdirs live behind a /var → /private/var symlink).
+        // Canonicalize BEFORE creation so git2 records the canonical spelling (macOS tempdirs live behind a symlink from /var to /private/var)
         let wt_path = dunce::canonicalize(wt_parent.path()).unwrap().join("wt");
         repo.worktree("wt", &wt_path, None).unwrap();
         let wt_root = wt_path;
@@ -1194,9 +1197,8 @@ allowed_mcp_servers = ["a"]
         );
     }
 
-    /// A legacy (exact-cwd) store seeds the first load, and the next persist
-    /// carries the seeded grants into the scope-root store — after which the
-    /// legacy file is dead even if it later gains new content.
+    /// A legacy (exact-cwd) store seeds the first load, and the next persist carries the seeded grants into the scope-root store.
+    /// After that the legacy file is dead even if it later gains new content.
     #[tokio::test]
     async fn legacy_grants_migrate_to_root_store_on_persist() {
         let root = tempfile::tempdir().unwrap();
@@ -1210,8 +1212,7 @@ allowed_mcp_servers = ["a"]
         let seeded = load_state_with_fallback(root.path(), Some(legacy.path()), None).await;
         assert!(seeded.allowed_bash_commands.contains("cargo test"));
 
-        // The session's next persist (a new grant) lands the seeded state in
-        // the root store.
+        // The session's next persist (a new grant) lands the seeded state in the root store
         let mut session = seeded.clone();
         session.allowed_bash_commands.insert("npm test".to_string());
         persist_state_merging_to_dir(root.path(), &session, None).await;
@@ -1220,9 +1221,8 @@ allowed_mcp_servers = ["a"]
         assert!(migrated.allowed_bash_commands.contains("cargo test"));
         assert!(migrated.allowed_bash_commands.contains("npm test"));
 
-        // The asserts above would also pass if the loader *merged* legacy in
-        // (the resurrection bug the seed-never-merge design avoids), so prove
-        // legacy is dead: content added to it after migration must not surface.
+        // The asserts above would also pass if the loader *merged* legacy in, the resurrection bug that seeding instead of merging avoids
+        // So prove legacy is dead: content added to it after migration must not surface
         let mut stale = PermissionState::default();
         stale.allowed_bash_commands.insert("stale".to_string());
         persist_state_to_dir(legacy.path(), &stale, None).await;

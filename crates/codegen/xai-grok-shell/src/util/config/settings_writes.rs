@@ -5,19 +5,11 @@ use xai_grok_shared::ui_config::PiBuiltinTools;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
-// ---------------------------------------------------------------------------
-// Settings helpers — typed disk-write wrappers for each setting.
-// All route through `update_config` → `merge_section` → `save_config`.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Settings helpers: typed disk-write wrappers for each setting
+// All route through `update_config`, then `merge_section`, then `save_config` ---------------------------------------------------------------------------
 
-// Process-wide cache for `[ui].follow_up_behavior == "steer"`.
-//
-// The shell agent is a separate process from the pager, so an in-process
-// atomic updated in the pager never reaches the turn loop. Key the cache on
-// config.toml mtime instead. A live settings write invalidates on the next
-// safe-point drain (cheap stat; full parse only when the file changed).
-//
-// 0 = unknown, 1 = queue, 2 = steer.
+// Process-wide cache for `[ui].follow_up_behavior == "steer"`. The shell agent is a separate process from the pager, so an in-process atomic updated in the pager never reaches the turn loop
+// Key the cache on config.toml mtime instead A live settings write invalidates on the next safe-point drain (cheap stat; full parse only when the file changed) 0 = unknown, 1 = queue, 2 = steer.
 const FOLLOW_UP_CACHE_UNKNOWN: u8 = 0;
 const FOLLOW_UP_CACHE_QUEUE: u8 = 1;
 const FOLLOW_UP_CACHE_STEER: u8 = 2;
@@ -48,13 +40,9 @@ pub fn set_follow_up_steer_cache(steer: bool) {
     FOLLOW_UP_STEER_MTIME_NS.store(follow_up_config_mtime_ns(), Ordering::Relaxed);
 }
 
-/// Whether Steer is enabled in this process.
-///
-/// Hits disk only when the cache is cold or `config.toml` mtime has changed
-/// since the last resolve, so the pager can toggle Follow-up behavior live
-/// without restarting the shell agent. A failed effective-config load does
-/// not pin Queue: previous cache is kept, or cold failure returns false for
-/// this call only without writing QUEUE+mtime.
+/// Whether Steer is enabled in this process. Hits disk only when the cache is cold or the `config.toml` mtime has changed since the last resolve.
+/// That lets the pager toggle Follow-up behavior live without restarting the shell agent. A failed effective-config load does not pin Queue: the previous cache is kept, or a cold failure returns false for this call only.
+/// The cold failure writes neither QUEUE nor the mtime.
 pub async fn follow_up_steer_enabled() -> bool {
     let mtime = follow_up_config_mtime_ns();
     let cached_mtime = FOLLOW_UP_STEER_MTIME_NS.load(Ordering::Relaxed);
@@ -92,14 +80,14 @@ pub async fn set_compact_mode(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.compact_mode = value).await
 }
 
-/// Persist `[ui].show_timestamps` via `update_config`. `UiConfig::show_timestamps`
-/// is `Option<bool>` — pager-side `None` means "use default" — so we wrap.
+/// Persist `[ui].show_timestamps` via `update_config`.
+/// `UiConfig::show_timestamps` is `Option<bool>` (pager-side `None` means "use default"), so we wrap.
 pub async fn set_show_timestamps(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.show_timestamps = Some(value)).await
 }
 
-/// Persist `[ui].show_timeline` via `update_config`. Same `Option<bool>`
-/// shape as `show_timestamps`.
+/// Persist `[ui].show_timeline` via `update_config`.
+/// The `Option<bool>` shape matches `show_timestamps`.
 pub async fn set_show_timeline(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.show_timeline = Some(value)).await
 }
@@ -129,14 +117,14 @@ pub async fn set_cancel_turn_key(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.cancel_turn_key = Some(value)).await
 }
 
-/// Persist `[ui].simple_mode` via `update_config`. Same `Option<bool>`
-/// shape as `show_timestamps`.
+/// Persist `[ui].simple_mode` via `update_config`.
+/// The `Option<bool>` shape matches `show_timestamps`.
 pub async fn set_simple_mode(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.simple_mode = Some(value)).await
 }
 
-/// Persist `[ui.contextual_hints].undo` via `update_config`. The nested struct
-/// stays out of `config.toml` until a tip is toggled (`skip_serializing_if`).
+/// Persist `[ui.contextual_hints].undo` via `update_config`.
+/// The nested struct stays out of `config.toml` until a tip is toggled (`skip_serializing_if`).
 pub async fn set_contextual_hint_undo(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.contextual_hints.undo = Some(value)).await
 }
@@ -166,46 +154,42 @@ pub async fn set_contextual_hint_word_select(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.contextual_hints.word_select = Some(value)).await
 }
 
+/// Persist `[ui.contextual_hints].export_copy` via `update_config`.
+pub async fn set_contextual_hint_export_copy(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.contextual_hints.export_copy = Some(value)).await
+}
+
 /// Persist `[ui.contextual_hints].ssh_wrap` via `update_config`.
 pub async fn set_contextual_hint_ssh_wrap(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.contextual_hints.ssh_wrap = Some(value)).await
 }
 
-/// Persist `[ui].theme` via `update_config`. Caller must pass the
-/// canonical theme name (`groknight`, `tokyonight`, `auto`, etc.).
+/// Persist `[ui].theme` via `update_config`.
+/// Caller must pass the canonical theme name (`groknight`, `tokyonight`, `auto`, etc.).
 pub async fn set_theme(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.theme = Some(value)).await
 }
 
-/// Persist `[ui].auto_dark_theme` via `update_config`. `UiConfig::auto_dark_theme`
-/// is `Option<String>` (canonical theme name; `auto` is rejected by the
-/// pager's `load_auto_theme_config` filter at read time to prevent
-/// circular reference).
+/// Persist `[ui].auto_dark_theme` via `update_config`.
+/// `UiConfig::auto_dark_theme` is `Option<String>` holding a canonical theme name.
+/// The pager's `load_auto_theme_config` filter rejects `auto` at read time to prevent a circular reference.
 pub async fn set_auto_dark_theme(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.auto_dark_theme = Some(value)).await
 }
 
-/// Persist `[ui].auto_light_theme` via `update_config`. Same shape as
-/// [`set_auto_dark_theme`].
+/// Persist `[ui].auto_light_theme` via `update_config`.
+/// The shape matches [`set_auto_dark_theme`].
 pub async fn set_auto_light_theme(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.auto_light_theme = Some(value)).await
 }
 
 /// Maximum length (in bytes) accepted by [`set_default_model`].
-/// Defense against callers bypassing catalog validation.
+/// It defends against callers bypassing catalog validation.
 pub const MAX_DEFAULT_MODEL_LEN: usize = 256;
 
-/// Persist `[models].default` and dismiss any active campaign nudging it (an
-/// explicit user pick wins over the soft campaign default).
-///
-/// This is the only sanctioned writer of `models.default`; it routes through
-/// [`super::campaigns::persist_models_default`] so a user pick always dismisses
-/// an active campaign. Do not persist `models.default` via raw `update_config`,
-/// or a campaign would keep overriding the user's choice.
-///
-/// Caller must validate `value` against the model catalog first.
-/// Empty string clears the field (falls back to remote/built-in default).
-/// Length over [`MAX_DEFAULT_MODEL_LEN`] returns `Err`.
+/// Persist `[models].default`. This is the only sanctioned writer of `models.default`. It routes through [`super::campaigns::persist_models_default`] so a user pick always dismisses an active campaign.
+/// Do not persist `models.default` via raw `update_config`, or a campaign would keep overriding the user's choice. Caller must validate `value` against the model catalog first.
+/// Empty string clears the field (falls back to remote/built-in default). Length over [`MAX_DEFAULT_MODEL_LEN`] returns `Err`.
 pub async fn set_default_model(value: String) -> Result<()> {
     super::campaigns::persist_models_default(
         if value.is_empty() { None } else { Some(value) },
@@ -238,10 +222,7 @@ pub async fn set_feedback_trace_card(value: bool) -> Result<()> {
     .await
 }
 
-/// Persist `[ui].fork_secondary_model` via `update_config`.
-///
-/// Caller must validate against the model catalog. Empty string
-/// restores the built-in default. Length > [`MAX_DEFAULT_MODEL_LEN`] → `Err`.
+/// Persist `[ui].fork_secondary_model` via `update_config`. Caller must validate against the model catalog. Empty string restores the built-in default. A length over [`MAX_DEFAULT_MODEL_LEN`] returns `Err`.
 pub async fn set_fork_secondary_model(value: String) -> Result<()> {
     if value.len() > MAX_DEFAULT_MODEL_LEN {
         anyhow::bail!(
@@ -433,8 +414,8 @@ pub async fn set_review_include_reads(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.review_include_reads = value).await
 }
 
-/// Bounds for [`set_max_thoughts_width`]. Mirrored from the pager's
-/// registry consts; a CI test pins the agreement.
+/// Bounds for [`set_max_thoughts_width`].
+/// They mirror the pager's registry consts; a CI test pins the agreement.
 const MAX_THOUGHTS_WIDTH_SHELL_MIN: i64 = 40;
 const MAX_THOUGHTS_WIDTH_SHELL_MAX: i64 = 500;
 
@@ -463,7 +444,7 @@ pub async fn set_invert_scroll(value: bool) -> Result<()> {
 }
 
 /// Persist `[ui.display_refresh].auto_cadence_enabled` via `update_config`.
-/// Nested field only — does not replace the whole `display_refresh` object.
+/// It writes only the nested field and does not replace the whole `display_refresh` object.
 pub async fn set_display_refresh_auto_cadence(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.display_refresh.auto_cadence_enabled = Some(value)).await
 }
@@ -500,9 +481,8 @@ pub async fn set_prompt_suggestions(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.prompt_suggestions = Some(value)).await
 }
 
-/// Persist `[toolset.ask_user_question].timeout_enabled` via `update_config`
-/// (the user tier of the shell's tiered resolver; the effective value is
-/// re-resolved at agent build).
+/// Persist `[toolset.ask_user_question].timeout_enabled` via `update_config` (the user tier of the shell's tiered resolver).
+/// The effective value is re-resolved at agent build.
 pub async fn set_ask_user_question_timeout_enabled(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ask_user_question.timeout_enabled = Some(value)).await
 }
@@ -538,9 +518,8 @@ pub async fn set_write_edit_hover_popups(value: bool) -> Result<()> {
 }
 
 /// Persist `[ui].keep_text_selection` (`flash` | `hold` | `word_select`).
-/// Clears the legacy `selection_highlight_duration_ms` and the retired
-/// `double_click_action` keys it supersedes so the two can never drift (one-shot
-/// disk migration away from the legacy key on any Settings write).
+/// Clears the legacy `selection_highlight_duration_ms` and the retired `double_click_action` keys it supersedes so the two can never drift.
+/// This makes any Settings write a one-shot disk migration away from the legacy keys.
 pub async fn set_keep_text_selection(value: String) -> Result<()> {
     update_config(|cfg| {
         cfg.ui.keep_text_selection = Some(value);
@@ -550,49 +529,46 @@ pub async fn set_keep_text_selection(value: String) -> Result<()> {
     .await
 }
 
-/// Persist `[ui].render_mermaid` via `update_config`. Value is one of the
-/// canonical strings `auto` | `on` | `off`.
+/// Persist `[ui].render_mermaid` via `update_config`.
+/// Value is one of the canonical strings `auto` | `on` | `off`.
 pub async fn set_render_mermaid(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.render_mermaid = Some(value)).await
 }
 
-/// Persist `[ui].hunk_tracker_mode` via `update_config`. Value is one of the
-/// canonical strings `agent_only` | `all_dirty` | `off`.
+/// Persist `[ui].hunk_tracker_mode` via `update_config`.
+/// Value is one of the canonical strings `agent_only` | `all_dirty` | `off`.
 /// Restart-required: the mode is read once at connect time.
 pub async fn set_hunk_tracker_mode(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.hunk_tracker_mode = Some(value)).await
 }
 
-/// Persist `[ui].voice_capture_mode` via `update_config`. Value is one of the
-/// canonical strings `toggle` | `hold`.
+/// Persist `[ui].voice_capture_mode` via `update_config`.
+/// Value is one of the canonical strings `toggle` | `hold`.
 pub async fn set_voice_capture_mode(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.voice_capture_mode = Some(value)).await
 }
 
-/// Persist `[ui].voice_stt_language` via `update_config`. Value is a canonical
-/// language code from the settings catalog (`en`, `es`, …) or `auto` (system
-/// locale, falling back to English).
+/// Persist `[ui].voice_stt_language` via `update_config`.
+/// Value is a canonical language code from the settings catalog (`en`, `es`, …) or `auto` (system locale, falling back to English).
 pub async fn set_voice_stt_language(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.voice_stt_language = Some(value)).await
 }
 
-/// Persist `[ui].voice_keybind_enabled` via `update_config`. When `false` the
-/// Ctrl+Space / F8 voice chord is ignored (`/voice` still works).
+/// Persist `[ui].voice_keybind_enabled` via `update_config`.
+/// When `false` the Ctrl+Space / F8 voice chord is ignored (`/voice` still works).
 pub async fn set_voice_keybind_enabled(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.voice_keybind_enabled = Some(value)).await
 }
 
-/// Persist `[ui].default_selected_permission` via `update_config`. Value is
-/// one of the canonical strings from `DEFAULT_SELECTED_PERMISSION_CHOICES`
-/// (`default` | `allow_once` | `allow_always` | `reject`); `default` is the
-/// "no preselection" sentinel.
+/// Persist `[ui].default_selected_permission` via `update_config`.
+/// Value is one of the canonical strings from `DEFAULT_SELECTED_PERMISSION_CHOICES` (`default` | `allow_once` | `allow_always` | `reject`).
+/// `default` is the "no preselection" sentinel.
 pub async fn set_default_selected_permission(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.default_selected_permission = Some(value)).await
 }
 
 /// Persist `[ui].cancel_subagents_on_turn_cancel` via `update_config`.
-/// Canonical values: `ask` (clear / prompt each time), `always_stop`,
-/// `always_continue`.
+/// Canonical values: `ask` (clear / prompt each time), `always_stop`, `always_continue`.
 pub async fn set_cancel_subagents_on_turn_cancel(value: String) -> Result<()> {
     update_config(|cfg| {
         cfg.ui.cancel_subagents_on_turn_cancel = if value == "ask" { None } else { Some(value) };

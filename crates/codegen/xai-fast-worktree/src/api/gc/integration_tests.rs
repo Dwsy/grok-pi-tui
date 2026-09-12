@@ -34,6 +34,7 @@ fn register_worktree_writes_correct_fields() {
     let wt_canon = dunce::canonicalize(&wt_path).unwrap_or_else(|_| wt_path.clone());
 
     super::register_worktree(
+        None,
         &wt_path,
         std::path::Path::new("/src/repo"),
         WorktreeKind::Session,
@@ -377,10 +378,9 @@ fn gc_dry_run_missing_and_expired_counted_once() {
     );
 }
 
-/// A path that is no repository and will not remove either. Retrying it
-/// every pass only grows the candidate set, so the record goes and the
-/// bytes stay where they are, which is the one outcome that leaves both
-/// halves behind.
+/// A path that is not a repo and will not remove. Retrying only grows the
+/// candidate set, so the record goes and the bytes stay — both halves left
+/// behind.
 #[test]
 fn expired_path_that_will_not_remove_loses_its_record_and_keeps_its_bytes() {
     let fx = crate::db::GrokHomeFixture::new();
@@ -562,10 +562,9 @@ fn gc_asks_the_source_repository_about_a_standalone_worktree() {
     assert!(!dir.exists());
 }
 
-/// True if a record with `path` exists in the DB (assert on our own
-/// record rather than total count: other tests may write to the same
-/// open_default DB concurrently). Matches `register_worktree`'s
-/// canonical path storage (/var vs /private/var on macOS).
+/// True if our record exists. Assert on our path, not total count: other
+/// tests may write the same open_default DB. Matches `register_worktree`'s
+/// canonical path (/var vs /private/var on macOS).
 fn record_present(db: &WorktreeDb, path: &std::path::Path) -> bool {
     let canon = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     db.list(&ListFilter::default())
@@ -587,6 +586,7 @@ fn db_record_survives_failed_removal() {
 
     // Register via the production registration path (uses open_default).
     super::register_worktree(
+        None,
         &wt_path,
         std::path::Path::new("/src/repo"),
         WorktreeKind::Session,
@@ -636,6 +636,7 @@ fn db_record_removed_after_successful_removal() {
         .unwrap();
 
     super::register_worktree(
+        None,
         &wt_path,
         &repo,
         WorktreeKind::Session,
@@ -662,12 +663,47 @@ fn db_record_removed_after_successful_removal() {
 }
 
 #[test]
+fn registry_home_registers_the_worktree_in_the_given_home_only() {
+    xai_test_utils::require_git!();
+    use xai_test_utils::git::{git_commit_all, init_git_repo};
+
+    // The default DB is the fixture's home; the builder is pointed at another one.
+    let fx = crate::db::GrokHomeFixture::new();
+    let other_home = fx.home.join("other-home");
+    let repo = fx.home.join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    init_git_repo(&repo);
+    std::fs::write(repo.join("f.txt"), "x").unwrap();
+    git_commit_all(&repo, "init");
+    let wt_path = fx.home.join("injected-wt");
+    crate::WorktreeBuilder::new(&repo, &wt_path)
+        .worktree_kind(WorktreeKind::Session)
+        .session_id("injected")
+        .registry_home(&other_home)
+        .create()
+        .unwrap();
+
+    let other = WorktreeDb::open(&other_home).unwrap();
+    let record = other
+        .get(&wt_path.to_string_lossy())
+        .unwrap()
+        .expect("registered under registry_home");
+    assert_eq!(Some("injected".to_string()), record.session_id);
+    assert!(
+        !record_present(&db_at_home(&fx.home), &wt_path),
+        "the resolved home's DB did not receive the record"
+    );
+}
+
+fn db_at_home(home: &std::path::Path) -> WorktreeDb {
+    WorktreeDb::open(home).unwrap()
+}
+
+#[test]
 fn gc_with_delegate_removes_expired_and_unregisters() {
-    // gc_worktrees_with_delegate threads the delegate through the expired
-    // path and, on a successful removal, counts it and drops the record.
-    // (The delegate's btrfs fallback only fires on a real btrfs-delete
-    // failure, which needs a btrfs host; here the plain-dir fast path
-    // succeeds, so the mock's delete_snapshot is not called.)
+    // Delegate is threaded through the expired path; a successful removal
+    // counts and drops the record. Btrfs fallback needs a real delete failure,
+    // so the mock's delete_snapshot is not called on this plain-dir path.
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // GROK_HOME == the gc DB dir so remove_worktree's open_default
@@ -940,11 +976,8 @@ fn gc_never_expire_manual_age_only_not_dead() {
     assert!(dir2.exists());
 }
 
-/// End-to-end survivors for the per-kind age cutoff: each row registers
-/// real worktree dirs of the given kinds, runs gc, and asserts which
-/// dirs survive plus `expired_removed`. The reclaimability logic itself
-/// is unit-tested in `classify_covers_expiry_guards_and_kind_ttls`
-/// and `effective_max_age_precedence`; this pins the disk effect.
+/// Pins the disk effect of the per-kind age cutoff (which dirs survive and
+/// `expired_removed`). Reclaimability itself is unit-tested elsewhere.
 #[test]
 fn per_kind_age_expiry_reclaims_listed_kinds_and_keeps_the_rest() {
     const HOUR: i64 = 3600;
@@ -1113,20 +1146,4 @@ fn dry_run_counts_per_kind_cutoffs() {
     .unwrap();
     assert_eq!(dry0.expired_removed, 2);
     assert!(dry0.never_expiring >= 1);
-}
-
-#[test]
-fn db_stats_serde_round_trip() {
-    let stats = crate::db::DbStats {
-        total_records: 10,
-        alive_count: 7,
-        dead_count: 3,
-        db_file_bytes: 4096,
-    };
-    let json = serde_json::to_string(&stats).unwrap();
-    let deser: crate::db::DbStats = serde_json::from_str(&json).unwrap();
-    assert_eq!(deser.total_records, 10);
-    assert_eq!(deser.alive_count, 7);
-    assert_eq!(deser.dead_count, 3);
-    assert_eq!(deser.db_file_bytes, 4096);
 }

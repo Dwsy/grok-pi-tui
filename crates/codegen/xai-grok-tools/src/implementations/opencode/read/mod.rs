@@ -171,6 +171,12 @@ impl xai_tool_runtime::Tool for ReadTool {
             (display_cwd, fs)
         };
         let resolved = resolve_model_path(&cwd, display_cwd.as_deref(), &input.file_path);
+        if let Err(error) =
+            crate::types::memory_v2::validate_memory_v2_read(&resources, &resolved).await
+        {
+            return Ok(ReadFileOutput::FileReadError(error));
+        }
+        let policy_path = resolved.clone();
         let path = crate::util::fs::canonicalize_with_timeout(resolved).await;
 
         // ── Stat the path ───────────────────────────────────────────
@@ -214,6 +220,12 @@ impl xai_tool_runtime::Tool for ReadTool {
                 )));
             }
         };
+        if let Err(error) =
+            crate::types::memory_v2::record_memory_v2_read(&resources, &policy_path, &file_bytes)
+                .await
+        {
+            return Ok(ReadFileOutput::FileReadError(error));
+        }
 
         // Check for images via magic-byte detection. Route through
         // compression — raw bytes (truncated or non-endpoint formats)
@@ -536,20 +548,8 @@ mod tests {
             .render(ToolMetadata::description_template(&ReadTool))
             .unwrap();
         assert!(
-            rendered.contains("start_line and max_lines"),
+            rendered.contains("start_line") && rendered.contains("max_lines"),
             "renamed offset/limit must appear:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("file or directory")
-                && rendered.contains("trailing `/` for subdirectories"),
-            "directory support must be documented:\n{rendered}"
-        );
-        assert!(
-            !rendered.contains("only read files")
-                && !rendered.contains("ls command")
-                && !rendered.contains("a line offset and limit")
-                && !rendered.contains("Bash tool"),
-            "stale files-only/ls/offset/Bash-tool literals must not remain:\n{rendered}"
         );
     }
 

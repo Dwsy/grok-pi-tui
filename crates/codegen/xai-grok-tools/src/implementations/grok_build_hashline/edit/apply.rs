@@ -16,10 +16,9 @@ use crate::implementations::grok_build_hashline::scheme::{
 
 const SNIPPET_CONTEXT: usize = 3;
 
-/// Generate a scheme-appropriate format label and example anchor for error messages.
-///
-/// Probes the scheme with a single-line sample to determine whether it uses
-/// a context hash (e.g. `"22:abc:rst"`) or only a local hash (e.g. `"22:abc"`).
+/// Generate a scheme-appropriate format label and example anchor for error messages. Probes the
+/// scheme with a single-line sample to determine whether it uses a context hash (e.g.
+/// `"22:abc:rst"`) or only a local hash (e.g. `"22:abc"`).
 fn anchor_format_hint(scheme: &dyn AnchorScheme) -> (&'static str, String) {
     let len = scheme.hash_len().clamp(1, 4);
     let hash = &"abcd"[..len];
@@ -140,12 +139,9 @@ pub(crate) struct EditRegionDetail {
     pub new_line: usize,
     pub new_text: String,
 }
-/// Apply a batch of hashline edit operations to file content.
-///
-/// Validates all anchors against `content` before applying any edits.
-/// Returns both the structured output and the new file content (if
-/// successful), so the caller can write to disk without re-deriving the
-/// content through a separate code path.
+/// Apply a batch of hashline edit operations to file content. Validates all anchors against `content` before applying
+/// any edits. Returns both the structured output and the new file content (if successful), so the caller can write to
+/// disk without re-deriving the content through a separate code path.
 pub(crate) fn apply_edits(
     content: &str,
     ops: &[HashlineOp],
@@ -310,10 +306,8 @@ pub(crate) fn apply_edits(
 /// individual ±SNIPPET_CONTEXT windows separated by `... N lines not shown ...`.
 const MAX_CONTIGUOUS_SNIPPET: usize = 80;
 
-/// Build the snippet output for a batch of edits.
-///
-/// If all edits fall within `MAX_CONTIGUOUS_SNIPPET` lines of each other,
-/// returns a single contiguous snippet. Otherwise, returns per-edit-region
+/// Build the snippet output for a batch of edits. If all edits fall within `MAX_CONTIGUOUS_SNIPPET`
+/// lines of each other, returns a single contiguous snippet. Otherwise, returns per-edit-region
 /// snippets separated by gap markers.
 fn build_snippet(
     new_content: &str,
@@ -1560,10 +1554,9 @@ mod tests {
 
         match apply_edits(&shifted_content, &ops, &test_path(), &*test_scheme()).output {
             HashlineEditOutput::Error(e) => {
-                // With chunk-based scheme, insertion changes chunk boundaries,
-                // so recovery may or may not find the shifted line depending
-                // on whether the chunk context still matches. Both AnchorStale
-                // (with or without shifted_to) are acceptable outcomes.
+                // With chunk-based scheme, insertion changes chunk boundaries, so recovery may or
+                // may not find the shifted line depending on whether the chunk context still
+                // matches. Both AnchorStale (with or without shifted_to) are acceptable outcomes.
                 assert!(
                     e.error == HashlineEditErrorKind::AnchorStale
                         || e.error == HashlineEditErrorKind::AmbiguousAnchor,
@@ -1754,14 +1747,9 @@ mod tests {
         }
     }
 
-    /// Deterministic test proving shifted recovery works with a real full
-    /// chunk-context anchor — the same shape `hashline_read` emits.
-    ///
-    /// Scenario: insert exactly `chunk_size` (8) lines at position 0.
-    /// Every original line shifts by +8. A line originally at position `p`
-    /// moves to `p+8`, which is in the next chunk — but that chunk now
-    /// contains the same lines as the original chunk at `p`. So the chunk
-    /// fingerprint matches, and `find_shifted` recovers deterministically.
+    /// Deterministic test proving shifted recovery works with a real full chunk-context anchor — the same shape `hashline_read` emits. Scenario:
+    /// insert exactly `chunk_size` (8) lines at position 0. Every original line shifts by +8. A line originally at position `p` moves to `p+8`,
+    /// which is in the next chunk — but that chunk now contains the same lines as the original chunk at `p`.
     #[test]
     fn deterministic_shifted_recovery_with_full_anchor() {
         // 16 unique lines → chunks [0,8) and [8,16).

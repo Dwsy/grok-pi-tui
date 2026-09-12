@@ -1,16 +1,13 @@
 //! Concurrency-safe, field-correct writes to a session's `summary.json`.
 //!
-//! The same `summary.json` is mutated by several writers and, on reconnect, by
-//! more than one persistence actor. A whole-summary read-modify-write with no
-//! lock loses updates: a writer holding a stale read overwrites a concurrent
-//! writer's field on write-back, which silently reverted `last_active_at` and
-//! `num_messages` (the active session then sank in the `/resume` picker).
+//! The same `summary.json` is mutated by several writers and, on reconnect, by more than one persistence actor.
+//! A whole-summary read-modify-write with no lock loses updates: a writer holding a stale read overwrites a concurrent writer's field on write-back.
+//! That silently reverted `last_active_at` and `num_messages`, and the active session sank in the `/resume` picker.
 //!
-//! [`SummaryPatch`] expresses *intent* (a partial update) rather than a
-//! whole-struct snapshot, and [`apply_patch_locked`] applies it under an
-//! exclusive lock on a sidecar `summary.json.lock` (never renamed, so the lock
-//! spans the entire read-modify-write). All writers funnel through it, so the
-//! read-modify-writes serialize across actors and processes.
+//! [`SummaryPatch`] expresses *intent* (a partial update) rather than a whole-struct snapshot.
+//! [`apply_patch_locked`] applies it under an exclusive lock on a sidecar `summary.json.lock`.
+//! The lock file is never renamed, so the lock spans the entire read-modify-write.
+//! All writers funnel through it, so the read-modify-writes serialize across actors and processes.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -22,10 +19,10 @@ use fs2::FileExt;
 use xai_grok_sampling_types::ReasoningEffort;
 
 use crate::session::persistence::Summary;
+use crate::session::worktree::WorktreeIdentity;
 
-/// How a counter field changes. `Increment` is applied to the in-lock fresh
-/// read (never precomputed by the caller, which would re-open the race); `Set`
-/// is an absolute rewrite (compaction / rewind).
+/// `Increment` is applied to the in-lock fresh read (never precomputed by the caller, which would re-open the race).
+/// `Set` is an absolute rewrite (compaction / rewind).
 #[derive(Debug, Clone)]
 pub(crate) enum CounterOp {
     Increment(usize),
@@ -41,8 +38,7 @@ impl CounterOp {
     }
 }
 
-/// Model / agent / reasoning-effort update. Each `None` leaves the existing
-/// value unchanged (matches the legacy `update_current_model` semantics).
+/// Each `None` leaves the existing value unchanged (matches the legacy `update_current_model` behavior).
 #[derive(Debug, Clone)]
 pub(crate) struct ModelPatch {
     pub model_id: acp::ModelId,
@@ -50,29 +46,24 @@ pub(crate) struct ModelPatch {
     pub reasoning_effort: Option<Option<ReasoningEffort>>,
 }
 
-/// Persisted git HEAD. `commit` and `branch` are last-writer-wins, including
-/// being cleared to `None`.
+/// `commit` and `branch` are last-writer-wins, including being cleared to `None`.
 #[derive(Debug, Clone)]
 pub(crate) struct GitHeadPatch {
     pub commit: Option<String>,
     pub branch: Option<String>,
 }
 
-/// Telemetry trace bookkeeping. `next_trace_turn` is monotonic; `request_id`
-/// is applied only when this turn wins, so a stale lower-turn write cannot
-/// leave a high `next_trace_turn` paired with an older `request_id` (these
-/// were set together in the legacy read-modify-write path).
+/// `next_trace_turn` is monotonic.
+/// `request_id` is applied only when this turn wins, so a stale lower-turn write cannot pair a high `next_trace_turn` with an older `request_id`.
 #[derive(Debug, Clone)]
 pub(crate) struct TraceTurnPatch {
     pub next_trace_turn: u64,
     pub request_id: Option<String>,
 }
 
-/// A typed, partial mutation of a `Summary`. Only the set fields change; the
-/// rest are read fresh under the lock and preserved. Per-field merge rules
-/// (see [`Summary::apply_patch`]): `last_active_at` / `next_trace_turn` /
-/// `chat_format_version` are monotonic (never lowered), counters apply to the
-/// fresh read, everything else is last-writer-wins on that field alone.
+/// Only the set fields change; the rest are read fresh under the lock and preserved.
+/// Per-field merge rules (see [`Summary::apply_patch`]): `last_active_at` / `next_trace_turn` / `chat_format_version` are monotonic (never lowered).
+/// Counters apply to the fresh read; everything else is last-writer-wins on that field alone.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SummaryPatch {
     pub record_activity: bool,
@@ -80,47 +71,43 @@ pub(crate) struct SummaryPatch {
     pub chat_messages: Option<CounterOp>,
     pub chat_format_version: Option<u8>,
     pub trace_turn: Option<TraceTurnPatch>,
+    pub attempt_id: Option<String>,
     pub model: Option<ModelPatch>,
     pub git_head: Option<GitHeadPatch>,
     pub collection_id: Option<String>,
-    /// Set the session title unconditionally (last-writer-wins). Used by the
-    /// manual `/rename` (`/title`) path, which must always win. Also marks the
-    /// title manual (`Summary::title_is_manual`).
+    /// Set the session title unconditionally (last-writer-wins).
+    /// Used by the manual `/rename` (`/title`) path, which must always win.
+    /// Also marks the title manual (`Summary::title_is_manual`).
     pub generated_title: Option<String>,
-    /// Set the session title only when the session has no title yet. Used by
-    /// automatic LLM title generation so it never clobbers a title the user
-    /// set via `/rename`. Ignored when `generated_title` is also set.
+    /// Set the session title only when the session has no title yet.
+    /// Used by automatic LLM title generation so it never overwrites a title the user set via `/rename`.
+    /// Ignored when `generated_title` is also set.
     pub generated_title_if_absent: Option<String>,
-    /// Overwrite an existing *auto* title with a freshly regenerated one, but
-    /// never a manual `/rename`. Used by the early-session title refresh
-    /// (turns 3 and 6). Ignored when `generated_title` (manual) is also set.
+    /// Overwrite an existing *auto* title with a freshly regenerated one, but never a manual `/rename`.
+    /// Used by the early-session title refresh (turns 3 and 6).
+    /// Ignored when `generated_title` (manual) is also set.
     pub generated_title_regenerate: Option<String>,
-    /// `/rename --auto`: clear the manual pin. Takes precedence over the
-    /// generated-title fields. A successful clear blanks `generated_title`
-    /// *and* `session_summary` so `display_title()` is empty and if-absent
-    /// can adopt again (a leftover pre-rename auto title would block regen).
+    /// `/rename --auto`: clear the manual pin.
+    /// A successful clear blanks `generated_title` *and* `session_summary` so `display_title()` is empty and if-absent can adopt again.
+    /// A leftover pre-rename auto title would otherwise block regeneration.
     pub reset_title_to_auto: bool,
     pub cwd_switch_bookkeeping_generation: Option<u64>,
-    /// Per-turn dashboard summary as `(text, prompt_id)`. Outer `Some`
-    /// applies (last-writer-wins); `Some(None)` clears it (conversation
-    /// rewind removed the described work).
+    /// Per-turn dashboard summary as `(text, prompt_id)`.
+    /// Outer `Some` applies (last-writer-wins); `Some(None)` clears it (conversation rewind removed the described work).
     pub last_turn_summary: Option<Option<(String, String)>>,
-    /// Latest session recap preview. Outer `Some` applies (last-writer-wins);
-    /// `Some(None)` clears it (rewind removed the described turns). Persisted so
-    /// listing surfaces can show a recap when available.
+    /// Latest session recap preview.
+    /// Outer `Some` applies (last-writer-wins); `Some(None)` clears it (rewind removed the described turns).
+    /// Persisted so session lists can show a recap when available.
     pub last_recap: Option<Option<String>>,
+    /// Stamp `session_kind` only when the summary has none yet.
+    /// Used by the session/new headless stamp; a kind already on disk (crash-recovered dir, concurrent writer) is never overwritten.
+    pub session_kind_if_absent: Option<String>,
 }
 
 impl Summary {
-    /// Apply `patch` in place using the per-field merge rules. `now` is the
-    /// single timestamp used for both `last_active_at` (when activity is
-    /// recorded) and `updated_at`.
-    ///
-    /// Returns `true` iff an auto title was adopted (`generated_title_if_absent`
-    /// or `generated_title_regenerate`), **or** a `reset_title_to_auto` actually
-    /// cleared a manual pin. Callers use the former to propagate the adopted
-    /// title and the latter to reset the generator / remote pin only when unpin
-    /// changed disk.
+    /// Apply `patch` in place using the per-field merge rules.
+    /// `now` is the single timestamp used for both `last_active_at` (when activity is recorded) and `updated_at`.
+    /// Returns `true` iff an auto title was adopted (`generated_title_if_absent` or `generated_title_regenerate`).
     pub(crate) fn apply_patch(&mut self, patch: &SummaryPatch, now: DateTime<Utc>) -> bool {
         if patch.record_activity {
             // Monotonic: a stale concurrent writer can never move it backwards.
@@ -142,22 +129,23 @@ impl Summary {
             && generation > self.cwd_switch_bookkeeping_generation
         {
             self.cwd_switch_bookkeeping_generation = generation;
-            // An explicit chat counter op already owns the resulting count
-            // (append increments; history replacement sets). Without one, this
-            // patch repairs a line found on disk after an earlier summary failure.
+            // An explicit chat counter op already owns the resulting count (append increments; history replacement sets)
+            // Without one, this patch repairs a line found on disk after an earlier summary failure
             if patch.chat_messages.is_none() {
                 self.num_chat_messages = self.num_chat_messages.saturating_add(1);
             }
         }
         if let Some(trace_turn) = &patch.trace_turn {
-            // next_trace_turn is monotonic; keep request_id paired with the
-            // winning turn so a stale lower-turn write can't re-pair them.
+            // next_trace_turn is monotonic; keep request_id paired with the winning turn so a stale lower-turn write can't re-pair them
             if trace_turn.next_trace_turn >= self.next_trace_turn {
                 self.next_trace_turn = trace_turn.next_trace_turn;
                 if let Some(request_id) = &trace_turn.request_id {
                     self.request_id = Some(request_id.clone());
                 }
             }
+        }
+        if let Some(attempt_id) = &patch.attempt_id {
+            self.attempt_id = Some(attempt_id.clone());
         }
         if let Some(model) = &patch.model {
             self.current_model_id = model.model_id.clone();
@@ -183,18 +171,20 @@ impl Summary {
         if let Some(recap) = &patch.last_recap {
             self.last_recap = recap.clone();
         }
+        if let Some(kind) = &patch.session_kind_if_absent
+            && self.session_kind.is_none()
+        {
+            self.session_kind = Some(kind.clone());
+        }
         let mut absent_title_applied = false;
         if patch.reset_title_to_auto {
-            // Gate on a real pin (`manual_title_opt`), not a stale flag
-            // over a blank `generated_title` — that would wipe a legitimate
-            // auto title living in `session_summary`.
+            // Gate on a real pin (`manual_title_opt`), not a stale flag over a blank `generated_title`
+            // That would wipe a legitimate auto title living in `session_summary`
             let cleared_manual = self.manual_title_opt().is_some();
             if cleared_manual {
                 self.generated_title = None;
-                // Blank both fields so `display_title()` is empty and
-                // `set_generated_title_if_absent` can adopt again. A leftover
-                // pre-rename auto title in `session_summary` would otherwise
-                // pin display forever.
+                // Blank both fields so `display_title()` is empty and `set_generated_title_if_absent` can adopt again
+                // A leftover pre-rename auto title in `session_summary` would otherwise pin display forever
                 self.session_summary.clear();
             }
             self.title_is_manual = false;
@@ -202,19 +192,16 @@ impl Summary {
             return cleared_manual;
         } else if let Some(title) = &patch.generated_title {
             self.set_title(title);
-            // Manual `/rename`: recorded so clients can restore the
-            // prompt-border title on resume.
+            // Manual `/rename`: recorded so clients can restore the prompt-border title on resume
             self.title_is_manual = true;
         } else if let Some(title) = &patch.generated_title_regenerate {
-            // Early-session refresh: replace an existing auto title, but never
-            // a manual `/rename` (checked atomically under the summary lock).
+            // Early-session refresh: replace an existing auto title, but never a manual `/rename` (checked atomically under the summary lock)
             if !self.title_is_manual {
                 self.set_title_overwrite(title);
                 absent_title_applied = true;
             }
         } else if let Some(title) = &patch.generated_title_if_absent {
-            // Auto-generated titles defer to any title already present, so a
-            // manual `/rename` is never overwritten by a racing LLM title.
+            // Auto-generated titles defer to any title already present, so a manual `/rename` is never overwritten by a racing LLM title
             if self.display_title().trim().is_empty() {
                 self.set_title(title);
                 // Defensive: an adopted auto title is never manual.
@@ -226,9 +213,8 @@ impl Summary {
         absent_title_applied
     }
 
-    /// Set `generated_title`, mirroring into `session_summary` while that field
-    /// is still empty so older clients that only read `session_summary` see the
-    /// title too.
+    /// Set `generated_title`, mirroring into `session_summary` while that field is still empty.
+    /// Older clients that only read `session_summary` then see the title too.
     fn set_title(&mut self, title: &str) {
         self.generated_title = Some(title.to_owned());
         if self.session_summary.is_empty() {
@@ -236,26 +222,201 @@ impl Summary {
         }
     }
 
-    /// Replace an auto title with a refreshed one. Unlike [`Self::set_title`],
-    /// this also updates the mirrored `session_summary` (which for an auto title
-    /// holds the previous auto title) so `display_title()` — read by older
-    /// clients that only see `session_summary` — reflects the new title. Only
-    /// called for non-manual titles, so no manual `/rename` is overwritten.
+    /// Replace an auto title with a refreshed one, updating the mirrored `session_summary` too so older clients that only read it see the new title.
+    /// Only called for non-manual titles, so no manual `/rename` is overwritten.
     fn set_title_overwrite(&mut self, title: &str) {
         self.generated_title = Some(title.to_owned());
         self.session_summary = title.to_owned();
     }
 }
 
-/// Read → apply `patch` → write `summary_path`, serialized by an exclusive lock
-/// on the sidecar `lock_path`. The lock is held across the whole read-modify-
-/// write so concurrent writers cannot lose each other's updates. Synchronous:
-/// callers run it on `spawn_blocking` because the lock acquisition blocks.
-///
-/// Returns whether a `generated_title_if_absent` was applied (see
-/// [`Summary::apply_patch`]). Because the read-modify-write happens under the
-/// lock, this "set the title only if absent" check is atomic against a
-/// concurrent manual rename.
+/// Both arms carry the lock-fresh on-disk summary, so a caller that adopts it always displays exactly what the file says.
+pub(crate) enum WorktreeIdentityRepair {
+    /// The lock-fresh read was missing identity the file now has.
+    Applied(Summary),
+    /// The lock-fresh read already had a kind and a label; nothing was written.
+    AlreadyKinded(Summary),
+}
+
+impl WorktreeIdentityRepair {
+    /// The lock-fresh on-disk summary, whichever way the repair went.
+    pub(crate) fn into_summary(self) -> Summary {
+        match self {
+            Self::Applied(summary) | Self::AlreadyKinded(summary) => summary,
+        }
+    }
+}
+
+/// A kinded summary that is still missing `worktree_label` gets only the label.
+/// Kind and source stay put, so a legacy fork is not rewritten as `worktree`.
+/// A kinded and labeled summary is never rewritten.
+pub(crate) fn repair_worktree_identity(
+    summary_path: &Path,
+    lock_path: &Path,
+    identity: &WorktreeIdentity,
+) -> io::Result<WorktreeIdentityRepair> {
+    let lock = open_lock_file(lock_path)?;
+    lock.lock_exclusive()?;
+    let result = (|| {
+        let mut summary = read_summary(summary_path)?;
+        if summary.session_kind.is_none() {
+            summary.stamp_worktree_identity(identity);
+        } else if summary.worktree_label.is_none() {
+            // Keep the existing kind: a fork on a worktree path is still a fork
+            // Only the display label was dropped when merge stopped calling lookup_worktree_label
+            summary.worktree_label = Some(identity.label.clone());
+        } else {
+            return Ok(WorktreeIdentityRepair::AlreadyKinded(summary));
+        }
+        // Deliberately not apply_patch: the stamp is metadata repair, not activity, so updated_at stays put.
+        // Bumping it would reshuffle listings (it is the sort key when last_active_at is absent).
+        // Restore the pre-write mtime so the candidate window still matches the unrepaired file A restore failure must not fail the heal: the stamp is already on disk and the caller would otherwise keep an untagged summary.
+        let previous_mtime = std::fs::metadata(summary_path)
+            .ok()
+            .and_then(|meta| meta.modified().ok());
+        write_summary_atomic(summary_path, &summary)?;
+        if let Some(mtime) = previous_mtime
+            && let Err(error) = restore_summary_mtime(summary_path, mtime)
+        {
+            tracing::warn!(
+                "failed to restore summary mtime after worktree identity heal on {}: {error}",
+                summary_path.display()
+            );
+        }
+        Ok(WorktreeIdentityRepair::Applied(summary))
+    })();
+    let _ = lock.unlock();
+    result
+}
+
+/// Read-site repair for a `summary` that is untagged, or kinded but still missing `worktree_label`, when its cwd is inside a grok-managed worktree.
+/// Stamps the missing identity on disk via [`repair_worktree_identity`] and replaces `summary` with the lock-fresh on-disk state.
+/// Memory then mirrors disk whichever way the repair went.
+pub(crate) fn repair_untagged_worktree_summary(
+    summary: &mut Summary,
+    summary_path: &Path,
+    lock_path: &Path,
+) {
+    if summary.session_kind.is_some() && summary.worktree_label.is_some() {
+        return;
+    }
+    let Some(identity) = crate::session::worktree::worktree_identity_for_cwd(&summary.info.cwd)
+    else {
+        return;
+    };
+    match repair_worktree_identity(summary_path, lock_path, &identity) {
+        Ok(repair) => *summary = repair.into_summary(),
+        Err(error) => tracing::warn!(
+            "failed to repair worktree identity onto {}: {error}",
+            summary_path.display()
+        ),
+    }
+}
+
+/// Keep a parseable on-disk agent id and always mint a new attempt for this activation.
+/// A required id rejects a different persisted identity and adopts the id when none is stored.
+/// Synchronous: callers run it on `spawn_blocking` because lock acquisition blocks.
+pub(crate) fn stamp_session_identity_if_absent(
+    summary_path: &Path,
+    lock_path: &Path,
+    required_agent_id: Option<&str>,
+    mint: impl FnOnce(Option<&str>) -> crate::session::persistence::SessionIdentity,
+) -> io::Result<crate::session::persistence::SessionIdentity> {
+    let lock = open_lock_file(lock_path)?;
+    lock.lock_exclusive()?;
+    let result = (|| {
+        let mut summary = read_summary(summary_path)?;
+        let mut live_agent_id = summary
+            .agent_id
+            .as_deref()
+            .and_then(xai_message_delivery_core::AgentId::parse)
+            .map(|id| id.as_str().to_owned());
+        if let Some(required_agent_id) = required_agent_id {
+            match live_agent_id.as_deref() {
+                Some(live) if live != required_agent_id => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "persisted agent id does not match the requested agent",
+                    ));
+                }
+                Some(_) => {}
+                None => live_agent_id = Some(required_agent_id.to_owned()),
+            }
+        }
+        let mut identity = mint(live_agent_id.as_deref());
+        if let Some(agent_id) = live_agent_id {
+            identity.agent_id = agent_id;
+        }
+        summary.agent_id = Some(identity.agent_id.clone());
+        summary.attempt_id = Some(identity.attempt_id.clone());
+        summary.updated_at = chrono::Utc::now();
+        write_summary_atomic(summary_path, &summary)?;
+        Ok(identity)
+    })();
+    let _ = lock.unlock();
+    result
+}
+
+pub(crate) fn update_wake_start_locked(
+    summary_path: &Path,
+    lock_path: &Path,
+    start: crate::session::persistence::WakeStart,
+    abort: &tokio_util::sync::CancellationToken,
+) -> io::Result<()> {
+    let crate::session::persistence::WakeStart {
+        prior,
+        attempt_id,
+        next_trace_turn,
+        model_id,
+        agent_name,
+        reasoning_effort,
+    } = start;
+    let lock = open_lock_file(lock_path)?;
+    lock.lock_exclusive()?;
+    let result = (|| {
+        if abort.is_cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "wake aborted"));
+        }
+        let mut summary = read_summary(summary_path)?;
+        if summary.attempt_id != prior.attempt_id
+            || summary.next_trace_turn != prior.next_trace_turn
+            || summary.current_model_id != prior.current_model_id
+            || summary.agent_name != prior.agent_name
+            || summary.reasoning_effort != prior.reasoning_effort
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "wake summary changed before start publication",
+            ));
+        }
+        summary.attempt_id = Some(attempt_id);
+        summary.next_trace_turn = next_trace_turn;
+        summary.current_model_id = model_id;
+        if let Some(agent_name) = agent_name {
+            summary.agent_name = Some(agent_name);
+        }
+        if let Some(reasoning_effort) = reasoning_effort {
+            summary.reasoning_effort = reasoning_effort;
+        }
+        summary.updated_at = Utc::now();
+        write_summary_atomic(summary_path, &summary)
+    })();
+    let _ = lock.unlock();
+    result
+}
+
+pub(crate) fn restore_wake_summary_locked(
+    summary_path: &Path,
+    lock_path: &Path,
+    prior: crate::session::persistence::WakeSummaryState,
+) -> io::Result<()> {
+    let lock = open_lock_file(lock_path)?;
+    lock.lock_exclusive()?;
+    let result = super::write_bytes_atomic(summary_path, &prior.summary_bytes);
+    let _ = lock.unlock();
+    result
+}
+
 pub(crate) fn apply_patch_locked(
     summary_path: &Path,
     lock_path: &Path,
@@ -303,6 +464,27 @@ fn write_summary_atomic(summary_path: &Path, summary: &Summary) -> io::Result<()
 }
 
 #[cfg(test)]
+thread_local! {
+    static RESTORE_MTIME_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_restore_summary_mtime() {
+    RESTORE_MTIME_FAULT.set(true);
+}
+
+fn restore_summary_mtime(path: &Path, mtime: std::time::SystemTime) -> io::Result<()> {
+    #[cfg(test)]
+    if RESTORE_MTIME_FAULT.replace(false) {
+        return Err(io::Error::other("injected mtime restore failure"));
+    }
+    OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .set_modified(mtime)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::session::info::Info;
@@ -319,14 +501,9 @@ mod tests {
         }
     }
 
-    /// Regression guard for the `/resume` "frozen `last_active_at`" lost-update
-    /// race. Two adapters (standing in for two persistence actors) hammer the
-    /// SAME `summary.json` concurrently: one appends, the other writes metadata.
-    /// Every write is a whole-summary read-modify-write, so without the sidecar
-    /// lock the metadata writer reverts the appender's `num_messages` /
-    /// `last_active_at` (and vice versa). The invariants below are exact, so a
-    /// regression that drops the lock fails this deterministically: the counter
-    /// must equal the number of appends and the monotonic field must not regress.
+    /// Regression guard for the `/resume` "frozen `last_active_at`" lost-update race.
+    /// Without the sidecar lock the metadata writer reverts the appender's `num_messages` / `last_active_at` (and vice versa).
+    /// The invariants below are exact, so a regression that drops the lock fails this deterministically.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_writes_do_not_lose_updates() {
         const N: usize = 300;
@@ -402,8 +579,7 @@ mod tests {
         );
     }
 
-    /// A freshly-initialized (untitled) session: returns its adapter and the
-    /// path to the on-disk `summary.json`.
+    /// A freshly-initialized (untitled) session: returns its adapter and the path to the on-disk `summary.json`.
     async fn new_session(dir: &TempDir) -> (JsonlStorageAdapter, Info, std::path::PathBuf) {
         let session_dir = dir.path().join("session");
         let info = test_info();
@@ -415,8 +591,132 @@ mod tests {
         (adapter, info, session_dir.join("summary.json"))
     }
 
-    /// Auto title generation writes (and reports `true`) when the session has
-    /// no title yet, mirroring into `session_summary` for old clients.
+    #[tokio::test]
+    async fn second_identity_stamp_keeps_agent_id_and_rotates_attempt_id() {
+        let dir = TempDir::new().unwrap();
+        let (adapter, info, summary_path) = new_session(&dir).await;
+
+        let first = adapter
+            .stamp_session_identity_if_absent(&info, None, |_| {
+                crate::session::persistence::SessionIdentity {
+                    agent_id: "ag1.a1".to_owned(),
+                    attempt_id: "at1.a1".to_owned(),
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            first,
+            crate::session::persistence::SessionIdentity {
+                agent_id: "ag1.a1".to_owned(),
+                attempt_id: "at1.a1".to_owned(),
+            }
+        );
+
+        let second = adapter
+            .stamp_session_identity_if_absent(&info, None, |live_agent_id| {
+                assert_eq!(live_agent_id, Some("ag1.a1"));
+                crate::session::persistence::SessionIdentity {
+                    agent_id: "ag1.a2".to_owned(),
+                    attempt_id: "at1.a2".to_owned(),
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            second,
+            crate::session::persistence::SessionIdentity {
+                agent_id: "ag1.a1".to_owned(),
+                attempt_id: "at1.a2".to_owned(),
+            }
+        );
+
+        let summary = read_summary(&summary_path).unwrap();
+        assert_eq!(summary.agent_id.as_deref(), Some("ag1.a1"));
+        assert_eq!(summary.attempt_id.as_deref(), Some("at1.a2"));
+    }
+
+    #[tokio::test]
+    async fn identity_stamp_adopts_required_uuid() {
+        let dir = TempDir::new().unwrap();
+        let (adapter, info, summary_path) = new_session(&dir).await;
+        let agent_id = "019f972a-7c1b-7d92-a896-4f08f91b6864";
+
+        let stamped = adapter
+            .stamp_session_identity_if_absent(
+                &info,
+                Some(agent_id.to_owned()),
+                move |live_agent_id| {
+                    assert_eq!(live_agent_id, Some(agent_id));
+                    crate::session::persistence::SessionIdentity {
+                        agent_id: live_agent_id.unwrap().to_owned(),
+                        attempt_id: "at1.c1".to_owned(),
+                    }
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(stamped.agent_id, agent_id);
+        let summary = read_summary(&summary_path).unwrap();
+        assert_eq!(summary.agent_id.as_deref(), Some(agent_id));
+        assert_eq!(summary.attempt_id.as_deref(), Some("at1.c1"));
+    }
+
+    #[tokio::test]
+    async fn identity_stamp_rejects_mismatched_required_uuid() {
+        let dir = TempDir::new().unwrap();
+        let (adapter, info, summary_path) = new_session(&dir).await;
+        let mut summary = read_summary(&summary_path).unwrap();
+        summary.agent_id = Some("019f972a-7c1b-7d92-a896-4f08f91b6864".to_owned());
+        write_summary_atomic(&summary_path, &summary).unwrap();
+
+        let error = adapter
+            .stamp_session_identity_if_absent(
+                &info,
+                Some("019f972a-7c1b-7d92-a896-4f08f91b6865".to_owned()),
+                |_| unreachable!("mismatch must fail before minting"),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// An unparseable on-disk agent id is treated as absent: the mint closure sees `None` and its agent replaces the bad token.
+    #[tokio::test]
+    async fn identity_stamp_replaces_unparseable_agent_id() {
+        let dir = TempDir::new().unwrap();
+        let (adapter, info, summary_path) = new_session(&dir).await;
+
+        let mut summary = read_summary(&summary_path).unwrap();
+        summary.agent_id = Some("legacy-session-id".to_owned());
+        write_summary_atomic(&summary_path, &summary).unwrap();
+
+        let stamped = adapter
+            .stamp_session_identity_if_absent(&info, None, |live_agent_id| {
+                assert_eq!(live_agent_id, None);
+                crate::session::persistence::SessionIdentity {
+                    agent_id: "ag1.b1".to_owned(),
+                    attempt_id: "at1.b1".to_owned(),
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            stamped,
+            crate::session::persistence::SessionIdentity {
+                agent_id: "ag1.b1".to_owned(),
+                attempt_id: "at1.b1".to_owned(),
+            }
+        );
+
+        let summary = read_summary(&summary_path).unwrap();
+        assert_eq!(summary.agent_id.as_deref(), Some("ag1.b1"));
+        assert_eq!(summary.attempt_id.as_deref(), Some("at1.b1"));
+    }
+
+    /// Auto title generation writes (and reports `true`) when the session has no title yet, mirroring into `session_summary` for old clients.
     #[tokio::test]
     async fn auto_title_applies_when_session_has_no_title() {
         let dir = TempDir::new().unwrap();
@@ -435,9 +735,8 @@ mod tests {
         assert!(summary.manual_title_opt().is_none());
     }
 
-    /// Regression guard for the `/rename`-during-turn race: an auto-generated
-    /// title that lands after a manual `/rename` must not overwrite it, and
-    /// must report `false` so callers skip the remote/registry sync.
+    /// Regression guard for the `/rename`-during-turn race: an auto-generated title that lands after a manual `/rename` must not overwrite it.
+    /// It must also report `false` so callers skip the remote/registry sync.
     #[tokio::test]
     async fn auto_title_does_not_clobber_manual_rename() {
         let dir = TempDir::new().unwrap();
@@ -458,7 +757,6 @@ mod tests {
         assert_eq!(summary.manual_title_opt().as_deref(), Some("Manual Title"));
     }
 
-    /// A manual `/rename` overwrites a title that was already auto-generated.
     #[tokio::test]
     async fn manual_rename_overrides_existing_auto_title() {
         let dir = TempDir::new().unwrap();
@@ -478,12 +776,9 @@ mod tests {
         assert!(summary.title_is_manual, "manual rename must mark the title");
     }
 
-    /// The race resolved under contention: whichever of a concurrent manual
-    /// rename / auto title generation grabs the summary lock first, the manual
-    /// title is always the final on-disk value (the unconditional manual write
-    /// wins if it lands last; the auto write defers if it lands last). Many
-    /// iterations so a regression to an unconditional auto overwrite — or
-    /// moving the "if absent" check outside the lock — fails reliably.
+    /// The race resolved under contention: a manual rename and an auto title race for the summary lock.
+    /// The unconditional manual write wins if it lands last; the auto write defers if it lands last.
+    /// It runs many iterations so a regression to an unconditional auto overwrite (or moving the "if absent" check outside the lock) fails reliably.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_manual_rename_always_wins_over_auto_title() {
         for _ in 0..100 {
@@ -517,14 +812,13 @@ mod tests {
 
             let summary = read_summary(&summary_path).unwrap();
             assert_eq!(summary.display_title(), "Manual Title");
-            // Manual-ness survives the race in either landing order, so the
-            // prompt-border title is restored on resume.
+            // The manual flag survives the race in either landing order, so the prompt-border title is restored on resume
             assert!(summary.title_is_manual);
         }
     }
 
-    /// `/rename --auto` after a rename-before-auto: both generated_title and
-    /// the mirrored session_summary are cleared, so if-absent can adopt again.
+    /// `/rename --auto` after a manual rename that landed before any auto title: both generated_title and the mirrored session_summary are cleared.
+    /// If-absent can then adopt again.
     #[tokio::test]
     async fn reset_title_to_auto_clears_manual_and_unmirrors_equal_summary() {
         let dir = TempDir::new().unwrap();
@@ -562,8 +856,8 @@ mod tests {
         assert!(!summary.title_is_manual);
     }
 
-    /// Common path: auto → `/rename` → `/rename --auto`. The leftover
-    /// pre-rename auto title in `session_summary` must not block if-absent.
+    /// Common path: auto title, then `/rename`, then `/rename --auto`.
+    /// The leftover pre-rename auto title in `session_summary` must not block if-absent.
     #[tokio::test]
     async fn reset_after_auto_then_manual_blanks_display_and_accepts_if_absent() {
         let dir = TempDir::new().unwrap();
@@ -608,8 +902,7 @@ mod tests {
         assert!(!summary.title_is_manual);
     }
 
-    /// Early-session title refresh overwrites an existing auto title, updating
-    /// the mirrored `session_summary` so old clients see the new title too.
+    /// Early-session title refresh overwrites an existing auto title, updating the mirrored `session_summary` so old clients see the new title too.
     #[tokio::test]
     async fn regenerate_overwrites_auto_title() {
         let dir = TempDir::new().unwrap();
@@ -627,12 +920,11 @@ mod tests {
         assert!(applied);
         let summary = read_summary(&summary_path).unwrap();
         assert_eq!(summary.display_title(), "Refined Real Topic");
-        // Mirror updated so `display_title()` (old clients) reflects the refresh.
+        // The mirror is updated so `display_title()` (old clients) reflects the refresh
         assert_eq!(summary.session_summary, "Refined Real Topic");
         assert!(!summary.title_is_manual);
     }
 
-    /// A title refresh never overwrites a manual `/rename`, and reports `false`.
     #[tokio::test]
     async fn regenerate_never_clobbers_manual_title() {
         let dir = TempDir::new().unwrap();
@@ -653,8 +945,7 @@ mod tests {
         assert!(summary.title_is_manual);
     }
 
-    /// A recap persists into `summary.json` (last-writer-wins) and clears on
-    /// rewind, separate from the last-turn summary.
+    /// A recap persists into `summary.json` (last-writer-wins) and clears on rewind, separate from the last-turn summary.
     #[tokio::test]
     async fn set_last_recap_persists_and_clears() {
         let dir = TempDir::new().unwrap();
@@ -670,7 +961,7 @@ mod tests {
             summary.last_recap.as_deref(),
             Some("Where we left off: fixing the parser")
         );
-        // Distinct from the last-turn summary.
+        // The recap is distinct from the last-turn summary
         assert!(summary.last_turn_summary.is_none());
 
         // A rewind clears it.
@@ -679,8 +970,7 @@ mod tests {
         assert!(summary.last_recap.is_none());
     }
 
-    /// Unpin on a never-renamed / auto-titled session is a no-op: the auto
-    /// title stays, the flag stays false.
+    /// Unpin on a never-renamed / auto-titled session is a no-op: the auto title stays, the flag stays false.
     #[tokio::test]
     async fn reset_title_to_auto_is_noop_when_not_manual() {
         let dir = TempDir::new().unwrap();
@@ -709,7 +999,48 @@ mod tests {
         );
     }
 
-    /// Reset and a racing auto-title never leave a manual pin on disk.
+    #[tokio::test]
+    async fn session_kind_if_absent_stamps_unset_summary() {
+        let dir = TempDir::new().unwrap();
+        let (adapter, info, summary_path) = new_session(&dir).await;
+
+        adapter
+            .set_session_kind_if_absent(&info, "headless".into())
+            .await
+            .unwrap();
+
+        let summary = read_summary(&summary_path).unwrap();
+        assert_eq!(summary.session_kind.as_deref(), Some("headless"));
+    }
+
+    #[tokio::test]
+    async fn session_kind_if_absent_preserves_existing_kind() {
+        let dir = TempDir::new().unwrap();
+        let (adapter, info, summary_path) = new_session(&dir).await;
+
+        adapter
+            .apply_summary_patch(
+                &info,
+                SummaryPatch {
+                    session_kind_if_absent: Some("subagent".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        adapter
+            .set_session_kind_if_absent(&info, "headless".into())
+            .await
+            .unwrap();
+
+        let summary = read_summary(&summary_path).unwrap();
+        assert_eq!(
+            summary.session_kind.as_deref(),
+            Some("subagent"),
+            "an existing kind must win over a later stamp"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_reset_and_auto_title_never_leave_manual_pin() {
         for _ in 0..50 {
@@ -749,5 +1080,186 @@ mod tests {
             );
             assert_ne!(summary.display_title(), "Manual Title");
         }
+    }
+    fn as_json(summary: &Summary) -> serde_json::Value {
+        serde_json::to_value(summary).unwrap()
+    }
+
+    fn identity(label: &str, source: Option<&str>) -> WorktreeIdentity {
+        WorktreeIdentity {
+            label: label.to_owned(),
+            source_workspace_dir: source.map(str::to_owned),
+        }
+    }
+
+    fn lock_path_for(summary_path: &Path) -> std::path::PathBuf {
+        summary_path.with_file_name(format!("{}.lock", crate::session::storage::SUMMARY_FILE))
+    }
+
+    #[tokio::test]
+    async fn repair_stamps_untagged_summary_on_disk_without_bumping_updated_at() {
+        let dir = TempDir::new().unwrap();
+        let (_adapter, _info, summary_path) = new_session(&dir).await;
+        let mut expected = read_summary(&summary_path).unwrap();
+
+        let repair = repair_worktree_identity(
+            &summary_path,
+            &lock_path_for(&summary_path),
+            &identity("fix-bug", Some("/home/user/repo")),
+        )
+        .unwrap();
+
+        let WorktreeIdentityRepair::Applied(applied) = repair else {
+            panic!("expected Applied for an untagged summary");
+        };
+        expected.session_kind = Some("worktree".to_owned());
+        expected.worktree_label = Some("fix-bug".to_owned());
+        expected.source_workspace_dir = Some("/home/user/repo".to_owned());
+        assert_eq!(as_json(&applied), as_json(&expected));
+        assert_eq!(
+            as_json(&read_summary(&summary_path).unwrap()),
+            as_json(&applied),
+            "returned summary must mirror the file",
+        );
+    }
+
+    #[tokio::test]
+    async fn repair_stamps_untagged_summary_without_refreshing_file_mtime() {
+        let dir = TempDir::new().unwrap();
+        let (_adapter, _info, summary_path) = new_session(&dir).await;
+        let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 24 * 3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&summary_path)
+            .unwrap()
+            .set_modified(stale)
+            .unwrap();
+        let mtime_before = std::fs::metadata(&summary_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        let repair = repair_worktree_identity(
+            &summary_path,
+            &lock_path_for(&summary_path),
+            &identity("fix-bug", Some("/home/user/repo")),
+        )
+        .unwrap();
+        assert!(matches!(repair, WorktreeIdentityRepair::Applied(_)));
+
+        let mtime_after = std::fs::metadata(&summary_path)
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(
+            mtime_after, mtime_before,
+            "heal rewrite must not refresh mtime; list_sessions_recent uses it"
+        );
+        assert_eq!(
+            read_summary(&summary_path).unwrap().session_kind.as_deref(),
+            Some("worktree")
+        );
+    }
+
+    #[tokio::test]
+    async fn repair_keeps_applied_stamp_when_mtime_restore_fails() {
+        let dir = TempDir::new().unwrap();
+        let (_adapter, _info, summary_path) = new_session(&dir).await;
+        fail_next_restore_summary_mtime();
+
+        let repair = repair_worktree_identity(
+            &summary_path,
+            &lock_path_for(&summary_path),
+            &identity("fix-bug", Some("/home/user/repo")),
+        )
+        .unwrap();
+        let WorktreeIdentityRepair::Applied(applied) = repair else {
+            panic!("mtime restore must not undo a stamp already on disk");
+        };
+        assert_eq!(applied.session_kind.as_deref(), Some("worktree"));
+        assert_eq!(applied.worktree_label.as_deref(), Some("fix-bug"));
+        assert_eq!(
+            read_summary(&summary_path).unwrap().session_kind.as_deref(),
+            Some("worktree")
+        );
+    }
+
+    #[tokio::test]
+    async fn repair_declines_already_kinded_labeled_summary_and_leaves_file_unwritten() {
+        let dir = TempDir::new().unwrap();
+        let (_adapter, _info, summary_path) = new_session(&dir).await;
+        let mut on_disk = read_summary(&summary_path).unwrap();
+        on_disk.session_kind = Some("fork".to_owned());
+        on_disk.worktree_label = Some("existing".to_owned());
+        std::fs::write(&summary_path, serde_json::to_vec_pretty(&on_disk).unwrap()).unwrap();
+        let bytes_before = std::fs::read(&summary_path).unwrap();
+
+        let repair = repair_worktree_identity(
+            &summary_path,
+            &lock_path_for(&summary_path),
+            &identity("fix-bug", Some("/home/user/repo")),
+        )
+        .unwrap();
+
+        let WorktreeIdentityRepair::AlreadyKinded(fresh) = repair else {
+            panic!("expected AlreadyKinded for a kinded labeled summary");
+        };
+        assert_eq!(as_json(&fresh), as_json(&on_disk));
+        assert_eq!(std::fs::read(&summary_path).unwrap(), bytes_before);
+    }
+
+    #[tokio::test]
+    async fn repair_fills_missing_label_on_kinded_summary_without_changing_kind() {
+        let dir = TempDir::new().unwrap();
+        let (_adapter, _info, summary_path) = new_session(&dir).await;
+        let mut on_disk = read_summary(&summary_path).unwrap();
+        on_disk.session_kind = Some("fork".to_owned());
+        on_disk.worktree_label = None;
+        on_disk.source_workspace_dir = Some("/home/user/repo".to_owned());
+        std::fs::write(&summary_path, serde_json::to_vec_pretty(&on_disk).unwrap()).unwrap();
+
+        let repair = repair_worktree_identity(
+            &summary_path,
+            &lock_path_for(&summary_path),
+            &identity("fix-bug", Some("/other/source")),
+        )
+        .unwrap();
+
+        let WorktreeIdentityRepair::Applied(applied) = repair else {
+            panic!("expected Applied for a kinded unlabeled summary");
+        };
+        assert_eq!(applied.session_kind.as_deref(), Some("fork"));
+        assert_eq!(applied.worktree_label.as_deref(), Some("fix-bug"));
+        assert_eq!(
+            applied.source_workspace_dir.as_deref(),
+            Some("/home/user/repo"),
+            "existing source must not be overwritten by the path identity"
+        );
+        let fresh = read_summary(&summary_path).unwrap();
+        assert_eq!(as_json(&fresh), as_json(&applied));
+    }
+
+    #[tokio::test]
+    async fn repair_second_application_declines_and_keeps_first_stamp() {
+        let dir = TempDir::new().unwrap();
+        let (_adapter, _info, summary_path) = new_session(&dir).await;
+        let lock_path = lock_path_for(&summary_path);
+        repair_worktree_identity(
+            &summary_path,
+            &lock_path,
+            &identity("fix-bug", Some("/home/user/repo")),
+        )
+        .unwrap();
+        let bytes_after_first = std::fs::read(&summary_path).unwrap();
+
+        let repair =
+            repair_worktree_identity(&summary_path, &lock_path, &identity("other-label", None))
+                .unwrap();
+
+        let WorktreeIdentityRepair::AlreadyKinded(fresh) = repair else {
+            panic!("expected the second repair to decline");
+        };
+        assert_eq!(fresh.worktree_label.as_deref(), Some("fix-bug"));
+        assert_eq!(std::fs::read(&summary_path).unwrap(), bytes_after_first);
     }
 }

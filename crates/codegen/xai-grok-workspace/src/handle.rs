@@ -5,13 +5,14 @@ use prometheus::{
     Histogram, HistogramVec, IntCounter, IntCounterVec, register_histogram, register_histogram_vec,
     register_int_counter, register_int_counter_vec,
 };
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use xai_hunk_tracker::{HunkTrackerActor, HunkTrackerHandle, TrackingMode};
-use xai_tool_protocol::ToolServerStatusPayload;
 use xai_tool_protocol::turn_hook::TurnHookOutcome;
-/// Default SIGTERM drain budget (ms); override via
-/// `GROK_WORKSPACE_TERMINATION_GRACE_MS`. 45s fits under the K8s grace period.
+use xai_tool_protocol::{SessionId, ToolId, ToolServerStatusPayload};
+/// Default SIGTERM drain budget (ms); override via `GROK_WORKSPACE_TERMINATION_GRACE_MS`.
+/// 45s fits under the K8s grace period.
 const DEFAULT_TERMINATION_GRACE_MS: u64 = 45_000;
 /// preStop-hook drain marker; override via `GROK_WORKSPACE_DRAINING_FILE`.
 const DEFAULT_DRAINING_FILE: &str = "/tmp/workspace-server.draining";
@@ -55,7 +56,7 @@ static PRODUCER_SPAWNED_AFTER_DRAIN_TOTAL: std::sync::LazyLock<IntCounter> =
         )
         .unwrap()
     });
-/// Startup stages until hub connected. Labels: stage + outcome (ok/error).
+/// Startup stages until hub connected. Labels: stage and outcome (ok/error).
 static STARTUP_STAGE_DURATION_SECONDS: std::sync::LazyLock<HistogramVec> =
     std::sync::LazyLock::new(|| {
         register_histogram_vec!(
@@ -85,7 +86,7 @@ fn observe_startup_stage(stage: &str, outcome: &str, secs: f64) {
         .with_label_values(&[stage, outcome])
         .observe(secs);
 }
-/// tool_catalog always; connect_hub error only when catalog fails. Testable.
+/// Records tool_catalog always, and a connect_hub error only when the catalog fails. Split out so tests can call it.
 fn observe_connect_hub_catalog_result(
     catalog_ok: bool,
     tool_catalog_secs: f64,
@@ -116,10 +117,17 @@ static WORKSPACE_BIND_ZERO_TOOLS_TOTAL: std::sync::LazyLock<IntCounterVec> =
         )
         .unwrap()
     });
-/// `session.bind` resolutions that FAILED the bind (the server reports
-/// bind-unavailable and the harness re-provisions), by reason. Distinct from
-/// [`WORKSPACE_BIND_ZERO_TOOLS_TOTAL`], which counts binds that *completed*
-/// while advertising zero model-facing tools.
+/// `session.bind` resolutions that FAILED the bind (the server reports bind-unavailable and the harness re-provisions), by reason.
+/// Binds that SUCCEEDED but with MCP degraded (binding left `Closed` until the next bind). Deliberately not `WORKSPACE_BIND_FAILED_TOTAL`: the bind invariant is that no MCP condition fails a bind, so MCP race outcomes are degradations, not failures.
+static WORKSPACE_BIND_MCP_DEGRADED_TOTAL: std::sync::LazyLock<IntCounterVec> =
+    std::sync::LazyLock::new(|| {
+        register_int_counter_vec!(
+            "grok_workspace_bind_mcp_degraded_total",
+            "session.bind resolutions that succeeded with MCP degraded, by reason",
+            &["reason"]
+        )
+        .unwrap()
+    });
 static WORKSPACE_BIND_FAILED_TOTAL: std::sync::LazyLock<IntCounterVec> =
     std::sync::LazyLock::new(|| {
         register_int_counter_vec!(
@@ -138,8 +146,8 @@ static WORKSPACE_BIND_UNSERVED_TOOLS_TOTAL: std::sync::LazyLock<IntCounter> =
         )
         .unwrap()
     });
-/// Model-facing tools advertised per successful `session.bind` (the RPC infra
-/// handler is not counted). Catches silent shrinkage of a session's toolset.
+/// Model-facing tools advertised per successful `session.bind` (the RPC infra handler is not counted).
+/// Catches silent shrinkage of a session's toolset.
 static WORKSPACE_BIND_ADVERTISED_TOOLS: std::sync::LazyLock<Histogram> =
     std::sync::LazyLock::new(|| {
         register_histogram!(
@@ -151,13 +159,7 @@ static WORKSPACE_BIND_ADVERTISED_TOOLS: std::sync::LazyLock<Histogram> =
         )
         .unwrap()
     });
-/// Tripwire, expected 0 in production. `path="swap"`: a toolset swap found
-/// the outgoing toolset's `Terminal` resource pointing at a backend other
-/// than the session-owned one — a resolve path bypassed the session-owned
-/// backend, and that backend's background tasks die with the old toolset.
-/// Non-zero means background tasks were (or are about to be) killed by a
-/// toolset swap: page the owning team. (`path="actor"` — actor-loop
-/// channel-closure detection — is not emitted yet.)
+/// Tripwire, expected 0 in production. (`path="actor"`, actor-loop channel-closure detection, is not emitted yet.)
 pub(crate) static WORKSPACE_TERMINAL_BACKEND_ORPHANED_TOTAL: std::sync::LazyLock<IntCounterVec> =
     std::sync::LazyLock::new(|| {
         register_int_counter_vec!(
@@ -168,9 +170,8 @@ pub(crate) static WORKSPACE_TERMINAL_BACKEND_ORPHANED_TOTAL: std::sync::LazyLock
         )
         .unwrap()
     });
-/// Environment-capture (`workspace_environment.json`) blocking task panics
-/// (tripwire, expected 0). A non-zero rate means `WorkspaceEnvironment::capture`
-/// is faulting for real sessions and dropping the artifact.
+/// Environment-capture (`workspace_environment.json`) blocking task panics (tripwire, expected 0).
+/// A non-zero rate means `WorkspaceEnvironment::capture` is faulting for real sessions and dropping the artifact.
 static ENV_CAPTURE_PANIC_TOTAL: std::sync::LazyLock<IntCounter> = std::sync::LazyLock::new(|| {
     register_int_counter!(
         "grok_workspace_env_capture_panic_total",
@@ -188,7 +189,7 @@ use crate::session::swap_policy::{
     record_swap_decision, record_toolset_swap,
 };
 use crate::session::tool_config::resolve_session_toolset;
-use crate::session::{WorkspaceSession, WorkspaceShared};
+use crate::session::{WorkspaceMcpBinding, WorkspaceSession, WorkspaceShared};
 use crate::telemetry::dc_log;
 use crate::workspace_ops::{
     GetFileEntry, GetFileResult, GetFilesRes, PutFileEntry, PutFileResult, PutFilesRes,
@@ -239,8 +240,8 @@ pub(crate) static REWIND_CHECKPOINT_DURATION: std::sync::LazyLock<HistogramVec> 
         )
         .unwrap()
     });
-/// Correctness canary: non-`Completed` `after_turn` boundaries that produced
-/// a rewind finalize. Stays 0 unless `workspace_rewind_all_outcomes` is on.
+/// Correctness canary: non-`Completed` `after_turn` boundaries that produced a rewind finalize.
+/// Stays 0 unless `workspace_rewind_all_outcomes` is on.
 pub(crate) static REWIND_NON_COMPLETED_FINALIZE_TOTAL: std::sync::LazyLock<IntCounterVec> =
     std::sync::LazyLock::new(|| {
         register_int_counter_vec!(
@@ -250,25 +251,17 @@ pub(crate) static REWIND_NON_COMPLETED_FINALIZE_TOTAL: std::sync::LazyLock<IntCo
         )
         .unwrap()
     });
-/// `domain` label for the rewind metrics. Typed so the closed fs/hunk/git
-/// vocabulary can't be mistyped at a call site.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `domain` label for the rewind metrics.
+/// Typed so the closed fs/hunk/git vocabulary can't be mistyped at a call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub(crate) enum RewindDomain {
     Fs,
     Hunk,
     Git,
 }
-impl RewindDomain {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            RewindDomain::Fs => "fs",
-            RewindDomain::Hunk => "hunk",
-            RewindDomain::Git => "git",
-        }
-    }
-}
-/// Map a turn outcome to a stable, bounded `outcome` metric label. The catch-all
-/// keeps label cardinality bounded (`TurnHookOutcome` is `#[non_exhaustive]`).
+/// Map a turn outcome to a stable, bounded `outcome` metric label.
+/// The catch-all keeps label cardinality bounded (`TurnHookOutcome` is `#[non_exhaustive]`).
 pub(crate) fn rewind_outcome_label(outcome: TurnHookOutcome) -> &'static str {
     match outcome {
         TurnHookOutcome::Completed => "completed",
@@ -284,24 +277,23 @@ pub(crate) fn rewind_result_label(success: bool) -> &'static str {
 /// Record a per-domain checkpoint capture, labeled by turn outcome.
 pub(crate) fn record_rewind_capture(domain: RewindDomain, outcome: TurnHookOutcome) {
     REWIND_CHECKPOINT_CAPTURE_TOTAL
-        .with_label_values(&[domain.as_str(), rewind_outcome_label(outcome)])
+        .with_label_values(&[domain.as_ref(), rewind_outcome_label(outcome)])
         .inc();
 }
 /// Observe how long a per-domain capture operation took (seconds).
 pub(crate) fn observe_rewind_capture_duration(domain: RewindDomain, seconds: f64) {
     REWIND_CHECKPOINT_DURATION
-        .with_label_values(&[domain.as_str()])
+        .with_label_values(&[domain.as_ref()])
         .observe(seconds);
 }
 /// Record a per-domain restore, labeled by result (success/failure).
 pub(crate) fn record_rewind_restore(domain: RewindDomain, success: bool) {
     REWIND_RESTORE_TOTAL
-        .with_label_values(&[domain.as_str(), rewind_result_label(success)])
+        .with_label_values(&[domain.as_ref(), rewind_result_label(success)])
         .inc();
 }
-/// Record the metrics common to every finalize: FS-domain capture + finalize
-/// counter (both by `outcome`) + FS capture duration. Shared by the RPC finalize
-/// and the non-`Completed` cross-over so the two paths can't drift.
+/// Record the metrics common to every finalize: the FS-domain capture and finalize counters (both by `outcome`) and the FS capture duration.
+/// Shared by the RPC finalize and the non-`Completed` cross-over so the two paths can't drift.
 pub(crate) fn record_fs_finalize(outcome: TurnHookOutcome, fs_capture_seconds: f64) {
     observe_rewind_capture_duration(RewindDomain::Fs, fs_capture_seconds);
     record_rewind_capture(RewindDomain::Fs, outcome);
@@ -309,8 +301,7 @@ pub(crate) fn record_fs_finalize(outcome: TurnHookOutcome, fs_capture_seconds: f
         .with_label_values(&[rewind_outcome_label(outcome)])
         .inc();
 }
-/// Record the correctness canary: a non-`Completed` `after_turn` boundary that
-/// produced a finalize.
+/// Record the correctness canary: a non-`Completed` `after_turn` boundary that produced a finalize.
 pub(crate) fn record_non_completed_finalize_canary(outcome: TurnHookOutcome) {
     REWIND_NON_COMPLETED_FINALIZE_TOTAL
         .with_label_values(&[rewind_outcome_label(outcome)])
@@ -320,7 +311,7 @@ pub(crate) fn record_non_completed_finalize_canary(outcome: TurnHookOutcome) {
 pub(crate) fn init_metrics() {
     for reason in [DrainReason::Sigterm, DrainReason::Evict] {
         DRAIN_STARTED_TOTAL
-            .with_label_values(&[reason.as_str()])
+            .with_label_values(&[reason.as_ref()])
             .inc_by(0);
     }
     for outcome in [
@@ -330,7 +321,7 @@ pub(crate) fn init_metrics() {
         DrainOutcome::Timeout,
     ] {
         DRAIN_COMPLETED_TOTAL
-            .with_label_values(&[outcome.as_str()])
+            .with_label_values(&[outcome.as_ref()])
             .inc_by(0);
     }
     DRAIN_LOST_ITEMS_TOTAL.inc_by(0);
@@ -359,6 +350,9 @@ pub(crate) fn init_metrics() {
             .with_label_values(&[reason])
             .inc_by(0);
     }
+    WORKSPACE_BIND_MCP_DEGRADED_TOTAL
+        .with_label_values(&["raced_teardown"])
+        .inc_by(0);
     for reason in ["empty_after_filter", "missing_tool_config"] {
         WORKSPACE_BIND_ZERO_TOOLS_TOTAL
             .with_label_values(&[reason])
@@ -370,15 +364,15 @@ pub(crate) fn init_metrics() {
     for domain in [RewindDomain::Fs, RewindDomain::Hunk, RewindDomain::Git] {
         for outcome in ["completed", "cancelled", "error", "other"] {
             REWIND_CHECKPOINT_CAPTURE_TOTAL
-                .with_label_values(&[domain.as_str(), outcome])
+                .with_label_values(&[domain.as_ref(), outcome])
                 .inc_by(0);
         }
         for result in ["success", "failure"] {
             REWIND_RESTORE_TOTAL
-                .with_label_values(&[domain.as_str(), result])
+                .with_label_values(&[domain.as_ref(), result])
                 .inc_by(0);
         }
-        let _ = REWIND_CHECKPOINT_DURATION.with_label_values(&[domain.as_str()]);
+        let _ = REWIND_CHECKPOINT_DURATION.with_label_values(&[domain.as_ref()]);
     }
     for outcome in ["completed", "cancelled", "error", "other"] {
         REWIND_CHECKPOINT_FINALIZE_TOTAL
@@ -389,44 +383,37 @@ pub(crate) fn init_metrics() {
             .inc_by(0);
     }
 }
-/// Outcome of a hub `session.bind` against an already-existing session
-/// (see [`WorkspaceHandle::rebind_existing_hub_session`]).
+/// Outcome of a hub `session.bind` against an already-existing session (see [`WorkspaceHandle::rebind_existing_hub_session`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RebindOutcome {
-    /// Same (or no) explicit toolset — session reused untouched.
+    /// Same (or no) explicit toolset: session reused untouched.
     Reused,
-    /// Changed explicit toolset — re-resolved and swapped in.
+    /// Changed explicit toolset: re-resolved and swapped in.
     Reresolved,
-    /// Changed explicit toolset, but the re-resolve failed; existing kept.
+    /// Changed explicit toolset, but the re-resolve failed; the existing toolset is kept.
     ReresolveFailed,
-    /// Changed explicit toolset, but the session's toolset is externally
-    /// owned (local-bind shape) — nothing was resolved or swapped; the
-    /// existing toolset (and fingerprint) kept. Reused-semantics for the
-    /// bind reply: advertise the KEPT toolset, drop any unserved set from
-    /// the unapplied resolve.
+    /// Changed explicit toolset, but the session's toolset is externally owned (local-bind shape): nothing was resolved or swapped.
+    /// The existing toolset (and fingerprint) is kept.
+    /// The bind reply behaves like `Reused`: advertise the kept toolset, drop any unserved set from the unapplied resolve.
     KeptExternallyOwned,
-    /// Changed explicit toolset while the session had tool calls in flight
-    /// (`explicit → different-explicit` transition only) — existing kept;
-    /// a later rebind with no calls in flight applies the correction.
+    /// Changed explicit toolset while the session had tool calls in flight (only the explicit-to-different-explicit transition).
+    /// The existing toolset is kept; a later rebind with no calls in flight applies the correction.
     ReresolveDeferredInFlight,
 }
-/// What [`WorkspaceHandle::resolve_and_swap_session_toolset`] actually did —
-/// so no caller can mistake a deliberate skip for an installed swap (the
-/// skip leaves toolset AND fingerprint untouched).
+/// What [`WorkspaceHandle::resolve_and_swap_session_toolset`] actually did, so no caller can mistake a deliberate skip for an installed swap.
+/// A skip leaves toolset AND fingerprint untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "a skip means the config was NOT applied; callers must not report success"]
 pub(crate) enum SwapOutcome {
     /// Toolset re-resolved and installed; fingerprint updated.
     Swapped,
-    /// Identical fingerprint ([`SwapDecision::Reuse`]): the live toolset
-    /// already reflects the config, nothing resolved or changed.
+    /// Identical fingerprint ([`SwapDecision::Reuse`]): the live toolset already reflects the config, nothing resolved or changed.
     Reused,
-    /// Externally-owned (local-bind) toolset: rebuild skipped, nothing
-    /// changed. See `toolset_terminal_is_session_owned`.
+    /// Externally-owned (local-bind) toolset: rebuild skipped, nothing changed.
+    /// See `toolset_terminal_is_session_owned`.
     SkippedExternallyOwned,
 }
-/// Public handle to a workspace instance. Owns shared state (sessions,
-/// MCP snapshot, tool config, event bus) and session lifecycle.
+/// Owns the shared state (sessions, MCP snapshot, tool config, event bus) and creates, forks, and drops sessions.
 #[derive(Clone)]
 pub struct WorkspaceHandle {
     pub(crate) shared: Arc<WorkspaceShared>,
@@ -441,15 +428,14 @@ type AcknowledgedNotifyChannel = (
 fn acknowledged_notify_channel(_enabled: bool) -> Option<AcknowledgedNotifyChannel> {
     None
 }
-/// Client-fs resolution base: request paths resolve against `base`,
-/// `canonical` is the matching canonicalization-containment boundary.
+/// Client-fs resolution base: request paths resolve against `base`, and `canonical` is its canonicalized form used for containment checks.
 pub(crate) struct ClientFsBase {
     pub(crate) base: PathBuf,
     pub(crate) canonical: PathBuf,
 }
 impl WorkspaceHandle {
-    /// `None` when not connected. Never hands out an owned
-    /// `ToolServer` — a clone-drop begins server teardown.
+    /// `None` when not connected.
+    /// Never hands out an owned `ToolServer`: dropping a clone starts server teardown.
     pub async fn trace_donation_reporter(
         &self,
         service_name: &str,
@@ -464,15 +450,8 @@ impl WorkspaceHandle {
             .as_ref()
             .map(|hub| hub.server.trace_donation_reporter(service_name))
     }
-    /// Post-connect entry point for the log export layer, the analogue of
-    /// [`Self::trace_donation_reporter`]. Returns `None` when not connected
-    /// (the layer stays inert). On
-    /// `Some`, yields a [`LogDonationSender`] to swap into the
-    /// already-installed inert `DonatingLogLayer` plus a drain handle.
-    /// Never hands out an owned `ToolServer` — a clone-drop begins server
-    /// teardown.
-    ///
-    /// [`LogDonationSender`]: xai_computer_hub_sdk::LogDonationSender
+    /// Post-connect entry point for the log export layer, the analogue of [`Self::trace_donation_reporter`]. Returns `None` when not connected (the layer stays inert).
+    /// Never hands out an owned `ToolServer`: dropping a clone starts server teardown.
     pub async fn log_donation_layer(
         &self,
         service_name: &str,
@@ -487,12 +466,8 @@ impl WorkspaceHandle {
             .as_ref()
             .map(|hub| hub.server.log_donation_layer(service_name))
     }
-    /// Post-connect entry point for metric export, the analogue of
-    /// [`Self::trace_donation_reporter`]. Returns `None` when not connected
-    /// (no reporter is spawned). On
-    /// `Some`, spawns the periodic Prometheus-registry gather → OTLP →
-    /// export pump and yields a drain handle. Never hands out an owned
-    /// `ToolServer` — a clone-drop begins server teardown.
+    /// Post-connect entry point for metric export, the analogue of [`Self::trace_donation_reporter`]. Returns `None` when not connected (no reporter is spawned).
+    /// Never hands out an owned `ToolServer`: dropping a clone starts server teardown.
     pub async fn metric_donation_reporter(
         &self,
         service_name: &str,
@@ -504,15 +479,8 @@ impl WorkspaceHandle {
             .as_ref()
             .map(|hub| hub.server.metric_donation_reporter(service_name))
     }
-    /// Construct a handle with zero sessions.
-    ///
-    /// Sessions are created explicitly via [`Self::create_session`] or
-    /// [`Self::fork_session`]. There is no implicit "main" session —
-    /// callers (TUI, workspace-server binary) create their first
-    /// session after construction.
-    ///
-    /// # Panics
-    /// Requires a Tokio runtime to be entered (for broadcast channel).
+    /// Construct a handle with zero sessions. Sessions are created explicitly via [`Self::create_session`] or [`Self::fork_session`].
+    /// There is no implicit "main" session: callers (TUI, workspace-server binary) create their first session after construction.
     pub fn new(config: WorkspaceConfig) -> WorkspaceResult<Self> {
         Self::build(
             config,
@@ -526,15 +494,8 @@ impl WorkspaceHandle {
             crate::upload::environment::WorkspaceIdentity::default(),
         )
     }
-    /// Construct a handle with an explicit `$GROK_WORKSPACE_HOME` and a
-    /// pre-spawned [`UploadQueue`](xai_file_utils::queue::UploadQueue).
-    ///
-    /// [`connect_local_workspace`] calls this so the queue is backed by the
-    /// proxy storage config; [`Self::new`] takes the queue-less path for tests
-    /// and local mode.
-    ///
-    /// # Panics
-    /// Requires a Tokio runtime to be entered (for broadcast channel).
+    /// Construct a handle with an explicit `$GROK_WORKSPACE_HOME` and a pre-spawned [`UploadQueue`](xai_file_utils::queue::UploadQueue).
+    /// [`connect_local_workspace`] calls this so the queue is backed by the proxy storage config. [`Self::new`] takes the queue-less path for tests and local mode.
     pub(crate) fn new_with_data_collection(
         config: WorkspaceConfig,
         workspace_home: std::path::PathBuf,
@@ -576,21 +537,15 @@ impl WorkspaceHandle {
         let (events, _drop_rx) = tokio::sync::broadcast::channel(capacity);
         let (hook_registry, hook_load_errors) = {
             use xai_grok_hooks::discovery::{HookSource, load_hooks_from_sources};
-            fn to_hook_source(s: &HookSourceConfig) -> HookSource<'_> {
-                match s {
-                    HookSourceConfig::SettingsFile(p) => HookSource::SettingsFile(p.as_path()),
-                    HookSourceConfig::Directory(p) => HookSource::Directory(p.as_path()),
-                }
-            }
             let global_refs: Vec<HookSource<'_>> = config
                 .hook_global_sources
                 .iter()
-                .map(to_hook_source)
+                .map(HookSourceConfig::as_hook_source)
                 .collect();
             let project_refs: Vec<HookSource<'_>> = config
                 .hook_project_sources
                 .iter()
-                .map(to_hook_source)
+                .map(HookSourceConfig::as_hook_source)
                 .collect();
             let (registry, errors) = load_hooks_from_sources(&global_refs, &project_refs);
             for err in &errors {
@@ -675,6 +630,7 @@ impl WorkspaceHandle {
             root_cwd: config.root_cwd.clone(),
             sessions: parking_lot::RwLock::new(sessions),
             session_factory: config.session_factory,
+            bind_mcp: config.bind_mcp.map(parking_lot::RwLock::new),
             mcp_tools_snapshot: arc_swap::ArcSwap::new(Arc::new(vec![])),
             events,
             respect_gitignore: config.respect_gitignore,
@@ -712,6 +668,9 @@ impl WorkspaceHandle {
             session_event_writers,
             inflight_enqueues: dashmap::DashMap::new(),
             producer_tasks,
+            bind_mount_hook: arc_swap::ArcSwap::from_pointee(
+                crate::path_virtualization::BindMountHook::noop(),
+            ),
             #[cfg(test)]
             post_resolve_test_hook: parking_lot::Mutex::new(None),
             client_fs_hash_memo: Default::default(),
@@ -727,42 +686,27 @@ impl WorkspaceHandle {
     pub fn activity_tracker(&self) -> &std::sync::Arc<crate::activity::ActivityTracker> {
         &self.shared.activity_tracker
     }
-    /// The [`ToolServer`](xai_computer_hub_sdk::ToolServer) for this
-    /// workspace, if a server connection is active.
-    ///
-    /// Non-blocking: returns `None` both when no server is connected and when the
-    /// handle is momentarily locked (e.g. a concurrent connect), so callers
-    /// must treat `None` as "no server available right now" and degrade gracefully.
+    /// The [`ToolServer`](xai_computer_hub_sdk::ToolServer) for this workspace, if a server connection is active. Callers must treat `None` as "no server available right now" and degrade gracefully.
     pub fn hub_server(&self) -> Option<xai_computer_hub_sdk::ToolServer> {
         self.shared.hub_server()
     }
-    /// Like [`Self::hub_server`] but awaits the connection lock instead of returning
-    /// `None` on contention, so a transient `connect_hub` lock is not mistaken
-    /// for "no server". `None` means no server is connected. Use from async callers.
+    /// Like [`Self::hub_server`] but awaits the connection lock instead of returning `None` on contention.
+    /// A transient `connect_hub` lock is not mistaken for "no server"; `None` means no server is connected.
+    /// Use from async callers.
     pub async fn hub_server_blocking(&self) -> Option<xai_computer_hub_sdk::ToolServer> {
         self.shared.hub_server_blocking().await
     }
-    /// Get the workspace root directory.
     pub(crate) fn root_cwd(&self) -> crate::error::WorkspaceResult<PathBuf> {
         Ok(self.shared.root_cwd.clone())
     }
-    /// Create a new top-level session from the workspace's default config.
-    ///
-    /// Unlike [`fork_session`](Self::fork_session), this does not inherit
-    /// from a parent — it creates a fresh session with
-    /// `CapabilityMode::All` and the workspace's `root_cwd`. Both the
-    /// TUI and server use this as the primary session creation path.
-    ///
-    /// Returns the newly created session, or an error if a session with
-    /// the given ID already exists.
+    /// Create a new top-level session from the workspace's default config. Unlike [`fork_session`](Self::fork_session), this does not inherit from a parent.
     pub fn create_session(
         &self,
         session_id: impl Into<String>,
     ) -> WorkspaceResult<Arc<WorkspaceSession>> {
         self.create_session_with_cwd(session_id, None)
     }
-    /// Create a session with an optional CWD override, using the workspace
-    /// default toolset and `CapabilityMode::All`.
+    /// Create a session with an optional CWD override, using the workspace default toolset and `CapabilityMode::All`.
     pub fn create_session_with_cwd(
         &self,
         session_id: impl Into<String>,
@@ -770,8 +714,8 @@ impl WorkspaceHandle {
     ) -> WorkspaceResult<Arc<WorkspaceSession>> {
         self.create_session_with_config(session_id, cwd, None, CapabilityMode::All, None, false)
     }
-    /// Create a session with an optional CWD override, per-session toolset, and
-    /// capability mode. Bind-time entry point; `tool_config: None` uses the default.
+    /// Create a session with an optional CWD override, per-session toolset, and capability mode.
+    /// Bind-time entry point; `tool_config: None` uses the default.
     /// `viewer_ctx` is `None` for sessions that don't go through the server bind path.
     pub fn create_session_with_config(
         &self,
@@ -808,9 +752,8 @@ impl WorkspaceHandle {
         }
         result
     }
-    /// Create a session that reuses an existing hunk tracker (already rooted at
-    /// `cwd`) instead of spawning a new one, so the workspace session and the
-    /// agent share a single per-session tracker. `tool_config: None` uses the default.
+    /// Create a session that reuses an existing hunk tracker (already rooted at `cwd`) instead of spawning a new one.
+    /// The workspace session and the agent then share a single per-session tracker. `tool_config: None` uses the default.
     pub fn create_session_with_tracker(
         &self,
         session_id: impl Into<String>,
@@ -829,9 +772,8 @@ impl WorkspaceHandle {
             false,
         )
     }
-    /// Variant of [`create_session_with_tracker`](Self::create_session_with_tracker)
-    /// that carries a session-bind viewer context. The tracker is externally
-    /// owned, so the session stores no cancel token for it.
+    /// Variant of [`create_session_with_tracker`](Self::create_session_with_tracker) that carries a session-bind viewer context.
+    /// The tracker is externally owned, so the session stores no cancel token for it.
     pub fn create_session_with_tracker_and_viewer_ctx(
         &self,
         session_id: impl Into<String>,
@@ -853,9 +795,9 @@ impl WorkspaceHandle {
             system_notifications,
         )
     }
-    /// Shared creation body. `hunk_tracker_cancel` is `Some` only for
-    /// workspace-spawned trackers, whose actor lifetime the session then
-    /// owns; externally owned trackers pass `None`.
+    /// Shared creation body.
+    /// `hunk_tracker_cancel` is `Some` only for workspace-spawned trackers, whose actor lifetime the session then owns.
+    /// Externally owned trackers pass `None`.
     #[allow(clippy::too_many_arguments)]
     fn create_session_with_tracker_inner(
         &self,
@@ -931,8 +873,8 @@ impl WorkspaceHandle {
         );
         Ok(session)
     }
-    /// Insert under the write lock the evict drain shares, so a racing insert is
-    /// seen by the evict or rejected here; rejection tears down what resolve spawned.
+    /// Insert under the write lock the evict drain shares, so a racing insert is seen by the evict or rejected here.
+    /// Rejection tears down what resolve spawned.
     fn insert_session_guarded(&self, session: &Arc<WorkspaceSession>) -> WorkspaceResult<()> {
         let rejection = {
             let mut sessions = self.shared.sessions.write();
@@ -954,8 +896,7 @@ impl WorkspaceHandle {
         }
         Ok(())
     }
-    /// Update a session's tool config with auth and serialization; the RPC
-    /// handler derives `caller_session_id` from the server-bound envelope.
+    /// Update a session's tool config with auth and serialization; the RPC handler derives `caller_session_id` from the server-bound envelope.
     /// Swap gating (retryable `TurnActive`, stale heal): [`SwapPolicy::evaluate`].
     pub(crate) async fn update_tool_config(
         &self,
@@ -982,9 +923,8 @@ impl WorkspaceHandle {
             ),
         }
     }
-    /// Re-resolve `new_config` against the session's frozen bind-time inputs
-    /// and atomically swap its toolset (`ToolsChanged`). Update-RPC entry:
-    /// gated by [`SwapPolicy::evaluate`], twice (entry + post-resolve).
+    /// Re-resolve `new_config` against the session's frozen bind-time inputs and atomically swap its toolset (`ToolsChanged`).
+    /// Update-RPC entry: gated by [`SwapPolicy::evaluate`], twice (entry and post-resolve).
     pub(crate) async fn resolve_and_swap_session_toolset(
         &self,
         session: &Arc<crate::session::WorkspaceSession>,
@@ -1052,9 +992,8 @@ impl WorkspaceHandle {
             }
         }
     }
-    /// The [`SwapDecision::Apply`] arm: resolve `new_config` (whose
-    /// fingerprint `new_fingerprint` must be) and install it. Callers hold
-    /// `update_lock` and evaluated [`SwapPolicy`] to `Apply` under that hold.
+    /// The [`SwapDecision::Apply`] arm: resolve `new_config` (whose fingerprint `new_fingerprint` must be) and install it.
+    /// Callers hold `update_lock` and evaluated [`SwapPolicy`] to `Apply` under that hold.
     async fn resolve_and_swap_session_toolset_locked(
         &self,
         session: &Arc<crate::session::WorkspaceSession>,
@@ -1176,9 +1115,8 @@ impl WorkspaceHandle {
             });
         Ok(SwapOutcome::Swapped)
     }
-    /// Hub `session.bind` against an existing session: reuse, or re-resolve
-    /// and swap per the owner-rebind policy rows (incl. the identical stale
-    /// heal). `explicit_cfg=None` never overwrites; `None` = session vanished.
+    /// Hub `session.bind` against an existing session: reuse, or re-resolve and swap per the owner-rebind policy rows (incl. the stale heal).
+    /// `explicit_cfg=None` never overwrites; a `None` return means the session vanished.
     pub(crate) async fn rebind_existing_hub_session(
         &self,
         session_id: &str,
@@ -1314,9 +1252,8 @@ impl WorkspaceHandle {
                 .insert((session_id.to_owned(), payload.turn_number), handle);
         }
     }
-    /// Fire-and-forget `after_turn` hook path (legacy shells / local mode):
-    /// turn-end work with detached enqueue handles, no ack. New shells use
-    /// the request/response path ([`Self::compute_turn_injections`]) instead.
+    /// Fire-and-forget `after_turn` hook path (legacy shells / local mode): turn-end work with detached enqueue handles, no ack.
+    /// New shells use the request/response path ([`Self::compute_turn_injections`]) instead.
     pub async fn on_after_turn(
         &self,
         session_id: &str,
@@ -1366,19 +1303,8 @@ impl WorkspaceHandle {
             .map(|(_, handle)| handle);
         (before_handle, after_handle)
     }
-    /// Answer a request/response `turn_hook` (sampler/shell → workspace).
-    ///
-    /// Both phases run the same turn-boundary work as their fire-and-forget
-    /// hook counterparts (the server-side sampler signals turns ONLY through
-    /// this request channel): `Before` drives [`Self::on_before_turn`]
-    /// (including the YOLO-state sync) and answers with a no-op reply
-    /// (injections are not computed yet); `After` runs the turn-end work,
-    /// awaits this turn's enqueue outcomes under [`after_turn_watchdog`]
-    /// (which MUST undercut the requester's hook timeout), and returns the
-    /// artifact ack on `HookReply::after_turn_ack`.
-    ///
-    /// Each phase must be signalled through exactly ONE channel per client —
-    /// fire-and-forget hook or request — otherwise its work runs twice.
+    /// Answer a request/response `turn_hook` (sampler/shell to workspace). The server-side sampler signals turns ONLY through this request channel.
+    /// `Before` drives [`Self::on_before_turn`] (including the YOLO-state sync) and answers with a no-op reply (injections are not computed yet).
     pub async fn compute_turn_injections(
         &self,
         session_id: &str,
@@ -1425,8 +1351,8 @@ impl WorkspaceHandle {
             _ => HookReply::default(),
         }
     }
-    /// Sync a before-turn hook's YOLO state into the session, emitting
-    /// `YoloToggled` on transitions. No-op for unknown sessions.
+    /// Sync a before-turn hook's YOLO state into the session, emitting `YoloToggled` on transitions.
+    /// No-op for unknown sessions.
     fn sync_session_yolo_mode(&self, session_id: &str, yolo_mode: bool) {
         let Some(session) = self.session(session_id) else {
             return;
@@ -1443,13 +1369,7 @@ impl WorkspaceHandle {
             self.on_yolo_toggled(session_id, yolo_mode);
         }
     }
-    /// Spawn an artifact-producer future tracked in the producer `TaskTracker`
-    /// so status counts it and the durability idle gate withholds `idle_since_ms`
-    /// while it runs; pokes status on start and completion. (The graceful drain
-    /// added in the next PR awaits these tasks in phase 1.5 before flushing the
-    /// queue — this PR only wires the tracking + idle-withholding.) Spawns after
-    /// drain start stay tracked (the idle gate must not go blind) but are warned
-    /// + counted as at-risk of missing the queue flush.
+    /// Spawn an artifact-producer future tracked in the producer `TaskTracker`. Spawns after drain start stay tracked (the idle gate must not go blind) but are warned and counted as at risk of missing the queue flush.
     pub(crate) fn spawn_producer<F>(&self, fut: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: std::future::Future + Send + 'static,
@@ -1471,11 +1391,8 @@ impl WorkspaceHandle {
         self.shared.activity_tracker.poke();
         handle
     }
-    /// Spawn a fire-and-forget per-turn `tool_state.json` snapshot + upload to
-    /// `{session_id}/turn_{N}/tool_state.json`. No-op when
-    /// `GROK_WORKSPACE_TOOL_STATE_ENABLED` is off, opted out,
-    /// there is no upload queue (local/test mode), or the
-    /// session is unknown — legacy behavior unchanged.
+    /// Spawn a fire-and-forget per-turn `tool_state.json` snapshot and upload to `{session_id}/turn_{N}/tool_state.json`.
+    /// No-op when `GROK_WORKSPACE_TOOL_STATE_ENABLED` is off, opted out, there is no upload queue (local/test mode), or the session is unknown.
     fn spawn_tool_state_upload(&self, session_id: &str, turn_number: u64) {
         if !crate::session::tool_config::tool_state_enabled() {
             return;
@@ -1534,30 +1451,17 @@ impl WorkspaceHandle {
             }
         });
     }
-    /// Drain the workspace's upload queue, waiting up to `deadline` for in-flight
-    /// uploads to finish. Returns the number of items still pending after the
-    /// deadline (0 when no queue is configured). Called from the workspace-server
-    /// SIGTERM handler on graceful shutdown.
+    /// Drain the workspace's upload queue, waiting up to `deadline` for in-flight uploads to finish.
+    /// Returns the number of items still pending after the deadline (0 when no queue is configured).
+    /// Called from the workspace-server SIGTERM handler on graceful shutdown.
     pub async fn drain_upload_queue(&self, deadline: std::time::Duration) -> usize {
         match &self.shared.upload_queue {
             Some(queue) => queue.drain(deadline).await,
             None => 0,
         }
     }
-    /// Serialize the session's workspace-side toolset to the Chat Completions
-    /// tool-definitions shape and enqueue it (fire-and-forget) at the
-    /// session-root path `{session_id}/workspace_tool_definitions.json`.
-    ///
-    /// This is the WORKSPACE-side subset; the shell's `tool_definitions.json`
-    /// remains the source of truth for the full set the model sees — consumers
-    /// union the two on `session_id`. Ordering is best-effort: the bind
-    /// emission bypasses the 5s debounce (so it can't suppress the immediate
-    /// post-bind `ToolsChanged` re-emit), and queue dispatch has no per-path
-    /// ordering, so a stale baseline-only write may rarely clobber a fresher
-    /// baseline+MCP snapshot — accepted as telemetry-only.
-    ///
-    /// No-op when the `GROK_WORKSPACE_TOOL_DEFS_ENABLED` flag is off, no upload
-    /// queue is wired, or the session is unknown.
+    /// Serialize the session's workspace-side toolset to the Chat Completions tool-definitions shape. Ordering is best-effort: the bind emission bypasses the 5s debounce (so it can't suppress the immediate post-bind `ToolsChanged` re-emit).
+    /// Queue dispatch has no per-path ordering, so a stale baseline-only write may rarely clobber a fresher write that also carries the MCP tools.
     pub(crate) fn emit_workspace_tool_definitions(&self, session_id: &str) {
         if !self.shared.tool_defs_enabled {
             return;
@@ -1588,11 +1492,9 @@ impl WorkspaceHandle {
             .await;
         });
     }
-    /// Build the `(gcs_path, json_bytes)` payload for a session's workspace-side
-    /// tool definitions, or `None` for an unknown session. Uses the same
-    /// serializer as the shell's `tool_definitions.json`, so the two artifacts
-    /// share a byte-identical element shape. Free of flag/queue gating for
-    /// direct unit testing.
+    /// Build the `(gcs_path, json_bytes)` payload for a session's workspace-side tool definitions, or `None` for an unknown session.
+    /// Uses the same serializer as the shell's `tool_definitions.json`, so the two artifacts share a byte-identical element shape.
+    /// Free of flag/queue gating for direct unit testing.
     fn workspace_tool_definitions_payload(&self, session_id: &str) -> Option<(String, Vec<u8>)> {
         let session = self.session(session_id)?;
         let definitions = session.toolset().tool_definitions();
@@ -1603,22 +1505,8 @@ impl WorkspaceHandle {
             .ok()?;
         Some((workspace_tool_definitions_path(session_id), bytes))
     }
-    /// Preemption-aware graceful drain: phase 1 waits for tool calls, phase 1.5
-    /// for artifact producers, phase 2 flushes the upload queue (budgets per the
-    /// `phase*_budget` helpers). Shared by the SIGTERM and server-evict triggers so
-    /// they can't diverge.
-    ///
-    /// The preStop drain marker is (re)written at every phase boundary — not
-    /// just once at the start — with the live total of outstanding durability
-    /// work: active tool calls + background tasks (phase 1), in-flight artifact
-    /// producers that have not yet enqueued (phase 1.5), and queued uploads
-    /// (phase 2). This keeps a preStop hook from reading `0` while a tool call
-    /// is still running (queue and producers both empty) or while later phases
-    /// have yet to flush newly-produced work.
-    ///
-    /// Returns that same outstanding total after the deadline, so `0` means a
-    /// fully clean drain — consistent with the final marker and
-    /// [`DrainOutcome::Full`]; a wedged producer or tool call keeps it non-zero.
+    /// Preemption-aware graceful drain: phase 1 waits for tool calls, phase 1.5 for artifact producers, phase 2 flushes the upload queue.
+    /// Shared by the SIGTERM and server-evict triggers so they can't diverge. The preStop drain marker is (re)written at every phase boundary, not just at the start, with the live total of outstanding durability work.
     pub async fn two_phase_drain(
         &self,
         grace_budget: std::time::Duration,
@@ -1629,7 +1517,7 @@ impl WorkspaceHandle {
         tracker.set_draining();
         tracker.poke();
         DRAIN_STARTED_TOTAL
-            .with_label_values(&[reason.as_str()])
+            .with_label_values(&[reason.as_ref()])
             .inc();
         let active_at_start = tracker.total_active() as usize;
         let pending_at_start = self.upload_queue_pending();
@@ -1641,7 +1529,7 @@ impl WorkspaceHandle {
         );
         dc_log!(
             info,
-            drain_reason = reason.as_str(),
+            drain_reason = reason.as_ref(),
             grace_ms = grace_budget.as_millis() as u64,
             active_at_start,
             pending_at_start,
@@ -1679,7 +1567,7 @@ impl WorkspaceHandle {
         let outcome =
             classify_drain_outcome(tools_idle, producers_done, producers_unfinished, unfinished);
         DRAIN_COMPLETED_TOTAL
-            .with_label_values(&[outcome.as_str()])
+            .with_label_values(&[outcome.as_ref()])
             .inc();
         DRAIN_DURATION.observe(start.elapsed().as_secs_f64());
         if unfinished > 0 {
@@ -1688,8 +1576,8 @@ impl WorkspaceHandle {
         write_draining_marker(&drain_file, total_unfinished);
         if total_unfinished > 0 {
             tracing::warn!(
-                reason = reason.as_str(),
-                outcome = outcome.as_str(),
+                reason = reason.as_ref(),
+                outcome = outcome.as_ref(),
                 active_unfinished,
                 producers_unfinished,
                 unfinished,
@@ -1699,8 +1587,8 @@ impl WorkspaceHandle {
             );
         } else {
             tracing::info!(
-                reason = reason.as_str(),
-                outcome = outcome.as_str(),
+                reason = reason.as_ref(),
+                outcome = outcome.as_ref(),
                 duration_ms = start.elapsed().as_millis() as u64,
                 "workspace: two-phase drain complete"
             );
@@ -1715,19 +1603,16 @@ impl WorkspaceHandle {
             .map(|q| q.stats().pending.load(std::sync::atomic::Ordering::Relaxed) as usize)
             .unwrap_or(0)
     }
-    /// Live total of outstanding durability work the two-phase drain must wait
-    /// on: active tool calls + background tasks (phase 1) + in-flight artifact
-    /// producers that have not yet enqueued (phase 1.5) + queued uploads
-    /// (phase 2). Used to refresh the preStop drain marker at each phase
-    /// boundary so it is never `0` while any phase still has work.
+    /// Live total of outstanding durability work the two-phase drain must wait on.
+    /// It sums active tool calls and background tasks (phase 1), producers that have not yet enqueued (phase 1.5), and queued uploads (phase 2).
+    /// Used to refresh the preStop drain marker at each phase boundary so it is never `0` while any phase still has work.
     fn outstanding_drain_work(&self) -> usize {
         self.shared.activity_tracker.total_active() as usize
             + self.shared.producer_tasks.len()
             + self.upload_queue_pending()
     }
-    /// Bookkeeping for a cancelled in-flight tool call: marks it as
-    /// completed in the activity tracker. Does **not** abort execution
-    /// of the tool — that requires `CancellationToken` plumbing (future work).
+    /// Bookkeeping for a cancelled in-flight tool call: marks it as completed in the activity tracker.
+    /// Does **not** abort execution of the tool; nothing carries a `CancellationToken` to it yet.
     pub fn cancel_tool_call(&self, session_id: &str, call_id: &str) {
         self.shared.activity_tracker.tool_call_completed(
             call_id,
@@ -1736,8 +1621,8 @@ impl WorkspaceHandle {
         );
         tracing::info!(%session_id, %call_id, "cancel_tool_call: marked as completed");
     }
-    /// Cancel all in-flight tool calls for a session. Called when a
-    /// session-wide Cancel hook arrives (no specific `call_id`).
+    /// Cancel all in-flight tool calls for a session.
+    /// Called when a session-wide Cancel hook arrives (no specific `call_id`).
     pub fn cancel_all_tool_calls(&self, session_id: &str) {
         let count = self
             .shared
@@ -1746,8 +1631,7 @@ impl WorkspaceHandle {
         tracing::info!(%session_id, count, "cancel_all_tool_calls: marked all as completed");
     }
     /// Clean up workspace state for a session that has ended.
-    /// Does **not** drop the session — that is handled by the server's
-    /// `unbind_session` lifecycle.
+    /// Does **not** drop the session; the server's `unbind_session` path handles that.
     pub fn on_session_ended(&self, session_id: &str) {
         self.shared.activity_tracker.session_ended(session_id);
         self.shared.session_event_writers.remove(session_id);
@@ -1757,22 +1641,16 @@ impl WorkspaceHandle {
         self.shared.tool_defs_last_emit.remove(session_id);
         tracing::info!(%session_id, "session_ended cleanup completed");
     }
-    /// Record a YOLO / always-approve mode toggle into the session's
-    /// `events.jsonl`. These volatile-config mutations are shell-owned; this is
-    /// the workspace-side emission entry point invoked by the server/shell forwarding
-    /// layer when it observes a `SetYoloMode` command for a bound session. A no-op
-    /// when events recording is disabled.
+    /// Record a YOLO / always-approve mode toggle into the session's `events.jsonl`. The server/shell forwarding layer calls this when it observes a `SetYoloMode` command for a bound session.
     pub fn on_yolo_toggled(&self, session_id: &str, enabled: bool) {
         self.shared
             .session_event_writer(session_id)
             .emit(Event::YoloToggled { enabled });
         tracing::debug!(%session_id, enabled, "workspace: yolo toggle recorded");
     }
-    /// Record an MCP server enable/disable toggle into the session's
-    /// `events.jsonl`. Like [`on_yolo_toggled`](Self::on_yolo_toggled), this is
-    /// the workspace-side emission point for a shell-owned mutation; the server/shell
-    /// forwarding layer calls it when it observes an MCP toggle for a bound
-    /// session. A no-op when events recording is disabled.
+    /// Record an MCP server enable/disable toggle into the session's `events.jsonl`.
+    /// Like [`on_yolo_toggled`](Self::on_yolo_toggled), the server/shell forwarding layer calls it on an MCP toggle for a bound session.
+    /// A no-op when events recording is disabled.
     pub fn on_mcp_server_toggled(&self, session_id: &str, server_name: &str, enabled: bool) {
         self.shared
             .session_event_writer(session_id)
@@ -1782,22 +1660,12 @@ impl WorkspaceHandle {
             });
         tracing::debug!(%session_id, %server_name, enabled, "workspace: mcp toggle recorded");
     }
-    /// Returns a cloned snapshot of the hook registry, disconnected
-    /// from the workspace's live state.
-    ///
-    /// The registry is loaded once at workspace construction from the
-    /// global and project sources in `WorkspaceConfig`; mid-session
-    /// reloads (e.g. plugin hook appending) mutate the live registry
-    /// in place via the `RwLock` on `WorkspaceShared`. The returned
-    /// clone is not affected by subsequent mutations.
+    /// Returns a cloned snapshot of the hook registry, disconnected from the workspace's live state. The returned clone is not affected by subsequent mutations.
     pub fn hook_registry(&self) -> xai_grok_hooks::discovery::HookRegistry {
         self.shared.hook_registry.read().clone()
     }
-    /// Non-fatal errors from the initial hook discovery pass at
-    /// workspace construction time.
-    ///
-    /// Empty when all hook files parsed cleanly. Not updated on
-    /// mid-session hook mutations (e.g. plugin hook appending).
+    /// Non-fatal errors from the initial hook discovery pass at workspace construction time.
+    /// Not updated on mid-session hook mutations.
     pub fn hook_load_errors(&self) -> &[xai_grok_hooks::error::HookError] {
         &self.shared.hook_load_errors
     }
@@ -1814,11 +1682,8 @@ impl WorkspaceHandle {
         })?;
         Ok(dunce::simplified(&canonical).to_path_buf())
     }
-    /// Resolve a caller-provided path safely. Accepts a path relative to the
-    /// workspace root, or an absolute path that resolves within the root;
-    /// either form is confined to the root (paths that escape are rejected).
-    /// See [`Self::resolve_path_within_root`] for the confinement contract
-    /// and its TOCTOU caveat.
+    /// Resolve a caller-provided path safely. Accepts a path relative to the workspace root, or an absolute path that resolves within the root.
+    /// Either form is confined to the root (paths that escape are rejected).
     pub(crate) async fn resolve_service_path(
         &self,
         req_path: &str,
@@ -1827,13 +1692,8 @@ impl WorkspaceHandle {
         let root = self.root_cwd()?;
         Self::resolve_path_within_root(req_path, &root, canonical_root).await
     }
-    /// Resolution base for the client-facing fs ops: the bound session's
-    /// cwd when it extends the workspace root by a plain path suffix (e.g.
-    /// a bind cwd of `<root>/artifacts`), else the root. A suffix that is
-    /// missing on disk, not a directory, non-`Normal` (`..`), or whose
-    /// canonicalization leaves the root falls back to the root base rather
-    /// than failing every op with a confinement error (the bind cwd is
-    /// caller-supplied and the artifacts mount is asynchronous).
+    /// Resolution base for the client-facing fs ops: the bound session's cwd when it extends the workspace root by a plain suffix, else the root.
+    /// a bind cwd of `<root>/artifacts`.) A suffix that is missing on disk, not a directory, non-`Normal` (`..`), or whose canonicalization leaves the root falls back to the root base.
     pub(crate) async fn client_fs_base(
         &self,
         session_id: Option<&str>,
@@ -1883,16 +1743,7 @@ impl WorkspaceHandle {
             "client-fs ops rebased to the session cwd");
         Ok(ClientFsBase { base, canonical })
     }
-    /// Resolve a caller-provided path against an explicit base, confining
-    /// it there with two-layer defense: textual normalization + symlink
-    /// containment (see [`Self::confine_to_root`]). Entry point for the
-    /// client-facing fs ops, and the core of [`Self::resolve_service_path`].
-    ///
-    /// # TOCTOU caveat
-    /// The symlink check is point-in-time. If a symlink is created between
-    /// resolution and I/O, containment is not guaranteed. Defense-in-depth
-    /// (e.g., `O_NOFOLLOW`, mount namespaces) would be needed for hostile
-    /// workspace environments, which is out of scope for this service-level API.
+    /// Resolve a caller-provided path against an explicit base and confine it there. If a symlink is created between resolution and I/O, containment is not guaranteed.
     pub(crate) async fn resolve_path_within_root(
         req_path: &str,
         root: &std::path::Path,
@@ -1992,12 +1843,9 @@ impl WorkspaceHandle {
         }
         Ok(normalized)
     }
-    /// Confine `path` to the workspace root (reject `..`, absolute-outside-root,
-    /// symlink escapes) when confinement is enabled. Returns the resolved path and
-    /// an optional walk root: `Some(root)` confines a `list`, `None` leaves it
-    /// unconfined. Off by default (see
-    /// [`WorkspaceConfig::confine_fs_to_workspace_root`](crate::config::WorkspaceConfig::confine_fs_to_workspace_root)):
-    /// the absolute `path` is returned as-is, following out-of-root symlinks.
+    /// Confine `path` to the workspace root (reject `..`, absolute-outside-root, symlink escapes) when confinement is enabled.
+    /// Returns the resolved path and an optional walk root: `Some(root)` confines a `list`, `None` leaves it unconfined.
+    /// Off by default (see [`WorkspaceConfig::confine_fs_to_workspace_root`](crate::config::WorkspaceConfig::confine_fs_to_workspace_root)).
     pub async fn confine_to_workspace_root(
         &self,
         path: &std::path::Path,
@@ -2012,8 +1860,8 @@ impl WorkspaceHandle {
         let confined = self.resolve_service_path(path_str, &canonical_root).await?;
         Ok((confined, Some(canonical_root)))
     }
-    /// Like [`Self::confine_to_workspace_root`] but against an alternative trusted
-    /// root (e.g. a worktree session cwd). Same gate; unconfined by default.
+    /// Like [`Self::confine_to_workspace_root`] but against an alternative trusted root (e.g. a worktree session cwd).
+    /// Same gate; unconfined by default.
     pub async fn confine_to_root(
         &self,
         path: &std::path::Path,
@@ -2029,11 +1877,8 @@ impl WorkspaceHandle {
         let confined = Self::resolve_path_within_root(path_str, root, &canonical_root).await?;
         Ok((confined, Some(canonical_root)))
     }
-    /// Write files to the workspace filesystem (service-level, no hunk tracking).
-    ///
-    /// Files are written sequentially. If file N fails, files 1..N-1 are
-    /// already on disk and will NOT be rolled back. Callers must inspect
-    /// per-file results in the response to detect partial failures.
+    /// Write files to the workspace filesystem (service-level, no hunk tracking). If file N fails, files 1..N-1 are already on disk and will NOT be rolled back.
+    /// Callers must inspect per-file results in the response to detect partial failures.
     pub async fn put_files(
         &self,
         session_id: Option<&str>,
@@ -2104,15 +1949,8 @@ impl WorkspaceHandle {
             },
         }
     }
-    /// Read files from the workspace filesystem with optional cache
-    /// validation and byte-range support.
-    ///
-    /// Files are read sequentially. Each result includes:
-    /// - `exists`: whether the file exists on disk.
-    /// - `content`: file content (full or requested byte range as UTF-8).
-    /// - `hash`: SHA-256 hex digest of the **full** file content.
-    /// - `matched`: true if `if_none_match` matched the current hash.
-    /// - `size`: total file size in bytes.
+    /// Read files from the workspace filesystem with optional cache validation and byte-range support. Files are read sequentially.
+    /// Each result includes: - `exists`: whether the file exists on disk.
     pub async fn get_files(
         &self,
         session_id: Option<&str>,
@@ -2291,8 +2129,7 @@ impl WorkspaceHandle {
             target_client_id,
         )
     }
-    /// Routing info (session id + target client) stored for a search at open
-    /// time, read by the notification driver to address status updates.
+    /// Routing info (session id and target client) stored for a search at open time, read by the notification driver to address status updates.
     pub async fn fuzzy_routing(
         &self,
         search_id: &str,
@@ -2303,9 +2140,9 @@ impl WorkspaceHandle {
             manager.get_target_client_id(search_id),
         )
     }
-    /// Run one poll tick for an active fuzzy search. Returns the next batch of
-    /// results (paths absolutized against the search root) or a signal to keep
-    /// polling / stop. Drives the `x.ai/search/fuzzy/status` notification loop.
+    /// Run one poll tick for an active fuzzy search.
+    /// Returns the next batch of results (paths absolutized against the search root) or a signal to keep polling / stop.
+    /// Drives the `x.ai/search/fuzzy/status` notification loop.
     pub async fn fuzzy_poll(
         &self,
         search_id: &str,
@@ -2353,7 +2190,6 @@ impl WorkspaceHandle {
         let mut manager = self.shared.fuzzy_searches.lock().await;
         manager.change(search_id, query, dirs_only)
     }
-    /// Get fuzzy search results.
     pub async fn fuzzy_get_results(
         &self,
         search_id: &str,
@@ -2361,17 +2197,14 @@ impl WorkspaceHandle {
         let mut manager = self.shared.fuzzy_searches.lock().await;
         manager.get_results(search_id)
     }
-    /// Close a fuzzy search.
     pub async fn fuzzy_close(&self, search_id: &str) -> bool {
         let mut manager = self.shared.fuzzy_searches.lock().await;
         manager.close(search_id)
     }
-    /// Install the sink used to deliver workspace-originated ext-notifications
-    /// to the client (gateway in local mode, hub in proxy mode).
+    /// Install the sink used to deliver workspace-originated ext-notifications to the client (gateway in local mode, hub in proxy mode).
     pub fn set_client_ext_sink(&self, sink: crate::session::ClientExtSink) {
         self.shared.client_ext_sink.store(Arc::new(Some(sink)));
     }
-    /// Whether a client ext-notification sink has been installed.
     pub fn has_client_ext_sink(&self) -> bool {
         self.shared.client_ext_sink.load().is_some()
     }
@@ -2382,10 +2215,9 @@ impl WorkspaceHandle {
             sink(method, params);
         }
     }
-    /// Drive the `x.ai/search/fuzzy/status` stream for an active search: poll
-    /// until done / closed / superseded, emitting each new result batch to the
-    /// client through the ext-notification sink. Co-located with the manager so
-    /// it polls in-process in both local and proxy mode.
+    /// Drive the `x.ai/search/fuzzy/status` stream for an active search.
+    /// Poll until done / closed / superseded, emitting each new result batch to the client through the ext-notification sink.
+    /// Co-located with the manager so it polls in-process in both local and proxy mode.
     pub async fn run_fuzzy_notifications(
         &self,
         search_id: String,
@@ -2439,10 +2271,8 @@ impl WorkspaceHandle {
             }
         }
     }
-    /// Run a content search (ripgrep) and return results.
-    /// Run a streaming content (ripgrep) search rooted at `cwd`, emitting each
-    /// batch as `x.ai/search/content/status` via the client sink, and returning
-    /// the final result. Co-located with the sink so it streams in both modes.
+    /// Run a streaming content (ripgrep) search rooted at `cwd`, emitting each batch as `x.ai/search/content/status` via the client sink.
+    /// Returns the final result. Co-located with the sink so it streams in both modes.
     pub async fn run_content_search(
         &self,
         cwd: std::path::PathBuf,
@@ -2535,12 +2365,8 @@ impl WorkspaceHandle {
             tracing::debug!("codebase index event forwarder exited");
         })
     }
-    /// Re-emit `workspace_tool_definitions.json` on every `ToolsChanged` event,
-    /// debounced per session via [`tool_defs_reemit_gate`] so a cascade of
-    /// reclassifications does not churn the file. Returns `None` (no task, no
-    /// broadcast subscriber) when the feature flag is off; exits when the
-    /// broadcast channel closes. The returned handle is tracked on `HubHandle`
-    /// so shutdown aborts it — a reconnect must not stack a second subscriber.
+    /// Re-emit `workspace_tool_definitions.json` on every `ToolsChanged` event. Debounced per session via [`tool_defs_reemit_gate`] so a cascade of reclassifications does not churn the file.
+    /// Returns `None` (no task, no broadcast subscriber) when the feature flag is off; exits when the broadcast channel closes.
     fn spawn_tool_definitions_event_forwarder(&self) -> Option<tokio::task::JoinHandle<()>> {
         if !self.shared.tool_defs_enabled {
             return None;
@@ -2571,32 +2397,15 @@ impl WorkspaceHandle {
             tracing::debug!("tool definitions event forwarder exited");
         }))
     }
-    /// Post-creation session setup (browser service seeding, etc.).
-    ///
-    /// When the optional browser backend is enabled, seeds a fresh per-session `BrowserService`
-    /// into the toolset unless one is already present (idempotent — safe
-    /// against double-finalize on concurrent on-demand session creation).
-    /// Toolset rebuilds carry the handle forward via
-    /// [`WorkspaceSession::replace_carrying_browser_service`](crate::session::WorkspaceSession::replace_carrying_browser_service).
-    ///
-    /// Holds the session's `update_lock` for the whole read-check-insert so
-    /// it cannot interleave with a concurrent toolset rebuild (which swaps
-    /// in a fresh `FinalizedToolset` under the same lock) — otherwise the
-    /// seed could land in a just-replaced, stale toolset and the live one
-    /// would miss the browser service.
-    ///
-    /// Also the initial `workspace_tool_definitions.json` emission point.
+    /// Post-creation session setup (browser service seeding, etc.). When the optional browser backend is enabled, seeds a fresh per-session `BrowserService` into the toolset unless one is already present.
+    /// Idempotent: safe against double-finalize on concurrent on-demand session creation.
     pub(crate) async fn finalize_session_setup(&self, session: &crate::session::WorkspaceSession) {
         let _update_guard = session.update_lock.lock().await;
         self.emit_workspace_tool_definitions(session.session_id());
         self.maybe_emit_environment(session.session_id(), session.cwd());
     }
-    /// Emit `workspace_environment.json` once at session bind. Emission is
-    /// unconditional except for the legitimate suppression conditions below:
-    /// it is a no-op when opted out or when
-    /// there is no upload queue. Runs as a tracked producer task so the bind
-    /// path never waits on the enqueue and the drain/idle gating still sees the
-    /// in-flight work.
+    /// Emit `workspace_environment.json` once at session bind. A no-op when opted out or when there is no upload queue.
+    /// Runs as a tracked producer task so the bind path never waits on the enqueue and the drain/idle gating still sees the in-flight work.
     fn maybe_emit_environment(&self, session_id: &str, cwd: &std::path::Path) {
         if self.shared.data_collection_disabled {
             return;
@@ -2612,8 +2421,7 @@ impl WorkspaceHandle {
         });
     }
     /// Build and enqueue the environment artifact at the session-root path.
-    /// Flag-independent core (the flag check lives in `maybe_emit_environment`)
-    /// so it is unit-testable; returns `None` when there is no upload queue.
+    /// Flag-independent core (the flag check lives in `maybe_emit_environment`) so it is unit-testable; returns `None` when there is no upload queue.
     async fn emit_environment_artifact(
         &self,
         session_id: &str,
@@ -2720,20 +2528,19 @@ impl WorkspaceHandle {
         }
         Some(outcome)
     }
-    /// Start MCP servers for a session and bridge them to the server.
+    /// Replace a session's MCP servers with `configs` (`workspace.configure_mcp`). Client-driven, so it is refused on a workspace whose MCP servers come from local configuration — there, the machine owns the set and [`Self::reload_bind_mcp`] is how it changes.
     pub async fn start_session_mcp_servers(
         &self,
         session_id: &str,
-        configs: Vec<agent_client_protocol::McpServer>,
+        mut configs: Vec<agent_client_protocol::McpServer>,
     ) -> crate::error::WorkspaceResult<crate::mcp::McpStartResult> {
-        use crate::mcp::{
-            McpClientTransportAdapter, McpStartFailure, McpStartResult, QualifiedMcpToolHandler,
-            make_bridge_config, server_name_from_mcp_error,
-        };
-        use xai_computer_hub_mcp_adapter::McpBridge;
-        use xai_computer_hub_sdk::ToolServerHandler as _;
-        use xai_grok_mcp::servers::MCP_TOOL_NAME_DELIMITER;
-        use xai_tool_protocol::SessionId;
+        crate::mcp::dedupe_servers_last_wins(&mut configs);
+        crate::mcp::cap_servers(&mut configs);
+        if self.shared.bind_mcp.is_some() {
+            return Err(WorkspaceError::HubError(
+                "bind-time MCP configuration is immutable".to_owned(),
+            ));
+        }
         let tool_server = {
             let hub_guard = self.shared.hub_handle.lock().await;
             let hub = hub_guard
@@ -2746,144 +2553,43 @@ impl WorkspaceHandle {
             .ok_or_else(|| WorkspaceError::SessionNotFound(session_id.to_owned()))?;
         let sid = SessionId::new(session_id)
             .map_err(|e| WorkspaceError::HubError(format!("invalid session_id: {e}")))?;
+        let _update_guard = session.update_lock.lock().await;
+        let live: Vec<String> = session
+            .mcp_binding
+            .lock()
+            .await
+            .active()
+            .map(|active| active.servers.keys().cloned().collect())
+            .unwrap_or_default();
+        crate::mcp::stop_servers(&session, &sid, &tool_server, &live).await;
         {
-            let mut tool_ids = session.mcp_tool_ids.lock().await;
-            for tid in tool_ids.drain(..) {
-                let _ = tool_server.unregister_tool_dynamic(&tid, &sid).await;
-            }
-            let mut existing_bridges = session.mcp_bridges.lock().await;
-            existing_bridges.clear();
+            let _binding = session.mcp_binding.lock().await;
             let mut state = session.mcp_state.lock().await;
+            state.update_configs(configs.clone());
             state.owned_clients.clear();
         }
-        let session_id_owned = session_id.to_owned();
-        let event_writer = self.shared.session_event_writer(session_id);
-        let rt_handle = tokio::runtime::Handle::current();
-        let mcp_results: Vec<
-            Result<xai_grok_mcp::servers::McpClient, xai_grok_mcp::servers::McpError>,
-        > = tokio::task::spawn_blocking(move || {
-            use std::collections::HashMap;
-            use xai_grok_mcp::oauth_config::McpOAuthConfigMap;
-            use xai_grok_mcp::servers::{McpClientTimeoutOverrides, McpMetaConfigMap};
-            let overrides_map: HashMap<String, McpClientTimeoutOverrides> = HashMap::new();
-            let meta_config_map = McpMetaConfigMap::new();
-            let oauth_config_map = McpOAuthConfigMap::new();
-            let ctx = xai_grok_mcp::servers::McpSpawnCtx::for_session(
-                &session_id_owned,
-                &event_writer,
-                xai_grok_mcp::servers::OauthInteractivity::Interactive,
-                None,
-            );
-            rt_handle.block_on(xai_grok_mcp::servers::start_mcp_servers(
-                configs,
-                &overrides_map,
-                &meta_config_map,
-                &oauth_config_map,
-                &ctx,
-            ))
-        })
-        .await
-        .map_err(|e| WorkspaceError::JoinError(e.to_string()))?;
-        let mcp_state = session.mcp_state.clone();
-        let mut started = Vec::new();
-        let mut failed = Vec::new();
-        let mut bridges = Vec::new();
-        let mut registered_tool_ids = Vec::new();
-        for result in mcp_results {
-            match result {
-                Ok(client) => {
-                    let server_name = client.server_name().to_owned();
-                    let client = Arc::new(client);
-                    {
-                        let mut state = mcp_state.lock().await;
-                        state
-                            .owned_clients
-                            .insert(server_name.clone(), Arc::clone(&client));
-                    }
-                    let transport: Arc<dyn xai_computer_hub_mcp_adapter::McpTransport> =
-                        Arc::new(McpClientTransportAdapter::new(Arc::clone(&client)));
-                    let bridge_config = make_bridge_config(sid.clone(), &server_name);
-                    match McpBridge::connect(transport, &bridge_config).await {
-                        Ok(handle) => {
-                            for handler in handle.bridge.handlers() {
-                                let qualified_name = format!(
-                                    "{}{}{}",
-                                    server_name,
-                                    MCP_TOOL_NAME_DELIMITER,
-                                    handler.tool_id()
-                                );
-                                let qualified = match QualifiedMcpToolHandler::try_new(
-                                    qualified_name.clone(),
-                                    handler.clone(),
-                                ) {
-                                    Some(h) => Arc::new(h),
-                                    None => continue,
-                                };
-                                if let Err(e) = tool_server
-                                    .register_tool_dynamic(qualified, vec![sid.clone()])
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        server = %server_name,
-                                        tool = %qualified_name,
-                                        error = %e,
-                                        "failed to register MCP tool on hub"
-                                    );
-                                } else if let Ok(tid) =
-                                    xai_tool_protocol::ToolId::new(&qualified_name)
-                                {
-                                    registered_tool_ids.push(tid);
-                                }
-                            }
-                            bridges.push(handle);
-                            started.push(server_name);
-                        }
-                        Err(e) => {
-                            {
-                                let mut state = mcp_state.lock().await;
-                                state.owned_clients.remove(&server_name);
-                            }
-                            tracing::warn!(
-                                server = %server_name,
-                                error = %e,
-                                "McpBridge::connect failed"
-                            );
-                            failed.push(McpStartFailure {
-                                name: server_name,
-                                error: e.to_string(),
-                            });
-                        }
-                    }
-                }
-                Err(e) => {
-                    let name = server_name_from_mcp_error(&e).to_owned();
-                    tracing::warn!(
-                        server = %name,
-                        error = %e,
-                        "MCP server start failed"
-                    );
-                    failed.push(McpStartFailure {
-                        name,
-                        error: e.to_string(),
-                    });
-                }
-            }
-        }
-        {
-            let mut session_bridges = session.mcp_bridges.lock().await;
-            session_bridges.extend(bridges);
-        }
-        {
-            let mut ids = session.mcp_tool_ids.lock().await;
-            ids.extend(registered_tool_ids);
-        }
-        tracing::info!(
-            session_id = %session_id,
-            started = ?started,
-            failed_count = failed.len(),
-            "session MCP servers initialized"
-        );
-        if !started.is_empty() {
+        let (started, life) = crate::mcp::connect_servers(
+            &session,
+            session_id,
+            configs,
+            crate::config::BindMcpConfig::DEFAULT_DISCOVERY_TIMEOUT,
+            &std::collections::HashSet::new(),
+            self.shared.session_event_writer(session_id),
+        )
+        .await?;
+        let result = crate::mcp::McpStartResult {
+            started: started.servers.iter().map(|s| s.name.clone()).collect(),
+            failed: started.failed.clone(),
+        };
+        crate::mcp::install_and_advertise_qualified(
+            &session,
+            &sid,
+            &tool_server,
+            started.servers,
+            life,
+        )
+        .await?;
+        if !result.started.is_empty() {
             let _ =
                 self.shared
                     .events
@@ -2891,35 +2597,202 @@ impl WorkspaceHandle {
                         session_id: session_id.to_owned(),
                     });
         }
-        Ok(McpStartResult { started, failed })
+        Ok(result)
     }
-    /// Unregister all MCP tools for a session from the server.
-    pub async fn teardown_session_mcp(&self, session_id: &str) {
-        let tool_server = {
-            let hub_guard = self.shared.hub_handle.lock().await;
-            match hub_guard.as_ref() {
-                Some(hub) => hub.server.clone(),
-                None => return,
+    /// Publish a new locally-configured MCP set and converge every live session onto it, without restarting the process.
+    /// Only added, removed, and redefined servers are touched; the rest keep their client, process, and in-flight calls.
+    /// Sessions converge concurrently, each serialized only by its own `update_lock`, and every convergence reads the *published* config at execution time — so overlapping reloads need no global ordering: the last publish wins.
+    pub async fn reload_bind_mcp(
+        &self,
+        config: crate::config::BindMcpConfig,
+    ) -> WorkspaceResult<Vec<(String, crate::mcp::SessionMcpDelta)>> {
+        use futures::StreamExt;
+        let Some(bind_mcp) = self.shared.bind_mcp.as_ref() else {
+            tracing::debug!("ignoring MCP reload: this workspace has no local MCP configuration");
+            return Ok(Vec::new());
+        };
+        *bind_mcp.write() = config;
+        if self.shared.hub_server_blocking().await.is_none() {
+            return Err(WorkspaceError::HubError(
+                "no hub connection; the MCP config is staged and applies to new binds — \
+                 retry the reload once the hub reconnects"
+                    .to_owned(),
+            ));
+        }
+        let mut walks: futures::stream::FuturesUnordered<_> = self
+            .session_ids()
+            .into_iter()
+            .map(|session_id| async move {
+                let delta = self
+                    .converge_session_mcp(&session_id, crate::mcp::McpReclaim::IfChanged)
+                    .await;
+                (session_id, delta)
+            })
+            .collect();
+        let mut applied = Vec::new();
+        while let Some((session_id, delta)) = walks.next().await {
+            if let Some(delta) = delta
+                && !delta.is_empty()
+            {
+                applied.push((session_id, delta));
+            }
+        }
+        Ok(applied)
+    }
+    /// Converge one session's MCP servers onto the *currently published* configuration, under that session's `update_lock`.
+    /// The single entry point for every convergence — bind-spawned, reload-driven — so tool publication has exactly one channel (dynamic registration) and one serialization point per session.
+    /// Reads the config after taking the lock, so a convergence queued behind another always applies the latest publish.
+    pub(crate) async fn converge_session_mcp(
+        &self,
+        session_id: &str,
+        reclaim: crate::mcp::McpReclaim,
+    ) -> Option<crate::mcp::SessionMcpDelta> {
+        let bind_mcp = self.shared.bind_mcp.as_ref()?;
+        let session = self.session(session_id)?;
+        let tool_server = self.shared.hub_server_blocking().await;
+        let Some(tool_server) = tool_server else {
+            tracing::debug!(session_id, "skipping MCP convergence: no hub connection");
+            return None;
+        };
+        let _update_guard = session.update_lock.lock().await;
+        let config = bind_mcp.read().clone();
+        let delta = match crate::mcp::converge_session(
+            &session,
+            session_id,
+            &config,
+            &tool_server,
+            reclaim,
+            self.shared.session_event_writer(session_id),
+        )
+        .await
+        {
+            Ok(delta) => delta,
+            Err(error) => {
+                tracing::warn!(session_id, %error, "MCP convergence failed for session");
+                return None;
             }
         };
-        let session = match self.session(session_id) {
-            Some(s) => s,
-            None => return,
-        };
-        let sid = match xai_tool_protocol::SessionId::new(session_id) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let mut tool_ids = session.mcp_tool_ids.lock().await;
-        for tid in tool_ids.drain(..) {
-            let _ = tool_server.unregister_tool_dynamic(&tid, &sid).await;
+        if !delta.is_empty() {
+            tracing::info!(
+                session_id,
+                added = ?delta.added,
+                removed = ?delta.removed,
+                failed = ?delta.failed,
+                "converged session onto the published MCP configuration"
+            );
+            let _ =
+                self.shared
+                    .events
+                    .send(xai_grok_workspace_types::WorkspaceEvent::ToolsChanged {
+                        session_id: session_id.to_owned(),
+                    });
         }
-        let mut bridges = session.mcp_bridges.lock().await;
-        bridges.clear();
-        let mut state = session.mcp_state.lock().await;
-        state.owned_clients.clear();
+        Some(delta)
     }
-    /// Look up an existing session.
+    /// [`Self::drop_session`], preceded by MCP teardown when — and only when — the drop itself would be authorized (a self-drop).
+    /// One predicate for both halves, so an unauthorized caller can neither drop another session nor tear down its MCP servers.
+    pub async fn drop_session_with_teardown(
+        &self,
+        caller_session_id: &str,
+        session_id: &str,
+    ) -> WorkspaceResult<()> {
+        let session = self.unmap_session(caller_session_id, session_id)?;
+        self.teardown_session_mcp_arc(&session, None).await;
+        self.finalize_dropped_session(&session, session_id);
+        Ok(())
+    }
+    /// Unregister all MCP tools for a session from the server. Deliberately takes no `update_lock`: session-end, evict, and `drop_session` await this from hub hooks, and a bind or reload mid-MCP-start holds that lock for up to the discovery window — a hook must not queue behind it.
+    /// Flipping the binding to `Closed` first is what makes the lock unnecessary: every in-flight MCP step fails closed against it (`install_servers` refuses the session and `claim_tools` yields nothing), and cancelling `mcp_cancel` drops any starts still connecting.
+    pub async fn teardown_session_mcp(&self, session_id: &str) {
+        if let Some(session) = self.session(session_id) {
+            let _ = self.teardown_session_mcp_arc(&session, None).await;
+        }
+    }
+    /// The hub-EVENT teardown entry (`session.unbind`'s deferred task, the `SessionEnded` hook) for a session that stays mapped: the caller anchors the bind generation with ONE atomic load when the event arrives, and this re-snapshots the (epoch, generation) pair atomically under `mcp_binding` — two separate loads can tear, and a soft rebind between them pairs the old epoch with the post-bind generation, which would slip past the fence and close MCP under the accepted bind.
+    /// (The unmapped-session paths — evict, drop — stay unfenced by design: the unmap precedes the teardown, so no bind can reach the session through the map, and the teardown must always run or the MCP children leak.)
+    pub(crate) async fn teardown_session_mcp_for_event(
+        &self,
+        session_id: &str,
+        arrival_generation: u64,
+    ) -> bool {
+        let Some(session) = self.session(session_id) else {
+            return false;
+        };
+        let (epoch, generation) = {
+            let _binding = session.mcp_binding.lock().await;
+            (
+                session.mcp_epoch.load(std::sync::atomic::Ordering::SeqCst),
+                session
+                    .mcp_bind_generation
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            )
+        };
+        if generation != arrival_generation {
+            return false;
+        }
+        self.teardown_session_mcp_arc(&session, Some((epoch, generation)))
+            .await
+    }
+    /// Arc-based teardown, so a caller that already unmapped the session
+    /// (the drop and evict paths) can still tear its MCP down.
+    pub(crate) async fn teardown_session_mcp_arc(
+        &self,
+        session: &Arc<WorkspaceSession>,
+        expected: Option<(u64, u64)>,
+    ) -> bool {
+        let session_id = session.session_id().to_owned();
+        let session_id = session_id.as_str();
+        let (servers, cancel, closed_life) = {
+            let mut binding = session.mcp_binding.lock().await;
+            let closed_life = session.mcp_epoch.load(std::sync::atomic::Ordering::SeqCst);
+            if let Some((expected_epoch, expected_bind_generation)) = expected {
+                if closed_life != expected_epoch {
+                    return false;
+                }
+                if session
+                    .mcp_bind_generation
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    != expected_bind_generation
+                {
+                    return false;
+                }
+            }
+            session
+                .mcp_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let cancel = session.mcp_cancel.lock().clone();
+            let servers = match std::mem::replace(&mut *binding, WorkspaceMcpBinding::Closed) {
+                WorkspaceMcpBinding::Active(active) => active.servers,
+                WorkspaceMcpBinding::Uninitialized | WorkspaceMcpBinding::Closed => {
+                    std::collections::HashMap::new()
+                }
+            };
+            session.mcp_state.lock().await.owned_clients.clear();
+            (servers, cancel, closed_life)
+        };
+        cancel.cancel();
+        let tool_server = {
+            let hub_guard = self.shared.hub_handle.lock().await;
+            hub_guard.as_ref().map(|hub| hub.server.clone())
+        };
+        if let (Some(tool_server), Ok(sid)) =
+            (tool_server, xai_tool_protocol::SessionId::new(session_id))
+        {
+            for server in servers.values() {
+                for tool_id in &server.tool_ids {
+                    let _ = crate::mcp::HubToolRegistry::unregister_tool_dynamic(
+                        &tool_server,
+                        tool_id,
+                        &sid,
+                        closed_life,
+                    )
+                    .await;
+                }
+            }
+        }
+        drop(servers);
+        true
+    }
     pub fn session(&self, session_id: &str) -> Option<Arc<WorkspaceSession>> {
         self.shared.sessions.read().get(session_id).cloned()
     }
@@ -2930,12 +2803,7 @@ impl WorkspaceHandle {
     pub fn session_count(&self) -> usize {
         self.shared.sessions.read().len()
     }
-    /// Fork a new subagent session. Clones (not references) the parent's
-    /// tool config and env. Enforces capability subset and fork budget.
-    ///
-    /// Forks go through the same post-creation setup as hub-bound sessions
-    /// ([`Self::finalize_session_setup`]): each fork gets its own browser
-    /// service rather than sharing the parent's tabs.
+    /// Fork a new subagent session. Clones (not references) the parent's tool config and env. Forks go through the same post-creation setup as hub-bound sessions ([`Self::finalize_session_setup`]).
     pub async fn fork_session(
         &self,
         config: AgentSessionConfig,
@@ -2966,14 +2834,22 @@ impl WorkspaceHandle {
         }
         let new_depth = parent.depth.saturating_add(1);
         let new_fork_budget = parent.fork_budget.saturating_sub(1).min(config.max_depth);
-        let baseline = config
+        let mut baseline = config
             .tool_config
             .clone()
             .unwrap_or_else(|| (*parent.effective_tool_config()).clone());
+        let active_agent_message_id = xai_grok_tools::registry::types::ToolConfig::for_tool::<
+            xai_grok_tools::implementations::grok_build::SendSubagentMessageTool,
+        >()
+        .id;
+        baseline.tools.retain(|tool| {
+            tool.kind != Some(xai_grok_tools::types::tool::ToolKind::ActiveAgentMessage)
+                && tool.id != active_agent_message_id
+        });
         let cwd = config
             .cwd_override
             .clone()
-            .unwrap_or_else(|| parent.cwd.clone());
+            .unwrap_or_else(|| parent.cwd().to_path_buf());
         let mut env: std::collections::HashMap<String, String> = (**parent.session_env()).clone();
         env.extend(config.extra_env.clone());
         let session_env = Arc::new(env);
@@ -3019,13 +2895,82 @@ impl WorkspaceHandle {
             false,
             None,
         ));
+        if let Some(mapping) = parent.path_virtualization() {
+            session.set_path_virtualization(mapping.clone());
+        }
         self.insert_session_guarded(&session)?;
         record_toolset_swap(&self.shared.activity_tracker, "fork", session.session_id());
         self.finalize_session_setup(&session).await;
         Ok(session)
     }
-    /// Remove a session.
+    /// Replace the bind-time mount hook.
+    /// Default is a no-op until a command is configured; `on_unbind` must not unmount.
+    pub fn set_bind_mount_hook(&self, hook: crate::path_virtualization::BindMountHook) {
+        self.shared.bind_mount_hook.store(Arc::new(hook));
+    }
+    fn bind_lifecycle_ctx<'a>(
+        session: &'a crate::session::WorkspaceSession,
+        real_root: &'a std::path::Path,
+    ) -> crate::path_virtualization::BindLifecycleCtx<'a> {
+        crate::path_virtualization::BindLifecycleCtx {
+            session_id: session.session_id(),
+            real_root,
+        }
+    }
+    async fn invoke_bind_mount_hook(
+        &self,
+        session: &crate::session::WorkspaceSession,
+    ) -> Result<(), crate::path_virtualization::BindMountError> {
+        let Some(mapping) = session.path_virtualization() else {
+            return Ok(());
+        };
+        let hook = self.shared.bind_mount_hook.load_full();
+        let session_id = session.session_id().to_owned();
+        let real_root = mapping.real_root_path();
+        const BIND_MOUNT_HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        match tokio::time::timeout(
+            BIND_MOUNT_HOOK_TIMEOUT,
+            tokio::task::spawn_blocking(move || {
+                hook.on_bind(crate::path_virtualization::BindLifecycleCtx {
+                    session_id: &session_id,
+                    real_root: &real_root,
+                })
+            }),
+        )
+        .await
+        {
+            Ok(join) => join.unwrap_or_else(|e| {
+                Err(crate::path_virtualization::BindMountError(format!(
+                    "bind mount hook join: {e}"
+                )))
+            }),
+            Err(_) => Err(crate::path_virtualization::BindMountError(format!(
+                "bind mount hook timed out after {}s",
+                BIND_MOUNT_HOOK_TIMEOUT.as_secs()
+            ))),
+        }
+    }
+    pub(crate) fn invoke_unbind_hook(&self, session: &crate::session::WorkspaceSession) {
+        let Some(mapping) = session.path_virtualization() else {
+            return;
+        };
+        let real_root = mapping.real_root_path();
+        self.shared
+            .bind_mount_hook
+            .load()
+            .on_unbind(Self::bind_lifecycle_ctx(session, &real_root));
+    }
     pub fn drop_session(&self, caller_session_id: &str, session_id: &str) -> WorkspaceResult<()> {
+        let session = self.unmap_session(caller_session_id, session_id)?;
+        self.finalize_dropped_session(&session, session_id);
+        Ok(())
+    }
+    /// Authorize and remove the session from the map, returning the Arc so the caller can finish teardown on it. Split from [`Self::finalize_dropped_session`] so the MCP drop path can tear down between the two (unmap first — see `drop_session_with_teardown`).
+    fn unmap_session(
+        &self,
+        caller_session_id: &str,
+        session_id: &str,
+    ) -> WorkspaceResult<Arc<WorkspaceSession>> {
         if caller_session_id != session_id {
             return Err(WorkspaceError::Unauthorized {
                 caller: caller_session_id.to_owned(),
@@ -3036,16 +2981,19 @@ impl WorkspaceHandle {
         let Some(session) = sessions.remove(session_id) else {
             return Err(WorkspaceError::SessionNotFound(session_id.to_owned()));
         };
-        drop(sessions);
+        Ok(session)
+    }
+    /// The non-MCP half of dropping a session: unbind hook, forwarder and
+    /// backend shutdowns, debounce-entry cleanup.
+    fn finalize_dropped_session(&self, session: &Arc<WorkspaceSession>, session_id: &str) {
+        self.invoke_unbind_hook(session);
         session.abort_system_notify_producers();
         session.shutdown_terminal_backend();
         session.shutdown_browser_service();
         session.cancel_hunk_tracker();
         self.shared.tool_defs_last_emit.remove(session_id);
-        Ok(())
     }
-    /// Re-resolve every session's toolset against `new_snapshot` and
-    /// emit one `WorkspaceEvent::ToolsChanged` per session.
+    /// Re-resolve every session's toolset against `new_snapshot` and emit one `WorkspaceEvent::ToolsChanged` per session.
     pub fn on_mcp_snapshot_changed(
         &self,
         new_snapshot: Vec<xai_grok_tools::registry::types::ToolConfig>,
@@ -3073,10 +3021,9 @@ impl WorkspaceHandle {
             )
         })
     }
-    /// Per-`session.bind` handler resolver: resolves the bind metadata into a
-    /// session toolset (fail-closed in strict mode) and returns the handlers
-    /// plus the bind-report fields. Extracted from `connect_hub` so tests can
-    /// drive the full bind path without a hub connection.
+    /// Per-`session.bind` handler resolver: resolves the bind metadata into a session toolset (fail-closed in strict mode).
+    /// Returns the handlers plus the bind-report fields.
+    /// Extracted from `connect_hub` so tests can drive the full bind path without a hub connection.
     pub(crate) fn session_bind_resolver(
         &self,
         catalog: Arc<Vec<Arc<dyn xai_computer_hub_sdk::ToolServerHandler>>>,
@@ -3103,6 +3050,7 @@ impl WorkspaceHandle {
                     });
                 Box::pin(
                 async move {
+                    let bind_started = std::time::Instant::now();
                     let Some(shared) = weak_shared.upgrade() else {
                         WORKSPACE_BIND_FAILED_TOTAL
                             .with_label_values(&["workspace_shutdown"])
@@ -3124,6 +3072,30 @@ impl WorkspaceHandle {
                         .pointer("/metadata")
                         .map(crate::config::WorkspaceBindConfig::from_metadata)
                         .unwrap_or_default();
+                    let path_virt = bind_config
+                        .session_root
+                        .as_deref()
+                        .and_then(
+                            crate::path_virtualization::PathVirtualization::try_from_session_root,
+                        );
+                    if bind_config.session_root.is_some() && path_virt.is_none() {
+                        tracing::warn!(
+                            session_id = %sid_str,
+                            session_root = ?bind_config.session_root,
+                            "session.bind: ignoring malformed session_root"
+                        );
+                    }
+                    let bind_cwd = match (bind_cwd, &path_virt) {
+                        (Some(cwd), Some(v)) => {
+                            Some(
+                                std::path::PathBuf::from(
+                                    v.to_guest(&cwd.to_string_lossy()).into_owned(),
+                                ),
+                            )
+                        }
+                        (None, Some(v)) => Some(v.real_root_path()),
+                        (cwd, None) => cwd,
+                    };
                     let empty_toolset = || xai_grok_tools::registry::types::ToolServerConfig {
                         tools: vec![],
                         behavior_preset: None,
@@ -3204,6 +3176,7 @@ impl WorkspaceHandle {
                         yolo_mode,
                         "session.bind: resolving workspace session toolset"
                     );
+                    let bind_cwd_for_rebind = bind_cwd.clone();
                     let created = {
                         let _span = LocalSpan::enter_with_local_parent(
                                 "tool_server.session_bind.create_session",
@@ -3225,6 +3198,9 @@ impl WorkspaceHandle {
                                 .set_bind_tool_config_fingerprint_if_unset(
                                     bind_fingerprint.clone(),
                                 );
+                            if let Some(mapping) = path_virt.clone() {
+                                session.set_path_virtualization(mapping);
+                            }
                             ws.finalize_session_setup(&session)
                                 .in_span(
                                     fastrace::Span::enter_with_local_parent(
@@ -3240,6 +3216,24 @@ impl WorkspaceHandle {
                             session
                         }
                         Err(crate::error::WorkspaceError::SessionAlreadyExists(_)) => {
+                            if let Some(existing) = ws.session(&sid_str)
+                                && let Some(mapping) = path_virt.clone()
+                            {
+                                if let Some(cwd) = bind_cwd_for_rebind.clone()
+                                    && let Err(e) = existing
+                                        .set_cwd_for_virtualization(cwd)
+                                        .await
+                                {
+                                    return Err(
+                                        xai_tool_runtime::ToolError::service_unavailable(
+                                            format!(
+                                            "path-virt remount failed for `{sid_str}`: {e}"
+                                        ),
+                                        ),
+                                    );
+                                }
+                                existing.set_path_virtualization(mapping);
+                            }
                             match ws
                                 .rebind_existing_hub_session(
                                     &sid_str,
@@ -3288,6 +3282,41 @@ impl WorkspaceHandle {
                             );
                         }
                     };
+                    let mcp_bind_epoch = session
+                        .mcp_epoch
+                        .load(std::sync::atomic::Ordering::SeqCst);
+                    if let Some(mapping) = path_virt {
+                        if let Some(cwd) = bind_cwd_for_rebind
+                            && let Err(e) = session.set_cwd_for_virtualization(cwd).await
+                        {
+                            return Err(
+                                xai_tool_runtime::ToolError::service_unavailable(
+                                    format!(
+                                "path-virt remount failed for `{sid_str}`: {e}"
+                            ),
+                                ),
+                            );
+                        }
+                        session.set_path_virtualization(mapping);
+                    }
+                    if let Err(e) = ws.invoke_bind_mount_hook(&session).await {
+                        tracing::error!(
+                            session_id = %sid_str,
+                            error = %e,
+                            "session.bind: bind mount hook failed"
+                        );
+                        WORKSPACE_BIND_FAILED_TOTAL
+                            .with_label_values(&["bind_mount_failed"])
+                            .inc();
+                        let _ = ws.drop_session_with_teardown(&sid_str, &sid_str).await;
+                        return Err(
+                            xai_tool_runtime::ToolError::service_unavailable(
+                                format!(
+                            "bind mount hook failed: {e}"
+                        ),
+                            ),
+                        );
+                    }
                     let mut handlers = {
                         let _span = LocalSpan::enter_with_local_parent(
                                 "tool_server.session_bind.handlers",
@@ -3295,6 +3324,140 @@ impl WorkspaceHandle {
                             .with_property(|| ("session_id", sid_str.clone()));
                         build_session_routed_handlers(&session.toolset(), &ws)
                     };
+                    let () = async {
+                        if ws.shared.bind_mcp.is_some() && !bind_config.rpc_only
+                            && resolve_error.is_none()
+                        {
+                            let mut native: HashSet<ToolId> = handlers
+                                .iter()
+                                .map(|handler| handler.tool_id())
+                                .collect();
+                            native.insert(rpc_tool_id.clone());
+                            let mut degraded_raced_teardown = false;
+                            let mut union_grew = false;
+                            let enrolled = {
+                                let mut binding = session.mcp_binding.lock().await;
+                                if session
+                                    .mcp_epoch
+                                    .load(std::sync::atomic::Ordering::SeqCst) != mcp_bind_epoch
+                                {
+                                    if matches!(*binding, WorkspaceMcpBinding::Closed) {
+                                        session
+                                            .mcp_bind_generation
+                                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                        degraded_raced_teardown = true;
+                                    } else {
+                                        {
+                                            let mut set = session.mcp_native_tool_ids.lock();
+                                            let before = set.len();
+                                            set.extend(native);
+                                            union_grew = set.len() != before;
+                                        }
+                                        session
+                                            .mcp_bind_generation
+                                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                    }
+                                    false
+                                } else {
+                                    if matches!(*binding, WorkspaceMcpBinding::Closed) {
+                                        *binding = WorkspaceMcpBinding::Uninitialized;
+                                        *session.mcp_cancel.lock() = tokio_util::sync::CancellationToken::new();
+                                    }
+                                    let was_active = binding.active().is_some();
+                                    let _ = binding.join();
+                                    if !was_active {
+                                        session
+                                            .mcp_epoch
+                                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                    }
+                                    session
+                                        .mcp_bind_generation
+                                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                    *session.mcp_native_tool_ids.lock() = native;
+                                    true
+                                }
+                            };
+                            if enrolled {
+                                let converge_ws = ws.clone();
+                                let converge_sid = sid_str.clone();
+                                let mut converge = tokio::spawn(async move {
+                                    converge_ws
+                                        .converge_session_mcp(
+                                            &converge_sid,
+                                            crate::mcp::McpReclaim::Always,
+                                        )
+                                        .await;
+                                });
+                                let grace = ws
+                                    .shared
+                                    .bind_mcp
+                                    .as_ref()
+                                    .map(|config| {
+                                        config
+                                            .read()
+                                            .bind_converge_grace_within(bind_started.elapsed())
+                                    })
+                                    .unwrap_or_default();
+                                let _ = tokio::time::timeout(grace, &mut converge).await;
+                            } else {
+                                tracing::warn!(
+                                session_id = %sid_str,
+                                degraded_raced_teardown,
+                                "session.bind: MCP enrolment refused — the session was torn down after this bind began"
+                            );
+                                if degraded_raced_teardown {
+                                    WORKSPACE_BIND_MCP_DEGRADED_TOTAL
+                                        .with_label_values(&["raced_teardown"])
+                                        .inc();
+                                }
+                                if union_grew {
+                                    let reclaim_ws = ws.clone();
+                                    let reclaim_sid = sid_str.clone();
+                                    tokio::spawn(async move {
+                                        reclaim_ws
+                                            .converge_session_mcp(
+                                                &reclaim_sid,
+                                                crate::mcp::McpReclaim::Always,
+                                            )
+                                            .await;
+                                    });
+                                }
+                            }
+                        } else {
+                            let mut binding = session.mcp_binding.lock().await;
+                            let epoch_current = session
+                                .mcp_epoch
+                                .load(std::sync::atomic::Ordering::SeqCst)
+                                == mcp_bind_epoch;
+                            if epoch_current
+                                && matches!(*binding, WorkspaceMcpBinding::Closed)
+                            {
+                                *binding = WorkspaceMcpBinding::Uninitialized;
+                                *session.mcp_cancel.lock() = tokio_util::sync::CancellationToken::new();
+                                session
+                                    .mcp_epoch
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                session
+                                    .mcp_bind_generation
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            } else if !epoch_current
+                                && matches!(*binding, WorkspaceMcpBinding::Closed)
+                            {
+                                tracing::warn!(
+                                session_id = %sid_str,
+                                "session.bind: MCP re-open skipped — the session was torn down after this bind began; the next bind re-opens"
+                            );
+                                session
+                                    .mcp_bind_generation
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            } else {
+                                session
+                                    .mcp_bind_generation
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            }
+                        }
+                    }
+                        .await;
                     let advertised: Vec<String> = handlers
                         .iter()
                         .map(|h| h.tool_id().as_str().to_owned())
@@ -3354,18 +3517,10 @@ impl WorkspaceHandle {
             },
         )
     }
-    /// Connect to the server, start the tool server (provider
-    /// direction) and notification listener (consumer direction).
-    ///
-    /// No-op if no `hub_config` was provided or already connected.
-    ///
-    /// The tool server exposes the workspace's main session tools so
-    /// the server can dispatch `tool_call_request` frames to them. The
-    /// notification listener updates `hub_tools_snapshot` and
-    /// re-resolves every session's toolset whenever the server announces
-    /// tool changes.
+    /// Connect to the server, start the tool server (provider direction) and notification listener (consumer direction).
+    /// No-op if no `hub_config` was provided or already connected. The tool server exposes the workspace's main session tools so the server can dispatch `tool_call_request` frames to them.
     pub async fn connect_hub(&self) -> WorkspaceResult<()> {
-        use crate::hub::{HubHandle, apply_tools_changed, hub_result};
+        use crate::hub::{HubHandle, HubWsTiming, apply_tools_changed, hub_result};
         tracing::info!("WorkspaceHandle::connect_hub — starting");
         let connect_hub_started = std::time::Instant::now();
         let hub_config = match &self.shared.hub_config {
@@ -3437,14 +3592,37 @@ impl WorkspaceHandle {
         let catalog: Arc<Vec<Arc<dyn xai_computer_hub_sdk::ToolServerHandler>>> =
             Arc::new(template_handlers.clone());
         let resolver = self.session_bind_resolver(catalog, rpc_tool_id);
+        let unbind_workspace = self.clone();
+        let on_session_unbound: Arc<xai_computer_hub_sdk::SessionUnboundCallback> =
+            Arc::new(move |sid: &xai_tool_protocol::SessionId| {
+                let workspace = unbind_workspace.clone();
+                let session_id = sid.as_str().to_owned();
+                let Some(session) = workspace.session(&session_id) else {
+                    return;
+                };
+                let arrival_generation = session
+                    .mcp_bind_generation
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    if workspace
+                        .teardown_session_mcp_for_event(&session_id, arrival_generation)
+                        .await
+                    {
+                        tracing::info!(
+                            session = %session_id,
+                            "hub session unbind: MCP resources torn down"
+                        );
+                    }
+                });
+            });
         let hub_ws_started = std::time::Instant::now();
         let connect_result = HubHandle::connect(
             &hub_config,
-            self.shared.status_config.ws_ping,
-            self.shared.status_config.ws_reconnect_backoff.clone(),
+            HubWsTiming::from_status(&self.shared.status_config),
             template_handlers,
             self.shared.server_metadata.clone(),
             Some(resolver),
+            Some(on_session_unbound),
         )
         .await;
         let hub_ws_connect_secs = hub_ws_started.elapsed().as_secs_f64();
@@ -3562,12 +3740,7 @@ impl WorkspaceHandle {
         let heartbeat = self.shared.status_config.heartbeat;
         let keepalive = self.shared.status_config.keepalive;
         let status_publisher_task = tokio::spawn(async move {
-            /// Attempt to send a status frame.
-            ///
-            /// Returns `Some(true)` on success, `Some(false)` on transport
-            /// failure (hub unreachable), and `None` when the send was
-            /// skipped due to a local error (serialization, id allocation)
-            /// that does not indicate a dead connection.
+            /// Attempt to send a status frame. `None` means the send was skipped due to a local error (serialization, id allocation) that does not indicate a dead connection.
             async fn send_status(
                 conn: &xai_computer_hub_sdk::HubConnection,
                 payload: ToolServerStatusPayload,
@@ -3745,20 +3918,13 @@ impl WorkspaceHandle {
         }
     }
 }
-/// Build one [`SessionRoutedToolHandler`](crate::hub::SessionRoutedToolHandler)
-/// per tool in `toolset`, keyed by client (function) name. Shared by the
-/// connect-time catalog and the per-`session.bind` resolver so the two
-/// construction paths cannot drift.
-///
-/// `finalize` already rejects duplicate client names, so the `seen` set is
-/// defense-in-depth: it guards a regression from ever emitting two handlers
-/// with the same `tool_id` (which would duplicate the bind response and
-/// silently first-win at dispatch).
+/// Build one [`SessionRoutedToolHandler`](crate::hub::SessionRoutedToolHandler) per tool in `toolset`, keyed by client (function) name.
+/// Shared by the connect-time catalog and the per-`session.bind` resolver so the two construction paths cannot drift.
 fn build_session_routed_handlers(
     toolset: &xai_grok_tools::registry::types::FinalizedToolset,
     ws: &WorkspaceHandle,
 ) -> Vec<Arc<dyn xai_computer_hub_sdk::ToolServerHandler>> {
-    let tool_kinds = toolset.tool_kinds();
+    let tool_kinds = toolset.tool_kind_map();
     let mut seen = std::collections::HashSet::new();
     let mut handlers = Vec::new();
     for def in toolset.tool_definitions() {
@@ -3769,15 +3935,17 @@ fn build_session_routed_handlers(
             );
             continue;
         }
+        let semantic_kind = tool_kinds.get(&def.function.name).copied();
         let mut desc = xai_tool_types::ToolDescription::new(
             def.function.name.clone(),
             def.function.description.clone().unwrap_or_default(),
         );
         desc.arguments_schema = Some(def.function.parameters.clone());
-        desc.kind = tool_kinds.get(&def.function.name).cloned();
+        desc.kind = semantic_kind.map(|kind| kind.as_key().to_owned());
         match crate::hub::SessionRoutedToolHandler::new(
             def.function.name.clone(),
             desc,
+            semantic_kind,
             Some(def.function.parameters.clone()),
             ws.clone(),
         ) {
@@ -3796,8 +3964,7 @@ fn build_session_routed_handlers(
     handlers
 }
 /// Apply a tool notification to the ActivityTracker background-task count.
-/// `started` must precede `completed`, else the unknown `completed` no-ops and
-/// strands the count.
+/// `started` must precede `completed`, else the unknown `completed` no-ops and strands the count.
 pub(crate) fn apply_background_task_notification(
     tracker: &crate::activity::ActivityTracker,
     notification: &xai_grok_tools::notification::types::ToolNotification,
@@ -3813,9 +3980,8 @@ pub(crate) fn apply_background_task_notification(
         _ => {}
     }
 }
-/// Tracker-only drain of the session tool-notification stream — not a network
-/// send, so the hibernation decrement isn't delayed by send backoff and
-/// notifications aren't misattributed across sessions.
+/// Tracker-only drain of the session tool-notification stream, not a network send.
+/// The hibernation decrement therefore isn't delayed by send backoff, and notifications aren't misattributed across sessions.
 pub(crate) async fn run_activity_feed(
     tracker: Arc<crate::activity::ActivityTracker>,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<
@@ -3831,25 +3997,18 @@ fn sha256_hex(data: &[u8]) -> String {
     use sha2::Digest;
     format!("{:x}", sha2::Sha256::digest(data))
 }
-/// What triggered a [`WorkspaceHandle::two_phase_drain`] — the metric label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What triggered a [`WorkspaceHandle::two_phase_drain`] (the metric label).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum DrainReason {
     /// Process received SIGTERM / Ctrl-C (standalone `workspace_server`).
     Sigterm,
     /// Hub sent `tool_server.evict`.
     Evict,
 }
-impl DrainReason {
-    /// Stable `reason` label for `grok_workspace_drain_started_total`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            DrainReason::Sigterm => "sigterm",
-            DrainReason::Evict => "evict",
-        }
-    }
-}
-/// Terminal classification of a two-phase drain — the metric label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Terminal classification of a two-phase drain (the metric label).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum DrainOutcome {
     /// Tools, producers, and the upload queue all finished within budget.
     Full,
@@ -3860,30 +4019,18 @@ pub enum DrainOutcome {
     /// Upload-queue deadline exceeded with items still pending (lost on exit).
     Timeout,
 }
-impl DrainOutcome {
-    /// Stable `outcome` label for `grok_workspace_drain_completed_total`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            DrainOutcome::Full => "full",
-            DrainOutcome::Partial => "partial",
-            DrainOutcome::ProducersTimeout => "producers_timeout",
-            DrainOutcome::Timeout => "timeout",
-        }
-    }
-}
 /// Phase-1 (in-flight tool call) budget: one third of the total grace budget.
 /// Phases 1.5 and 2 split the remainder.
 fn phase1_budget(grace_budget: std::time::Duration) -> std::time::Duration {
     grace_budget / 3
 }
-/// Phase-1.5 (artifact producer) budget: half the post-phase-1 remainder, so a
-/// wedged producer can't starve the phase-2 flush of already-enqueued items.
+/// Phase-1.5 (artifact producer) budget: half the post-phase-1 remainder.
+/// A wedged producer thus can't starve the phase-2 flush of already-enqueued items.
 fn phase15_budget(remaining: std::time::Duration) -> std::time::Duration {
     remaining / 2
 }
-/// Poll the producer tracker until it reports zero in-flight tasks or `budget`
-/// elapses; `true` = idle reached. Replaces `close()` + `wait()` so the
-/// tracker stays open (reusable after a non-terminal drain).
+/// Poll the producer tracker until it reports zero in-flight tasks or `budget` elapses; `true` means idle was reached.
+/// Replaces `close()` and `wait()` so the tracker stays open (reusable after a non-terminal drain).
 async fn wait_for_producers_idle(
     tracker: &tokio_util::task::TaskTracker,
     budget: std::time::Duration,
@@ -3897,14 +4044,7 @@ async fn wait_for_producers_idle(
     }
     true
 }
-/// Classify a drain by the earliest phase that blew its deadline:
-/// tools (`Partial`) > producers (`ProducersTimeout`) > queue (`Timeout`) >
-/// clean (`Full`). `producers_unfinished` is the final producer count after
-/// phase 2 (a producer can be spawned *during* phase 2, after `producers_done`
-/// was latched in phase 1.5); it is checked so `Full` and the drain marker
-/// agree — `Full` requires that no producer work remains, matching the marker /
-/// return total (active tool calls + producers + queue), which is `0` only when
-/// `tools_idle`, no producers remain, and the queue is empty.
+/// Classify a drain by the earliest phase that blew its deadline. `producers_unfinished` is checked because a producer can be spawned *during* phase 2, after `producers_done` was latched in phase 1.5.
 fn classify_drain_outcome(
     tools_idle: bool,
     producers_done: bool,
@@ -3921,14 +4061,12 @@ fn classify_drain_outcome(
         DrainOutcome::Full
     }
 }
-/// The SIGTERM drain budget from `GROK_WORKSPACE_TERMINATION_GRACE_MS`
-/// (default [`DEFAULT_TERMINATION_GRACE_MS`]). The hub-evict path uses the
-/// hub-provided `grace_period_ms` instead.
+/// The SIGTERM drain budget from `GROK_WORKSPACE_TERMINATION_GRACE_MS` (default [`DEFAULT_TERMINATION_GRACE_MS`]).
+/// The hub-evict path uses the hub-provided `grace_period_ms` instead.
 pub fn termination_grace_from_env() -> std::time::Duration {
     grace_budget_from_raw(std::env::var("GROK_WORKSPACE_TERMINATION_GRACE_MS").ok())
 }
-/// Pure parse of the termination-grace env value: a positive integer ms wins,
-/// anything else (absent, unparseable, zero) falls back to the default.
+/// Pure parse of the termination-grace env value: a positive integer ms wins, anything else (absent, unparseable, zero) falls back to the default.
 fn grace_budget_from_raw(raw: Option<String>) -> std::time::Duration {
     let ms = raw
         .and_then(|s| s.trim().parse::<u64>().ok())
@@ -3936,19 +4074,15 @@ fn grace_budget_from_raw(raw: Option<String>) -> std::time::Duration {
         .unwrap_or(DEFAULT_TERMINATION_GRACE_MS);
     std::time::Duration::from_millis(ms)
 }
-/// Path of the preStop drain marker (`GROK_WORKSPACE_DRAINING_FILE` or
-/// [`DEFAULT_DRAINING_FILE`]).
+/// Path of the preStop drain marker (`GROK_WORKSPACE_DRAINING_FILE` or [`DEFAULT_DRAINING_FILE`]).
 fn draining_file_path() -> std::path::PathBuf {
     std::env::var("GROK_WORKSPACE_DRAINING_FILE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from(DEFAULT_DRAINING_FILE))
 }
-/// Atomically write `outstanding` (total durability work still pending: upload
-/// queue depth + in-flight artifact producers) to the drain marker (temp +
-/// fsync + rename) so the preStop hook never reads a torn value and never sees
-/// `0` while a producer could still enqueue. Best-effort. The temp name is
-/// unique (pid + counter) so concurrent evict drains don't race on a fixed
-/// `.tmp`.
+/// Atomically write `outstanding` (total durability work still pending: upload queue depth and in-flight artifact producers) to the drain marker.
+/// The write is temp file, fsync, rename, so the preStop hook never reads a torn value and never sees `0` while a producer could still enqueue.
+/// Best-effort. The temp name is unique (pid and counter) so concurrent evict drains don't race on a fixed `.tmp`.
 fn write_draining_marker(path: &std::path::Path, outstanding: usize) {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -3971,13 +4105,8 @@ fn write_draining_marker(path: &std::path::Path, outstanding: usize) {
         let _ = std::fs::remove_file(&tmp);
     }
 }
-/// Stream a file once: SHA-256 over every byte while capturing the
-/// `[offset, offset + length)` overlap. Returns
-/// `(hash_hex, range_bytes, total_streamed_bytes)`.
-///
-/// Shared by [`WorkspaceHandle::get_files`]' chunked reads and the
-/// `file_system::client_fs` ops so the overlap arithmetic lives in one
-/// place.
+/// Stream a file once: SHA-256 over every byte while capturing the `[offset, offset + length)` overlap. Returns `(hash_hex, range_bytes, total_streamed_bytes)`.
+/// Shared by [`WorkspaceHandle::get_files`]' chunked reads and the `file_system::client_fs` ops so the overlap arithmetic lives in one place.
 pub(crate) async fn stream_hash_and_range(
     path: &std::path::Path,
     offset: u64,
@@ -4008,36 +4137,56 @@ pub(crate) async fn stream_hash_and_range(
     }
     Ok((format!("{:x}", hasher.finalize()), chunk, pos))
 }
-/// Create a [`WorkspaceHandle`] and connect it to the hub.
-///
-/// This is the shared setup used by both the standalone `workspace_server`
-/// binary and the TUI's in-process local workspace server. The workspace
-/// registers its tools on the server so external clients can reach them.
-/// Sessions are bound dynamically by clients calling `bind_server`.
-///
-/// `confine_fs_to_workspace_root` confines `x.ai/fs/*` resolution to the root.
-/// The standalone workspace server defaults it on (it always backs a remote
-/// sandbox; override via `GROK_WORKSPACE_CONFINE_FS_TO_ROOT`); the CLI leader
-/// passes `false`.
-///
-/// Returns the connected handle (caller should keep it alive for the
-/// lifetime of the server connection).
+/// Everything [`connect_local_workspace`] needs beyond the connection identity (cwd, hub URL, auth). One options struct instead of a positional flag tail, so call sites read as named decisions and adding a knob is non-breaking.
+/// `Default` is the fail-closed configuration.
+#[derive(Clone, Default)]
+pub struct LocalWorkspaceConnectOptions {
+    /// Metadata attached to the tool-server registration (`servers.list`).
+    pub metadata: Option<serde_json::Value>,
+    /// Stable hub server id (`--server-id`).
+    pub server_id: Option<String>,
+    pub alpha_test_key: Option<String>,
+    /// Allow `ws://` hub URLs (tests and local development only).
+    pub allow_insecure_ws: bool,
+    /// Runtime-tunable timing/threshold config for the tool server.
+    pub status_config: crate::status_config::StatusConfig,
+    /// Enable the durable artifact upload queue.
+    pub upload_queue_enabled: bool,
+    /// Folder-trust verdict for project-scoped LSP servers.
+    pub project_lsp_trusted: bool,
+    /// Diagnostics server handle, when the embedder runs one.
+    pub diag: Option<DiagHandle>,
+    /// Fail binds without an explicit toolset closed instead of widening to
+    /// the default catalog (sandbox-launched standalone servers).
+    pub require_explicit_toolset: bool,
+    /// Confine `x.ai/fs/*` resolution to the workspace root (remote
+    /// sandboxes, where the root is a tenant boundary).
+    pub confine_fs_to_workspace_root: bool,
+    /// MCP servers every admitted hub session binds; hot-swappable via
+    /// [`WorkspaceHandle::reload_bind_mcp`].
+    pub bind_mcp: Option<crate::config::BindMcpConfig>,
+}
+/// Create a [`WorkspaceHandle`] and connect it to the hub. Sessions are bound dynamically by clients calling `bind_server`.
 pub async fn connect_local_workspace(
     cwd: std::path::PathBuf,
     hub_url: url::Url,
     auth: xai_computer_hub_sdk::SharedAuthProvider,
-    metadata: Option<serde_json::Value>,
-    server_id: Option<String>,
-    alpha_test_key: Option<String>,
-    allow_insecure_ws: bool,
-    status_config: crate::status_config::StatusConfig,
-    upload_queue_enabled: bool,
-    project_lsp_trusted: bool,
-    diag: Option<DiagHandle>,
-    require_explicit_toolset: bool,
-    confine_fs_to_workspace_root: bool,
+    options: LocalWorkspaceConnectOptions,
 ) -> WorkspaceResult<WorkspaceHandle> {
     use crate::session::tool_config::WorkspaceSessionContextFactory;
+    let LocalWorkspaceConnectOptions {
+        metadata,
+        server_id,
+        alpha_test_key,
+        allow_insecure_ws,
+        status_config,
+        upload_queue_enabled,
+        project_lsp_trusted,
+        diag,
+        require_explicit_toolset,
+        confine_fs_to_workspace_root,
+        bind_mcp,
+    } = options;
     let time_to_ready_started = std::time::Instant::now();
     let identity: crate::upload::environment::WorkspaceIdentity =
         auth.identity().map(Into::into).unwrap_or_default();
@@ -4078,6 +4227,7 @@ pub async fn connect_local_workspace(
     ws_config.project_lsp_trusted = project_lsp_trusted;
     ws_config.require_explicit_toolset = require_explicit_toolset;
     ws_config.confine_fs_to_workspace_root = confine_fs_to_workspace_root;
+    ws_config.bind_mcp = bind_mcp;
     if let Ok(dir) = std::env::var("GROK_WORKSPACE_SERVER_SKILLS_DIR")
         && !dir.is_empty()
     {
@@ -4161,12 +4311,7 @@ pub async fn connect_local_workspace(
     connect_result?;
     Ok(ws_handle)
 }
-/// Resolve `$GROK_WORKSPACE_HOME` — the workspace-owned on-disk state root.
-///
-/// Precedence:
-/// 1. `$GROK_WORKSPACE_HOME` (operator override).
-/// 2. `<grok_home>/workspace`, where `<grok_home>` honours `$GROK_HOME` and
-///    otherwise falls back to `~/.grok` (see [`xai_grok_config::grok_home`]).
+/// Resolve `$GROK_WORKSPACE_HOME`, the workspace-owned on-disk state root. `<grok_home>/workspace`, where `<grok_home>` honours `$GROK_HOME` and otherwise falls back to `~/.grok` (see [`xai_grok_config::grok_home`]).
 pub fn resolve_workspace_home() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("GROK_WORKSPACE_HOME")
         && !p.trim().is_empty()
@@ -4175,13 +4320,8 @@ pub fn resolve_workspace_home() -> std::path::PathBuf {
     }
     xai_grok_config::grok_home().join("workspace")
 }
-/// Skill `ignore` entries for the allow-list: subdirs of `dir` not in the
-/// comma-separated list (`bundled__` prefix optional). Unreadable `dir` fails
-/// closed (ignore `dir` itself).
-///
-/// Unset and set-but-empty differ: unset means no filtering at all, empty means
-/// advertise none. The sandbox service relies on that to forward the tri-state
-/// of `AgentSandboxStartRequest.bundled_skills`.
+/// Skill `ignore` entries for the allow-list: subdirs of `dir` not in the comma-separated list (`bundled__` prefix optional).
+/// Unreadable `dir` fails closed (ignore `dir` itself).
 fn bundled_allowlist_ignore_dirs(dir: &str, allowlist: Option<&str>) -> Vec<String> {
     let Some(allowlist) = allowlist else {
         return vec![];
@@ -4217,18 +4357,14 @@ fn bundled_allowlist_ignore_dirs(dir: &str, allowlist: Option<&str>) -> Vec<Stri
     dirs.sort();
     dirs
 }
-/// Whether per-session `events.jsonl` recording is enabled
-/// (`GROK_WORKSPACE_EVENTS_ENABLED=true`). Any other value — including unset —
-/// keeps the legacy behaviour: [`WorkspaceShared::session_event_writer`] hands
-/// back [`EventWriter::noop()`](xai_grok_session_events::EventWriter::noop)
-/// and no `events.jsonl` is ever opened.
+/// Whether per-session `events.jsonl` recording is enabled (`GROK_WORKSPACE_EVENTS_ENABLED=true`). Any other value (including unset) keeps the legacy behaviour.
+/// [`WorkspaceShared::session_event_writer`] hands back [`EventWriter::noop()`](xai_grok_session_events::EventWriter::noop).
 fn events_enabled() -> bool {
     std::env::var("GROK_WORKSPACE_EVENTS_ENABLED").as_deref() == Ok("true")
 }
-/// Watchdog for awaiting enqueue outcomes when answering an `After` turn
-/// hook. MUST undercut the requester's 10s hook deadline or the reply (and
-/// its ack) arrives after the requester gave up. Default 8s; override via
-/// `GROK_WORKSPACE_AFTER_TURN_WATCHDOG_MS` (malformed values fall back).
+/// Watchdog for awaiting enqueue outcomes when answering an `After` turn hook.
+/// MUST undercut the requester's 10s hook deadline or the reply (and its ack) arrives after the requester gave up.
+/// Default 8s; override via `GROK_WORKSPACE_AFTER_TURN_WATCHDOG_MS` (malformed values fall back).
 fn after_turn_watchdog() -> std::time::Duration {
     const DEFAULT_MS: u64 = 8_000;
     let ms = std::env::var("GROK_WORKSPACE_AFTER_TURN_WATCHDOG_MS")
@@ -4237,30 +4373,25 @@ fn after_turn_watchdog() -> std::time::Duration {
         .unwrap_or(DEFAULT_MS);
     std::time::Duration::from_millis(ms)
 }
-/// Whether per-session `workspace_tool_definitions.json` emission is enabled
-/// (`GROK_WORKSPACE_TOOL_DEFS_ENABLED=true`; any other value keeps legacy
-/// behaviour).
+/// Whether per-session `workspace_tool_definitions.json` emission is enabled (`GROK_WORKSPACE_TOOL_DEFS_ENABLED=true`).
+/// Any other value keeps legacy behaviour.
 fn tool_defs_enabled() -> bool {
     std::env::var("GROK_WORKSPACE_TOOL_DEFS_ENABLED").as_deref() == Ok("true")
 }
-/// Debounce window for `ToolsChanged`-driven re-emission: at most one re-emit
-/// per session per window.
+/// Debounce window for `ToolsChanged`-driven re-emission: at most one re-emit per session per window.
 pub(crate) const TOOL_DEFS_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(5);
-/// Session-root GCS object path for a session's workspace-side tool
-/// definitions (same cadence convention as `workspace_environment.json`).
+/// Session-root GCS object path for a session's workspace-side tool definitions (same cadence convention as `workspace_environment.json`).
 fn workspace_tool_definitions_path(session_id: &str) -> String {
     format!("{session_id}/workspace_tool_definitions.json")
 }
-/// Whether `s` is safe to interpolate as the leading segment of a GCS object
-/// key: non-empty, no separators, `..`, or NUL (RPC ids are a trust boundary).
+/// Whether `s` is safe to interpolate as the leading segment of a GCS object key.
+/// Non-empty, no separators, `..`, or NUL (RPC ids are a trust boundary).
 fn is_safe_object_segment(s: &str) -> bool {
     !s.is_empty() && !s.contains('/') && !s.contains('\\') && !s.contains("..") && !s.contains('\0')
 }
-/// Per-session re-emit gate: `true` (recording `now` as last-emit) only when
-/// `enabled` and at least `window` elapsed since the previous re-emit. Disabled
-/// records no state, so flipping the flag on later is never pre-empted by
-/// suppressed-while-off events; the check-and-set is atomic via the dashmap
-/// entry API so concurrent events for one session cannot both pass.
+/// Per-session re-emit gate: `true` (recording `now` as last-emit) only when `enabled` and at least `window` elapsed since the previous re-emit.
+/// Disabled records no state, so flipping the flag on later is never pre-empted by suppressed-while-off events.
+/// The check-and-set is atomic via the dashmap entry API so concurrent events for one session cannot both pass.
 fn tool_defs_reemit_gate(
     enabled: bool,
     last_emit: &dashmap::DashMap<String, std::time::Instant>,
@@ -4292,9 +4423,8 @@ fn tool_defs_reemit_gate(
         }
     }
 }
-/// Enqueue serialized workspace tool definitions at `object_path`, mapping the
-/// outcome to a log line. Shared by `emit_workspace_tool_definitions` (which
-/// spawns it) and the unit tests (which await it).
+/// Enqueue serialized workspace tool definitions at `object_path`, mapping the outcome to a log line.
+/// Shared by `emit_workspace_tool_definitions` (which spawns it) and the unit tests (which await it).
 async fn enqueue_workspace_tool_definitions(
     upload_queue: &xai_file_utils::queue::UploadQueue,
     session_id: &str,
@@ -4336,9 +4466,8 @@ async fn enqueue_workspace_tool_definitions(
     }
     outcome
 }
-/// Single source of truth for mapping a turn-hook outcome to the `events.jsonl`
-/// [`TurnOutcomeLabel`]. Kept as one `match` so the two enums cannot drift and
-/// the mapping is never duplicated across call sites.
+/// Single source of truth for mapping a turn-hook outcome to the `events.jsonl` [`TurnOutcomeLabel`].
+/// Kept as one `match` so the two enums cannot drift and the mapping is never duplicated across call sites.
 fn turn_outcome_label(outcome: xai_tool_protocol::turn_hook::TurnHookOutcome) -> TurnOutcomeLabel {
     use xai_tool_protocol::turn_hook::TurnHookOutcome;
     match outcome {
@@ -4348,26 +4477,23 @@ fn turn_outcome_label(outcome: xai_tool_protocol::turn_hook::TurnHookOutcome) ->
         _ => TurnOutcomeLabel::Error,
     }
 }
-/// Decode the wire `session_relationship` string into the `events.jsonl`
-/// enum. Unknown values map to the safe default `Primary`; the snake_case
-/// forms are pinned by `session_relationship_wire_forms_round_trip`.
+/// Decode the wire `session_relationship` string into the `events.jsonl` enum.
+/// Unknown values map to the safe default `Primary`; the snake_case forms are pinned by `session_relationship_wire_forms_round_trip`.
 fn decode_session_relationship(s: &str) -> SessionRelationship {
     match s {
         "subagent" => SessionRelationship::Subagent,
         _ => SessionRelationship::Primary,
     }
 }
-/// Decode the bare snake_case `cancellation_category` string into the
-/// `events.jsonl` enum; unrecognised values decode to `None` rather than
-/// failing the whole `TurnEnded` emission.
+/// Decode the bare snake_case `cancellation_category` string into the `events.jsonl` enum.
+/// Unrecognised values decode to `None` rather than failing the whole `TurnEnded` emission.
 fn decode_cancellation_category(s: Option<&str>) -> Option<CancellationCategory> {
     s.and_then(|s| {
         serde_json::from_value::<CancellationCategory>(serde_json::Value::String(s.to_owned())).ok()
     })
 }
-/// Await both per-phase enqueue handles and reduce them to the wire ack triple
-/// `(status, artifact_count, error_message)`. No handles at all means nothing
-/// is on disk → `Skipped` with `no_handle_skip_reason` as the diagnostic.
+/// Await both per-phase enqueue handles and reduce them to the wire ack triple `(status, artifact_count, error_message)`.
+/// No handles at all means nothing is on disk: `Skipped`, with `no_handle_skip_reason` as the diagnostic.
 async fn resolve_after_turn_ack(
     before_handle: Option<tokio::task::JoinHandle<EnqueueOutcome>>,
     after_handle: Option<tokio::task::JoinHandle<EnqueueOutcome>>,
@@ -4387,9 +4513,8 @@ async fn resolve_after_turn_ack(
     );
     reduce_enqueue_outcomes(&before, &after)
 }
-/// Await one enqueue handle under a watchdog, mapping every failure mode
-/// (missing handle, join error, timeout) to [`EnqueueOutcome::Failed`]. On
-/// timeout the task is detached, not aborted — we only stop blocking the ack.
+/// Await one enqueue handle under a watchdog, mapping every failure mode (missing handle, join error, timeout) to [`EnqueueOutcome::Failed`].
+/// On timeout the task is detached, not aborted; we only stop blocking the ack.
 async fn await_enqueue_outcome(
     handle: Option<tokio::task::JoinHandle<EnqueueOutcome>>,
     watchdog: std::time::Duration,
@@ -4410,12 +4535,8 @@ async fn await_enqueue_outcome(
         },
     }
 }
-/// Reduce the two per-phase [`EnqueueOutcome`]s to the wire ack triple.
-/// `artifact_count` counts only durably-spilled phases (`FellBackToInline` is
-/// a success for `status` but not durable, so it does not count); any `Failed`
-/// wins the `status`, carrying the first failure reason. [`EnqueueOutcome::Skipped`]
-/// (e.g. collect deadline) is a non-failure and not a durable enqueue. The
-/// no-handle case is handled by [`resolve_after_turn_ack`].
+/// Reduce the two per-phase [`EnqueueOutcome`]s to the wire ack triple. `artifact_count` counts only durably-spilled phases (`FellBackToInline` is a success for `status` but not durable, so it does not count).
+/// collect deadline) is a non-failure and not a durable enqueue.
 fn reduce_enqueue_outcomes(
     before: &EnqueueOutcome,
     after: &EnqueueOutcome,
@@ -4434,10 +4555,9 @@ fn reduce_enqueue_outcomes(
         None => (AfterTurnAckStatus::Enqueued, artifact_count, None),
     }
 }
-/// Per-process ephemeral workspace home for handles constructed without a
-/// backing upload queue (tests, local mode). Never the real grok home —
-/// only [`connect_local_workspace`] resolves `$GROK_WORKSPACE_HOME` — so the
-/// queue-less default path can never collide with a real workspace's state dir.
+/// Per-process ephemeral workspace home for handles constructed without a backing upload queue (tests, local mode).
+/// Never the real grok home: only [`connect_local_workspace`] resolves `$GROK_WORKSPACE_HOME`.
+/// The queue-less default path can therefore never collide with a real workspace's state dir.
 fn ephemeral_workspace_home() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("grok-workspace-ephemeral-{}", std::process::id()))
 }
@@ -4445,10 +4565,9 @@ fn ephemeral_workspace_home() -> std::path::PathBuf {
 fn rewind_all_outcomes_from_env() -> bool {
     xai_grok_config::env_bool("GROK_WORKSPACE_REWIND_ALL_OUTCOMES").unwrap_or(false)
 }
-/// Flush the session toolset's `ResourcesPersistence` to disk (a fresh
-/// snapshot, waiting for the atomic-rename write to land), then read the bytes
-/// back and enqueue them for the given turn. Extracted from
-/// `spawn_tool_state_upload` so the path is unit-testable without a live turn.
+/// Flush the session toolset's `ResourcesPersistence` to disk (a fresh snapshot, waiting for the atomic-rename write to land).
+/// Then read the bytes back and enqueue them for the given turn.
+/// Extracted from `spawn_tool_state_upload` so the path is unit-testable without a live turn.
 async fn persist_and_enqueue_tool_state(
     session: Arc<crate::session::WorkspaceSession>,
     session_id: String,
@@ -4482,13 +4601,7 @@ async fn persist_and_enqueue_tool_state(
     })?;
     crate::upload::upload_tool_state_queued(bytes, session_id, turn_number, upload_queue).await
 }
-/// `ToolHandle` adapter that delegates to a workspace session's
-/// [`FinalizedToolset`]. Used by [`WorkspaceHandle::create_local_harness`]
-/// to populate a [`LocalRegistry`] for in-process tool dispatch.
-///
-/// This is the same dispatch pattern as [`SessionRoutedToolHandler`] in
-/// `hub.rs`, but implements `ToolHandle` (for `LocalRegistry`) instead
-/// of `ToolServerHandler` (for `ToolServer`).
+/// `ToolHandle` adapter that delegates to a workspace session's [`FinalizedToolset`]. It implements `ToolHandle` (for `LocalRegistry`) instead of `ToolServerHandler` (for `ToolServer`).
 struct SessionToolHandle {
     tool_id: xai_tool_protocol::ToolId,
     desc: xai_tool_types::ToolDescription,
@@ -4558,6 +4671,11 @@ impl xai_tool_runtime::ToolDyn for SessionToolHandle {
             session = %self.session_id,
             "local harness: dispatching tool call"
         );
+        let virt = session.path_virtualization().cloned();
+        let args = match &virt {
+            Some(v) => v.rewrite_json_inbound(args),
+            None => args,
+        };
         let inner = toolset.call_streaming(self.name(), args, &call_id, None);
         Box::pin(async_stream::stream! {
             use futures::StreamExt;
@@ -4566,12 +4684,19 @@ impl xai_tool_runtime::ToolDyn for SessionToolHandle {
                 match item {
                     // Rollout gate lives downstream in the sampler.
                     ToolStreamItem::Progress(p) => {
+                        let p = match &virt {
+                            Some(v) => v.rewrite_progress(p),
+                            None => p,
+                        };
                         yield ToolStreamItem::Progress(p);
                     }
                     ToolStreamItem::Terminal(Ok(run_result)) => {
-                        yield ToolStreamItem::Terminal(Ok(
-                            run_result.into_typed_tool_output(tool_id),
-                        ));
+                        let output = run_result.into_typed_tool_output(tool_id);
+                        let output = match &virt {
+                            Some(v) => v.rewrite_typed_output(output),
+                            None => output,
+                        };
+                        yield ToolStreamItem::Terminal(Ok(output));
                         return;
                     }
                     ToolStreamItem::Terminal(Err(e)) => {
@@ -4581,21 +4706,21 @@ impl xai_tool_runtime::ToolDyn for SessionToolHandle {
                             error = %e,
                             "local harness tool call failed"
                         );
+                        let detail = match &virt {
+                            Some(v) => v.rewrite_error(e).to_string(),
+                            None => e.to_string(),
+                        };
                         yield ToolStreamItem::Terminal(Err(ToolError::new(
                             ToolErrorKind::TerminalError,
-                            e.to_string(),
+                            detail,
                         )));
                         return;
                     }
                 }
             }
-            // Defensive fallback: every terminal arm above `return`s, so this
-            // is only reached if the inner `call_streaming` stream ended
-            // without a terminal. That is unreachable under the
-            // `call_streaming` contract (it yields exactly one terminal on
-            // every code path), but emit a terminal here anyway so the
-            // "exactly one Terminal" invariant is enforced locally rather
-            // than merely inherited from the inner layer.
+            // Defensive fallback: every terminal arm above `return`s, so this is only reached if the inner stream ended without a terminal
+            // That is unreachable under the `call_streaming` contract (it yields exactly one terminal on every code path)
+            // Emit a terminal here anyway so the "exactly one Terminal" invariant is enforced locally, not merely inherited from the inner layer
             yield ToolStreamItem::Terminal(Err(ToolError::new(
                 ToolErrorKind::TerminalError,
                 "tool stream ended without a terminal",
@@ -4604,13 +4729,8 @@ impl xai_tool_runtime::ToolDyn for SessionToolHandle {
     }
 }
 impl WorkspaceHandle {
-    /// Create a local-only [`ToolHarness`] backed by this workspace's
-    /// session toolset.
-    ///
-    /// Tools are dispatched in-process via a [`LocalRegistry`] — no hub
-    /// connection needed. Each tool is resolved dynamically from the
-    /// session's live [`FinalizedToolset`] at call time, so tool config
-    /// hot-reloads (via `update_tool_config()`) take effect automatically.
+    /// Create a local-only [`ToolHarness`] backed by this workspace's session toolset. Tools are dispatched in-process via a [`LocalRegistry`]; no hub connection needed.
+    /// Each tool is resolved dynamically from the session's live [`FinalizedToolset`] at call time.
     pub fn create_local_harness(
         &self,
         session_id: &str,
@@ -4651,8 +4771,7 @@ impl WorkspaceHandle {
 impl WorkspaceHandle {
     /// Minimal handle for local mode (no hub). Requires Tokio runtime.
     ///
-    /// `identity` is stored for parity with the standalone path; this local
-    /// path has no upload queue, so no environment artifact is emitted.
+    /// `identity` is stored for parity with the standalone path; this local path has no upload queue, so no environment artifact is emitted.
     pub fn new_minimal(
         cwd: std::path::PathBuf,
         identity: crate::upload::environment::WorkspaceIdentity,
@@ -4680,6 +4799,7 @@ impl WorkspaceHandle {
             project_lsp_trusted,
             require_explicit_toolset: false,
             confine_fs_to_workspace_root: false,
+            bind_mcp: None,
         };
         Self::build(
             config,
@@ -4722,6 +4842,7 @@ impl WorkspaceHandle {
             project_lsp_trusted: true,
             require_explicit_toolset: false,
             confine_fs_to_workspace_root: false,
+            bind_mcp: None,
         }
     }
     /// Test handle backed by a temp dir. Zero sessions; `TempDir` kept alive via `Arc`.

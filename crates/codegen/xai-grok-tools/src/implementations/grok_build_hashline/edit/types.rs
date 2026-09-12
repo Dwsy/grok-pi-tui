@@ -16,11 +16,9 @@ pub struct HashlineEditInput {
     pub edits: Vec<HashlineOp>,
 }
 
-/// Accept `edits` as either a native JSON array or a double-encoded JSON string.
-///
-/// Models sometimes wrap the edits array in quotes, producing
-/// `"edits": "[{\"op\":...}]"` instead of `"edits": [{...}]`.
-/// This deserializer transparently handles both forms.
+/// Accept `edits` as either a native JSON array or a double-encoded JSON string. Models sometimes
+/// wrap the edits array in quotes, producing `"edits": "[{\"op\":...}]"` instead of `"edits":
+/// [{...}]`. This deserializer transparently handles both forms.
 fn deserialize_edits<'de, D>(deserializer: D) -> Result<Vec<HashlineOp>, D::Error>
 where
     D: serde::Deserializer<'de>,

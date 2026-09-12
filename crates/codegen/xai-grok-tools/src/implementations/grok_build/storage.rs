@@ -23,10 +23,9 @@ fn budget_for(dir_name: &str) -> u64 {
     }
 }
 
-/// Persists numbered files to `<session_folder>/<dir_name>/<N>.<ext>`.
-///
-/// Writes are crash-safe: data is written to a temp file, fsynced, then
-/// atomically renamed into place via `tempfile::NamedTempFile::persist`.
+/// Persists numbered files to `<session_folder>/<dir_name>/<N>.<ext>`. Writes are crash-safe: data
+/// is written to a temp file, fsynced, then atomically renamed into place via
+/// `tempfile::NamedTempFile::persist`.
 #[derive(Clone, Debug)]
 pub(crate) struct SessionFileWriter {
     dir_name: &'static str,
@@ -48,10 +47,9 @@ impl SessionFileWriter {
         }
     }
 
-    /// Save `bytes` to the next numbered file, returning the absolute path.
-    ///
-    /// `ext_override` writes a different file type without needing a
-    /// separate writer (e.g. saving a PNG from a JPG-default writer).
+    /// Save `bytes` to the next numbered file, returning the absolute path. `ext_override` writes a
+    /// different file type without needing a separate writer (e.g. saving a PNG from a JPG-default
+    /// writer).
     #[tracing::instrument(skip_all, fields(dir = self.dir_name))]
     pub(crate) async fn save(
         &self,

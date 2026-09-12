@@ -55,35 +55,15 @@ use crate::normalize::normalize_json_line;
 /// growing memory without bound.
 const STDIN_LINE_CHANNEL_DEPTH: usize = 64;
 
-/// Spawn a dedicated OS thread that reads newline-delimited lines from the
-/// process's standard input with **synchronous, blocking** `std::io` and yields
-/// each line (its trailing `\n` included, like `read_line`/`read_until`) on the
-/// returned channel. A final line without a trailing newline is still delivered
-/// before the channel closes.
-///
-/// Yielded lines are **not guaranteed byte-verbatim**: a line the pinned acp
-/// 0.6 envelope would otherwise drop (a `\/`-escaped `method`, as Foundation
-/// encoders emit) is re-serialized compactly (key order, whitespace, and
-/// number formatting normalized) before forwarding — see the crate-private
-/// `normalize` module. Every line the envelope already accepts, and anything
-/// that fails to parse, passes through byte-identical (trailing terminator
-/// always preserved).
-///
-/// The channel closes (so [`recv`](mpsc::Receiver::recv) returns `None`) when
-/// stdin reaches EOF, the read fails, or the [`Receiver`](mpsc::Receiver) is
-/// dropped. The reader is meant to be the **sole** stdin consumer in the
-/// agent-stdio / leader-bridge paths; on Windows it enforces that by redirecting
-/// the process's standard input to `NUL` so stray readers can't deadlock on it
-/// (see the [module docs](self)).
+/// Spawn a thread that blocking-reads stdin lines onto the returned channel.
+/// Lines the pinned acp 0.6 envelope would drop (`\/`-escaped `method`) are re-serialized; others pass through.
+/// Sole stdin consumer: on Windows, process stdin is redirected to `NUL` so stray readers cannot deadlock.
 pub fn spawn_stdin_line_reader() -> mpsc::Receiver<Vec<u8>> {
     let (tx, rx) = mpsc::channel::<Vec<u8>>(STDIN_LINE_CHANNEL_DEPTH);
 
-    // On Windows, synchronously take a private duplicate of the real stdin and
-    // redirect the process's standard input to `NUL` *before* the reader thread
-    // parks in a blocking read holding the global `StdinLock`. After this, any
-    // other `std::io::stdin()` read in the process EOFs immediately instead of
-    // deadlocking. `None` means we couldn't isolate (we fall back to reading
-    // `std::io::stdin()` directly — no worse than before).
+    // On Windows, duplicate real stdin and redirect process stdin to `NUL` before the
+    // reader thread parks on `StdinLock`. After this, other `stdin()` reads EOF instead of deadlocking.
+    // `None` means isolation failed; fall back to reading `std::io::stdin()` directly.
     #[cfg(windows)]
     let private_stdin: Option<std::fs::File> = isolate_process_stdin();
 
@@ -102,10 +82,8 @@ pub fn spawn_stdin_line_reader() -> mpsc::Receiver<Vec<u8>> {
     rx
 }
 
-/// Read `\n`-delimited lines from `reader` and forward each on `tx` — via
-/// [`normalize_json_line`], so bytes are verbatim except for the lines that
-/// workaround rewrites (terminator always preserved) — until EOF, a read
-/// error, or the receiver is dropped.
+/// Read `\n`-delimited lines from `reader` and forward each on `tx` via [`normalize_json_line`].
+/// Bytes are verbatim except workaround rewrites (terminator always preserved), until EOF or drop.
 fn forward_lines<R: BufRead>(mut reader: R, tx: &mpsc::Sender<Vec<u8>>) {
     let mut line = Vec::new();
     loop {
@@ -125,14 +103,9 @@ fn forward_lines<R: BufRead>(mut reader: R, tx: &mpsc::Sender<Vec<u8>>) {
     }
 }
 
-/// Duplicate the real stdin handle for private use and repoint the process's
-/// `STD_INPUT_HANDLE` at `NUL`, returning the duplicate as an owned [`File`].
-///
-/// Returns `None` (caller falls back to `std::io::stdin()`) when there is no
-/// stdin handle or duplication fails. Win32 declarations are inlined to avoid a
-/// `windows`/`windows-sys` dependency, matching the pager's console setup.
-///
-/// [`File`]: std::fs::File
+/// Duplicate real stdin and repoint `STD_INPUT_HANDLE` at `NUL`, returning the duplicate.
+/// `None` (fall back to `std::io::stdin()`) when there is no handle or duplication fails.
+/// Win32 declarations are inlined to avoid a `windows` dependency.
 #[cfg(windows)]
 fn isolate_process_stdin() -> Option<std::fs::File> {
     use std::os::windows::io::FromRawHandle as _;
@@ -193,10 +166,8 @@ fn isolate_process_stdin() -> Option<std::fs::File> {
             return None;
         }
 
-        // Repoint the process's std input at NUL so stray `std::io::stdin()`
-        // reads observe EOF instead of blocking on the held `StdinLock`. If NUL
-        // can't be opened we still return the duplicate so the reader works;
-        // we just forgo the stray-read isolation.
+        // Repoint process stdin at NUL so stray `std::io::stdin()` reads EOF instead of
+        // blocking on the held `StdinLock`. If NUL cannot be opened, still return the duplicate.
         let nul: Vec<u16> = "NUL\0".encode_utf16().collect();
         let nul_handle = CreateFileW(
             nul.as_ptr(),

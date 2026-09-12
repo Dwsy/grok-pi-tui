@@ -35,7 +35,7 @@ Each entry records:
 
 ## [37949780] — 2026-09-12
 
-> **Status:** Pending — not yet merged into grok-pi. This entry **supersedes the [9684fa3c] entry below**: that entry covered the first 3 commits of this same pending range; all 8 commits here merge together in one pass.
+> **Status:** Merged into grok-pi on isolated branch `merge/upstream-37949780`, pending merge back to `main`. This entry **supersedes the [9684fa3c] entry below**: that entry covered the first 3 commits of this same range; all 8 commits here were integrated together. Conflict resolution followed [`MERGE_ANALYSIS_37949780/REPORT.md`](MERGE_ANALYSIS_37949780/REPORT.md); the final index has 0 unresolved conflicts, `git diff --check` passes, and the manually merged Rust files pass `rustfmt --edition 2024 --check`. Cargo/build/test gates were intentionally not run in this integration session, so full verification is not claimed green; the existing verifier baseline blockers remain documented in [`docs/VERIFICATION.md`](../VERIFICATION.md) and no source-identity allowlist was broadened.
 
 - **Sync range:** `07b2f714..37949780` (`07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8` → `37949780c144e37df692e3d669051a21fec24f20`)
 - **Upstream commits:** 8 (`Synced from monorepo`)
@@ -44,7 +44,7 @@ Each entry records:
 
 ### Summary
 
-The largest pending sync recorded so far — eight monorepo syncs and ~3k files. Headlines: an isolated, durable **v2 memory** system; an **agent-host daemon** that can run full turns (Ctrl-C stop, picker resume, multi-folder workspaced daemon); a **startup-latency overhaul** (startup spans and sub-phase timers, a single settings fetch per boot, cache-first `/settings`, transport/auth/sampling prewarm); a much larger **MCP** surface (2026-07-28 elicitation, bind-time servers, a managed MCP/plugin/marketplace policy engine); the gated Pager **panel dock** and a queue/turn-UX pass; and **four security fixes** (GROK_CHANNEL RCE, symlink deny-rule bypass, sandboxed SessionStart hook escape, installer token leak). Two big additions dominate line counts: the new `xai-grok-login` crate (+26.7k gross, auth/login rework) and generated bot-relay Swift/Kotlin bindings in ACP/protocol (+15.5k). For grok-pi this is the highest-risk sync on record: **310 files changed on both fork and upstream sides** (245 of them in `xai-grok-pager`), versus 110 in the last entry.
+The largest sync recorded so far — eight monorepo syncs and ~3k files. Headlines: an isolated, durable **v2 memory** system; an **agent-host daemon** that can run full turns (Ctrl-C stop, picker resume, multi-folder workspaced daemon); a **startup-latency overhaul** (startup spans and sub-phase timers, a single settings fetch per boot, cache-first `/settings`, transport/auth/sampling prewarm); a much larger **MCP** surface (2026-07-28 elicitation, bind-time servers, a managed MCP/plugin/marketplace policy engine); the gated Pager **panel dock** and a queue/turn-UX pass; and **four security fixes** (GROK_CHANNEL RCE, symlink deny-rule bypass, sandboxed SessionStart hook escape, installer token leak). Two big additions dominate line counts: the new `xai-grok-login` crate (+26.7k gross, auth/login rework) and generated bot-relay Swift/Kotlin bindings in ACP/protocol (+15.5k). For grok-pi this is the highest-risk sync on record: **310 files changed on both fork and upstream sides** (245 of them in `xai-grok-pager`), versus 110 in the last entry.
 
 ### Areas touched
 

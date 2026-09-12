@@ -21,11 +21,9 @@ pub(crate) fn is_git_path_for_watcher(path: &Path) -> bool {
         || s.contains(".git/gc.pid")
 }
 
-/// Sapling analogue of [`is_git_path_for_watcher`]: lets **only** `.sl/wlock`
-/// through. `.sl/dirstate` is intentionally not watched — it is read on demand,
-/// because a read-only `sl status` rewrites dirstate without moving the parent,
-/// so watching it would turn every status into a refresh storm. Forward-slash
-/// only, like its git sibling.
+/// Sapling analogue of [`is_git_path_for_watcher`]: lets only `.sl/wlock` through.
+/// `.sl/dirstate` is not watched — a read-only `sl status` rewrites it without moving the parent.
+/// Watching it would turn every status into a refresh storm.
 pub(crate) fn is_sl_path_for_watcher(path: &Path) -> bool {
     path.to_string_lossy().contains(".sl/wlock")
 }
@@ -54,10 +52,7 @@ pub(crate) struct GitignoreCache {
 
 impl GitignoreCache {
     /// Check if a path should be ignored.
-    ///
-    /// With `watch_vcs`, the metadata files that drive the lock state machine
-    /// pass through: git's (`.git/index`, `.git/HEAD`, …) and, when `sapling`,
-    /// `.sl/wlock`. Everything else under `.git`/`.sl` stays ignored.
+    /// With `watch_vcs`, the lock-machine metadata files pass through; everything else under `.git`/`.sl` stays ignored.
     pub(crate) fn is_ignored(&mut self, path: &Path, watch_vcs: bool, sapling: bool) -> bool {
         let is_dir = path.is_dir();
         let mut current_dir = path.parent();
@@ -112,13 +107,9 @@ impl GitignoreCache {
     }
 }
 
-/// Locate the `.git` directory governing `watch_path` (searching its ancestors).
-///
-/// A real (non-symlink) `.git` directory is returned directly via a cheap
-/// `symlink_metadata` check (no link-follow), and lives inside the canonical
-/// ancestor so it can't escape. A `.git` file or symlink is resolved through
-/// `git2`, which rejects a pointer to a non-git target (e.g. a planted
-/// `gitdir: ~/.ssh` or `ln -s ~/.ssh .git`) instead of watching it.
+/// Locate the `.git` directory governing `watch_path` (ancestor search).
+/// A real non-symlink `.git` dir is returned via `symlink_metadata` (no link-follow).
+/// A `.git` file or symlink is resolved through `git2`, which rejects a non-git target.
 pub(crate) fn find_git_dir(watch_path: &Path) -> Option<PathBuf> {
     for ancestor in watch_path.ancestors() {
         let dot_git = ancestor.join(".git");
@@ -137,10 +128,9 @@ pub(crate) fn find_git_dir(watch_path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Locate the `.sl` working-copy directory governing `watch_path` (ancestor
-/// walk), mirroring [`find_git_dir`]'s real-directory branch: a non-symlink
-/// `.sl` dir via `symlink_metadata` (no link-follow), canonicalized so it can't
-/// escape. Sapling has no `.sl`-file indirection.
+/// Locate the `.sl` working-copy directory governing `watch_path` (ancestor walk).
+/// Non-symlink `.sl` dir via `symlink_metadata`, canonicalized so it cannot escape.
+/// Sapling has no `.sl`-file indirection.
 pub(crate) fn find_sl_dir(watch_path: &Path) -> Option<PathBuf> {
     for ancestor in watch_path.ancestors() {
         let dot_sl = ancestor.join(".sl");
@@ -165,19 +155,9 @@ pub(crate) fn should_watch_separate_vcs_dir(
     root_non_recursive || !vcs_dir.starts_with(watch_path)
 }
 
-/// The watches a discovered `.git` dir needs in per-dir mode, replacing the
-/// fan-out mode's single recursive watch. Recursive `.git` is catastrophic on
-/// inotify — `objects/` (256-way fan-out) and `modules/` (submodule git dirs)
-/// are thousands of directories that the event filter would discard anyway.
-///
-/// Everything [`is_git_path_for_watcher`] passes is covered: `index`, `HEAD`,
-/// `FETCH_HEAD`, `packed-refs`, `gc.pid` are direct children (non-recursive
-/// `.git` watch); `refs/heads/**` + `refs/tags/**` recursive for branch/tag
-/// moves. `refs` itself is non-recursive: `refs/remotes/**` (thousands of dirs
-/// on fetch-heavy clones) is deliberately unwatched — remote updates still
-/// surface via `FETCH_HEAD` and `packed-refs`. Worktree git dirs
-/// (`.git/worktrees/<n>`) have no `refs/`, so they get just the non-recursive
-/// watch, covering their `HEAD`/`index`.
+/// Watches a discovered `.git` dir needs in per-dir mode, replacing one recursive watch.
+/// Recursive `.git` is catastrophic on inotify (`objects/`, `modules/` are thousands of dirs the filter would discard).
+/// `refs/remotes/**` is deliberately unwatched; remote updates still surface via `FETCH_HEAD` and `packed-refs`.
 pub(crate) fn per_dir_git_watches(git_dir: &Path) -> Vec<(PathBuf, RecursiveMode)> {
     let mut watches = vec![(git_dir.to_path_buf(), RecursiveMode::NonRecursive)];
     let refs = git_dir.join("refs");

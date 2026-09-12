@@ -5,9 +5,8 @@
 use serde::Serialize;
 use xai_grok_tools::types::compat::{COMPAT_CELLS, CompatCell, CompatConfig};
 
-/// Derive the vendor origin from a file path. Returns `Some("cursor")` or
-/// `Some("claude")` when the path passes through a vendor config directory;
-/// `None` for native `.grok`/`.agents` paths.
+/// Derive the vendor origin from a file path.
+/// Returns `Some("cursor")` or `Some("claude")` when the path passes through a vendor config directory; `None` for native `.grok`/`.agents` paths.
 pub(super) fn derive_vendor(path: &str) -> Option<&'static str> {
     if path.contains("/.cursor/") || path.contains("\\.cursor\\") || path.ends_with("/.cursor") {
         Some("cursor")
@@ -167,8 +166,8 @@ fn resolve_compat_entry(
     };
 
     ExternalCompatEntry {
-        vendor: cell.vendor().as_str().to_owned(),
-        surface: cell.surface().as_str().to_owned(),
+        vendor: cell.vendor().as_ref().to_owned(),
+        surface: cell.surface().as_ref().to_owned(),
         enabled: resolved.value,
         source,
     }
