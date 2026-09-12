@@ -1,6 +1,7 @@
 mod edit;
 mod eval;
 mod execute;
+pub(crate) mod hook;
 pub mod list_dir;
 pub(crate) mod memory_search;
 mod other;
@@ -20,6 +21,7 @@ pub use edit::{
 };
 pub use eval::EvalToolCallBlock;
 pub use execute::ExecuteToolCallBlock;
+pub use hook::{HookPhase, HookRunEntry, HookRunStatus, ToolCallHookData};
 pub use list_dir::ListDirToolCallBlock;
 pub use memory_search::MemorySearchToolCallBlock;
 pub use other::OtherToolCallBlock;
