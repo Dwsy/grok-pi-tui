@@ -33,9 +33,142 @@ Each entry records:
 
 <!-- entries below this line -->
 
+## [37949780] — 2026-09-12
+
+> **Status:** Pending — not yet merged into grok-pi. This entry **supersedes the [9684fa3c] entry below**: that entry covered the first 3 commits of this same pending range; all 8 commits here merge together in one pass.
+
+- **Sync range:** `07b2f714..37949780` (`07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8` → `37949780c144e37df692e3d669051a21fec24f20`)
+- **Upstream commits:** 8 (`Synced from monorepo`)
+- **SOURCE_REV (monorepo SHA):** `c4ea71cfdbcdb21e32e41bc25a0043d7d4836714` (was `956313d459bee15ae8f17bf73e0633605e18dddd`)
+- **Diff size:** 2998 files changed, +341620 / −228519 (rename-aware: 454 added, 90 deleted, 2454 modified)
+
+### Summary
+
+The largest pending sync recorded so far — eight monorepo syncs and ~3k files. Headlines: an isolated, durable **v2 memory** system; an **agent-host daemon** that can run full turns (Ctrl-C stop, picker resume, multi-folder workspaced daemon); a **startup-latency overhaul** (startup spans and sub-phase timers, a single settings fetch per boot, cache-first `/settings`, transport/auth/sampling prewarm); a much larger **MCP** surface (2026-07-28 elicitation, bind-time servers, a managed MCP/plugin/marketplace policy engine); the gated Pager **panel dock** and a queue/turn-UX pass; and **four security fixes** (GROK_CHANNEL RCE, symlink deny-rule bypass, sandboxed SessionStart hook escape, installer token leak). Two big additions dominate line counts: the new `xai-grok-login` crate (+26.7k gross, auth/login rework) and generated bot-relay Swift/Kotlin bindings in ACP/protocol (+15.5k). For grok-pi this is the highest-risk sync on record: **310 files changed on both fork and upstream sides** (245 of them in `xai-grok-pager`), versus 110 in the last entry.
+
+### Areas touched
+
+| Area | Files | +/− | Added / Deleted | Notes |
+|------|------:|----:|-----------------|-------|
+| Pager (TUI) | 1069 | +103659/−82931 | 85/31 | panel dock, dashboard chrome, queue/turn UX, startup frames; `input/`+`search/` moved out to pager-render |
+| Shell (agent runtime) | 724 | +98557/−69318 | 160/53 | agent-host daemon, v2 memory, auth rework, startup prewarm, finalization arbitration |
+| Tools | 213 | +19248/−10671 | 17/1 | task coordinator, subagent attempts, scheduler UUID fixes |
+| Workspace / Permission | 161 | +30272/−17012 | 26/1 | managed policy engine, folder-trust gates, auto-mode allowlists |
+| ACP / Protocol | 90 | +20909/−858 | 59/0 | MCP elicitation, `set_config_option`, generated bot-relay Swift/Kotlin bindings |
+| Auth / Login | 52 | +5566/−5901 | 10/0 | new `xai-grok-login` crate (+26.7k gross), 401 parking, auth-refresh prewarm |
+| Telemetry / OTEL | 67 | +7840/−3641 | 14/2 | TTFT/TTFM histograms, startup spans, new `xai-grok-otel` crate |
+| Models / Sampling | 60 | +6078/−4340 | 10/0 | model-behavior schema/resolver, effort levels, transient retry |
+| Worktree / GC | 46 | +5822/−1983 | 3/0 | lifecycle instrumentation, summary healing, bench |
+| Memory | 25 | +6034/−1454 | 8/0 | isolated v2 memory foundation + durable observation capture |
+| Hooks / Plugins | 29 | +4638/−2374 | 0/0 | PostToolUse feedback, PreToolUse ask/defer, session-close budgets |
+| MCP | 19 | +4572/−2766 | 5/0 | bind-time servers, OAuth off spawn path, no batch cap |
+| Dashboard store | 14 | +3426/−0 | 14/0 | unified header/actions-row chrome helpers |
+| Sandbox | 23 | +3059/−846 | 0/0 | socket masks, io_uring bypass block, bubblewrap enforce |
+| Feedback (new crate) | 12 | +2649/−0 | 12/0 | structured feedback envelope + draft/submission metrics |
+| Config | 37 | +1933/−2529 | 4/1 | remote settings, reasoning-effort under lock |
+| Markdown / Mermaid | 33 | +1743/−2833 | 0/0 | table URL wrap, `/btw` highlighting |
+| Agent lifecycle | 45 | +2189/−3107 | 0/0 | sampling gate; attempt/wake glue moved to owning crates |
+| Computer Hub | 21 | +1411/−644 | 2/0 | bot-relay allowlists, workspace boundness |
+| Chat state | 17 | +1378/−1065 | 0/0 | two-pass compaction, segments default |
+| Update / Version | 18 | +1138/−1782 | 0/0 | compressed install download, channels |
+| Hunk tracker | 15 | +428/−1413 | 0/0 | dead-test cleanup |
+| Compaction | 11 | +436/−244 | 0/0 | input ladder, transcript support |
+| Voice | 17 | +508/−555 | 0/0 | cursor-position dictation, pw-record fallback |
+| Textarea / Inline | 12 | +395/−1511 | 0/0 | ghost text, paste handling |
+| Test support | 15 | +887/−553 | 0/0 | PTY harness |
+| Gboom (new crate) | 5 | +176/−308 | 1/0 | game extracted from pager-render (net relocation) |
+| Codebase graph | 14 | +112/−1015 | 0/1 | dead-code purge |
+| Dirs / home | 2 | +50/−17 | 0/0 | single home resolver (Windows `~/.grok`) |
+| Workflow | 5 | +42/−84 | 0/0 | pause/stop sources |
+| Other crates | 119 | +5527/−6399 | 24/0 | new `xai-grok-image`, `xai-message-delivery-core`, `xai-interjection-core`; dead-code purge |
+| Root / meta | 6 | +927/−338 | 0/0 | workspace deps, SOURCE_REV |
+| **Total** | **2998** | **+341620/−228519** | **454/90** | |
+
+### Added
+
+- **v2 memory system:** isolated v2 memory storage foundation, a safe v2 memory file workflow, durable v2 memory observation capture, and a documented isolated memory filesystem contract.
+- **Agent-host daemon:** run a full turn on the agent-host daemon; stop it with Ctrl-C; resume an agent-host session from the picker; answer `session/new` at spawn; add a multi-folder grok-workspaced daemon alongside the supervised sidecar. Documents cover agent-host prompt/load, the workspaced control socket, and the TUI worker + Esc cancel.
+- **Workflow control:** pause and stop sources so the agent can control its own workflow runs.
+- **MCP:** MCP 2026-07-28 elicitation via multi round-trip requests; bind-time MCP servers; a managed MCP, plugin, and marketplace policy engine; ACP `session/set_config_option` support (documented together with the 1h get-output wait cap).
+- **New crates:** `xai-grok-login` (auth/login subsystem), `xai-grok-feedback` (structured feedback envelope with typed source; feedback draft-store lock retry before reporting Busy; submission/draft metrics), `xai-grok-otel`, `xai-grok-image`, `xai-message-delivery-core`, `xai-interjection-core`, and the gboom game extracted into standalone `xai-grok-gboom`.
+- **Panel dock (gated):** consolidated Subagents/Tasks/Watchers/Queued above the prompt.
+- **Dashboard chrome:** unified header and actions row; extracted header/actions-row chrome and location helpers; walk the actions row with ←/→ and let Enter act like a click.
+- **Observability:** export turn time-to-first-token and time-to-first-message as OpenTelemetry histograms; startup spans for session create, spawn, prefetch, git scan, replay, and bootstrap, with startup sub-phase timing in the startup-complete event; session-create sub-phase timers; report TUI startup at the first interactive frame; answer the client before the skills scan with a startup-timing breakdown; shell span profiler; measure session start/resume latency, cancel-to-stop latency, and pager-busy input wait; fleet observability for turn-level transient retries; instrument the worktree lifecycle; measure session-end teardown as tracing spans; measure startup in CI across repo sizes.
+- **Scheduler / background tasks:** scheduler wakeups ask to fix, delete, or update the scheduled task; emit a durable background-tasks list snapshot; open the background-task viewer from the jump control even without a scrollback anchor; `scheduler_create` documents when to use the tool.
+- **Models:** unify the model-behavior schema and resolver; pin selectable models from signed `requirements.toml`; offer effort level as a setting instead of many model variants; let a model name a different id for each effort.
+- **Subagent attempts:** give subagent activations an attempt id and track subagent lifecycle per attempt; active subagent follow-up messaging (`send_subagent_message`); subagent completion notices include the command or subagent output.
+- **Hooks:** client-registered PostToolUse hooks contribute feedback and context; parse PreToolUse `additionalContext` and defer; PreToolUse `ask` prompts the user.
+- **Bot relay / computer hub:** bot-client connection kind, bot-relay wire types, and a computer-hub upstream connection manager; typed workspace-server metadata and `ServerInfo` last-seen timestamp; allowlist listener connect commands, `setAgentNotificationsEnabled`, and avatar commands; advertise bot tool argument schemas.
+- **Voice:** insert CLI/TUI voice dictation at the cursor position.
+- **Live user-message echo** opt-in via client capabilities.
+- **Queue:** hold queued follow-ups through waits; add a parent Queue delivery base; share ordinary human message admission.
+- **Headless:** headless session resume page; the shell classifies headless sessions.
+- **Distribution:** ship the install download compressed (zstd/gzip); compress Windows CLI builds with zstd/gzip sidecars.
+- **Worktree/clone:** fail-closed shallow clone protocol; `grok clone` bootstrap depth one; reuse a linked or local codebase for session worktrees/clone; cross-transport worktree lifecycle sampler/bench.
+- **Auth/identity:** auth decisions route through an `AuthBackend` trait; chat/gateway identity stamp and runtime rehydration from the chat store.
+- **Sampler salvage** of length-truncated responses behind a per-request length policy.
+- **Workflow smoke-check** for authored Rhai files.
+- **Docs:** the isolated memory filesystem contract; the folder-trust startup gate and scheduler wakeup footer; agent-host surfaces (above).
+
+### Changed
+
+- **Compaction:** default to two-pass mode; chat compaction mode defaults to segments; forward `/compact` instructions to compaction; re-inject scheduled loops and live workflows on compaction; route 413 and drifted size-overflow errors through the compaction input ladder; surface the real compaction error instead of a bare "Compaction failed."; control length salvage with a remote setting; handle split `max_prompt_tokens`/`max_time_limit` incomplete reasons and carry `raw_stop_reason`; execute completed tool calls on Length-truncated turns instead of failing; route truncation failures to the truncation error copy via a typed error kind.
+- **Permissions / trust:** Auto mode uses a fail-closed allowlist for routine git operations; reject `ripgrep --hostname-bin` on always-safe and Auto routine paths; auto-allow `mkdir`/`touch` as safe creation; reduce auto-mode friction while hardening always-allow scoping; make the interactive default permission mode configurable (Auto reverted as default); prompt when the classifier blocks on interactive clients; allow agent messages in Auto mode; default headless sessions to always-allow so they never wedge on prompts; gate project instructions, skills, untrusted project-agent `mcpServers`, and directory-typed vendor hook settings paths on folder trust; trusting a parent directory no longer implicitly trusts repos cloned under it later.
+- **Hooks enforcement:** run the prompt gate before the chat-state commit; parse and enforce `UserPromptSubmit` block decisions and hold the queue behind a blocked prompt; managed-policy hooks cannot be disabled; hooks UI is silent on success, shows a status row while a hook blocks the turn, and one line on failure; bound session-close hooks with a per-hook budget; hooks modal gains a source-level removable flag and non-empty group-collapse seeding.
+- **Queue / turn UX:** Esc no longer cancels a running turn — it hints at Ctrl+C; stop an agent-host turn with Ctrl-C; restore Send now during auto-wake and drop the fake cancel when sending during one; paint `[edit]` between `[Send now]` and `[cancel]` and shorten the comment to 3 lines; hold the client-owned local queue after a hook-blocked turn; keep the status row stable across send-now; keep a running command alive when you send a message; gate monitor-event wakes on the session's own turn flag; advertise the 15-second auto-background wait, not the 120-second timeout; cap get-output waits at 1 hour.
+- **Subagent coordination:** steer owned subagents at the next safe point; wake the same agent when a send hits a finished subagent; the wake turn delivers one digest for every finished subagent and drops its own completion; always shut down completed subagent sessions even when the parent actor is busy; wait for a spawning child before send fails; wake task waits on child exit; reopen subagent spawn admission before `/goal` slash intercepts; keep remote settings readable after a subagent spawn; gate concurrent subagent sampling to avoid proxy rate-limit bursts; move subagent attempt minting and wake glue to the crates that own them.
+- **Startup latency:** fetch startup settings once per boot with a single owner; cache-first `/settings` so a warm boot skips the network; move managed config off the startup critical path; prefetch repo status; warm the shared HTTP client; prewarm the sampling transport at session create and the auth refresh at agent spawn; replace the turn-end usage drain poll with a coordinator notification; batch safe-point chat insertion; compress the bundled ripgrep.
+- **MCP:** consolidate MCP startup ownership; move MCP OAuth off the session spawn path; start MCP servers without a batch cap; announce server failures once per episode; detach the serve loop from the turn trace.
+- **Auth:** park credential-less 401s on the uncharged resubmit path when auth recovery is deferred; resolve the reasoning-effort selector under the config lock; a single home resolver so Windows agents can open `~/.grok`; parse workspace `config.toml` as a document for the local auto-GC opt-in.
+- **Session lifecycle:** decouple session and extensions; separate the turn task from cancellation; count active workflows in session liveness; arbitrate turn finalization and bind completion to the exact turn epoch; stop a dropped connection costing a subagent 2s; don't cancel live parent-message turns; resume when the transcript fits the window; fail safe when the agent never acknowledges a prompt; remind the model when a session is forked; defer exit dream off the session-close path.
+- **Skills:** skill rescan announces only unannounced names and skips identical listings; refresh the session skill baseline when `/skills` lists skills.
+- **Pager surfaces:** jump turns with Shift+J/K like the timeline; keep user-expanded Execute panels open while progress updates; preserve startup Enter chords; quieter next-prompt ghost text; draw the minimal-mode reasoning rail under the diamond and the status line row in minimal mode; remove the scrollback accent rail on collapsed rows; keep the full URL on every wrapped line of a bare URL in a table cell; ellipsize lone overlong slash command names; tip `/copy` and `/export` after repeated select+scroll; double-click selects settings radios; match dock hover background to the terminal row hover; left-align the dock task spinner and drop the header rule; paint `[stop]` on every dock row; match theme aliases in the `/theme` picker; anchor `edit_file` diffs to real file line numbers; close the workflow modal on X instead of popping the list; render failed suppressed tool calls instead of dropping them; persist per-turn usage and expose it via `grok usage`; reassemble relay-mangled X10 mouse reports instead of typing them as text; do not auto-send a paste that ends in a newline; skip unchanged Kitty overlay frames on Warp; show humanized errors on retry status; show full UI output in bash mode; ensure shell history contains commands.
+- **Telemetry:** honour `DISABLE_TELEMETRY` for product telemetry and keep test/dev-build telemetry off production destinations; include the model in tool telemetry; record content-free Steer telemetry; hold the stream span open to first token with interior segments; detach turn-end uploads from the `agent.prompt` span and adopt its traceparent on `session.handle_prompt`; instrument post-turn work; parent instrumentation timer spans so profiler children nest; persist `elapsed_ms` on turn completed; emit startup phases as tracing spans; emit session-start context occupancy metrics; restore `session.id` (plus cost and cache-creation) on external OTEL work events; record prompt-suggestion fetch outcomes, request ids, remote knobs, and a session-model default; improve compaction telemetry.
+- **Models:** retarget legacy model slugs to grok-4.6.
+- **Memory:** treat recalled memory context as advisory; ground durable memory summaries in reusable facts; build the memory archive off the session runtime.
+- **Dashboard:** adopt live sessions into the dashboard workspace; read workspace members in dashboard v2.
+- **Sandbox:** canonicalize socket masks and require bubblewrap on Devbox; block the io_uring child-network bypass; gate the bubblewrap lockdown helper on enforce mode; add a feature-flag switch for workspace OIDC proactive refresh.
+- **Worktree:** remediate monitored job failures; heal untagged worktree summaries at list and load; stamp worktree identity on summaries at creation; use the create/fork Grove gate on new-worktree resume; retry transient sampler failures instead of killing the turn.
+- **Structure:** unify websocket crates on 0.28 to drop a duplicate TUI stack; collapse slash-command static metadata into a `slash_meta!` macro; move pager `input/` and `search/` into `xai-grok-pager-render`; give the model catalog one source for its URL and its fetch; voice falls back from unusable pw-record on Linux (Ubuntu 22.04).
+- **Misc:** report bypass lock as advisory in `grok inspect`; hide the workflow tool from child agents; enforce exclusive source selection for workflows; route session picker results to the requesting picker; stop print-once from freezing streaming wake-turn replies at their first chunk; stop the project discovery watcher from re-advertising on grok home writes; sanitize and quote remote text in the failed-server reminder; inspect advisory follow-ups with a named policy result, pin reason enum, and a single pin read; hub/terminal reports workspace boundness explicitly instead of counting tools.
+
+### Fixed
+
+- **Security:** persistent RCE via unescaped `GROK_CHANNEL` interpolated into `~/.grok/config.toml`; native Write/Edit bypass of deny rules via repository symlink; SessionStart hook persistence via `config.toml` in the sandbox leading to unsandboxed execution; the installer no longer sends the deployment key as a Bearer token to an attacker-settable URL.
+- Scheduler keeps dashes in loop task UUIDs, preserves full task UUIDs, and stops completed recurring tasks.
+- Fix startup cache and settings loading; fix `/resume` after a forgotten `--continue` so unused home husks are dropped.
+- Fix the MCP OAuth deadlock on `/mcps` auth.
+- Fix smart table highlighting inside `/btw`; stop SVG PNG thumbnails from poisoning conversation turns.
+- Fix dock input bugs, row indent, and the dock feature flag; fix foreground terminal completion regressions; fix always-dirty rebuild inputs causing no-op rebuilds; unfreeze the extensions modal loading spinner.
+- Deflake the cancel/resend PTY + graceful SIGTERM fixture; close the turn-1/turn-2 race in the autoscroll copy PTY test.
+- Remediate monitored job failures; make acked flushes durable and renames tear-proof; cover finalization arbitration races.
+- Raise the spawn validation timeout and stop treating a busy coordinator as unreachable.
+- Send plugin document context as structured input.
+- Don't panic when emitting a session telemetry event without a Tokio runtime.
+- Clamp images to 2000px even when re-encode doesn't shrink bytes.
+- Fix the `Path` import on Darwin enforce builds.
+- Point the grok npm bin entry at the installed binary.
+- Make a policy-leader reclaim not kill supervised daemons.
+- Spawning a subagent is no longer treated as a plan-mode file edit.
+- Speed up history jobs by avoiding full-tree checkouts.
+
+### Removed / Deprecated
+
+- Delete the never-wired worktree pool and relocation transaction machinery.
+- Delete verified dead code in `xai-grok-pager` (wrapper layer, dashboard vestiges, dead helpers); purge stale internal docs, orphaned assets, and dead benchmark examples; remove unused dev binaries (`test-sampling-server`, `test_multipart_upload`).
+- Remove duplicate tests in `xai-grok-shell` (no coverage loss) and dead/duplicate tests in scrollback and slash/acp/diagnostics/notifications.
+- Relocations (not capability loss): pager `input/` + `search/` moved into `xai-grok-pager-render`; gboom game extracted into `xai-grok-gboom`; shell auth manager replaced by the new `xai-grok-login` crate.
+
+### Merge risk for grok-pi
+
+- **Overlap tripled:** 310 files changed on both the fork and upstream sides since `07b2f714` — 245 in `xai-grok-pager` (fork seams live in `app/` dispatch, `event_loop.rs`, `agent_view`, `views/dock`, and modals), 25 in `xai-grok-shell`, 8 in `xai-grok-pager-render`, 6 in `xai-grok-workspace` (permission manager), 4 in `xai-grok-tools`. The last sync overlapped 110 files.
+- New crates (`xai-grok-login`, `xai-grok-feedback`, `xai-grok-otel`, `xai-grok-image`, `xai-grok-gboom`, `xai-message-delivery-core`) don't conflict; ACP/protocol +20.9k is mostly generated bot-relay Swift/Kotlin bindings.
+- The pager `input/`+`search/` move into `xai-grok-pager-render` and the `slash_meta!` collapse will relocate fork seam anchors — the source-identity verifier's allowed-seam baselines need deliberate updates after the merge.
+- `SOURCE_REV`, `AGENTS.md` `base`, and verifier baselines change only after a completed, verified merge.
+
 ## [9684fa3c] — 2026-08-28
 
-> **Status:** Pending — not yet merged into grok-pi.
+> **Status:** Pending — not yet merged into grok-pi. **Superseded by the [37949780] entry above**, which covers this same still-pending range (`07b2f714..9684fa3c`) extended to the newer upstream tip.
 
 - **Sync range:** `07b2f714..9684fa3c` (`07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8` → `9684fa3cdbf2995e30ea8b9b637f1db008f144fc`)
 - **Upstream commits:** 3 (`Synced from monorepo`)
