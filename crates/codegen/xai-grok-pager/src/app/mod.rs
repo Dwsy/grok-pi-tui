@@ -726,10 +726,12 @@ pub async fn run_external_deferred(
 
     let minimal = screen_mode.is_minimal();
     let relaunched_into_minimal = screen_mode_override == Some(ScreenMode::Minimal);
+    let relaunched_into_fullscreen = screen_mode_override == Some(ScreenMode::Fullscreen);
     engage_startup_theme(screen_mode);
     let minimal_live_rows = config_watcher.current().minimal_live_rows;
     let (frame_tx, writer_sync, writer_event_rx, writer_thread) =
-        crate::render::draw::spawn_writer_thread();
+        crate::render::draw::spawn_writer_thread()
+            .context("failed to spawn the term-writer thread")?;
     let cursor_blink = event_loop::load_initial_ui_config().cursor_blink;
     let TerminalInit {
         terminal: mut terminal,
@@ -794,6 +796,7 @@ pub async fn run_external_deferred(
         is_control_mode,
         screen_mode,
         relaunched_into_minimal,
+        relaunched_into_fullscreen,
         initial_theme: crate::theme::cache::current_kind(),
         startup_typeahead,
     };
@@ -812,10 +815,12 @@ pub async fn run_external_deferred(
     };
     let cancel = connection.cancel.clone();
     let pending_startup = xai_grok_telemetry::startup::PendingStartup::new();
+    let tracing_handle = crate::tracing::init_tracing();
     let result = event_loop::run(
         &mut terminal,
         connection,
         pending_startup,
+        tracing_handle,
         &mut config_watcher,
         &effective_args,
         session_cwd,
@@ -1283,6 +1288,7 @@ pub async fn run(
         .status_line
         .reserves_a_row();
     let relaunched_into_minimal = screen_mode_override == Some(ScreenMode::Minimal);
+    let relaunched_into_fullscreen = screen_mode_override == Some(ScreenMode::Fullscreen);
     tracing::info!(
         use_alt_screen = screen_mode.is_fullscreen(),
         minimal = screen_mode.is_minimal(),
@@ -1451,6 +1457,7 @@ pub async fn run(
         is_control_mode,
         screen_mode,
         relaunched_into_minimal,
+        relaunched_into_fullscreen,
         initial_theme: crate::theme::cache::current_kind(),
         startup_typeahead,
     };

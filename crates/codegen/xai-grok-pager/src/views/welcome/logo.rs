@@ -29,6 +29,58 @@ const SMALL_LOGO_MIN_HEIGHT: u16 = 22;
 /// Height at or above which the full logo is shown.
 const FULL_LOGO_MIN_HEIGHT: u16 = 26;
 
+/// Which logo art the stacked column shows.
+/// The terminal height picks the tier; the stacked layout steps it down only while the column would not fit beside the draft.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogoTier {
+    Full,
+    Compact,
+    Hidden,
+}
+
+impl LogoTier {
+    pub fn for_height(window_height: u16) -> Self {
+        Self::for_height_and_hidden(window_height, logo_hidden())
+    }
+
+    /// Takes the legacy-console flag as a parameter so tests can drive it directly.
+    fn for_height_and_hidden(window_height: u16, hidden: bool) -> Self {
+        if hidden || window_height < SMALL_LOGO_MIN_HEIGHT {
+            Self::Hidden
+        } else if window_height < FULL_LOGO_MIN_HEIGHT {
+            Self::Compact
+        } else {
+            Self::Full
+        }
+    }
+
+    /// Host overrides replace both tiers; [`logo_hidden`] is already false when one is installed.
+    fn art(self) -> Option<&'static str> {
+        let (full, small) = match logo_override() {
+            Some(art) => (art.full, art.small),
+            None => (LOGO, LOGO_SMALL),
+        };
+        match self {
+            Self::Full => Some(full),
+            Self::Compact => Some(small),
+            Self::Hidden => None,
+        }
+    }
+
+    pub fn rows(self) -> u16 {
+        self.art().map_or(0, count_lines)
+    }
+
+    /// The next smaller tier; `None` once hidden.
+    pub fn step_down(self) -> Option<Self> {
+        match self {
+            Self::Full => Some(Self::Compact),
+            Self::Compact => Some(Self::Hidden),
+            Self::Hidden => None,
+        }
+    }
+}
+
 fn logo_override_cell() -> &'static RwLock<Option<ExternalLogoArt>> {
     static CELL: OnceLock<RwLock<Option<ExternalLogoArt>>> = OnceLock::new();
     CELL.get_or_init(|| RwLock::new(None))
@@ -288,6 +340,13 @@ pub fn logo_visual_width(window_height: u16) -> u16 {
 
 pub fn render_logo(area: Rect, buf: &mut Buffer, theme: &Theme, window_height: u16) {
     if let Some(logo) = pick_logo(window_height) {
+        render_into(area, buf, theme, logo);
+    }
+}
+
+/// Paint the tier the layout reserved rows for, so the art can never outgrow its slot.
+pub fn render_logo_tier(area: Rect, buf: &mut Buffer, theme: &Theme, tier: LogoTier) {
+    if let Some(logo) = tier.art() {
         render_into(area, buf, theme, logo);
     }
 }

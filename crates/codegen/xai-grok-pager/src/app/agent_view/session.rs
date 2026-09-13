@@ -155,6 +155,7 @@ impl AgentView {
             vim_mode: crate::appearance::cache::load_vim_mode(),
             input_mode: InputMode::Vim,
             bash_turn: false,
+            cron_task_id: None,
             stashed_prompt: None,
             prompt_stash: None,
             draft_consumed: false,
@@ -538,8 +539,9 @@ impl AgentView {
         ) {
             let mut infos: Vec<_> = view.subagent_sessions.values().cloned().collect();
             infos.sort_by(|left, right| {
-                left.started_at
-                    .cmp(&right.started_at)
+                left.attempt
+                    .started_at
+                    .cmp(&right.attempt.started_at)
                     .then_with(|| left.child_session_id.cmp(&right.child_session_id))
             });
             let count = infos.len();

@@ -6,7 +6,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::git_info;
 use crate::render::line_utils::truncate_line;
@@ -43,8 +43,15 @@ pub fn render_top_bar(
 /// Build the `{git branch} {worktree} {cwd}` line for the welcome top bar, reading the live process cwd.
 /// The caller width-truncates the returned line.
 pub(crate) fn location_line(theme: &Theme) -> Line<'static> {
+    location_line_at(theme, &process_cwd())
+}
+
+/// As [`location_line`], but for an explicit `cwd`. The dashboard header
+/// passes its staged `app.cwd` so the line tracks a `/cd` immediately,
+/// before (or even if) `Effect::SetWorkingDir` moves the process cwd.
+pub(crate) fn location_line_at(theme: &Theme, cwd: &Path) -> Line<'static> {
     let info_style = Style::default().fg(theme.gray);
-    let parts = location_parts(&process_cwd());
+    let parts = location_parts(cwd);
 
     let mut spans: Vec<Span> = Vec::new();
     if let Some(branch) = parts.branch.as_deref() {

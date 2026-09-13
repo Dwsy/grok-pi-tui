@@ -120,6 +120,7 @@ impl WorkflowAgentBackend for GrokSubagentBackend {
             fork_context: request.fork_context,
             owner: SubagentOwner::workflow(&request.run_id),
             cancel_token: request.cancel_token,
+            spawn_root: Default::default(),
         };
 
         if self
@@ -127,6 +128,7 @@ impl WorkflowAgentBackend for GrokSubagentBackend {
             .send(SubagentEvent::Spawn(SubagentSpawnRequest {
                 request: Box::new(subagent_request),
                 result_tx,
+                registered_tx: None,
             }))
             .is_err()
         {

@@ -601,7 +601,6 @@ impl AgentView {
                                         .and_then(|v| v.bg_task_id.as_deref())
                                         == Some(tid.as_str());
                                     if already_open {
-                                    if already_open {
                                         self.dismiss_block_viewer();
                                         return InputOutcome::Changed;
                                     }

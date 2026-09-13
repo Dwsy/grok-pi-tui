@@ -1088,6 +1088,10 @@ fn handle_pi_ui_session_catalog(notif: &acp::ExtNotification, app: &mut AppView)
                     .get("lastRecap")
                     .and_then(serde_json::Value::as_str)
                     .map(ToOwned::to_owned),
+                session_kind: session
+                    .get("sessionKind")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned),
                 card_detail: None,
             })
         })

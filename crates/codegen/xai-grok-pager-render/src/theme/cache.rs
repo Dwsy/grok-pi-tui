@@ -37,7 +37,6 @@ static CUSTOM: Mutex<Option<CustomTheme>> = Mutex::new(None);
 /// Whether auto-switching mode is active. Set when the config file contains `theme = "auto"`.
 /// Checked by the event loop to decide whether the `SystemAppearanceWatcher` should run.
 static AUTO_MODE: AtomicBool = AtomicBool::new(false);
-static AUTO_MODE: AtomicBool = AtomicBool::new(false);
 
 /// Whether the theme is locked to `Theme::terminal_default` for the whole session (minimal mode, no theming).
 static TERMINAL_NATIVE_LOCK: AtomicBool = AtomicBool::new(false);

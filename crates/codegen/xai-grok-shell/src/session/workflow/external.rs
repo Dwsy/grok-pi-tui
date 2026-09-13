@@ -46,6 +46,9 @@ impl ExternalWorkflowRuntime {
             config.session_dir,
             config.cwd.clone(),
             tracker.clone(),
+            // No ACP session actor observes the External (Pi) runtime's busy
+            // counter, so keep it private to the manager's WorkGuard.
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             config.store,
             config.notify,
             config.backend,

@@ -5,7 +5,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use crate::terminal::ModifierDelivery;
 
 /// macOS US Option+letter → base letter (Terminal often drops ALT bit).
-pub(crate) fn mac_option_glyph_to_letter(ch: char) -> Option<char> {
+pub fn mac_option_glyph_to_letter(ch: char) -> Option<char> {
     Some(match ch {
         'å' => 'a',
         '∫' => 'b',

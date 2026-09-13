@@ -11,6 +11,7 @@ use xai_grok_shell::sampling::error::{
     format_rate_limited_user_message, http_status_from_error,
 };
 use xai_grok_shell::session::ExtMethodResult;
+use xai_grok_shell::session::unified_list::ListScope;
 use xai_grok_shell::session::helpers::session_compact::{
     COMPACT_CANCELLED_MSG, CompactErrorKind, compact_error_kind,
 };
@@ -839,6 +840,11 @@ pub(super) fn parse_session_picker_entries(
                     .map(String::from),
                 last_turn_summary,
                 last_recap,
+                session_kind: v
+                    .get("sessionKind")
+                    .or_else(|| v.get("session_kind"))
+                    .and_then(|s| s.as_str())
+                    .map(String::from),
                 card_detail: None,
             })
         })

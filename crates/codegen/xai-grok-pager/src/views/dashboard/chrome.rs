@@ -62,6 +62,7 @@ pub(super) fn render_header(
             RowState::Inactive => {}
             RowState::Completed => done += 1,
             RowState::Failed => failed += 1,
+            RowState::Blocked => {}
         }
     }
 

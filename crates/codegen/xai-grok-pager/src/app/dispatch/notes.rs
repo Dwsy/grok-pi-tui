@@ -993,7 +993,7 @@ pub(super) fn dispatch_send_recap(
         .models
         .reasoning_effort
         .filter(|effort| *effort != xai_grok_shell::sampling::types::ReasoningEffort::None)
-        .map(|effort| effort.as_str().to_string());
+        .map(|effort| effort.to_string());
 
     let terminal_width = agent.last_terminal_size.0;
 

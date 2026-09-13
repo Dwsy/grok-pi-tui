@@ -191,6 +191,8 @@ pub enum RowState {
     Completed,
     /// Finished, with status in ("failed", "cancelled").
     Failed,
+    /// Goal blocked / paused for human reasons (`"blocked"` / `"paused"` status).
+    Blocked,
 }
 
 impl RowState {
@@ -208,6 +210,7 @@ impl RowState {
         match self {
             Self::NeedsInput => 6,
             Self::Working => 5,
+            Self::Blocked => 4,
             Self::Idle => 3,
             // Below Idle (these aren't loaded here, so they're less immediately
             // actionable) but above Done/Failed (they're still live, resumable sessions)
@@ -228,6 +231,7 @@ impl RowState {
             Self::Inactive => "Inactive",
             Self::Completed => "Done",
             Self::Failed => "Failed",
+            Self::Blocked => "Blocked",
         }
     }
 }

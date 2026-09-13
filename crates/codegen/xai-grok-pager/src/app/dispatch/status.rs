@@ -130,6 +130,7 @@ fn open_dashboard_usage_modal(
         app.usage_visible && !chat_kind && app.usage_billing_redirect_url.is_none();
     let ctx = UsageInfoContext {
         session_id: None,
+        session_file: None,
         usage_visible: app.usage_visible,
         chat_kind,
         billing_redirect_url: app.usage_billing_redirect_url.clone(),

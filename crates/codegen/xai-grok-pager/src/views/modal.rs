@@ -182,6 +182,10 @@ pub fn session_picker_modal(previous_palette: Option<PaletteSnapshot>) -> Active
         entries_query: None,
         source_filter: crate::views::session_picker::SourceFilter::default(),
         pending_delete: None,
+        preview_scroll: 0,
+        search_mode: false,
+        preview_mode: false,
+        preview_messages: None,
     }
 }
 /// The currently active modal dialog, if any.

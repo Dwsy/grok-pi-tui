@@ -335,6 +335,36 @@ pub fn blend_area(
     }
 }
 
+/// Profile palettes cannot express the blend (`bg` is Reset/named ANSI), so fall back to DIM or unfocused panels never recede.
+pub fn recede_area(buf: &mut Buffer, area: Rect, bg: Color, opacity: f32) {
+    if color_to_rgb(bg).is_some() {
+        blend_area(buf, area, Some((bg, opacity)), None);
+        return;
+    }
+    use ratatui::style::Modifier;
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.modifier.insert(Modifier::DIM);
+                // Many terminals ignore faint when bold is set (the theme's
+                // bold prompts would stay at full weight): drop bold too.
+                cell.modifier.remove(Modifier::BOLD);
+            }
+        }
+    }
+}
+
+/// Post-pass: row builders bake their own fgs, so a uniform row must be repainted after it is drawn.
+pub fn force_area_fg(buf: &mut Buffer, area: Rect, fg: Color) {
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_fg(fg);
+            }
+        }
+    }
+}
+
 /// Dim a screen area: reset all modifiers then blend toward a background color.
 ///
 /// This ensures no bold/italic/underline bleeds through the dimmed overlay.

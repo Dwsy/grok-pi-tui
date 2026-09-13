@@ -1293,6 +1293,8 @@ impl AgentView {
                                         window: crate::views::modal_window::ModalWindowState::new(),
                                         content_results: None,
                                         content_loading: false,
+                                        generation: 0,
+                                        detail_seq: 0,
                                         deep_search_seq: 0,
                                         entries_query: None,
                                         source_filter:
@@ -2895,11 +2897,13 @@ impl AgentView {
             } = active_modal
             {
                 // Command palette: ModalWindow chrome and picker content
-                let filtered = modal::filter_palette_entries(
-                    state.query(),
+                // No live Pi commands on this surface: rebuild the default
+                // catalog, then filter it with the shared palette filter.
+                let catalog = modal::default_palette_entries(
                     self.sharing_enabled,
                     &self.prompt.slash_controller,
                 );
+                let filtered = modal::filter_palette_entries(&catalog, state.query());
 
                 let non_sel: Vec<bool> = filtered
                     .iter()

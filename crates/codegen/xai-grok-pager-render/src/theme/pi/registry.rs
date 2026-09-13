@@ -282,7 +282,7 @@ pub fn rediscover(cwd: &Path) -> DiscoveryReport {
 }
 
 fn scan_discovered_locations(cwd: &Path, report: &mut DiscoveryReport) {
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = xai_dirs::home_dir() {
         let global = home.join(".pi").join("agent").join("themes");
         scan_dir(&global, report);
     }
@@ -307,7 +307,7 @@ fn rescan_discovered_locations(cwd: &Path, report: &mut DiscoveryReport) {
     // themes disappear, and normal first-source-wins ordering is rebuilt.
     clear_custom_file_themes();
 
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = xai_dirs::home_dir() {
         let global = home.join(".pi").join("agent").join("themes");
         scan_dir(&global, report);
     }

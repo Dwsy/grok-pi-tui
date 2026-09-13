@@ -412,14 +412,22 @@ pub(super) fn maybe_drain_queue(agent: &mut AgentView) -> QueueDrain {
 
     // Track whether this turn is a bash-mode command for post-turn focus.
     agent.bash_turn = queued.kind == QueueEntryKind::BashCommand;
+    agent.cron_task_id = if queued.kind == QueueEntryKind::Cron {
+        queued.task_id.clone()
+    } else {
+        None
+    };
     // Generate a fresh prompt_id for every outgoing prompt/command
     // It is threaded through PromptRequest._meta to the agent and echoed on every SessionNotification and the PromptResponse
     // That lets us correlate notifications back to the originating prompt for cancel/rewind
     let prompt_id = uuid::Uuid::new_v4().to_string();
 
     // Record it as self-originated so the ACP gate treats this turn's deltas as ours rather than adopting them as another client's turn
-    // Ours means drive it, and drop a stale post-rewind chunk on a mismatch
-    agent.note_self_originated_prompt(&prompt_id);
+    // Ours means drive it, and drop a stale post-rewind chunk on a mismatch.
+    // The `Cron` arm below re-prefixes `prompt_id` and records that id itself.
+    if queued.kind != QueueEntryKind::Cron {
+        agent.note_self_originated_prompt(&prompt_id);
+    }
 
     match queued.kind {
         QueueEntryKind::Prompt => {
@@ -606,7 +614,56 @@ pub(super) fn maybe_drain_queue(agent: &mut AgentView) -> QueueDrain {
                 page_flip_entry: None,
             }
         }
+        QueueEntryKind::Cron => {
+            let prompt_id = format!("scheduler-fired-{prompt_id}");
+            agent.note_self_originated_prompt(&prompt_id);
+            agent.start_turn_boundary(Some(&prompt_id));
+            agent.session.current_prompt_id = Some(prompt_id.clone());
+            let prompt_entry_id = agent
+                .scrollback
+                .push_block(RenderBlock::cron_prompt(&queued.text));
+            agent.turn_started_at = Some(Instant::now());
+
+            let prompt_idx = agent.scrollback.len().saturating_sub(1);
+            let flip = page_flip_on_send();
+            agent.scrollback.follow_new_turn(Some(prompt_idx), flip);
+
+            let framed_text = format_cron_prompt(
+                &queued.text,
+                queued.task_id.as_deref().unwrap_or("unknown"),
+                queued.human_schedule.as_deref().unwrap_or("unknown"),
+            );
+
+            let mut meta_map = serde_json::Map::new();
+            meta_map.insert(
+                user_prompt_meta::DISPLAY_TEXT.into(),
+                serde_json::Value::String(queued.text),
+            );
+            meta_map.insert(
+                user_prompt_meta::DISPLAY_AS_CRON.into(),
+                serde_json::Value::Bool(true),
+            );
+            let blocks = vec![acp::ContentBlock::Text(
+                acp::TextContent::new(framed_text).meta(Some(meta_map)),
+            )];
+
+            QueueDrain {
+                effects: vec![Effect::SendPromptBlocks {
+                    agent_id,
+                    session_id,
+                    blocks,
+                    prompt_id,
+                }],
+                page_flip_entry: flip.then_some(prompt_entry_id),
+            }
+        }
     }
+}
+
+/// Frame a scheduler-fired prompt as the system reminder the model reads.
+/// The shell wraps the payload in `<user_query>`, so this must not add one.
+fn format_cron_prompt(prompt: &str, task_id: &str, human_schedule: &str) -> String {
+    xai_grok_tools::reminders::format_scheduled_task_prompt(prompt, task_id, "", human_schedule)
 }
 
 /// Whether [`apply_turn_start_shim`] renders its own user block (i.e. `display_block` is `Some`).

@@ -450,7 +450,7 @@ pub(in crate::app::dispatch) fn dispatch_open_pi_settings(
             } else {
                 let (new_id, create_effects) =
                     crate::app::dispatch::session::lifecycle::dispatch_new_session_inner_with_id(
-                        app, None,
+                        app, None, false,
                     );
                 effects.extend(create_effects);
                 new_id

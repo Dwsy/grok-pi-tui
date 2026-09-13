@@ -880,7 +880,9 @@ pub(super) fn handle_session_notification_with_origin(
                     };
                     block.turn_count = (turns > 0).then_some(turns);
                     block.tokens_used = (tokens_used > 0).then_some(tokens_used);
-                    Some(agent.scrollback.push_block(block))
+                    Some(agent
+                        .scrollback
+                        .push_block(crate::scrollback::block::RenderBlock::Subagent(block)))
                 };
                 if let Some(info) = agent.subagent_sessions.get_mut(&child_session_id) {
                     info.attempt.terminal_entry_id = terminal_entry_id;

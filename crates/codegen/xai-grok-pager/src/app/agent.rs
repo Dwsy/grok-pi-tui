@@ -27,6 +27,8 @@ pub enum QueueEntryKind {
     Command,
     /// Direct bash command; it bypasses the agent loop and the shell executes it directly.
     BashCommand,
+    /// Scheduled (cron) prompt injected by the scheduler via ACP notification.
+    Cron,
 }
 impl QueueEntryKind {
     /// Short, stable label for telemetry and profiling logs.
@@ -35,6 +37,7 @@ impl QueueEntryKind {
             Self::Prompt => "prompt",
             Self::Command => "command",
             Self::BashCommand => "bash_command",
+            Self::Cron => "cron",
         }
     }
 }
@@ -59,6 +62,11 @@ pub struct QueuedPrompt {
     pub display_as_skill: bool,
     /// Recognized slash-token byte ranges into `text`, captured from the composer at submit time; empty means no token styling.
     pub skill_token_ranges: Vec<std::ops::Range<usize>>,
+    /// Scheduler task ID for cron prompts. Used for per-task dedup.
+    pub task_id: Option<String>,
+    /// Human-readable schedule (e.g. "every 5 minutes") for cron prompts.
+    /// Threaded into the system-reminder framing sent to the model.
+    pub human_schedule: Option<String>,
     /// All chip elements captured from the textarea at send time.
     /// Threaded into `InFlightPrompt` so rewind restores collapsed chips.
     pub chip_elements: Vec<ChipElement>,
@@ -78,6 +86,8 @@ impl QueuedPrompt {
             images: Vec::new(),
             display_as_skill: false,
             skill_token_ranges: Vec::new(),
+            task_id: None,
+            human_schedule: None,
             chip_elements: Vec::new(),
             combined_texts: Vec::new(),
         }

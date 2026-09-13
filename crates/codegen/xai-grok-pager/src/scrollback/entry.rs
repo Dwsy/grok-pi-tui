@@ -792,6 +792,46 @@ impl ScrollbackEntry {
         self.block.rendered_output(ctx).output
     }
 
+    fn rendered_output_with_hooks(&self, ctx: &BlockContext) -> RenderedBlockOutput {
+        let mut rendered = self.block.rendered_output(ctx);
+        let output = &mut rendered.output;
+        if let Some(ref hd) = self.hook_data {
+            use super::blocks::tool::hook::{
+                render_hook_separator, render_hooks_for_mode, render_hooks_inline_suffix,
+            };
+            match ctx.mode {
+                DisplayMode::Collapsed => {
+                    if let Some(suffix_spans) = render_hooks_inline_suffix(hd)
+                        && let Some(first_line) = output.lines.first_mut()
+                    {
+                        first_line.content.spans.extend(suffix_spans);
+                    }
+                }
+                _ => {
+                    let pre = render_hooks_for_mode("pre_tool_use", &hd.pre_hooks, ctx.mode);
+                    let post = render_hooks_for_mode("post_tool_use", &hd.post_hooks, ctx.mode);
+                    let has_any = !pre.is_empty() || !post.is_empty() || !hd.lifecycle.is_empty();
+                    if has_any {
+                        output.lines.push(render_hook_separator());
+                    }
+                    output.lines.extend(pre);
+                    output.lines.extend(post);
+                    for (event_name, runs) in &hd.lifecycle {
+                        output
+                            .lines
+                            .extend(render_hooks_for_mode(event_name, runs, ctx.mode));
+                    }
+                }
+            }
+        }
+        rendered
+    }
+
+    /// Produce block output with hook lines injected (tool first, then hooks).
+    pub fn output_with_hooks(&self, ctx: &BlockContext) -> BlockOutput {
+        self.rendered_output_with_hooks(ctx).output
+    }
+
     pub fn context_with_budget(
         &self,
         width: u16,

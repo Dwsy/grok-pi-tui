@@ -868,6 +868,7 @@ pub struct AgentView {
     pub bash_turn: bool,
     /// The task ID of the currently running cron turn, if any.
     /// Set when a cron prompt is drained, cleared on turn completion.
+    pub cron_task_id: Option<String>,
     /// Stashed normal prompt state while editing a queued prompt.
     pub stashed_prompt: Option<StashedPrompt>,
     /// One draft set aside for later; see [`prompt_stash`].

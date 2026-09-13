@@ -2137,6 +2137,8 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                         wire_blocks: blocks,
                         images: Vec::new(),
                         display_as_skill: false,
+                        task_id: None,
+                        human_schedule: None,
                         chip_elements: Vec::new(),
                         skill_token_ranges: Vec::new(),
                         combined_texts: Vec::new(),

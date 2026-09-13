@@ -1165,6 +1165,9 @@ pub fn build_hints(
     vim_mode: bool,
     is_subagent_view: bool,
     is_turn_running: bool,
+    // Whether Esc is the key that cancels the running turn this frame (fork
+    // `cancel_turn_key` policy); swaps the CancelTurn hint's key to Esc.
+    esc_would_cancel_turn: bool,
     has_queued_follow_up: bool,
     selected_is_user_prompt: bool,
     selected_is_agent_message: bool,
@@ -1444,7 +1447,11 @@ pub fn build_hints(
         }
     };
     if is_turn_running && let Some(def) = registry.find(ActionId::CancelTurn) {
-        hints.push(def.hint());
+        let mut hint = def.hint();
+        if esc_would_cancel_turn {
+            hint.keys = vec![crate::key!(Esc)];
+        }
+        hints.push(hint);
     }
     let has_composer_payload = !prompt.text().trim().is_empty() || is_editing_queued;
     if matches!(active_pane, ActivePane::Prompt)

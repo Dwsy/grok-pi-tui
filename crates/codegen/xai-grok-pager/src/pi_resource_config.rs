@@ -464,7 +464,7 @@ fn auto_resource_paths(
     })];
     if kind == PiResourceType::Skills {
         if scope == PiResourceScope::User {
-            if let Some(home) = dirs::home_dir() {
+            if let Some(home) = xai_dirs::home_dir() {
                 dirs.push(home.join(".agents/skills"));
             }
         } else if let Some(cwd) = base_dir.parent() {
@@ -943,7 +943,7 @@ pub fn resolve_pi_agent_dir() -> Result<PathBuf> {
             return Ok(canonical_or_clean(&expand_tilde(Path::new(trimmed))));
         }
     }
-    let home = dirs::home_dir().context("could not resolve home directory for Pi config")?;
+    let home = xai_dirs::home_dir().context("could not resolve home directory for Pi config")?;
     Ok(canonical_or_clean(
         &home.join(CONFIG_DIR_NAME).join("agent"),
     ))
@@ -968,19 +968,19 @@ pub fn is_pi_agent_home(cwd: &Path) -> bool {
 fn expand_tilde(path: &Path) -> PathBuf {
     let raw = path.as_os_str();
     if raw == "~" {
-        return dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+        return xai_dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
     }
     let Some(s) = path.to_str() else {
         return path.to_path_buf();
     };
     if let Some(rest) = s.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = xai_dirs::home_dir() {
             return home.join(rest);
         }
     }
     #[cfg(windows)]
     if let Some(rest) = s.strip_prefix("~\\") {
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = xai_dirs::home_dir() {
             return home.join(rest);
         }
     }
@@ -1798,7 +1798,7 @@ mod tests {
 
     #[test]
     fn expand_tilde_matches_pi_normalize_path() {
-        let home = dirs::home_dir().expect("home");
+        let home = xai_dirs::home_dir().expect("home");
         assert_eq!(expand_tilde(Path::new("~")), home);
         assert_eq!(expand_tilde(Path::new("~/agent")), home.join("agent"));
         assert_eq!(

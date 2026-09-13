@@ -169,6 +169,10 @@ pub struct BlockLine {
     pub joiner: Option<String>,
     /// Semantic link target when paint text cannot recover it (tool headers).
     pub link_target: Option<crate::render::osc8::LinkTarget>,
+    /// Display width of the `subsequent_indent` prefix on wrapped continuation lines. This width is NOT part of the
+    /// logical pre-wrap content, so hyperlink column mapping must exclude it when rebuilding pre-wrap coordinates from
+    /// post-wrap segments.
+    pub indent_width: usize,
 }
 
 impl Default for BlockLine {
@@ -184,6 +188,7 @@ impl Default for BlockLine {
             selection_text: None,
             joiner: None,
             link_target: None,
+            indent_width: 0,
         }
     }
 }
@@ -473,17 +478,39 @@ pub struct BlockOutput {
     pub lines: Vec<BlockLine>,
 }
 
-/// Rare copy-only source bytes omitted from an Edit header's visible row.
+/// Rare selection metadata: source bytes omitted from a visible row, and a way to reach a source row that paints blank but is not empty.
 /// TODO: Copy the absolute Read/Edit target for a full painted-path drag; partial drags copy painted columns only to keep highlight and clipboard aligned.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct SelectionBoundary {
     prefix: String,
     suffix: String,
+    has_empty_row_anchor: bool,
 }
 
 impl SelectionBoundary {
     pub(crate) fn new(prefix: String, suffix: String) -> Self {
-        Self { prefix, suffix }
+        Self {
+            prefix,
+            suffix,
+            has_empty_row_anchor: false,
+        }
+    }
+
+    /// Make an otherwise empty source row reachable through its first blank terminal cell without painting or copying a placeholder.
+    pub(crate) fn empty_row_anchor(prefix: String, suffix: String) -> Self {
+        Self {
+            prefix,
+            suffix,
+            has_empty_row_anchor: true,
+        }
+    }
+
+    pub(crate) fn anchored_cols(&self, cols: Range<u16>) -> Range<u16> {
+        if self.has_empty_row_anchor && cols.is_empty() {
+            cols.start..cols.start.saturating_add(1)
+        } else {
+            cols
+        }
     }
 
     pub(crate) fn apply(

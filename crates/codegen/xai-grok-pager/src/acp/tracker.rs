@@ -1417,7 +1417,8 @@ impl AcpUpdateTracker {
                     {
                         base.update(tcu.fields);
                         let block = tool_call_to_block(&base, self.session_cwd.as_deref());
-                        self.finish_completed_tool(block, scrollback, is_replay);
+                        let trace = tool_trace_from_call(&base, meta);
+                        self.finish_completed_tool(block, trace, scrollback, is_replay);
                         return true;
                     }
                 }

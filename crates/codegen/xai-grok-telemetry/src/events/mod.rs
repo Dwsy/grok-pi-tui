@@ -2115,6 +2115,8 @@ pub enum BlockViewerKind {
     Read,
     Grep,
     PlainText,
+    /// Generic/unknown tool call opened as raw input + output (grok-pi viewer kind).
+    OtherTool,
 }
 
 #[derive(Serialize)]

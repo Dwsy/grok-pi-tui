@@ -5436,7 +5436,13 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::PiSessionSearch { query, cwd, seq } => {
+        Effect::PiSessionSearch {
+            query,
+            cwd,
+            host,
+            generation,
+            seq,
+        } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
@@ -5523,7 +5529,12 @@ pub(crate) fn execute(
                             tracing::warn!("pi session search timed out");
                         }
                     }
-                    TaskResult::DeepSearchResults { results, seq }
+                    TaskResult::DeepSearchResults {
+                        host,
+                        generation,
+                        results,
+                        seq,
+                    }
                 });
         }
         Effect::PiSessionPreview {

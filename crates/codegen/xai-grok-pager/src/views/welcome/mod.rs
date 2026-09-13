@@ -39,6 +39,7 @@ pub(crate) use logo::shimmer_frame;
 use logo::{LogoTier, logo_line_count, render_logo, render_logo_tier};
 use menu::render_menu;
 pub(crate) use toast::paint_welcome_toast;
+pub(crate) use top_bar::location_line_at;
 use top_bar::render_top_bar;
 #[cfg(feature = "local-workspace")]
 pub use workspace_mode::{

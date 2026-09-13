@@ -266,6 +266,12 @@ fn parse_session_picker_entries_with(
                 last_turn_summary,
                 last_recap,
                 session_kind,
+                name: None,
+                first_message: None,
+                session_path: None,
+                total_tokens: None,
+                total_cost: None,
+                parent_session_path: None,
                 card_detail: None,
             })
         })

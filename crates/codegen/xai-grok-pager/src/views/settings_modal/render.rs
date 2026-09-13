@@ -701,7 +701,7 @@ pub(super) fn render_rows(
                         .add_modifier(Modifier::BOLD);
                     let label = truncate_str(name, area.width as usize);
                     let w = (label.width() as u16).min(area.width);
-                    buf.set_span(area.x, y_cursor, &Span::styled(label.as_ref(), style), w);
+                    buf.set_span(area.x, y_cursor, &Span::styled(label.as_str(), style), w);
                 }
                 y_cursor = y_cursor.saturating_add(1);
             }
@@ -796,13 +796,16 @@ pub(super) fn render_rows(
                     buf,
                     render_area,
                     meta,
-                    value,
+                    Some(value),
                     max_label_w,
-                    is_selected,
-                    theme,
-                    is_expanded,
-                    is_hovered,
+                    RowStyle {
+                        selected: is_selected,
+                        hovered: is_hovered,
+                        dimmed: false,
+                        expanded: is_expanded,
+                    },
                     lock,
+                    theme,
                 );
                 state.value_hit_rects[row_idx] = value_rect;
                 y_cursor = y_cursor.saturating_add(row_height);
@@ -923,6 +926,71 @@ fn compute_filtered_row_heights(state: &SettingsModalState, area_width: u16) -> 
         }
     }
     heights
+}
+
+/// Paint the section sidebar and the divider column between it and the pane.
+fn render_sidebar(
+    buf: &mut Buffer,
+    area: Rect,
+    sidebar_w: u16,
+    sections: &[(&'static str, usize)],
+    state: &mut SettingsModalState,
+    theme: &Theme,
+) {
+    buf.set_style(area, Style::default().bg(theme.bg_base));
+    let active = state.active_section_index();
+    let separator_style = Style::default().fg(theme.gray_dim).bg(theme.bg_base);
+    for row in 0..area.height {
+        buf.set_span(
+            area.x + sidebar_w,
+            area.y + row,
+            &Span::styled(SIDEBAR_SEPARATOR, separator_style),
+            SIDEBAR_SEPARATOR_W,
+        );
+    }
+
+    let name_w = sidebar_w.saturating_sub(SIDEBAR_INDENT + SIDEBAR_GAP);
+    state.sidebar_rects.resize(sections.len(), Rect::default());
+    for (i, (name, _)) in sections.iter().enumerate() {
+        if i as u16 >= area.height {
+            break;
+        }
+        let y = area.y + i as u16;
+        let is_active = i == active;
+        let rect = Rect {
+            x: area.x,
+            y,
+            width: sidebar_w,
+            height: 1,
+        };
+        state.sidebar_rects[i] = rect;
+
+        // With section focus the cursor parks here instead of on a row, so
+        // the sidebar is the single focus indicator.
+        let cursor = if state.section_focus && is_active {
+            format!("{} ", crate::glyphs::chevron())
+        } else {
+            " ".repeat(SIDEBAR_INDENT as usize)
+        };
+        let style = match (is_active, state.section_focus) {
+            (true, true) => Style::default()
+                .fg(theme.text_primary)
+                .bg(theme.bg_visual)
+                .add_modifier(Modifier::BOLD),
+            (true, false) => Style::default()
+                .fg(theme.accent_user)
+                .bg(theme.bg_base)
+                .add_modifier(Modifier::BOLD),
+            (false, _) => Style::default().fg(theme.gray).bg(theme.bg_base),
+        };
+        if is_active && state.section_focus {
+            buf.set_style(rect, Style::default().bg(theme.bg_visual));
+        }
+        let label = truncate_str(name, name_w as usize);
+        let text = format!("{cursor}{label}");
+        let w = (text.width() as u16).min(sidebar_w);
+        buf.set_span(area.x, y, &Span::styled(&text, style), w);
+    }
 }
 
 /// Minimal scroll that keeps the focused row on screen, pulling in the
@@ -2213,6 +2281,24 @@ pub(super) fn wrap_description(description: &str, width: u16) -> Vec<String> {
         .collect()
 }
 
+/// Wrapped description height for scroll math (mirrors render path).
+fn wrapped_description_height(
+    meta: &SettingMeta,
+    lock_reason: Option<&'static str>,
+    area_width: u16,
+    cap: u16,
+) -> u16 {
+    let indent = 4u16.min(area_width);
+    let wrap_w = area_width.saturating_sub(indent);
+    if wrap_w == 0 {
+        return 0;
+    }
+    let text = lock_reason.unwrap_or(meta.description);
+    let line = Line::from(Span::raw(text));
+    let wrapped = crate::render::wrapping::word_wrap_line(&line, wrap_w as usize);
+    (wrapped.len() as u16).min(cap)
+}
+
 // Row layout: triangle on left, value right-aligned
 // The two-line layout kicks in when label + value exceed the area width
 
@@ -2223,6 +2309,12 @@ const ROW_CHEVRON_W: u16 = 2;
 /// Chevron column width, reserved for all rows for alignment.
 pub(super) const ROW_CHEVRON_COL_W: u16 = ROW_CHEVRON_W;
 const ROW_RESTART_PILL_W: u16 = 10; // " · restart", used for layout budgeting only.
+/// Triangle prefix column (`▸ ` / `▾ `) reserved at the start of every row.
+const ROW_TRIANGLE_PREFIX_W: u16 = 2;
+/// Minimum gap kept between the label and value columns.
+const ROW_GAP_MIN_W: u16 = 1;
+/// Gap between the label column and the value column.
+const ROW_GAP_W: u16 = 2;
 
 /// Appended to the value column of a locked row (see `SettingsModalState::row_lock`).
 pub(super) const ROW_ADMIN_MANAGED_SUFFIX: &str = " \u{00B7} Admin Managed";
@@ -2336,6 +2428,20 @@ pub(super) fn settings_row_overlay(
     }
 }
 
+/// Visual state of a settings row for one frame.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RowStyle {
+    /// Keyboard focus is on this row.
+    pub selected: bool,
+    /// Pointer is over this row.
+    pub hovered: bool,
+    /// Row belongs to a section other than the one under the cursor.
+    pub dimmed: bool,
+    /// The row's sub-sheet / description is expanded (drives the triangle and
+    /// the restart pill).
+    pub expanded: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 
 pub(super) fn render_setting_row(
@@ -2363,6 +2469,7 @@ pub(super) fn render_setting_row(
         return render_setting_row_unmapped(buf, area, meta, max_label_w, bg, theme);
     };
     let value_text = value_display(meta, value, lock);
+    let value_text = value_text.as_str();
 
     // Rows outside the active section collapse to one flat wash so inner
     // label/value colors do not fight the dimming.
@@ -2399,7 +2506,7 @@ pub(super) fn render_setting_row(
     let chevron_w = if show_chevron {
         chevron_str.width() as u16
     } else {
-        " ".repeat(ROW_CURSOR_W as usize)
+        0
     };
     let value_w = value_text.width() as u16;
     let chevron_style = Style::default().fg(theme.gray).bg(bg);
@@ -2698,45 +2805,26 @@ fn render_setting_group_row(
     let label_w = (label_text.width() as u16).min(label_cap);
 
     if label_w > 0 {
-        buf.set_span(label_x, area.y, &Span::styled(&label, label_style), label_w);
-    }
-
-    // ── Value column, right-aligned against the chevron gutter ───────────
-    let chevron_x = (area.x + area.width).saturating_sub(ROW_RIGHT_PAD_W + ROW_CHEVRON_COL_W);
-    let value_left_bound = label_x + max_label_w.min(label_avail) + ROW_GAP_W;
-    let value_avail = chevron_x.saturating_sub(value_left_bound);
-    let value_text = truncate_str(&value_text, value_avail as usize);
-    let value_w = (value_text.width() as u16).min(value_avail);
-    let value_x = chevron_x.saturating_sub(value_w);
-    if value_w > 0 {
         buf.set_span(
-            value_x,
+            area.x,
             area.y,
-            &Span::styled(&value_text, value_style),
-            value_w,
+            &Span::styled(&label_text, label_style),
+            label_w,
         );
     }
-    if show_chevron {
-        let chevron = format!(" {}", crate::glyphs::chevron());
-        let style = Style::default()
-            .fg(if row.dimmed {
-                theme.gray_dim
-            } else {
-                theme.gray
-            })
-            .bg(bg);
+    if chevron_w > 0 && chevron_x >= area.x.saturating_add(label_w) {
         buf.set_span(
             chevron_x,
             area.y,
-            &Span::styled(&chevron, style),
-            ROW_CHEVRON_COL_W,
+            &Span::styled(chevron_str.as_str(), chevron_style),
+            chevron_w,
         );
     }
-
+    // Hit-rect spans the chevron column (a click there opens the sub-sheet).
     Rect {
-        x: value_x,
+        x: chevron_x,
         y: area.y,
-        width: value_w.saturating_add(ROW_CHEVRON_COL_W),
+        width: ROW_CHEVRON_COL_W,
         height: 1,
     }
 }

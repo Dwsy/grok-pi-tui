@@ -120,6 +120,18 @@ impl NotificationEventKind {
     }
 }
 
+impl AsRef<str> for NotificationEventKind {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl From<NotificationEventKind> for &'static str {
+    fn from(kind: NotificationEventKind) -> Self {
+        kind.as_str()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NotificationHook {
     pub command: String,

@@ -105,7 +105,7 @@ impl Default for ExtensionShortcutRegistry {
 
 impl ExtensionShortcutRegistry {
     pub fn new() -> Self {
-        let config_path = dirs::home_dir()
+        let config_path = xai_dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".pi")
             .join("shortcut-manager.json");

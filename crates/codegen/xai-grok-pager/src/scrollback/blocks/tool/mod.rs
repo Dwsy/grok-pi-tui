@@ -332,6 +332,7 @@ impl ToolCallBlock {
             }
             (
                 ToolCallBlock::Execute(_)
+                | ToolCallBlock::Eval(_)
                 | ToolCallBlock::Read(_)
                 | ToolCallBlock::Edit(_)
                 | ToolCallBlock::ListDir(_)

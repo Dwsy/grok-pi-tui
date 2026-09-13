@@ -1890,6 +1890,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             },
             restart_required: false,
             hidden_in_minimal: false,
+            external_only: false,
         },
         SettingMeta {
             key: "contextual_hints.ssh_wrap",

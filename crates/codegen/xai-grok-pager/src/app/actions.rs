@@ -1418,6 +1418,7 @@ impl CancelTrigger {
     /// Snake_case wire string sent as `_meta.cancelTrigger`.
     pub fn as_wire_str(self) -> &'static str {
         match self {
+            Self::Esc => "esc",
             Self::CtrlC => "ctrl_c",
             Self::Mouse => "mouse",
             Self::DashboardStop => "dashboard_stop",
@@ -2456,6 +2457,12 @@ pub enum Effect {
     PiSessionSearch {
         query: String,
         cwd: Option<std::path::PathBuf>,
+        /// Echoed back on [`TaskResult::DeepSearchResults`] so the result is
+        /// routed to the picker host that asked for it.
+        host: crate::views::session_picker_surface::SessionPickerHost,
+        /// Echoed back on [`TaskResult::DeepSearchResults`] so a stale search
+        /// cannot overwrite a newer picker incarnation.
+        generation: u64,
         seq: u64,
     },
     /// Load message preview for a Pi session (PSM `message_entries`).

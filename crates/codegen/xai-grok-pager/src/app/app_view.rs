@@ -1058,6 +1058,8 @@ pub struct AppView {
     pub(crate) session_picker_lanes: crate::views::session_picker::SessionPickerLanes,
     /// Invalidates the welcome picker's in-flight card-detail reads when its rows or filters change.
     pub(crate) session_picker_detail_seq: u64,
+    /// Fork detail-preview generation guard for the PSM preview path.
+    pub(crate) session_picker_detail_generation: u64,
     /// Allocator for picker incarnation generations.
     /// Starts at 0; the first allocation returns 1, so a freshly-constructed modal's 0 placeholder can never collide with an allocated generation.
     /// (No producer stamps a request before the allocator runs.)
@@ -1772,6 +1774,7 @@ impl AppView {
             foreign_scan_coordinator: Default::default(),
             session_picker_lanes: Default::default(),
             session_picker_detail_seq: 0,
+            session_picker_detail_generation: 0,
             picker_generation_counter: 0,
             session_picker_generation: 0,
             dashboard_session_picker: None,
@@ -1786,6 +1789,7 @@ impl AppView {
             auto_mode_gate: xai_grok_shell::util::config::auto_permission_mode_enabled_from_disk(),
             yolo_policy_block: None,
             yolo_launch_block_notice: None,
+            screen_mode_switch_hint: None,
             require_plan_approval: false,
             plan_mode: false,
             subagents: false,
@@ -2189,6 +2193,30 @@ impl AppView {
         if is_send {
             let _ = crate::voice::commit_interim_into_prompt(self);
         }
+    }
+    /// Whether an app-level surface owns Esc before the focused agent sees it.
+    ///
+    /// Mirrors `handle_input`'s intercepts, in their order: the focused dev
+    /// tracing pane (step 1a consumes all non-global keys), the cloud modal
+    /// (step 1d), the import-Claude modal (agent-arm intercept),
+    /// [`Self::voice_listening`] — listening OR pending cold-start, the
+    /// handler's actual condition, not the render-only recording flag — and
+    /// the dashboard's attached-agent popup (dashboard-arm intercept). Keep
+    /// this list in lockstep with those intercepts when adding a top-level
+    /// Esc owner.
+    pub(crate) fn esc_owned_before_agent(&self) -> bool {
+        if matches!(self.active_view, ActiveView::AgentDashboard)
+            && self
+                .dashboard
+                .as_ref()
+                .and_then(|d| d.attached_agent)
+                .is_some_and(|id| self.agents.contains_key(&id))
+        {
+            return true;
+        }
+        self.import_claude_modal.is_some()
+            || self.voice_listening()
+            || self.voice_state.pending_cold_start()
     }
     /// The agent tab on screen.
     /// Always the root agent, even when a subagent view is focused within the tab.
@@ -5537,6 +5565,7 @@ impl AppView {
                 layout_cfg.eff_outer_vpad(compact),
             )
         };
+        let esc_owned_before_agent = self.esc_owned_before_agent();
         let zdr_blocked_for_draw = self.is_zdr_blocked();
         let has_access = self.has_access();
         let privacy_banner = self.privacy_banner_should_show();
@@ -6008,6 +6037,7 @@ impl AppView {
                                     voice_interim: voice_interim.as_deref(),
                                     status_line: status_line_frame.clone(),
                                     workspace_dashboard_enabled: self.workspace_dashboard_enabled,
+                                    esc_owned_before_agent,
                                 },
                             );
                             if let Some(modal) = self.import_claude_modal.as_mut() {

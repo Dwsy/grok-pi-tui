@@ -826,8 +826,15 @@ pub(in crate::app::dispatch) fn dispatch_trigger_deep_search(
             }
             *content_loading = true;
             let cwd = Some(agent.session.cwd.clone());
+            let host = SessionPickerHost::AgentModal;
             if force {
-                return vec![Effect::PiSessionSearch { query, cwd, seq }];
+                return vec![Effect::PiSessionSearch {
+                    query,
+                    cwd,
+                    host,
+                    generation: *generation,
+                    seq,
+                }];
             }
             return vec![Effect::DebounceSessionSearch {
                 host: SessionPickerHost::AgentModal,
@@ -882,8 +889,15 @@ pub(in crate::app::dispatch) fn dispatch_trigger_deep_search(
         }
         app.session_picker_content_loading = true;
         let cwd = Some(app.cwd.clone());
+        let host = SessionPickerHost::Welcome;
         if force {
-            return vec![Effect::PiSessionSearch { query, cwd, seq }];
+            return vec![Effect::PiSessionSearch {
+                query,
+                cwd,
+                host,
+                generation: app.session_picker_generation,
+                seq,
+            }];
         }
         return vec![Effect::DebounceSessionSearch {
             host: SessionPickerHost::Welcome,
@@ -1472,6 +1486,8 @@ pub(in crate::app::dispatch) fn handle_session_search_debounce_expired(
         return vec![Effect::PiSessionSearch {
             query,
             cwd,
+            host: request.host,
+            generation: request.generation,
             seq: request.seq,
         }];
     }
@@ -1703,7 +1719,7 @@ pub(in crate::app::dispatch) fn dispatch_show_session_picker(app: &mut AppView) 
     use super::lifecycle::discard_welcome_prewarm;
     use crate::views::modal::ActiveModal;
     let external_agent = app.external_agent;
-    let has_agent = matches!(app.active_view, crate::app_view::ActiveView::Agent(_));
+    let has_agent = matches!(app.active_view, crate::app::app_view::ActiveView::Agent(_));
     // Resume replaces the empty prewarmed session; drop it so we do not leak
     // a background Pi session the user never typed into.
     let mut effects = discard_welcome_prewarm(app);
