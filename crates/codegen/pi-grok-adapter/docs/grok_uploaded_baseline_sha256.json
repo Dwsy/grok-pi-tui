@@ -2787,6 +2787,7 @@
     "crates/codegen/pi-grok-adapter/"
   ],
   "allowedAddedFiles": [
+    "crates/codegen/xai-grok-pager/tests/remote_tui_keys.rs",
     "crates/codegen/xai-grok-pager-bin/src/bin/grok-pi.rs",
     "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/plan_mode_extension.rs",
     "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/model_manager_tests.rs",

@@ -140,6 +140,9 @@ component when the terminal reports that chord distinctly. Transport metadata is
 isolated per Grok-Pi process, and stale component input is discarded. Plugins
 should use Pi's key parsers for modified keys; raw string comparisons do not
 recognize every terminal encoding.
+Plain Shift+letter presses are forwarded as uppercase text (for example, `S`)
+for compatibility with literal Pi component actions. Other modified presses
+retain their modifiers; repeat and release events remain distinct.
 
 ## Configuration
 

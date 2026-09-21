@@ -45,3 +45,18 @@ The draft must remain intact. Ordinary Escape must follow the component's own
 back/cancel behavior; Ctrl+Shift+Escape must release a stuck remote component.
 Repeat with two terminals and during reload. Test lower-case keys separately
 from Shift-modified keys: plugins must parse the terminal sequence correctly.
+
+## Follow-up: modified key presses
+
+Shop settings exposed a remaining encoder defect: `kitty_sequence()` returned
+`None` for Press, including Shift+S, so modal capture consumed the key without
+forwarding it. Encode modified presses, preserve plain Shift+letter presses as
+uppercase text for Pi components using literal actions, and keep repeat/release
+events distinct. Validate with a standalone integration target (production
+library, not the broken lib-test fixtures) and the actual Shop settings component
+using synthetic profiles without writing user configuration.
+
+Validation: standalone key integration tests failed 2/3 before the fix and
+passed 3/3 after it; product build passed. PTY runs of the real Shop panel
+returned `save` for `s`, raw `S` and Kitty `Shift+S`. No configuration was saved
+by the probe. Full Shop transport/lifecycle behavior is outside this key test.

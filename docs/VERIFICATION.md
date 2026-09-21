@@ -2,6 +2,17 @@
 
 ## 2026-09-21 Remote TUI input ownership
 
+Follow-up modified-key regression: the encoder returned `None` for modified
+Press events, dropping Shift+S before it reached a component. Standalone
+`cargo test -p xai-grok-pager --test remote_tui_keys` reproduced two failures
+before the fix and passes all three tests after it. This integration target
+links the production library without compiling the stale lib-test fixtures.
+Coverage includes Shift+letter actions, Ctrl/Alt/Super presses, BackTab and
+repeat/release behavior. The product build passed. A PTY probe loaded the actual
+installed Shop `settingsPanel` with synthetic profiles: lower-case `s`, raw
+uppercase `S`, and Kitty Shift+S each returned `save`. The probe stops at that
+action and does not write any Shop configuration or call a model.
+
 - `bun test extensions/pi-grok-remote-tui`: 13 passed. Covers lifecycle before
   the first frame, explicit child focus, letter/Escape delivery, shortcut
   isolation, native Pi non-interference, stale input rejection and partial JSONL.

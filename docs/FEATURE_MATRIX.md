@@ -109,6 +109,8 @@ Remote TUI input ownership is explicit and independent of frame updates.
 Component input precedes global extension shortcuts; native Pi dialogs can
 temporarily own input. Ordinary Escape is forwarded, Ctrl+Shift+Escape is host
 cancellation, and per-instance metadata plus component IDs reject stale input.
+Shift+letter presses preserve uppercase literal actions; other modified presses
+use terminal encodings instead of being silently dropped.
 See `docs/issues/20260921-remote-tui-input-ownership.md` for verification boundaries.
 
 ## Slash Commands

@@ -2847,7 +2847,7 @@ impl AppView {
             let event = match key.kind {
                 KeyEventKind::Repeat => ":2",
                 KeyEventKind::Release => ":3",
-                KeyEventKind::Press => return None,
+                KeyEventKind::Press => "",
             };
             let modifier = kitty_modifier_value(key.modifiers);
             let functional = match key.code {
@@ -2878,6 +2878,17 @@ impl AppView {
             Some(format!("\u{001b}[{codepoint};{modifier}{event}u"))
         }
 
+        // Native terminals normally deliver Shift+letters as uppercase text.
+        // Keep Pi components using literal letter actions compatible, while
+        // preserving modifiers and event types for other keys/repeat/release.
+        if key.kind == KeyEventKind::Press
+            && key.modifiers == KeyModifiers::SHIFT
+            && let KeyCode::Char(c) = key.code
+            && c.is_ascii_alphabetic()
+        {
+            return Some(c.to_ascii_uppercase().to_string());
+        }
+
         if key.kind != KeyEventKind::Press
             || key.modifiers.intersects(
                 KeyModifiers::SHIFT
@@ -2886,7 +2897,7 @@ impl AppView {
                     | KeyModifiers::SUPER,
             )
         {
-            if key.kind == KeyEventKind::Press && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if key.kind == KeyEventKind::Press && key.modifiers == KeyModifiers::CONTROL {
                 match key.code {
                     KeyCode::Char('c') => return Some("\u{0003}".to_string()),
                     KeyCode::Char('d') => return Some("\u{0004}".to_string()),
@@ -2904,7 +2915,8 @@ impl AppView {
             KeyCode::Enter => Some("\r".to_string()),
             KeyCode::Esc => Some("\u{001b}".to_string()),
             KeyCode::Backspace => Some("\u{007f}".to_string()),
-            KeyCode::Tab | KeyCode::BackTab => Some("\t".to_string()),
+            KeyCode::Tab => Some("\t".to_string()),
+            KeyCode::BackTab => Some("\u{001b}[Z".to_string()),
             KeyCode::Home => Some("\u{001b}[H".to_string()),
             KeyCode::End => Some("\u{001b}[F".to_string()),
             KeyCode::PageUp => Some("\u{001b}[5~".to_string()),
