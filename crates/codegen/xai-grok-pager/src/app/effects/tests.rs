@@ -2819,3 +2819,20 @@ fn upload_trace_request_without_intent_keeps_legacy_wire_shape() {
             r#"{"sessionId":"sess-1"}"#
         );
 }
+#[test]
+fn remote_tui_enqueues_rapid_keys_in_order_before_tasks_run() {
+    let (client, mut agent) = xai_acp_lib::acp_channels();
+    for key in "deepseek".chars() {
+        super::enqueue_remote_tui(&client.tx, "pi/ui/remote_tui/input",
+            serde_json::json!({"id": "picker", "data": key.to_string()}));
+    }
+    let mut received = String::new();
+    while let Ok(message) = agent.rx.try_recv() {
+        let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = message else {
+            panic!("expected keyboard notification");
+        };
+        let value: serde_json::Value = serde_json::from_str(args.request.params.get()).unwrap();
+        received.push_str(value["data"].as_str().unwrap());
+    }
+    assert_eq!(received, "deepseek");
+}

@@ -1089,6 +1089,16 @@ async fn run(mut args: Args) -> Result<()> {
         // custom component requests.
         env.push(("PI_GROK_REMOTE_TUI".to_string(), "1".to_string()));
         env.push(("PI_GROK_EXTENSION_TUI_COMPAT".to_string(), "1".to_string()));
+        let remote_meta = remote_tui_extension
+            .as_ref()
+            .expect("remote TUI enabled")
+            .source_path()
+            .with_file_name("active.json")
+            .to_string_lossy()
+            .into_owned();
+        env.push(("PI_GROK_REMOTE_TUI_META".to_string(), remote_meta.clone()));
+        // Same instance-specific transport for the adapter and its Pi child.
+        unsafe { std::env::set_var("PI_GROK_REMOTE_TUI_META", remote_meta) };
         // Pi RPC child has no real TTY; pass host size so Remote TUI is full-width
         // like interactive Pi (not a fixed 72-col probe box).
         if let Some((cols, rows)) = host_terminal_size() {
@@ -1247,6 +1257,24 @@ async fn run(mut args: Args) -> Result<()> {
         let route_adapter = adapter.clone();
         tokio::task::spawn_local(async move {
             while let Some(message) = agent_channel.rx.recv().await {
+                if let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = &message
+                    && matches!(
+                        args.request.method.as_ref(),
+                        "pi/ui/remote_tui/input" | "pi/ui/remote_tui/cancel"
+                    )
+                {
+                    // Keyboard notifications are ordered, short synchronous
+                    // keyfile writes. Do not schedule each key independently.
+                    if let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = message {
+                        let result = agent_client_protocol::Agent::ext_notification(
+                            route_adapter.as_ref(),
+                            args.request,
+                        )
+                        .await;
+                        let _ = args.response_tx.send(result);
+                    }
+                    continue;
+                }
                 message.route_to_agent(route_adapter.clone(), |future| {
                     tokio::task::spawn_local(future);
                 });

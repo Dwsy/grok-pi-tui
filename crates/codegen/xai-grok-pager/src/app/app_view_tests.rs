@@ -517,6 +517,83 @@ fn remote_tui_forwards_key_release_to_component() {
 }
 
 #[test]
+fn remote_tui_lifecycle_owns_letters_before_frame_and_ignores_stale_close() {
+    use crate::app::actions::Effect;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    let agent_id = super::super::agent::AgentId(0);
+    app.agents.get_mut(&agent_id).unwrap().active_pane = crate::views::agent::ActivePane::Prompt;
+    app.agents
+        .get_mut(&agent_id)
+        .unwrap()
+        .prompt
+        .set_text("draft");
+    app.agents
+        .get_mut(&agent_id)
+        .unwrap()
+        .prompt
+        .textarea
+        .set_cursor(5);
+    app.external_ui.extension_shortcuts.set_shortcuts(vec![
+        crate::app::extension_shortcuts::ExtensionShortcut {
+            key: "a".into(),
+            description: "must not steal".into(),
+            extension: "test".into(),
+            enabled: true,
+            remapped_to: None,
+        },
+    ]);
+    let lifecycle = |app: &mut AppView, op: &str, id: &str| {
+        app.set_external_widget(
+            "__pi_grok_remote_tui_session__".into(),
+            Some(vec![serde_json::json!({"op": op, "id": id}).to_string()]),
+            ExternalWidgetPlacement::AboveEditor,
+        );
+    };
+    lifecycle(&mut app, "open", "new");
+    app.set_external_widget(
+        "remote_tui".into(),
+        None,
+        ExternalWidgetPlacement::AboveEditor,
+    );
+    lifecycle(&mut app, "close", "old");
+    for (code, modifiers) in [
+        (KeyCode::Char('a'), KeyModifiers::NONE),
+        (KeyCode::Char('S'), KeyModifiers::SHIFT),
+        (KeyCode::Esc, KeyModifiers::NONE),
+    ] {
+        app.handle_input(&Event::Key(KeyEvent::new(code, modifiers)));
+    }
+    assert_eq!(app.agents[&agent_id].prompt.text(), "draft");
+    assert_eq!(app.pending_effects.len(), 3);
+    assert!(app.pending_effects.iter().all(|effect| matches!(effect,
+        Effect::RemoteTuiInput { id, .. } if id == "new")));
+    assert!(
+        matches!(app.pending_effects.last(), Some(Effect::RemoteTuiInput { data, .. }) if data == "\u{1b}")
+    );
+    app.pending_effects.clear();
+    app.handle_input(&Event::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    assert!(
+        matches!(app.pending_effects.last(), Some(Effect::RemoteTuiCancel { id }) if id == "new")
+    );
+    assert!(app.external_ui.remote_tui_id.is_none());
+    app.set_external_widget(
+        "remote_tui".into(),
+        Some(vec!["late frame".into()]),
+        ExternalWidgetPlacement::AboveEditor,
+    );
+    assert!(app.external_ui.remote_tui_id.is_none());
+    assert!(!app.external_ui.widgets.contains_key("remote_tui"));
+    app.pending_effects.clear();
+    app.handle_input(&Event::Paste(" after".into()));
+    assert_eq!(app.agents[&agent_id].prompt.text(), "draft after");
+}
+
+#[test]
 fn remote_tui_frame_preserves_multiline_and_closes() {
     let mut app = test_app_with_agent();
     app.external_agent = true;
@@ -549,6 +626,40 @@ fn remote_tui_frame_preserves_multiline_and_closes() {
     assert!(app.apply_remote_tui("close", Some("sess-1".into()), None, None));
     assert!(app.external_ui.remote_tui_id.is_none());
     assert!(!app.external_ui.widgets.contains_key("remote_tui"));
+}
+
+#[test]
+fn remote_tui_yields_to_pi_question_then_resumes_without_editing_draft() {
+    use crate::app::actions::Effect;
+    use crate::views::question_view::QuestionViewState;
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    app.apply_remote_tui("open", Some("parent".into()), None, None);
+    let id = super::super::agent::AgentId(0);
+    install_question_overlay(&mut app, id, 1);
+    let agent = app.agents.get_mut(&id).unwrap();
+    agent.in_dashboard_overlay = false;
+    let old = agent.question_view.take().unwrap();
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    agent.question_view = Some(QuestionViewState::with_response_tx(
+        "pi-extension-ui:child".into(), old.questions,
+        crate::views::prompt_widget::StashedPrompt::default(), Some(tx),
+        xai_grok_tools::implementations::grok_build::ask_user_question::AskUserQuestionMode::Default,
+    ));
+    app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!app.pending_effects.iter().any(|e| matches!(
+        e,
+        Effect::RemoteTuiInput { .. } | Effect::RemoteTuiCancel { .. }
+    )));
+    assert_eq!(app.external_ui.remote_tui_id.as_deref(), Some("parent"));
+    app.agents.get_mut(&id).unwrap().question_view = None;
+    app.handle_input(&key_event(KeyCode::Char('s'), KeyModifiers::NONE));
+    assert!(
+        app.pending_effects
+            .iter()
+            .any(|e| matches!(e, Effect::RemoteTuiInput { data, .. } if data == "s"))
+    );
+    assert!(app.agents[&id].prompt.text().is_empty());
 }
 
 #[test]

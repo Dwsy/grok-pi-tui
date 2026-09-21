@@ -2719,6 +2719,7 @@
     "third_party/ordered_hashmap/src/lib.rs": "50d04cc67b74bd5ac4061b245ae00d0075806f6dcd15b4eaa7d339d725010809"
   },
   "allowedModifiedFiles": [
+    "crates/codegen/xai-grok-pager/src/app/agent_view/render.rs",
     "Cargo.lock",
     "Cargo.toml",
     "crates/codegen/xai-grok-pager-bin/Cargo.toml",

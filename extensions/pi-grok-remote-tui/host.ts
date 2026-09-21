@@ -22,7 +22,7 @@ import { ensurePiTheme, shouldInstallRemoteHost } from "./env.ts";
 import { resolveRemoteTuiLayout, resolveViewport } from "./layout.ts";
 import { drainKeys, ensureKeyFile, publishRemoteTuiLayout, writeMeta } from "./transport.ts";
 import type { ActiveHost, ComponentLike, RemoteTuiDemoUi, RemoteTuiLayout } from "./shared.ts";
-import { WIDGET_KEY } from "./shared.ts";
+import { SESSION_WIDGET_KEY, WIDGET_KEY } from "./shared.ts";
 
 let active: ActiveHost | null = null;
 /** Track which uiContext objects already have our custom() host. */
@@ -64,14 +64,25 @@ export function installCustomPatch(ui: PatchableUi): void {
     const keysPath = join(tmpdir(), `pi-grok-remote-tui-keys-${id}.jsonl`);
     ensureKeyFile(keysPath);
     writeMeta({ id, keysPath });
+    // Claim input before an asynchronous factory can leave a visible/loading UI
+    // with the composer still receiving keys. Frames do not own the lifecycle.
+    ui.setWidget(SESSION_WIDGET_KEY, [JSON.stringify({ op: "open", id })]);
 
     return new Promise((resolve, reject) => {
       let component: ComponentLike | undefined;
+      const pendingInputs: string[] = [];
+      let pollTimer: ReturnType<typeof setInterval> | undefined;
       let closed = false;
       let focused: Component | null = null;
+      const setFocus = (next: Component | null) => {
+        if (focused && "focused" in focused) (focused as Component & { focused: boolean }).focused = false;
+        focused = next;
+        if (next && "focused" in next) (next as Component & { focused: boolean }).focused = true;
+      };
       let frameWidth = width;
       // Auth select overlays LoginDialog; hide must restore the previous root.
       let previousComponent: ComponentLike | undefined;
+      let previousFocus: Component | null = null;
 
       const setLayout = (next: RemoteTuiLayout) => {
         frameWidth = next.width;
@@ -79,6 +90,7 @@ export function installCustomPatch(ui: PatchableUi): void {
       };
 
       const cleanup = () => {
+        if (pollTimer) clearInterval(pollTimer);
         try {
           host.watcher?.close();
         } catch {
@@ -90,10 +102,12 @@ export function installCustomPatch(ui: PatchableUi): void {
           /* ignore */
         }
         writeMeta(null);
+        setFocus(null);
         // Clear only the interactive frame. Applied demo surfaces stay so
         // header/footer/status can still be inspected after Esc.
         ui.setWidget(WIDGET_KEY, undefined);
         publishRemoteTuiLayout(ui, undefined);
+        ui.setWidget(SESSION_WIDGET_KEY, [JSON.stringify({ op: "close", id })]);
         if (active?.id === id) active = null;
         try {
           component?.dispose?.();
@@ -131,11 +145,11 @@ export function installCustomPatch(ui: PatchableUi): void {
 
       const handleInput = (data: string) => {
         if (closed) return;
-        // Extension shortcut intercept: check before dispatching to component
-        const shortcutIntercept = (globalThis as typeof globalThis & {
-          __piGrokShortcutIntercept?: (data: string) => boolean;
-        }).__piGrokShortcutIntercept;
-        if (shortcutIntercept?.(data)) return;
+        if (!component) {
+          pendingInputs.push(data);
+          return;
+        }
+        // The focused component owns shortcuts until it closes.
         const target = focused ?? component;
         try {
           dispatchComponentInput(target, data);
@@ -158,15 +172,16 @@ export function installCustomPatch(ui: PatchableUi): void {
           });
         },
         setFocus: (next: Component | null) => {
-          focused = next;
+          setFocus(next);
         },
         showOverlay: (overlay: Component) => {
           if (component && component !== overlay) {
             previousComponent = component;
+            previousFocus = focused;
           }
           setLayout(resolveRemoteTuiLayout({ overlay: true }, terminalWidth));
           component = overlay as ComponentLike;
-          focused = overlay;
+          setFocus(overlay);
           pushFrame();
           return {
             hide: () => {
@@ -174,13 +189,14 @@ export function installCustomPatch(ui: PatchableUi): void {
               if (previousComponent) {
                 setLayout(baseLayout);
                 component = previousComponent;
-                focused = previousComponent;
+                setFocus(previousFocus ?? previousComponent);
                 previousComponent = undefined;
+                previousFocus = null;
                 pushFrame();
                 return;
               }
               // No stacked root (e.g. standalone selector) — keep current frame.
-              focused = component ?? null;
+              setFocus(component ?? null);
               pushFrame();
             },
             show: () => pushFrame(),
@@ -198,8 +214,9 @@ export function installCustomPatch(ui: PatchableUi): void {
           if (previousComponent) {
             setLayout(baseLayout);
             component = previousComponent;
-            focused = previousComponent;
+            setFocus(previousFocus ?? previousComponent);
             previousComponent = undefined;
+            previousFocus = null;
             pushFrame();
           }
         },
@@ -256,15 +273,11 @@ export function installCustomPatch(ui: PatchableUi): void {
       try {
         host.watcher = watch(keysPath, () => drainKeys(host));
       } catch {
-        // poll fallback
-        const timer = setInterval(() => {
-          if (host.closed) {
-            clearInterval(timer);
-            return;
-          }
-          drainKeys(host);
-        }, 50);
+        // The periodic drain below also supports platforms without fs.watch.
       }
+      // Watch notifications may coalesce a burst before its final write; do not
+      // leave its tail unread until the next physical keypress.
+      pollTimer = setInterval(() => drainKeys(host), 50);
 
       // Prefer Pi theme when available (OAuthSelector/LoginDialog touch it).
       // Fall back to themeStub for unit tests / non-Pi argv hosts.
@@ -289,7 +302,7 @@ export function installCustomPatch(ui: PatchableUi): void {
           }
           component = created as ComponentLike;
           host.component = component;
-          focused = component;
+          setFocus(focused ?? component);
           baseLayout = resolveRemoteTuiLayout(
             _options,
             terminalWidth,
@@ -297,6 +310,7 @@ export function installCustomPatch(ui: PatchableUi): void {
           );
           setLayout(baseLayout);
           pushFrame();
+          for (const data of pendingInputs.splice(0)) handleInput(data);
           drainKeys(host);
         })
         .catch((error) => {
