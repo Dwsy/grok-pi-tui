@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.10-beta.5] - 2026-09-23
+
+### Changed
+
+- Completed the recent Pi session follow-up work across notification delivery, task-pane status rendering, ACP session handling, settings, and related Pager/Shell integration paths.
+- Added the scheduler command usage and intelligent ordering configuration design note captured during the follow-up audit.
+
+### Fixed
+
+- Hardened background task completion notification admission, queuing, suppression, persistence, and replay behavior, with expanded regression coverage for deferred and duplicate wake scenarios.
+- Refined task-pane and session-notification rendering/state handling so background completion updates remain consistent across active, deferred, and resumed sessions.
+
 ## [0.1.10-beta.4] - 2026-09-12
 
 ### Changed
