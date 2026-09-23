@@ -57,11 +57,8 @@ impl SessionActor {
         let mut completion_ids: Vec<String> = state
             .pending_notifications
             .iter()
-            .filter_map(|notification| match &notification.source {
-                NotificationSource::BashTaskCompleted { task_id }
-                | NotificationSource::MonitorCompleted { task_id } => Some(task_id.clone()),
-                NotificationSource::MonitorEvent { .. } => None,
-            })
+            .flat_map(|notification| notification.source.completion_task_ids())
+            .map(str::to_owned)
             .collect();
         completion_ids.sort();
         completion_ids.dedup();
@@ -74,6 +71,7 @@ impl SessionActor {
         for notification in notifications {
             let consume = match &notification.source {
                 NotificationSource::BashTaskCompleted { .. }
+                | NotificationSource::BashTaskCompletedBatch { .. }
                 | NotificationSource::MonitorCompleted { .. } => true,
                 NotificationSource::MonitorEvent { task_id } => {
                     deferred_ids.contains(task_id.as_str())
@@ -514,6 +512,7 @@ impl SessionActor {
             );
 
         let drained_task_ids: Vec<String>;
+        let drained_completion_ids: Vec<String>;
 
         let drained = {
             let mut state = self.state.lock().await;
@@ -537,7 +536,13 @@ impl SessionActor {
 
             drained_task_ids = notifications
                 .iter()
-                .map(|n| n.source.task_id().to_string())
+                .flat_map(|n| n.source.task_ids())
+                .map(str::to_owned)
+                .collect();
+            drained_completion_ids = notifications
+                .iter()
+                .flat_map(|n| n.source.completion_task_ids())
+                .map(str::to_owned)
                 .collect();
 
             let (to_surface, dropped) = {
@@ -565,6 +570,11 @@ impl SessionActor {
         // Mark reported whether dropped or surfaced, so the per-tool-call `TaskCompletionReminder` won't resurface the same completions
         let ids: Vec<&str> = drained_task_ids.iter().map(String::as_str).collect();
         self.mark_completions_reported(&ids).await;
+        if let Some(reservations) = &self.tool_context.task_completion_reservations {
+            for task_id in &drained_completion_ids {
+                reservations.release(task_id);
+            }
+        }
 
         if drained {
             SessionActor::maybe_start_running_task(self, completion_tx).await;
@@ -646,7 +656,11 @@ impl SessionActor {
         let to_surface = notifications
             .into_iter()
             .filter(|n| {
-                let keep = !goal_turn_task_ids.contains(n.source.task_id());
+                let keep = !n
+                    .source
+                    .task_ids()
+                    .iter()
+                    .any(|task_id| goal_turn_task_ids.contains(*task_id));
                 if !keep {
                     dropped += 1;
                 }
@@ -664,10 +678,13 @@ impl SessionActor {
 
         let completion_task_ids: std::collections::HashSet<&str> = notifications
             .iter()
-            .filter_map(|notification| match &notification.source {
-                NotificationSource::MonitorCompleted { task_id } => Some(task_id.as_str()),
+            .flat_map(|notification| match &notification.source {
+                NotificationSource::MonitorCompleted { task_id } => vec![task_id.as_str()],
+                NotificationSource::BashTaskCompletedBatch { task_ids } => {
+                    task_ids.iter().map(String::as_str).collect()
+                }
                 NotificationSource::MonitorEvent { .. }
-                | NotificationSource::BashTaskCompleted { .. } => None,
+                | NotificationSource::BashTaskCompleted { .. } => Vec::new(),
             })
             .collect();
         let mut monitor_events: Vec<MonitorEventNotification> = Vec::new();
@@ -699,7 +716,8 @@ impl SessionActor {
                     }
                 }
                 NotificationSource::MonitorCompleted { .. }
-                | NotificationSource::BashTaskCompleted { .. } => {
+                | NotificationSource::BashTaskCompleted { .. }
+                | NotificationSource::BashTaskCompletedBatch { .. } => {
                     sections.push(notification.prompt_blocks.clone());
                 }
             }
@@ -769,6 +787,9 @@ impl SessionActor {
                 NotificationSource::MonitorEvent { task_id } => format!("monitor:{task_id}"),
                 NotificationSource::MonitorCompleted { task_id } => format!("monitor-completed:{task_id}"),
                 NotificationSource::BashTaskCompleted { task_id } => format!("bash:{task_id}"),
+                NotificationSource::BashTaskCompletedBatch { task_ids } => {
+                    format!("bash:{}", task_ids.join(","))
+                },
             }).collect::<Vec<_>>().join(","),
             "Drained pending notifications into single batched turn"
         );

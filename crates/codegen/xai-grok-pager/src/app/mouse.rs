@@ -584,14 +584,14 @@ impl AgentView {
                                 }
                             }
                         }
-                        let clicked_view_entry = self
-                            .tasks
-                            .view_button_rects
-                            .iter()
-                            .find_map(|(entry_id, rect)| {
-                                rect.contains((mouse.column, mouse.row).into())
-                                    .then(|| entry_id.clone())
-                            });
+                        let clicked_view_entry =
+                            self.tasks
+                                .view_button_rects
+                                .iter()
+                                .find_map(|(entry_id, rect)| {
+                                    rect.contains((mouse.column, mouse.row).into())
+                                        .then(|| entry_id.clone())
+                                });
                         if let Some(entry_id) = clicked_view_entry {
                             match &entry_id {
                                 TaskEntryId::BgTask(tid) => {

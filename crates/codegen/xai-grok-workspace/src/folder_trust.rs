@@ -568,8 +568,9 @@ fn collect_repo_config_kinds(cwd: &Path, first_only: bool) -> Vec<&'static str> 
     // must not resolve trusted. Presence is type-agnostic: a directory or
     // symlink at a vendor hook path must gate too.
     let hook_root = chain.git_root.as_deref().unwrap_or(cwd);
-    if crate::util::path_present_or_uncertain(&xai_grok_config::project_config_dir(&hook_root).join("hooks"))
-        || crate::util::path_present_or_uncertain(&hook_root.join(".cursor").join("hooks.json"))
+    if crate::util::path_present_or_uncertain(
+        &xai_grok_config::project_config_dir(&hook_root).join("hooks"),
+    ) || crate::util::path_present_or_uncertain(&hook_root.join(".cursor").join("hooks.json"))
     {
         hit!("hooks");
     }

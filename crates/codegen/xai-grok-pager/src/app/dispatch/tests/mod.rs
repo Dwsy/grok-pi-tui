@@ -333,7 +333,6 @@ fn test_app() -> AppView {
 /// `deferred_model_switch` is pulled from the `AppView`'s CLI
 /// overrides for parity with `dispatch_new_session_inner`.
 pub(super) fn make_test_agent_session(app: &AppView, id: AgentId, sid: &str) -> AgentSession {
-
     AgentSession {
         id,
         acp_tx: app.acp_tx.clone(),

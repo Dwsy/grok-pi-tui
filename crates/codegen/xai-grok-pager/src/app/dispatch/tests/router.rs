@@ -2867,8 +2867,8 @@ fn delete_session_refuses_conversation_row() {
 
 #[test]
 fn collapse_on_minimal_tool_trace_opens_split_trace_viewer() {
-    use crate::scrollback::{DisplayMode, RenderBlock};
     use crate::scrollback::entry::ToolTraceSnapshot;
+    use crate::scrollback::{DisplayMode, RenderBlock};
     use crate::views::modal::ActiveModal;
 
     let mut app = test_app_with_agent();

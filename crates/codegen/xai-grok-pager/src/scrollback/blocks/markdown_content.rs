@@ -330,10 +330,9 @@ impl MarkdownContent {
 
         // Step 1: Wrap any newly frozen lines
         let new_frozen_wrapped = if frozen_count > state.frozen_pre_wrap_count {
-            let new_frozen: Vec<Line<'static>> =
-                apply_code_block_inset(
-                    state.renderer.view().lines[state.frozen_pre_wrap_count..frozen_count].to_vec(),
-                );
+            let new_frozen: Vec<Line<'static>> = apply_code_block_inset(
+                state.renderer.view().lines[state.frozen_pre_wrap_count..frozen_count].to_vec(),
+            );
             Some(word_wrap_lines_with_joiners(new_frozen, width))
         } else {
             None
@@ -737,8 +736,7 @@ mod tests {
         );
 
         // derive_selection_text must NOT include the leading inset space.
-        let copy_text =
-            crate::scrollback::types::derive_selection_text(code_row);
+        let copy_text = crate::scrollback::types::derive_selection_text(code_row);
         assert!(
             !copy_text.starts_with(' '),
             "copy text must not start with the inset space: {copy_text:?}"
@@ -763,7 +761,10 @@ mod tests {
         );
         // No leading space span.
         let first: &str = row.content.spans[0].content.as_ref();
-        assert!(!first.is_empty(), "plain row first span should have content");
+        assert!(
+            !first.is_empty(),
+            "plain row first span should have content"
+        );
     }
 
     /// Regression: the code-block inset is inserted BEFORE word wrapping, so

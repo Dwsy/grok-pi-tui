@@ -437,7 +437,6 @@ pub enum ToolTraceKeyOutcome {
     Unchanged,
 }
 
-
 pub enum ActiveModal {
     /// Confirmation for leaving a dirty queued-prompt edit.
     EditConfirm {
@@ -640,7 +639,6 @@ pub enum ActiveModal {
     },
     /// Tabbed usage / session-info modal (`/usage`, `/session-info`,
     /// `/context`, context-bar click). Boxed — holds fetched snapshots.
-
     UsageInfo {
         state: Box<crate::views::usage_modal::UsageInfoModalState>,
     },
@@ -1524,7 +1522,6 @@ pub fn tool_trace_pane_at(
         None
     }
 }
-
 
 pub fn apply_doc_mouse_scroll(kind: crossterm::event::MouseEventKind, scroll: &mut u16) -> bool {
     use crossterm::event::MouseEventKind;

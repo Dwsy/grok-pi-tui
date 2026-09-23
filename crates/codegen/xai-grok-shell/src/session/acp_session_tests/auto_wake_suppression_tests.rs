@@ -411,6 +411,45 @@ async fn non_task_prompt_is_not_subject_to_task_wake_barrier() {
         .await;
 }
 #[tokio::test(flavor = "current_thread")]
+async fn bash_completion_wake_is_deferred_while_turn_is_busy() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor.state.lock().await.running_task = Some(running_task_stub("user-running"));
+            let origin = crate::session::PromptOrigin::TaskCompleted {
+                task_id: "bg-busy".to_string(),
+            };
+            let (admission, response_rx) = task_wake_admission(
+                "bg-busy",
+                NotificationSource::BashTaskCompleted {
+                    task_id: "bg-busy".to_string(),
+                },
+            );
+
+            assert!(
+                actor
+                    .admit_task_completion_wake(&origin, admission)
+                    .await
+                    .is_none()
+            );
+            assert_eq!(response_rx.await, Ok(false));
+            let state = actor.state.lock().await;
+            assert!(matches!(
+                state.pending_notifications.as_slice(),
+                [PendingNotification {
+                    source: NotificationSource::BashTaskCompleted { task_id },
+                    ..
+                }] if task_id == "bg-busy"
+            ));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn task_completion_wake_is_admitted_without_cancel_barrier() {
     let local = tokio::task::LocalSet::new();
     local

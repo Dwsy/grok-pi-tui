@@ -8,9 +8,9 @@ use super::{
 };
 use crate::app::agent::AgentSession;
 use crate::app::app_view::InputOutcome;
-use crate::app::subagent::SubagentInfo;
 use crate::app::cancel_latency::{CancelLatency, CancelOrigin, TurnEnd};
 use crate::app::prompt_ack::{AckSignal, PromptAckWatch};
+use crate::app::subagent::SubagentInfo;
 use crate::scrollback::state::ScrollbackState;
 use crate::scrollback::text_selection::ResolvedSelectionModel;
 use crate::views::prompt_widget::PromptWidget;
@@ -510,10 +510,7 @@ impl AgentView {
         None
     }
     /// Locate the direct parent view that owns `child_sid`, at any depth.
-    pub(crate) fn descendant_parent_view_mut(
-        &mut self,
-        child_sid: &str,
-    ) -> Option<&mut AgentView> {
+    pub(crate) fn descendant_parent_view_mut(&mut self, child_sid: &str) -> Option<&mut AgentView> {
         if self.subagent_views.contains_key(child_sid) {
             return Some(self);
         }
@@ -528,9 +525,7 @@ impl AgentView {
     /// retaining enough display metadata to render a stable tree. Child views
     /// deliberately do not use this path, so their existing flat/top chrome is
     /// unchanged.
-    pub(crate) fn subagent_tree_rows(
-        &self,
-    ) -> Vec<crate::views::tasks_pane::SubagentTreeRow> {
+    pub(crate) fn subagent_tree_rows(&self) -> Vec<crate::views::tasks_pane::SubagentTreeRow> {
         fn collect(
             view: &AgentView,
             visual_prefix: &str,
@@ -557,10 +552,8 @@ impl AgentView {
                     prefix,
                 });
                 if let Some(child) = view.subagent_views.get(&child_sid) {
-                    let next_visual = format!(
-                        "{visual_prefix}{}",
-                        if last { "   " } else { "│  " },
-                    );
+                    let next_visual =
+                        format!("{visual_prefix}{}", if last { "   " } else { "│  " },);
                     collect(child, &next_visual, &order, rows);
                 }
             }

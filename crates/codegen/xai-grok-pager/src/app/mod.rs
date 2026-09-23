@@ -426,10 +426,10 @@ fn engage_startup_theme(screen_mode: ScreenMode) {
     if screen_mode.is_minimal() {
         crate::theme::cache::set_terminal_native_lock(true);
     } else {
-    // Resolve stock and Pi themes before the first frame, then mark the new
-    // in-process mode-switch path ready to reuse the resolved palette.
-    let _ = crate::theme::cache::resolve_and_apply_initial_theme(true);
-    mode_switch::mark_theme_resolved();
+        // Resolve stock and Pi themes before the first frame, then mark the new
+        // in-process mode-switch path ready to reuse the resolved palette.
+        let _ = crate::theme::cache::resolve_and_apply_initial_theme(true);
+        mode_switch::mark_theme_resolved();
     }
 }
 /// Step 2 of the startup theme handshake.

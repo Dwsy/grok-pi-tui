@@ -982,7 +982,11 @@ fn plan_overview(body: &str) -> String {
 }
 
 fn plan_session_context(state: &PiState) -> (Option<String>, Option<String>) {
-    let Some(path) = state.session_file.as_deref().filter(|path| !path.is_empty()) else {
+    let Some(path) = state
+        .session_file
+        .as_deref()
+        .filter(|path| !path.is_empty())
+    else {
         return (None, None);
     };
     let Ok(file) = std::fs::File::open(path) else {
@@ -1080,10 +1084,7 @@ fn plan_state_path(plan_file: &Path) -> PathBuf {
         return plan_file.with_file_name(file_name);
     };
     if parent.file_name().is_some_and(|name| name == "plans") {
-        return parent
-            .parent()
-            .unwrap_or(parent)
-            .join(file_name);
+        return parent.parent().unwrap_or(parent).join(file_name);
     }
     parent.join(file_name)
 }

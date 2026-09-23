@@ -156,6 +156,7 @@ pub enum NotificationSource {
     MonitorEvent { task_id: String },
     MonitorCompleted { task_id: String },
     BashTaskCompleted { task_id: String },
+    BashTaskCompletedBatch { task_ids: Vec<String> },
 }
 impl NotificationSource {
     pub fn task_id(&self) -> &str {
@@ -163,6 +164,32 @@ impl NotificationSource {
             Self::MonitorEvent { task_id }
             | Self::MonitorCompleted { task_id }
             | Self::BashTaskCompleted { task_id } => task_id,
+            Self::BashTaskCompletedBatch { task_ids } => {
+                task_ids.first().map(String::as_str).unwrap_or_default()
+            }
+        }
+    }
+
+    pub fn task_ids(&self) -> Vec<&str> {
+        match self {
+            Self::MonitorEvent { task_id }
+            | Self::MonitorCompleted { task_id }
+            | Self::BashTaskCompleted { task_id } => vec![task_id.as_str()],
+            Self::BashTaskCompletedBatch { task_ids } => {
+                task_ids.iter().map(String::as_str).collect()
+            }
+        }
+    }
+
+    pub fn completion_task_ids(&self) -> Vec<&str> {
+        match self {
+            Self::MonitorCompleted { task_id } | Self::BashTaskCompleted { task_id } => {
+                vec![task_id.as_str()]
+            }
+            Self::BashTaskCompletedBatch { task_ids } => {
+                task_ids.iter().map(String::as_str).collect()
+            }
+            Self::MonitorEvent { .. } => Vec::new(),
         }
     }
 }

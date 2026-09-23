@@ -327,9 +327,7 @@ pub fn derive_selection_text(line: &BlockLine) -> String {
             // off the block edge and must not reach the clipboard.
             let mut spans = line.content.spans.as_slice();
             if let Some(bg) = line.content.style.bg
-                && spans
-                    .first()
-                    .is_some_and(|s| is_code_inset_pad(s, bg))
+                && spans.first().is_some_and(|s| is_code_inset_pad(s, bg))
             {
                 spans = &spans[1..];
             }

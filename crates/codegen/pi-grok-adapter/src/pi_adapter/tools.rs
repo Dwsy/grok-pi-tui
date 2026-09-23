@@ -137,7 +137,8 @@ impl PiAgent {
             meta.insert("piToolUsage".into(), usage);
             tool_call = tool_call.meta(Some(meta));
         }
-        self.send_update(acp::SessionUpdate::ToolCall(tool_call)).await;
+        self.send_update(acp::SessionUpdate::ToolCall(tool_call))
+            .await;
         if name == "exit_plan_mode" {
             self.request_plan_approval(id).await;
         }

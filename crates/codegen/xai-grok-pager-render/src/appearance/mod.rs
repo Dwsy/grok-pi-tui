@@ -23,8 +23,8 @@ pub use config::{
     AnimationConfig, AppearanceConfig, BlockBackground, BlocksConfig, EditBlockConfig,
     ExecuteHeaderStyle, FollowIndicator, LayoutConfig, PromptConfig, PromptCursor,
     PromptViewConfig, RawAltScreenMode, RawAppearanceConfig, RawTerminalConfig, ScrollConfig,
-    ScrollbackConfig, ScrollbarConfig, ToolBullet, ToolConfig,
-    persist_prompt_cursor, persist_respect_manual_folds,
+    ScrollbackConfig, ScrollbarConfig, ToolBullet, ToolConfig, persist_prompt_cursor,
+    persist_respect_manual_folds,
 };
 pub use execute_header_content::ExecuteHeaderContent;
 pub use follow_up_behavior::FollowUpBehavior;

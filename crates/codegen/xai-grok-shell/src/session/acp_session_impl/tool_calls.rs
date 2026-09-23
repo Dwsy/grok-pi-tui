@@ -2652,16 +2652,32 @@ impl SessionActor {
                 .is_some_and(|id| consumed_ids.contains(&id))
         });
         let dropped_inputs = dropped.len();
-        let before_notifications = state.pending_notifications.len();
-        state
+        let dropped_notification_ids: Vec<String> = state
             .pending_notifications
-            .retain(|n| !consumed_ids.contains(&n.source.task_id()));
+            .iter()
+            .filter(|n| {
+                n.source
+                    .task_ids()
+                    .iter()
+                    .any(|task_id| consumed_ids.contains(task_id))
+            })
+            .flat_map(|n| n.source.completion_task_ids())
+            .map(str::to_owned)
+            .collect();
+        let before_notifications = state.pending_notifications.len();
+        state.pending_notifications.retain(|n| {
+            !n.source
+                .task_ids()
+                .iter()
+                .any(|task_id| consumed_ids.contains(task_id))
+        });
         let dropped_notifications = before_notifications - state.pending_notifications.len();
         drop(state);
         if let Some(reservations) = &self.tool_context.task_completion_reservations {
             for task_id in dropped
                 .iter()
                 .filter_map(|input| input.input_origin.completion_id())
+                .chain(dropped_notification_ids.iter().map(String::as_str))
             {
                 reservations.release(task_id);
             }

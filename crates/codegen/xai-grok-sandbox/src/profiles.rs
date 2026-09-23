@@ -134,9 +134,9 @@ pub fn load_sandbox_config(workspace: &Path) -> SandboxConfig {
 
 pub fn sandbox_profile_conflicts(workspace: &Path) -> Vec<String> {
     let global = load_config_file(&grok_home().join(SANDBOX_CONFIG_FILENAME)).unwrap_or_default();
-    let project = load_config_file(&xai_grok_config::project_config_dir(workspace).join(
-        SANDBOX_CONFIG_FILENAME,
-    ))
+    let project = load_config_file(
+        &xai_grok_config::project_config_dir(workspace).join(SANDBOX_CONFIG_FILENAME),
+    )
     .unwrap_or_default();
     mismatched_profile_names(&global, &project)
 }

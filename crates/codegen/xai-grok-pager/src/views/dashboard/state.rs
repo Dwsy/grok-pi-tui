@@ -569,7 +569,6 @@ pub struct DashboardState {
     /// Mode the next spawned agent starts in. Cycled with the platform Plan
     /// shortcut and set by `/plan`. Sticky across dispatches; re-seeded from
     /// `app.default_yolo` on every dashboard-open (alongside `pending_model`).
-
     pub pending_mode: DashboardDispatchMode,
     /// Snapshot of the app-wide model catalog, seeded at dashboard-open so the session-less slash dropdown can suggest real model names for `/model`.
     /// Without this the dropdown would fall back to an empty `ModelState` and offer no completions.
@@ -3410,7 +3409,6 @@ impl DashboardState {
 
         // The platform Plan shortcut (`DashboardCycleMode`) is resolved through
         // the registry `from_registry` path above, so no hardcoded intercept is needed here.
-
 
         // Tab toggles focus between the dispatch input and the overview list (the vim-style way to reach j/k navigation)
         // When the slash / `@` dropdowns are open the intercepts above already consumed Tab (accept completion), so this only fires otherwise

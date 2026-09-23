@@ -417,7 +417,9 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                     let activity_label = {
                         let child_view = parent
                             .descendant_view_for_live_update_mut(child_key)
-                            .expect("find_session_match returned an existing descendant subagent view");
+                            .expect(
+                                "find_session_match returned an existing descendant subagent view",
+                            );
                         // An overlay prompt arms the watch on this child, so the child's own updates must disarm it
                         ack_prompt_from_update(child_view, &meta);
                         if let Some(tokens) = meta.total_tokens {

@@ -9,7 +9,6 @@
 //! Chrome, row geometry, and hit-testing come from [`crate::views::overlay_list::ListOverlay`] (shared with the rewind picker).
 //! This module owns only the row content and input mapping.
 
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

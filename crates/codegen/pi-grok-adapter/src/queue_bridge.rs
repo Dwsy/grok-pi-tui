@@ -445,7 +445,12 @@ mod tests {
         enqueue(&mut mirror, "c", "three");
         assert!(mirror.edit_local("b", "two edited".into()));
         assert_eq!(
-            mirror.local_entries.iter().find(|e| e.id == "b").unwrap().version,
+            mirror
+                .local_entries
+                .iter()
+                .find(|e| e.id == "b")
+                .unwrap()
+                .version,
             1
         );
         assert!(mirror.reorder_local(&["c".into(), "b".into(), "a".into()]));
@@ -524,7 +529,10 @@ mod tests {
         let cancelled = mirror.take_local("s1", Some(0)).unwrap();
         assert_eq!(cancelled.lane, QueueLane::Steering);
         assert_eq!(mirror.next_local_in_lane(QueueLane::Steering), None);
-        assert_eq!(mirror.next_local_in_lane(QueueLane::FollowUp).unwrap().0, "f1");
+        assert_eq!(
+            mirror.next_local_in_lane(QueueLane::FollowUp).unwrap().0,
+            "f1"
+        );
     }
 
     #[test]

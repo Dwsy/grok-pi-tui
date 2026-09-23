@@ -356,21 +356,39 @@ mod tests {
             "compaction and prompt markers stay distinct without color"
         );
     }
+    fn area() -> Rect {
+        Rect::new(0, 0, 80, 20)
+    }
+
+    fn rail(turn_count: usize, active: Option<usize>) -> Option<TimelineRail> {
+        compute_rail(
+            area(),
+            76,
+            turn_count,
+            RailViewport {
+                active,
+                up_target: active.and_then(|i| i.checked_sub(1)),
+                down_target: active.and_then(|i| (i + 1 < turn_count).then_some(i + 1)),
+                at_bottom: false,
+            },
+        )
+    }
+
     #[test]
     fn overflow_windows_around_active() {
         // 50 turns, 18 tick rows (20 - 2 chevrons).
-        let rail = rail(50, Some(25)).unwrap();
-        assert_eq!(rail.window.len(), 18);
-        assert!(rail.window.contains(&25));
+        let mid_rail = rail(50, Some(25)).unwrap();
+        assert_eq!(mid_rail.window.len(), 18);
+        assert!(mid_rail.window.contains(&25));
         // Window is roughly centered on the active turn, and tick rows map to window-relative turn indices
-        assert_eq!(rail.window.start, 25 - 9);
+        assert_eq!(mid_rail.window.start, 25 - 9);
 
         // Active at the end clamps the window to the tail.
-        let rail = self::rail(50, Some(49)).unwrap();
+        let rail = rail(50, Some(49)).unwrap();
         assert_eq!(rail.window, 32..50);
 
         // No active turn anchors to the newest.
-        let rail = self::rail(50, None).unwrap();
+        let rail = rail(50, None).unwrap();
         assert_eq!(rail.window, 32..50);
 
         // At the bottom the window prefers the tail, but still includes the viewport-top (active) turn so a tick stays highlighted

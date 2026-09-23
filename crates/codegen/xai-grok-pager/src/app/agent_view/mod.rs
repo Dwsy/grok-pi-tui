@@ -2424,6 +2424,8 @@ pub(crate) mod test_fixtures {
             &agent.session.bg_tasks,
             &agent.subagent_sessions,
             &agent.session.scheduled_tasks,
+            None,
+            &std::collections::HashSet::new(),
             &agent.workflow_runs,
         );
     }

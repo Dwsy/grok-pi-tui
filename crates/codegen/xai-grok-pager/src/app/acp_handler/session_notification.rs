@@ -862,27 +862,29 @@ pub(super) fn handle_session_notification_with_origin(
                 } else {
                     let mut block = match status.as_str() {
                         "completed" => crate::scrollback::blocks::SubagentBlock::completed(
-                                description.as_ref(),
-                                child_session_id.as_str(),
-                                elapsed_dur,
-                            ),
+                            description.as_ref(),
+                            child_session_id.as_str(),
+                            elapsed_dur,
+                        ),
                         "cancelled" => crate::scrollback::blocks::SubagentBlock::cancelled(
                             description.as_ref(),
                             child_session_id.as_str(),
                             elapsed_dur,
                         ),
                         _ => crate::scrollback::blocks::SubagentBlock::failed(
-                                description.as_ref(),
-                                child_session_id.as_str(),
-                                elapsed_dur,
-                                error.clone(),
-                            ),
+                            description.as_ref(),
+                            child_session_id.as_str(),
+                            elapsed_dur,
+                            error.clone(),
+                        ),
                     };
                     block.turn_count = (turns > 0).then_some(turns);
                     block.tokens_used = (tokens_used > 0).then_some(tokens_used);
-                    Some(agent
-                        .scrollback
-                        .push_block(crate::scrollback::block::RenderBlock::Subagent(block)))
+                    Some(
+                        agent
+                            .scrollback
+                            .push_block(crate::scrollback::block::RenderBlock::Subagent(block)),
+                    )
                 };
                 if let Some(info) = agent.subagent_sessions.get_mut(&child_session_id) {
                     info.attempt.terminal_entry_id = terminal_entry_id;
@@ -1622,7 +1624,12 @@ fn handle_nested_subagent_lifecycle(
             child_view.set_billing_surface_visible(parent.billing_surface_visible);
             child_view.set_usage_command_visible(parent.usage_command_visible);
             child_view.set_dashboard_visible(
-                parent.prompt.slash_controller.registry().get("dashboard").is_some(),
+                parent
+                    .prompt
+                    .slash_controller
+                    .registry()
+                    .get("dashboard")
+                    .is_some(),
             );
             child_view.set_has_session_announcements(
                 parent.prompt.slash_controller.has_session_announcements(),
@@ -1632,10 +1639,20 @@ fn handle_nested_subagent_lifecycle(
                 .set_screen_mode(parent.prompt.slash_controller.screen_mode());
             child_view.app_chat_mode = parent.app_chat_mode;
             child_view.set_session_recap_available(
-                parent.prompt.slash_controller.registry().get("recap").is_some(),
+                parent
+                    .prompt
+                    .slash_controller
+                    .registry()
+                    .get("recap")
+                    .is_some(),
             );
             child_view.set_voice_mode_available(
-                parent.prompt.slash_controller.registry().get("voice").is_some(),
+                parent
+                    .prompt
+                    .slash_controller
+                    .registry()
+                    .get("voice")
+                    .is_some(),
             );
             let restricted = parent
                 .prompt
@@ -1738,8 +1755,12 @@ fn handle_nested_subagent_lifecycle(
                 if let Some(entry) = parent.scrollback.get_by_id_mut(entry_id) {
                     if let RenderBlock::Subagent(ref mut block) = entry.block {
                         block.kind = match status.as_str() {
-                            "completed" => crate::scrollback::blocks::SubagentBlockKind::Completed { elapsed },
-                            "cancelled" => crate::scrollback::blocks::SubagentBlockKind::Cancelled { elapsed },
+                            "completed" => {
+                                crate::scrollback::blocks::SubagentBlockKind::Completed { elapsed }
+                            }
+                            "cancelled" => {
+                                crate::scrollback::blocks::SubagentBlockKind::Cancelled { elapsed }
+                            }
                             _ => crate::scrollback::blocks::SubagentBlockKind::Failed {
                                 elapsed,
                                 error: error.clone(),
@@ -1753,10 +1774,8 @@ fn handle_nested_subagent_lifecycle(
             }
             sync_subagent_activity(parent, &child_session_id, None);
             if let Some(info) = parent.subagent_sessions.get_mut(&child_session_id) {
-                if let crate::app::subagent::SubagentLifecycleReduction::Accepted(accepted) = info
-                    .attempt
-                    .lifecycle
-                    .reduce(
+                if let crate::app::subagent::SubagentLifecycleReduction::Accepted(accepted) =
+                    info.attempt.lifecycle.reduce(
                         crate::app::subagent::SubagentLifecycleTransition::Finished,
                         None,
                         None,

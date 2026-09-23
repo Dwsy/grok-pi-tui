@@ -174,9 +174,7 @@ impl PiAgent {
                 let mut tool_call = acp::ToolCall::new(acp::ToolCallId::new(id), name.clone())
                     .kind(tool_kind(&name))
                     .status(acp::ToolCallStatus::InProgress)
-                    .content(
-                        edit_diff_content(&name, arguments.as_ref(), None).unwrap_or_default(),
-                    )
+                    .content(edit_diff_content(&name, arguments.as_ref(), None).unwrap_or_default())
                     .locations(Vec::new())
                     .raw_input(arguments);
                 if let Some(usage) = usage {

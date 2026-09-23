@@ -997,9 +997,11 @@ impl AcpUpdateTracker {
         let (removed_hunks, removed_edit_count, removed_traces) =
             match scrollback.get_by_id(removed) {
                 Some(entry) => match &entry.block {
-                    RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) => {
-                        (edit.hunks.clone(), edit.edit_count, entry.tool_traces.clone())
-                    }
+                    RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) => (
+                        edit.hunks.clone(),
+                        edit.edit_count,
+                        entry.tool_traces.clone(),
+                    ),
                     _ => return,
                 },
                 None => return,

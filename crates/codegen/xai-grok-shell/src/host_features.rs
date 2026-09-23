@@ -230,7 +230,9 @@ impl HostFeatureManifest {
         &self,
         commands: impl IntoIterator<Item = &'a str>,
     ) -> Result<(), String> {
-        let commands = commands.into_iter().collect::<std::collections::HashSet<_>>();
+        let commands = commands
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
         for entry in &self.palette {
             if !commands.contains(entry.command) {
                 return Err(format!(

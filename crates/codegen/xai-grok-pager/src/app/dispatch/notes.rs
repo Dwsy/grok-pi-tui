@@ -905,7 +905,6 @@ pub(super) fn dispatch_send_recap(
     auto: bool,
     custom_instructions: Option<String>,
 ) -> Vec<Effect> {
-
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };

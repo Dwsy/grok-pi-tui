@@ -110,16 +110,37 @@ fn mixed_workflows_coalesce_children_and_keep_standalone_work_running() {
 fn active_to_paused_stays_visible_without_ticks_then_terminal_closes() {
     let mut pane = TasksPane::new();
     let active = [workflow_run("gate", "active")];
-    pane.sync(&BTreeMap::new(), &HashMap::new(), &HashMap::new(), &active);
+    pane.sync(
+        &BTreeMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        None,
+        &std::collections::HashSet::new(),
+        &active,
+    );
     assert!(pane.is_visible());
     assert!(pane.needs_tick());
     pane.overlay.focused = false;
 
     let paused = [workflow_run("gate", "user_paused")];
-    pane.sync(&BTreeMap::new(), &HashMap::new(), &HashMap::new(), &paused);
+    pane.sync(
+        &BTreeMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        None,
+        &std::collections::HashSet::new(),
+        &paused,
+    );
     assert!(pane.is_visible());
     assert!(!pane.needs_tick());
-    pane.sync(&BTreeMap::new(), &HashMap::new(), &HashMap::new(), &paused);
+    pane.sync(
+        &BTreeMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        None,
+        &std::collections::HashSet::new(),
+        &paused,
+    );
     assert!(pane.is_visible(), "paused-only syncs must not auto-close");
 
     let terminal = [workflow_run("gate", "complete")];
@@ -127,6 +148,8 @@ fn active_to_paused_stays_visible_without_ticks_then_terminal_closes() {
         &BTreeMap::new(),
         &HashMap::new(),
         &HashMap::new(),
+        None,
+        &std::collections::HashSet::new(),
         &terminal,
     );
     assert!(!pane.is_visible());

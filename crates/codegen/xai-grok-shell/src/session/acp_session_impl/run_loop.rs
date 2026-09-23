@@ -152,7 +152,13 @@ impl SessionActor {
             .is_some_and(|gate| gate.get());
         let mut state = self.state.lock().await;
         let state_suppressed = state.notifications_suppressed;
-        let admitted = !gate_suppressed && !state_suppressed;
+        let bash_wake_busy = matches!(
+            &fallback.source,
+            crate::session::commands::NotificationSource::BashTaskCompleted { .. }
+                | crate::session::commands::NotificationSource::BashTaskCompletedBatch { .. }
+        ) && (state.running_task.is_some()
+            || !state.pending_inputs.is_empty());
+        let admitted = !gate_suppressed && !state_suppressed && !bash_wake_busy;
         if !admitted {
             Self::push_task_wake_fallback(&mut state, fallback);
             drop(state);
@@ -163,6 +169,7 @@ impl SessionActor {
                     "task_id": task_id,
                     "gate": gate_suppressed,
                     "state": state_suppressed,
+                    "busy": bash_wake_busy,
                     "admitted": false,
                 })),
             );
@@ -181,6 +188,7 @@ impl SessionActor {
                 "task_id": task_id,
                 "gate": gate_suppressed,
                 "state": state_suppressed,
+                "busy": bash_wake_busy,
                 "admitted": true,
             })),
         );

@@ -378,7 +378,6 @@ impl ToolUsageStats {
             ToolCallBlock::SentMessage(b) => b.is_failure(),
             ToolCallBlock::Skill(b) => !b.is_success(),
             ToolCallBlock::Other(b) => !b.is_success(),
-
         }
     }
 

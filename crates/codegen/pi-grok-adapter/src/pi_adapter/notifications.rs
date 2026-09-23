@@ -160,13 +160,8 @@ impl PiAgent {
                     if parent_session_id == root_session_id {
                         self.send_update(update).await;
                     } else {
-                        self.send_update_for_session(
-                            &parent_session_id,
-                            update,
-                            replay,
-                            &event_id,
-                        )
-                        .await;
+                        self.send_update_for_session(&parent_session_id, update, replay, &event_id)
+                            .await;
                     }
                 }
                 BridgeOperation::ParentLifecycle(notification) => {

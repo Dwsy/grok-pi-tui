@@ -223,8 +223,8 @@ pub fn format_tool_traces_split(traces: &[ToolTraceSnapshot]) -> ToolTraceSplitC
     let mut output_parts = Vec::with_capacity(traces.len());
 
     for (index, trace) in traces.iter().enumerate() {
-        let call_heading = (traces.len() > 1)
-            .then(|| format!("# Call {} · {}\n\n", index + 1, trace.title));
+        let call_heading =
+            (traces.len() > 1).then(|| format!("# Call {} · {}\n\n", index + 1, trace.title));
 
         let mut input = call_heading.clone().unwrap_or_default();
         input.push_str(&format!(
@@ -916,7 +916,10 @@ mod tests {
         assert!(rendered.contains("\"stderr\": []"), "{rendered}");
         // serde_json pretty-prints with two-space indentation, so a numeric
         // array that survived decoding still shows one number per indented line.
-        assert!(rendered.contains("\"line_numbers\": [\n    1,"), "{rendered}");
+        assert!(
+            rendered.contains("\"line_numbers\": [\n    1,"),
+            "{rendered}"
+        );
     }
 
     #[test]

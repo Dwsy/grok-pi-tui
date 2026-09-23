@@ -88,6 +88,8 @@ pub(crate) fn test_app() -> AppView {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     AppView {
         pending_startup: None,
+        screen_mode_switch_hint: None,
+        session_picker_detail_generation: 0,
         active_view: ActiveView::Welcome,
         auth_return_view: None,
         agents: indexmap::IndexMap::new(),
@@ -5471,6 +5473,7 @@ fn dashboard_usage_modal_is_scroll_blocking() {
         UsageInfoTab::UsageLimit,
         UsageInfoContext {
             session_id: None,
+            session_file: None,
             usage_visible: true,
             chat_kind: false,
             billing_redirect_url: None,

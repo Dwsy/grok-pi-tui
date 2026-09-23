@@ -281,6 +281,57 @@ async fn bash_task_completed_auto_wakes_and_reserves_without_goal_loop() {
     );
 }
 
+#[tokio::test]
+async fn bash_completion_burst_uses_one_notification_wake() {
+    let (config, mut cmd_rx) = make_test_config();
+    config
+        .task_output_tool_name
+        .set(Some("get_command_or_subagent_output".to_string()))
+        .expect("slot is fresh in this test fixture");
+
+    handle_bash_task_completion_batch(
+        &config,
+        vec![
+            make_task_snapshot("bg-batch-1", TaskKind::Bash),
+            make_task_snapshot("bg-batch-2", TaskKind::Bash),
+        ],
+    )
+    .await;
+
+    match cmd_rx.try_recv().expect("expected one batched wake") {
+        SessionCommand::InjectNotification {
+            prompt_blocks,
+            source: NotificationSource::BashTaskCompletedBatch { task_ids },
+            ..
+        } => {
+            assert_eq!(task_ids, vec!["bg-batch-1", "bg-batch-2"]);
+            let text = match &prompt_blocks[0] {
+                acp::ContentBlock::Text(text) => &text.text,
+                _ => panic!("expected text block"),
+            };
+            assert!(text.contains("2 background tasks completed"));
+            assert!(text.contains("bg-batch-1"));
+            assert!(text.contains("bg-batch-2"));
+        }
+        _ => panic!("expected one batched background-task notification"),
+    }
+    assert!(matches!(
+        cmd_rx.try_recv(),
+        Ok(SessionCommand::DispatchNotificationHook { .. })
+    ));
+    assert_emit_background_tasks_snapshot(&mut cmd_rx);
+    assert!(matches!(
+        cmd_rx.try_recv(),
+        Ok(SessionCommand::DispatchNotificationHook { .. })
+    ));
+    assert!(
+        cmd_rx.try_recv().is_err(),
+        "the burst must not enqueue a second agent wake"
+    );
+    assert!(config.task_completion_reservations.contains("bg-batch-1"));
+    assert!(config.task_completion_reservations.contains("bg-batch-2"));
+}
+
 fn task_completed_will_wake(
     gateway_rx: &mut mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
 ) -> Option<bool> {

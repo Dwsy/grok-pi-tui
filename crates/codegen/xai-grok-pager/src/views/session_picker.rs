@@ -309,7 +309,6 @@ impl SourceFilter {
             }
             Self::External => source == "pi" || crate::app::is_foreign_picker_source(source),
             Self::All => !is_headless,
-
         }
     }
 }
@@ -480,7 +479,6 @@ pub(crate) fn sort_session_entries(
         }
     }
 }
-
 
 pub(crate) fn filter_session_entries(
     entries: Option<&[SessionPickerEntry]>,

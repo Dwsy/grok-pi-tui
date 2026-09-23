@@ -23,7 +23,15 @@ pub(super) fn write_tools_extension() -> Result<NamedTempFile> {
 
 #[cfg(windows)]
 const BUILTIN_TOOL_NAMES: [&str; 9] = [
-    "read", "bash", "powershell", "edit", "write", "grep", "find", "ls", "eval",
+    "read",
+    "bash",
+    "powershell",
+    "edit",
+    "write",
+    "grep",
+    "find",
+    "ls",
+    "eval",
 ];
 #[cfg(not(windows))]
 const BUILTIN_TOOL_NAMES: [&str; 8] = [

@@ -699,7 +699,9 @@ impl AgentView {
                 HintItem::new(key!(Tab), "next field"),
                 self.card_esc_hint(),
             ]),
-            KeyOwner::Pane => ShortcutsBarContent::Pane(self.normal_pane_hints(registry, esc_owned_before_agent)),
+            KeyOwner::Pane => {
+                ShortcutsBarContent::Pane(self.normal_pane_hints(registry, esc_owned_before_agent))
+            }
         }
     }
     /// An open line viewer paints its own hints over this row further down `draw`, so the bar is silent.
@@ -5513,7 +5515,7 @@ mod overlay_cycle_hint_tests {
             .default_key;
         let ctrl_x_label = |agent: &super::AgentView| {
             agent
-                .current_shortcut_hints(&registry)
+                .current_shortcut_hints(&registry, false)
                 .into_iter()
                 .find(|hint| hint.keys.contains(&stop_key))
                 .map(|hint| hint.label)

@@ -1,9 +1,9 @@
 use super::mcp::Config;
 use super::persist::update_config;
 use anyhow::Result;
-use xai_grok_shared::ui_config::PiBuiltinTools;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
+use xai_grok_shared::ui_config::PiBuiltinTools;
 
 // --------------------------------------------------------------------------- Settings helpers: typed disk-write wrappers for each setting
 // All route through `update_config`, then `merge_section`, then `save_config` ---------------------------------------------------------------------------

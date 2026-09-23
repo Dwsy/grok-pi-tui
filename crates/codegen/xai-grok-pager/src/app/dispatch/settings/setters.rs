@@ -2881,7 +2881,6 @@ pub(in crate::app::dispatch) fn set_remote_tui_footer(
 // `default_reasoning_effort` setters were removed alongside their
 // registry entries. Mirror fields and TOML schema stay for compat.
 
-
 // max_thoughts_width is an Int-valued setting
 // The registry hands over an `i64`; it is clamped to `(min, max)` bounds and cast to `u16`
 // Live application goes through `app.current_ui.max_thoughts_width`

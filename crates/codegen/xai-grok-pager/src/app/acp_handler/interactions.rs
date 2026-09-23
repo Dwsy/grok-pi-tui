@@ -533,9 +533,8 @@ pub(super) fn handle_exit_plan_mode(
     // carry unexpected release events.
     if agent.block_viewer_image_active {
         xai_grok_shell::util::with_locked_stderr(|stderr| {
-            let clear = crate::terminal::overlay::PostFlush::from(
-                crate::terminal::overlay::clear_kitty(),
-            );
+            let clear =
+                crate::terminal::overlay::PostFlush::from(crate::terminal::overlay::clear_kitty());
             let _ = clear.write_to(stderr);
         });
         agent.block_viewer_image_active = false;

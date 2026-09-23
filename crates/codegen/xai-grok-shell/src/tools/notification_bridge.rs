@@ -15,6 +15,8 @@ use xai_grok_tools::types::output::{BashOutput, ToolOutput};
 use xai_grok_workspace::session::file_state::FileStateTracker;
 use xai_hunk_tracker::HunkTrackerHandle;
 const TASK_WAKE_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+/// Small debounce so near-simultaneous background Bash exits share one model wake.
+const BASH_COMPLETION_BATCH_WINDOW: std::time::Duration = std::time::Duration::from_millis(25);
 pub(crate) struct NotificationBridgeConfig {
     /// ACP gateway for sending streaming updates to TUI
     pub gateway: GatewaySender,
@@ -197,7 +199,71 @@ pub(crate) fn spawn_notification_bridge(
     let (handle, mut rx) = ToolNotificationHandle::acknowledged_channel();
     tokio::task::spawn_local(async move {
         let mut offsets: HashMap<String, usize> = HashMap::new();
-        while let Some(delivery) = rx.recv().await {
+        let mut pending_delivery: Option<
+            xai_grok_tools::notification::AcknowledgedToolNotification,
+        > = None;
+        loop {
+            let Some(delivery) = (match pending_delivery.take() {
+                Some(delivery) => Some(delivery),
+                None => rx.recv().await,
+            }) else {
+                break;
+            };
+
+            let is_bash_completion = matches!(
+                &delivery.notification,
+                ToolNotification::TaskCompleted(snapshot)
+                    if snapshot.kind == xai_grok_tools::computer::types::TaskKind::Bash
+            );
+            if is_bash_completion {
+                tokio::time::sleep(BASH_COMPLETION_BATCH_WINDOW).await;
+                let mut deliveries = vec![delivery];
+                while let Ok(next) = rx.try_recv() {
+                    let is_bash_completion = matches!(
+                        &next.notification,
+                        ToolNotification::TaskCompleted(snapshot)
+                            if snapshot.kind
+                                == xai_grok_tools::computer::types::TaskKind::Bash
+                    );
+                    if is_bash_completion {
+                        deliveries.push(next);
+                    } else {
+                        pending_delivery = Some(next);
+                        break;
+                    }
+                }
+
+                let mut acknowledgements = Vec::with_capacity(deliveries.len());
+                let mut snapshots = Vec::with_capacity(deliveries.len());
+                for delivery in deliveries {
+                    acknowledgements.push(delivery.acknowledgement);
+                    let ToolNotification::TaskCompleted(snapshot) = delivery.notification else {
+                        unreachable!(
+                            "bash completion batch contains a non-completion notification"
+                        );
+                    };
+                    snapshots.push(snapshot);
+                }
+                if snapshots.len() == 1 {
+                    handle_notification(
+                        &config,
+                        ToolNotification::TaskCompleted(
+                            snapshots
+                                .pop()
+                                .expect("single completion batch must contain one snapshot"),
+                        ),
+                        &mut offsets,
+                    )
+                    .await;
+                } else {
+                    handle_bash_task_completion_batch(&config, snapshots).await;
+                }
+                for acknowledgement in acknowledgements.into_iter().flatten() {
+                    let _ = acknowledgement.send(Ok(()));
+                }
+                continue;
+            }
+
             let acknowledgement = delivery.acknowledgement;
             match delivery.notification {
                 ToolNotification::ScheduledTaskRemoved(removed) => {
@@ -236,6 +302,99 @@ async fn emit_current_mode_update(
     ));
     config.gateway.forward_fire_and_forget(notification);
 }
+async fn handle_bash_task_completion_batch(
+    config: &NotificationBridgeConfig,
+    tasks: Vec<xai_grok_tools::types::TaskSnapshot>,
+) {
+    let goal_loop_active = config
+        .goal_loop_active
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let can_batch = config.auto_wake_enabled
+        && !goal_loop_active
+        && tasks.iter().all(|task| !task.is_auto_wake_suppressed());
+    if !can_batch {
+        let mut offsets = HashMap::new();
+        for task in tasks {
+            handle_notification(config, ToolNotification::TaskCompleted(task), &mut offsets).await;
+        }
+        return;
+    }
+
+    let task_ids: Vec<String> = tasks.iter().map(|task| task.task_id.clone()).collect();
+    for task_id in &task_ids {
+        config.task_completion_reservations.reserve(task_id.clone());
+    }
+    let body = xai_grok_tools::reminders::task_completion::format_between_turn_bash_completions(
+        &tasks,
+        resolved_tool_name(&config.task_output_tool_name),
+        resolved_tool_name(&config.read_tool_name),
+    );
+    let prompt_id = format!("bash-completed-batch-{}", uuid::Uuid::now_v7());
+    let enqueued = config
+        .session_cmd_tx
+        .send(SessionCommand::InjectNotification {
+            prompt_id,
+            prompt_blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(body))],
+            priority: NotificationPriority::Later,
+            source: NotificationSource::BashTaskCompletedBatch {
+                task_ids: task_ids.clone(),
+            },
+        })
+        .is_ok();
+    if !enqueued {
+        for task_id in &task_ids {
+            config.task_completion_reservations.release(task_id);
+        }
+    }
+    tracing::info!(
+        count = task_ids.len(),
+        task_ids = ?task_ids,
+        enqueued,
+        "auto-wake: batched completed background bash tasks"
+    );
+    for task in tasks {
+        emit_task_completed(config, task, enqueued);
+    }
+}
+
+fn emit_task_completed(
+    config: &NotificationBridgeConfig,
+    task_snapshot: xai_grok_tools::types::TaskSnapshot,
+    will_wake: bool,
+) {
+    let task_id = task_snapshot.task_id.clone();
+    let mut notification = crate::extensions::notification::SessionNotification {
+        session_id: config.session_id.clone(),
+        update: crate::extensions::notification::SessionUpdate::TaskCompleted {
+            task_snapshot,
+            will_wake,
+        },
+        meta: None,
+    };
+    {
+        let mut meta_map = None;
+        stamp_event_id(config, &mut meta_map);
+        notification.meta = meta_map.map(serde_json::Value::Object);
+    }
+    if let Some(params) = task_completed_frame::encode(&mut notification) {
+        let _ = config.persistence.tx.send(PersistenceMsg::Update(
+            crate::session::storage::SessionUpdate::Xai(Box::new(notification.clone())),
+        ));
+        let notification: acp::ExtNotification =
+            acp::ExtNotification::new(task_completed_frame::METHOD, params.into_inner().into());
+        config.gateway.forward_fire_and_forget(notification);
+    }
+    let _ = config
+        .session_cmd_tx
+        .send(SessionCommand::DispatchNotificationHook {
+            notification_type: "task_complete".into(),
+            message: Some(format!("Background task completed: {task_id}")),
+            title: None,
+            level: Some("info".into()),
+        });
+    request_background_tasks_snapshot(config);
+}
+
 async fn handle_notification(
     config: &NotificationBridgeConfig,
     notification: ToolNotification,
@@ -583,38 +742,7 @@ async fn handle_notification(
                         source,
                     });
             }
-            let mut notification = crate::extensions::notification::SessionNotification {
-                session_id: config.session_id.clone(),
-                update: crate::extensions::notification::SessionUpdate::TaskCompleted {
-                    task_snapshot,
-                    will_wake,
-                },
-                meta: None,
-            };
-            {
-                let mut meta_map = None;
-                stamp_event_id(config, &mut meta_map);
-                notification.meta = meta_map.map(serde_json::Value::Object);
-            }
-            if let Some(params) = task_completed_frame::encode(&mut notification) {
-                let _ = config.persistence.tx.send(PersistenceMsg::Update(
-                    crate::session::storage::SessionUpdate::Xai(Box::new(notification.clone())),
-                ));
-                let notification: acp::ExtNotification = acp::ExtNotification::new(
-                    task_completed_frame::METHOD,
-                    params.into_inner().into(),
-                );
-                config.gateway.forward_fire_and_forget(notification);
-            }
-            let _ = config
-                .session_cmd_tx
-                .send(SessionCommand::DispatchNotificationHook {
-                    notification_type: "task_complete".into(),
-                    message: Some(format!("Background task completed: {task_id}")),
-                    title: None,
-                    level: Some("info".into()),
-                });
-            request_background_tasks_snapshot(config);
+            emit_task_completed(config, task_snapshot, will_wake);
         }
         ToolNotification::PlanModeEntered(entered) => {
             let activated = config.plan_mode.lock().activate_from_tool();

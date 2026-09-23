@@ -1,7 +1,7 @@
 //! Tests for session create, exit, trust, startup actions, worktree creation, and cloud lifecycle.
 use super::*;
-use crate::app::dispatch::session::lifecycle::handle_switch_model_complete;
 use crate::app::dispatch::session::lifecycle::dispatch_accept_consent;
+use crate::app::dispatch::session::lifecycle::handle_switch_model_complete;
 /// Simulate a release-stamped build so folder-trust is active (a local/dev build auto-trusts and persists nothing).
 /// Mirrors this module's raw env idiom.
 fn simulate_release_build() {

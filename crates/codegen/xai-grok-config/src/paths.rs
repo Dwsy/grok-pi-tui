@@ -9,7 +9,6 @@ const CLAUDE_MANAGED_SETTINGS_PATH: &str =
 #[cfg(target_os = "linux")]
 const CLAUDE_MANAGED_SETTINGS_PATH: &str = "/etc/claude-code/managed-settings.json";
 
-
 static PROJECT_CONFIG_DIRNAME: OnceLock<&'static str> = OnceLock::new();
 
 /// Project-local config tree under a repo root (e.g. `.grok` or `.grok-pi`).

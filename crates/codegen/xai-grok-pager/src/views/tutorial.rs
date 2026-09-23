@@ -592,7 +592,7 @@ mod tests {
         assert_eq!(st.screen, TutorialScreen::Topic { index: 0 });
 
         // `→` walks the whole tour, marking each topic viewed…
-        for expected in 1..TUTORIAL_TOPICS.len() {
+        for expected in 1..tutorial_topics().len() {
             handle_tutorial_input(&key(KeyCode::Right), &mut st);
             assert_eq!(st.screen, TutorialScreen::Topic { index: expected });
             assert!(st.viewed.contains(&expected));

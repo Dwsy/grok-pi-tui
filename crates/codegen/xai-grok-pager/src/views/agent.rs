@@ -176,7 +176,6 @@ pub struct AgentViewLayout {
     /// Timeline rail left edge.
     pub timeline_x: u16,
     /// Columns reserved for the timeline rail (0 = hidden).
-
     pub timeline_width: u16,
 }
 impl AgentViewLayout {
@@ -931,7 +930,13 @@ pub fn render_write_edit_hover_popup(
                 false,
                 scrollback.cwd(),
             );
-            lines.extend(member.output_with_hooks(&ctx).lines.into_iter().take(remaining as usize));
+            lines.extend(
+                member
+                    .output_with_hooks(&ctx)
+                    .lines
+                    .into_iter()
+                    .take(remaining as usize),
+            );
         }
         lines
     } else {
@@ -1626,11 +1631,20 @@ mod tests {
             &Theme::current(),
         );
 
-        assert!(frame.is_some(), "collapsed tool group should open a hover popup");
+        assert!(
+            frame.is_some(),
+            "collapsed tool group should open a hover popup"
+        );
         let text = frame_text(&buf);
-        assert!(text.contains("Group tool details"), "popup title missing: {text:?}");
+        assert!(
+            text.contains("Group tool details"),
+            "popup title missing: {text:?}"
+        );
         assert!(text.contains("first.rs"), "first member missing: {text:?}");
-        assert!(text.contains("second.rs"), "second member missing: {text:?}");
+        assert!(
+            text.contains("second.rs"),
+            "second member missing: {text:?}"
+        );
     }
     #[test]
     fn hook_hover_popup_allows_singleton_verb_header() {

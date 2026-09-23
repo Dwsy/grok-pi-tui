@@ -2272,7 +2272,14 @@ mod tests {
         let mut bg_tasks = std::collections::BTreeMap::new();
         bg_tasks.insert("t1".into(), task);
 
-        pane.sync(&bg_tasks, &HashMap::new(), &HashMap::new(), &[]);
+        pane.sync(
+            &bg_tasks,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
 
         // 12+ rows so `desired_height` is non-zero; wide enough that the overlay isn't clipped
         let lines = render_pane_to_strings(&mut pane, &bg_tasks, 80, 16);
@@ -2295,7 +2302,14 @@ mod tests {
         let mut bg_tasks = std::collections::BTreeMap::new();
         bg_tasks.insert("t-restored".to_string(), restored);
 
-        pane.sync(&bg_tasks, &HashMap::new(), &HashMap::new(), &[]);
+        pane.sync(
+            &bg_tasks,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
         assert!(
             !pane.is_visible(),
             "replay-restored running tasks must not auto-open the tasks pane"
@@ -2306,7 +2320,14 @@ mod tests {
             "t-live".to_string(),
             make_bg_task("t-live", "cargo build", BgTaskStatus::Running),
         );
-        pane.sync(&bg_tasks, &HashMap::new(), &HashMap::new(), &[]);
+        pane.sync(
+            &bg_tasks,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
         assert!(
             pane.is_visible(),
             "a new live running task must still auto-open the tasks pane"
@@ -2325,7 +2346,14 @@ mod tests {
         let mut bg_tasks = std::collections::BTreeMap::new();
         bg_tasks.insert("t1".into(), task);
 
-        pane.sync(&bg_tasks, &HashMap::new(), &HashMap::new(), &[]);
+        pane.sync(
+            &bg_tasks,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
 
         let lines = render_pane_to_strings(&mut pane, &bg_tasks, 80, 16);
         let joined = lines.join("\n");
@@ -2346,7 +2374,14 @@ mod tests {
         let mut bg_tasks = std::collections::BTreeMap::new();
         bg_tasks.insert("t1".into(), task);
 
-        pane.sync(&bg_tasks, &HashMap::new(), &HashMap::new(), &[]);
+        pane.sync(
+            &bg_tasks,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
 
         let lines = render_pane_to_strings(&mut pane, &bg_tasks, 80, 16);
         let joined = lines.join("\n");
@@ -2375,7 +2410,14 @@ mod tests {
                 ),
             );
         }
-        pane.sync(&bg_tasks, &HashMap::new(), &HashMap::new(), &[]);
+        pane.sync(
+            &bg_tasks,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
 
         // Press `/` to open the search bar.
         assert!(pane.handle_key(&crate::key!('/').to_key_event()));
@@ -2425,7 +2467,14 @@ mod tests {
                 ),
             );
         }
-        pane.sync(&bg_tasks, &HashMap::new(), &HashMap::new(), &[]);
+        pane.sync(
+            &bg_tasks,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
 
         // Tall enough that all entries fit without scrolling.
         let view_height = 40u16;
@@ -2470,7 +2519,14 @@ mod tests {
             ),
         );
 
-        pane.sync(&BTreeMap::new(), &HashMap::new(), &scheduled, &[]);
+        pane.sync(
+            &BTreeMap::new(),
+            &HashMap::new(),
+            &scheduled,
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
 
         // One header and one loop row in a tall pane: not scrollable
         let area = Rect::new(0, 0, 40, 10);
@@ -2522,7 +2578,14 @@ mod tests {
             );
         }
 
-        pane.sync(&bg_tasks, &HashMap::new(), &HashMap::new(), &[]);
+        pane.sync(
+            &bg_tasks,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
 
         // A short panel forces the list to overflow; at the top of the list a centered ▼ appears on the reserved bottom row
         let lines = render_pane_to_strings(&mut pane, &bg_tasks, 40, 6);
@@ -2546,7 +2609,14 @@ mod tests {
             );
         }
 
-        pane.sync(&bg_tasks, &HashMap::new(), &HashMap::new(), &[]);
+        pane.sync(
+            &bg_tasks,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
 
         // Establish the viewport, then scroll to the very bottom.
         let _ = render_pane_to_strings(&mut pane, &bg_tasks, 40, 6);
@@ -2580,7 +2650,14 @@ mod tests {
             make_bg_task("running", "sleep 99", BgTaskStatus::Running),
         );
 
-        pane.sync(&bg_tasks, &HashMap::new(), &HashMap::new(), &[]);
+        pane.sync(
+            &bg_tasks,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
 
         assert!(pane.items.len() >= 2);
         assert!(pane.items[0].is_running(), "first entry should be running",);
@@ -2601,7 +2678,14 @@ mod tests {
         info.attempt.status = Some("completed".into());
         subagents.insert("cs-1".into(), info);
 
-        pane.sync(&bg_tasks, &subagents, &HashMap::new(), &[]);
+        pane.sync(
+            &bg_tasks,
+            &subagents,
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
 
         assert_eq!(pane.items.len(), 2);
         assert!(
@@ -2629,7 +2713,14 @@ mod tests {
         let mut subagents = HashMap::new();
         subagents.insert("cs-1".into(), make_info()); // running subagent
 
-        pane.sync(&bg_tasks, &subagents, &HashMap::new(), &[]);
+        pane.sync(
+            &bg_tasks,
+            &subagents,
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
 
         assert_eq!(pane.items.len(), 3);
         assert!(
@@ -2675,7 +2766,14 @@ mod tests {
             make_scheduled_info("l1", "every 1m", "do x", None),
         );
 
-        pane.sync(&bg_tasks, &HashMap::new(), &scheduled, &[]);
+        pane.sync(
+            &bg_tasks,
+            &HashMap::new(),
+            &scheduled,
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
 
         // items: monitor first, then loop.
         assert_eq!(pane.items.len(), 2);
@@ -2723,7 +2821,14 @@ mod tests {
             make_bg_task("running", "sleep 99", BgTaskStatus::Running),
         );
 
-        pane.sync(&bg_tasks, &HashMap::new(), &HashMap::new(), &[]);
+        pane.sync(
+            &bg_tasks,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
 
         assert_eq!(pane.items.len(), 1, "only running tasks shown by default");
         assert!(pane.items[0].is_running());
@@ -2737,7 +2842,14 @@ mod tests {
         let mut subagents = HashMap::new();
         subagents.insert("cs-1".into(), make_info()); // running subagent
 
-        pane.sync(&bg_tasks, &subagents, &HashMap::new(), &[]);
+        pane.sync(
+            &bg_tasks,
+            &subagents,
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
 
         // Display list interleaves a header before each group's items: [Header(Subagents), Agent, Header(Tasks), BgTask]
         assert_eq!(pane.entries.len(), 4);
@@ -2778,6 +2890,8 @@ mod tests {
             &std::collections::BTreeMap::new(),
             &subagents,
             &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
             &[],
         );
 
@@ -2813,6 +2927,8 @@ mod tests {
             &std::collections::BTreeMap::new(),
             &subagents,
             &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
             &[],
         );
         assert_eq!(pane.entries.len(), 2);
@@ -2844,6 +2960,8 @@ mod tests {
             &std::collections::BTreeMap::new(),
             &subagents,
             &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
             &[],
         );
 
@@ -2855,6 +2973,8 @@ mod tests {
             &std::collections::BTreeMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
             &[],
         );
         assert!(!pane.collapsed_groups.contains(&GroupKind::Subagents));
@@ -2869,6 +2989,8 @@ mod tests {
             &std::collections::BTreeMap::new(),
             &subagents2,
             &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
             &[],
         );
         assert_eq!(pane.entries.len(), 2);
@@ -2893,6 +3015,8 @@ mod tests {
             &std::collections::BTreeMap::new(),
             &subagents,
             &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
             &[],
         );
 
@@ -3043,7 +3167,14 @@ mod tests {
             "t1".into(),
             make_scheduled_info("t1", "every 1m", "do x", Some(&next)),
         );
-        pane.sync(&BTreeMap::new(), &HashMap::new(), &scheduled, &[]);
+        pane.sync(
+            &BTreeMap::new(),
+            &HashMap::new(),
+            &scheduled,
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
         let label = match &pane.items[0] {
             TaskEntry::Scheduled { label, .. } => label,
             _ => panic!("expected Scheduled"),
@@ -3070,6 +3201,8 @@ mod tests {
             &std::collections::BTreeMap::new(),
             &subagents,
             &scheduled,
+            None,
+            &std::collections::HashSet::new(),
             &[],
         );
         let label = pane
@@ -3094,7 +3227,14 @@ mod tests {
             "provisional-abc".into(),
             make_scheduled_info("provisional-abc", "every 10s", "soon", None),
         );
-        pane.sync(&BTreeMap::new(), &HashMap::new(), &scheduled, &[]);
+        pane.sync(
+            &BTreeMap::new(),
+            &HashMap::new(),
+            &scheduled,
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
         let label = match &pane.items[0] {
             TaskEntry::Scheduled { label, .. } => label,
             _ => panic!("expected Scheduled"),
@@ -3114,7 +3254,14 @@ mod tests {
             "due".into(),
             make_scheduled_info("due", "every 1h", "past", Some(&past)),
         );
-        pane.sync(&BTreeMap::new(), &HashMap::new(), &scheduled, &[]);
+        pane.sync(
+            &BTreeMap::new(),
+            &HashMap::new(),
+            &scheduled,
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
         let label = match &pane.items[0] {
             TaskEntry::Scheduled { label, .. } => label,
             _ => panic!("expected Scheduled"),
@@ -3134,7 +3281,14 @@ mod tests {
             "uni".into(),
             make_scheduled_info("uni", "every 1s", &unicode_prompt, None),
         );
-        pane.sync(&BTreeMap::new(), &HashMap::new(), &scheduled, &[]);
+        pane.sync(
+            &BTreeMap::new(),
+            &HashMap::new(),
+            &scheduled,
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
         let entry = &pane.items[0];
         let label = match entry {
             TaskEntry::Scheduled { label, .. } => label,
@@ -3155,7 +3309,14 @@ mod tests {
             "bad".into(),
             make_scheduled_info("bad", "every 30s", "fallback", Some("not-a-date")),
         );
-        pane.sync(&BTreeMap::new(), &HashMap::new(), &scheduled, &[]);
+        pane.sync(
+            &BTreeMap::new(),
+            &HashMap::new(),
+            &scheduled,
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
         let label = match &pane.items[0] {
             TaskEntry::Scheduled { label, .. } => label,
             _ => panic!("expected Scheduled"),
@@ -3178,7 +3339,14 @@ mod tests {
             "unk".into(),
             make_scheduled_info("unk", "unknown schedule", "x", None),
         );
-        pane.sync(&BTreeMap::new(), &HashMap::new(), &scheduled, &[]);
+        pane.sync(
+            &BTreeMap::new(),
+            &HashMap::new(),
+            &scheduled,
+            None,
+            &std::collections::HashSet::new(),
+            &[],
+        );
         let label = match &pane.items[0] {
             TaskEntry::Scheduled { label, .. } => label,
             _ => panic!("expected Scheduled"),
@@ -3220,7 +3388,14 @@ mod tests {
             make_workflow_run("pii-purge", "active"),
             make_workflow_run("old-scan", "complete"),
         ];
-        pane.sync(&BTreeMap::new(), &HashMap::new(), &HashMap::new(), &runs);
+        pane.sync(
+            &BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &runs,
+        );
 
         let labels: Vec<&str> = pane.entries.iter().map(|e| e.search_text()).collect();
         assert!(
@@ -3250,7 +3425,14 @@ mod tests {
         let mut subagents = HashMap::new();
         subagents.insert("cs-1".to_string(), child);
         let runs = vec![make_workflow_run("deep-research", "active")];
-        pane.sync(&BTreeMap::new(), &subagents, &HashMap::new(), &runs);
+        pane.sync(
+            &BTreeMap::new(),
+            &subagents,
+            &HashMap::new(),
+            None,
+            &std::collections::HashSet::new(),
+            &runs,
+        );
         assert!(
             pane.items
                 .iter()

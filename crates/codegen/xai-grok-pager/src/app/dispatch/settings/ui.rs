@@ -199,7 +199,6 @@ fn open_command_arg_picker(
     vec![]
 }
 
-
 pub(in crate::app::dispatch) fn dispatch_open_command_palette(app: &mut AppView) -> Vec<Effect> {
     use crate::views::modal::ActiveModal;
     let ActiveView::Agent(id) = app.active_view else {
