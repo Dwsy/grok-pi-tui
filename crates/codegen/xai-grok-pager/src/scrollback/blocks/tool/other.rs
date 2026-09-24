@@ -130,8 +130,14 @@ impl OtherToolCallBlock {
         }
     }
 
-    /// Render collapsed line: `Label` `content` or `Name`. Otherwise renders the full name in bold.
-    fn collapsed_line(&self, theme: &Theme, muted: bool, width: Option<usize>) -> Line<'static> {
+    /// Render the compact tool row, optionally appending one-line JSON arguments.
+    fn collapsed_line(
+        &self,
+        theme: &Theme,
+        muted: bool,
+        width: Option<usize>,
+        show_args: bool,
+    ) -> Line<'static> {
         let text_style = if muted {
             theme.muted()
         } else {
@@ -164,12 +170,27 @@ impl OtherToolCallBlock {
             }
         }
 
+        if show_args && let Some(input) = self.compact_input_json() {
+            spans.push(Span::styled(
+                format!("  {input}"),
+                ratatui::style::Style::default().fg(theme.gray_dim),
+            ));
+        }
+
         let line = Line::from(spans);
         if let Some(w) = width {
             crate::render::line_utils::truncate_line(line, w)
         } else {
             line
         }
+    }
+
+    fn compact_input_json(&self) -> Option<String> {
+        let input = self.input_json.as_deref()?;
+        serde_json::from_str::<serde_json::Value>(input)
+            .ok()
+            .and_then(|value| serde_json::to_string(&value).ok())
+            .filter(|text| !text.is_empty())
     }
 
     fn push_input_lines(&self, lines: &mut Vec<BlockLine>, theme: &Theme, width: usize) {
@@ -197,7 +218,8 @@ impl BlockContent for OtherToolCallBlock {
 
         // Inline media blocks (image_gen / video_gen): render the header and a filepath line on every terminal
         if let Some(media_path) = self.media_ref_path() {
-            let header = self.collapsed_line(&theme, muted_collapsed, Some(ctx.content_width()));
+            let header =
+                self.collapsed_line(&theme, muted_collapsed, Some(ctx.content_width()), false);
             let max_w = ctx.content_width();
             // Percent-decode for display only (e.g. `%2F` becomes `/`); the stored path is unchanged so Open / copy-path still target the file.
             let raw_path = media_path.display().to_string();
@@ -245,18 +267,23 @@ impl BlockContent for OtherToolCallBlock {
             return BlockOutput { lines };
         }
 
-        // F2 show_other_tool_args: args only when expanded/truncated — collapsed stays name-only.
+        // F2 show_other_tool_args controls both the compact row preview and expanded raw input.
         let show_args = ctx.appearance.show_other_tool_args;
         match ctx.mode {
             DisplayMode::Collapsed => BlockOutput {
                 lines: vec![
-                    self.collapsed_line(&theme, muted_collapsed, Some(ctx.content_width()))
-                        .into(),
+                    self.collapsed_line(
+                        &theme,
+                        muted_collapsed,
+                        Some(ctx.content_width()),
+                        show_args,
+                    )
+                    .into(),
                 ],
             },
             DisplayMode::Truncated | DisplayMode::Expanded => {
                 let mut lines: Vec<BlockLine> =
-                    vec![self.collapsed_line(&theme, false, None).into()];
+                    vec![self.collapsed_line(&theme, false, None, false).into()];
 
                 if show_args {
                     self.push_input_lines(&mut lines, &theme, width);
@@ -545,6 +572,21 @@ fn parse_ask_user_qa_pairs(output: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_input_json_is_single_line() {
+        let block = OtherToolCallBlock::new("gapp_list", "").with_input_json(
+            r#"{
+  "id": "1",
+  "open": true
+}"#,
+        );
+
+        assert_eq!(
+            block.compact_input_json().as_deref(),
+            Some(r#"{"id":"1","open":true}"#)
+        );
+    }
 
     #[test]
     fn input_only_tool_is_foldable_for_other_tool_args() {

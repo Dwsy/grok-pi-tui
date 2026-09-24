@@ -429,11 +429,20 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                             child_view.turn_start_ms = Some(ts);
                         }
                         let had_activity_before = child_view.session.tracker.activity().is_some();
-                        child_view.session.handle_update(
-                            notif.request.update,
-                            &meta,
-                            &mut child_view.scrollback,
-                        );
+                        let bg_stdout_routed = if let acp::SessionUpdate::ToolCallUpdate(ref tcu) =
+                            notif.request.update
+                        {
+                            route_bg_task_stdout(tcu, &mut child_view.session)
+                        } else {
+                            false
+                        };
+                        if !bg_stdout_routed {
+                            child_view.session.handle_update(
+                                notif.request.update,
+                                &meta,
+                                &mut child_view.scrollback,
+                            );
+                        }
                         if !had_activity_before && child_view.session.tracker.activity().is_some() {
                             note_first_turn_activity(child_view);
                         }

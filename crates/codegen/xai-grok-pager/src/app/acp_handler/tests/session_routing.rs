@@ -82,6 +82,73 @@
     }
 
     #[test]
+    fn bg_task_stdout_for_subagent_lands_in_child_bg_tasks() {
+        let mut app = make_app_with_agent("sess-A");
+        let child_sid = "sess-A-child";
+        let task_id = "task-child-1";
+        let tool_call_id = "call-child-1";
+        {
+            let parent = app.agents.get_mut(&AgentId(0)).unwrap();
+            parent
+                .subagent_sessions
+                .insert(child_sid.into(), make_subagent_info(child_sid));
+            let mut child_view = make_agent(Some(child_sid));
+            child_view.session.bg_tasks.insert(
+                task_id.into(),
+                BgTaskState {
+                    task_id: task_id.into(),
+                    tool_call_id: tool_call_id.into(),
+                    command: "printf child-output".into(),
+                    description: None,
+                    cwd: "/tmp".into(),
+                    output_file: "/tmp/child-out".into(),
+                    status: BgTaskStatus::Running,
+                    start_time: std::time::SystemTime::now(),
+                    end_time: None,
+                    exit_code: None,
+                    signal: None,
+                    stdout: String::new(),
+                    stdout_line_count: 0,
+                    truncated: false,
+                    pending_kill: false,
+                    kill_requested_at: None,
+                    scrollback_entry_id: None,
+                    is_monitor: false,
+                    restored_from_replay: false,
+                },
+            );
+            child_view
+                .session
+                .bg_tool_call_to_task
+                .insert(tool_call_id.into(), task_id.into());
+            parent
+                .subagent_views
+                .insert(child_sid.into(), Box::new(child_view));
+        }
+
+        let affected = handle(
+            make_bash_stdout_message(child_sid, tool_call_id, "stdout-from-child"),
+            &mut app,
+        );
+
+        let parent = app.agents.get(&AgentId(0)).unwrap();
+        let child_view = parent
+            .subagent_views
+            .get(child_sid)
+            .expect("child view must still exist");
+        assert_eq!(
+            child_view.session.bg_tasks.get(task_id).unwrap().stdout,
+            "stdout-from-child",
+            "background Bash stdout must be routed into the child session store"
+        );
+        assert!(
+            parent.session.bg_tasks.is_empty(),
+            "child background stdout must not leak into the parent session"
+        );
+        assert!(affected, "visible parent should redraw for child background output");
+    }
+
+    #[test]
     fn acp_chunk_with_unknown_session_id_is_dropped_and_no_redraw() {
         // No agent owns the session_id and the active agent already has a session_id assigned (so the race-window fallback does not fire)
         // The notification must be dropped silently.

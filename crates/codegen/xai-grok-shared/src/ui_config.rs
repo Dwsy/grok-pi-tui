@@ -526,7 +526,7 @@ impl Default for UiConfig {
             pi_user_markdown: true,
             pi_at_search_hidden: true,
             pi_keep_multi_agent: false,
-            show_other_tool_args: false,
+            show_other_tool_args: true,
             review_file_tree: false,
             review_include_reads: false,
             theme: None,

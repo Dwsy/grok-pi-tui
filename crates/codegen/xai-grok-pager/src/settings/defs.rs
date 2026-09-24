@@ -2392,7 +2392,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Appearance,
             owner: SettingOwner::Shell,
             label: "Other tool args",
-            description: "When expanded, show raw_input JSON on all Other/generic tool cards (not just fabric_exec). Collapsed stays name-only. Default off.",
+            description: "Show raw_input JSON on Other/generic tool cards: compact one-line JSON after the collapsed tool name, plus the full JSON when expanded. Default on.",
             keywords: &[
                 "tool",
                 "args",

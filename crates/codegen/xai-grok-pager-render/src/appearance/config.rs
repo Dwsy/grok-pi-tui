@@ -1334,7 +1334,7 @@ impl From<RawAppearanceConfig> for AppearanceConfig {
             },
             turn_status: TurnStatusConfig::default(),
             show_timestamps: true, // runtime-only, loaded from config.toml via persist
-            show_other_tool_args: false, // runtime-only; F2 `[ui].show_other_tool_args`
+            show_other_tool_args: true, // runtime-only; F2 `[ui].show_other_tool_args`
             // Single source: UiConfig::SHOW_TIMELINE_DEFAULT (loaded from config.toml via persist).
             show_timeline: UiConfig::SHOW_TIMELINE_DEFAULT,
             disable_plugins: raw.disable_plugins,

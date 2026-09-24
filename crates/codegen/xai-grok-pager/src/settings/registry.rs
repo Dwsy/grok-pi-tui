@@ -1584,7 +1584,7 @@ mod tests {
                         *default, ui.show_other_tool_args,
                         "show_other_tool_args default drifts from UiConfig::default()"
                     );
-                    assert!(!*default, "show_other_tool_args must default OFF");
+                    assert!(*default, "show_other_tool_args must default ON");
                 }
                 ("review_file_tree", SettingKind::Bool { default }) => {
                     assert_eq!(

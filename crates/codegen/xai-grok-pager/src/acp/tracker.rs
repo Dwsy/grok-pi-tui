@@ -3035,7 +3035,7 @@ fn maybe_pretty_json(s: &str) -> String {
 /// Pretty-print Other-tool `raw_input` for the generic tool card body.
 ///
 /// Display is gated by F2 `show_other_tool_args` at render time; this only
-/// materializes JSON for storage on the block.
+/// materializes JSON for compact and expanded rendering on the block.
 fn format_other_tool_input(tc: &acp::ToolCall) -> Option<String> {
     let raw = tc.raw_input.as_ref()?;
     if raw.is_null() || raw.as_object().is_some_and(|o| o.is_empty()) {

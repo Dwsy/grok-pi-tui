@@ -765,7 +765,7 @@ pub enum Action {
     /// Keep previous agent tabs alive on `/new` so the dashboard can switch
     /// back (`[ui].pi_keep_multi_agent`, default off → full replacement).
     SetPiKeepMultiAgent(bool),
-    /// Show raw_input JSON on Other/generic tool cards when expanded (`[ui].show_other_tool_args`, default off).
+    /// Show raw_input JSON on Other/generic tool cards (`[ui].show_other_tool_args`, default on).
     SetShowOtherToolArgs(bool),
     /// Default tree layout for `/review-*` left pane (`[ui].review_file_tree`).
     SetReviewFileTree(bool),
