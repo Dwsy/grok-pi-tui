@@ -50,6 +50,7 @@ jobs:
     name: ${{ matrix.name }}
     needs: validate-changelog
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -117,7 +118,9 @@ jobs:
           # Six ~2 GiB target caches exceed GitHub's per-repository cache quota,
           # so Linux builds intentionally skip the persistent target cache.
           cache-workspace-crates: true
-          cache-on-failure: true
+          # Do not spend additional time uploading multi-GiB target caches after
+          # a failed build; failed caches are also poor inputs for later releases.
+          cache-on-failure: false
           # Bump the prefix when changing cache contents so GitHub does not keep
           # serving an older immutable cache entry without workspace artifacts.
           prefix-key: "v4-release"

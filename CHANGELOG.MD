@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.10-beta.7] - 2026-09-25
+
+### Fixed
+
+- Hardened release CI after the beta.6 build cancellation by capping platform builds at 90 minutes and disabling multi-GiB Rust cache uploads from failed builds, avoiding stale failed-build cache entries and unbounded runner time.
+
 ## [0.1.10-beta.6] - 2026-09-25
 
 ### Changed
