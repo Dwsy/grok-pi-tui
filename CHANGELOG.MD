@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.10-beta.6] - 2026-09-25
+
+### Changed
+
+- Release CI now keeps persistent Rust build caches only for the slower macOS and Windows builders, preventing six roughly 2 GiB target caches from competing for GitHub's per-repository Actions cache quota.
+
+### Fixed
+
+- Corrected ordinary tool-call argument rendering and subagent stdout handling in the Pager, including the related ACP session-routing behavior and regression coverage.
+
 ## [0.1.10-beta.5] - 2026-09-23
 
 ### Changed

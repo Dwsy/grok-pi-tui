@@ -110,16 +110,17 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache Rust build
+        if: runner.os != 'Linux'
         uses: Swatinem/rust-cache@v2
         with:
-          # Cache local workspace crates too. The default dependency-only cache
-          # still leaves this large workspace recompiling most local crates for
-          # every release tag.
+          # Cache local workspace crates on the slower macOS/Windows builders.
+          # Six ~2 GiB target caches exceed GitHub's per-repository cache quota,
+          # so Linux builds intentionally skip the persistent target cache.
           cache-workspace-crates: true
           cache-on-failure: true
           # Bump the prefix when changing cache contents so GitHub does not keep
           # serving an older immutable cache entry without workspace artifacts.
-          prefix-key: "v3-release"
+          prefix-key: "v4-release"
           shared-key: release-${{ matrix.target }}
 
       - name: Install protoc on Linux
