@@ -1299,14 +1299,24 @@ fn append_bash_kill_control(meta_path: &Path, task_id: &str) -> Result<&'static 
 /// Experimental Remote TUI: extension host watches a keyfile under tmp.
 /// Meta written by the injected extension: `{id, keysPath}`.
 fn append_remote_tui_key_event(event: Value) -> Result<()> {
+    let meta_path = std::env::var_os("PI_GROK_REMOTE_TUI_META")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("pi-grok-remote-tui-active.json"));
+    append_remote_tui_key_event_at(&meta_path, event)
+}
+
+fn append_remote_tui_key_event_at(meta_path: &std::path::Path, event: Value) -> Result<()> {
     use std::fs::OpenOptions;
     use std::io::Write;
 
-    let meta_path = std::env::temp_dir().join("pi-grok-remote-tui-active.json");
     if !meta_path.exists() {
         bail!("remote_tui meta missing ({})", meta_path.display());
     }
     let meta: Value = serde_json::from_str(&std::fs::read_to_string(&meta_path)?)?;
+    if event.get("id").and_then(Value::as_str).is_none() || event.get("id") != meta.get("id") {
+        // Input/cancel queued for a closed component must not reach its successor.
+        return Ok(());
+    }
     let keys_path = meta
         .get("keysPath")
         .and_then(Value::as_str)

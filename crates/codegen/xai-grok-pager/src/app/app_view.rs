@@ -127,6 +127,8 @@ pub struct ExternalUiState {
     /// Experimental Remote TUI session id (PI_GROK_REMOTE_TUI). When set,
     /// keyboard input is forwarded as Pi key sequences instead of prompt edit.
     pub remote_tui_id: Option<String>,
+    /// New hosts publish lifecycle separately from display-only frames.
+    pub remote_tui_session_managed: bool,
     /// Overlay stack for Remote TUI components (push/pop/focus).
     /// The top of the stack receives key input. Corresponds to TS-side
     /// showOverlay/hideOverlay semantics.
@@ -2574,6 +2576,27 @@ impl AppView {
         lines: Option<Vec<String>>,
         placement: ExternalWidgetPlacement,
     ) -> bool {
+        // Explicit ownership survives frame replacement and async factories.
+        // An old close cannot unlock the composer underneath a newer component.
+        if key == "__pi_grok_remote_tui_session__" {
+            let message = lines
+                .as_ref()
+                .and_then(|lines| lines.first())
+                .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok());
+            if let Some(message) = message
+                && let Some(id) = message.get("id").and_then(serde_json::Value::as_str)
+            {
+                match message.get("op").and_then(serde_json::Value::as_str) {
+                    Some("open") => self.external_ui.remote_tui_id = Some(id.to_owned()),
+                    Some("close") if self.external_ui.remote_tui_id.as_deref() == Some(id) => {
+                        self.external_ui.remote_tui_id = None;
+                    }
+                    _ => {}
+                }
+                self.external_ui.remote_tui_session_managed = true;
+            }
+            return true;
+        }
         // Pi extension shortcut catalog (pi-grok-shortcut-manager → setWidget).
         // Never render as a banner; feed the native `/pi-shortcut-manager` registry.
         if key == "__pi_extension_shortcuts__" {
@@ -2636,14 +2659,22 @@ impl AppView {
         // Extension-host Remote TUI reuses setWidget("remote_tui", lines).
         // Arm keyboard capture whenever that widget is present.
         if key == "remote_tui" {
-            match &lines {
-                Some(_) => {
-                    if self.external_ui.remote_tui_id.is_none() {
-                        self.external_ui.remote_tui_id = Some("widget".to_string());
-                    }
+            if self.external_ui.remote_tui_session_managed {
+                if self.external_ui.remote_tui_id.is_none() && lines.is_some() {
+                    return false;
                 }
-                None => {
-                    self.external_ui.remote_tui_id = None;
+            } else {
+                match &lines {
+                    Some(_) => {
+                        if self.external_ui.remote_tui_id.is_none() {
+                            self.external_ui.remote_tui_id = Some("widget".to_string());
+                        }
+                    }
+                    None => {
+                        if self.external_ui.remote_tui_id.as_deref() == Some("widget") {
+                            self.external_ui.remote_tui_id = None;
+                        }
+                    }
                 }
             }
         }
@@ -2816,7 +2847,7 @@ impl AppView {
             let event = match key.kind {
                 KeyEventKind::Repeat => ":2",
                 KeyEventKind::Release => ":3",
-                KeyEventKind::Press => return None,
+                KeyEventKind::Press => "",
             };
             let modifier = kitty_modifier_value(key.modifiers);
             let functional = match key.code {
@@ -2847,6 +2878,17 @@ impl AppView {
             Some(format!("\u{001b}[{codepoint};{modifier}{event}u"))
         }
 
+        // Native terminals normally deliver Shift+letters as uppercase text.
+        // Keep Pi components using literal letter actions compatible, while
+        // preserving modifiers and event types for other keys/repeat/release.
+        if key.kind == KeyEventKind::Press
+            && key.modifiers == KeyModifiers::SHIFT
+            && let KeyCode::Char(c) = key.code
+            && c.is_ascii_alphabetic()
+        {
+            return Some(c.to_ascii_uppercase().to_string());
+        }
+
         if key.kind != KeyEventKind::Press
             || key.modifiers.intersects(
                 KeyModifiers::SHIFT
@@ -2855,7 +2897,7 @@ impl AppView {
                     | KeyModifiers::SUPER,
             )
         {
-            if key.kind == KeyEventKind::Press && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if key.kind == KeyEventKind::Press && key.modifiers == KeyModifiers::CONTROL {
                 match key.code {
                     KeyCode::Char('c') => return Some("\u{0003}".to_string()),
                     KeyCode::Char('d') => return Some("\u{0004}".to_string()),
@@ -2873,7 +2915,8 @@ impl AppView {
             KeyCode::Enter => Some("\r".to_string()),
             KeyCode::Esc => Some("\u{001b}".to_string()),
             KeyCode::Backspace => Some("\u{007f}".to_string()),
-            KeyCode::Tab | KeyCode::BackTab => Some("\t".to_string()),
+            KeyCode::Tab => Some("\t".to_string()),
+            KeyCode::BackTab => Some("\u{001b}[Z".to_string()),
             KeyCode::Home => Some("\u{001b}[H".to_string()),
             KeyCode::End => Some("\u{001b}[F".to_string()),
             KeyCode::PageUp => Some("\u{001b}[5~".to_string()),
@@ -3370,9 +3413,18 @@ impl AppView {
                 return InputOutcome::Changed;
             }
         }
-        // Extension shortcut dispatch: check registered extension shortcuts
-        // BEFORE remote-tui and normal prompt handling.
+        // Native dialogs opened by a remote component temporarily own input.
+        let native_dialog = self.active_agent().is_some_and(|agent| {
+            agent.active_modal.is_some()
+                || agent
+                    .question_view
+                    .as_ref()
+                    .is_some_and(|q| q.is_pi_extension_ui())
+        });
+        // Global shortcuts must not steal a modal component's letter actions.
         if self.external_agent
+            && self.external_ui.remote_tui_id.is_none()
+            && !native_dialog
             && let Some(key) = key_event
         {
             if let Some(shortcut_key) = self.external_ui.extension_shortcuts.match_key(key) {
@@ -3388,6 +3440,7 @@ impl AppView {
         // Experimental Remote TUI: when a remote component session is open,
         // forward keys to the Pi process host instead of editing the prompt.
         if self.external_agent
+            && !native_dialog
             && let Some(id) = self.external_ui.remote_tui_id.clone()
         {
             // Bracketed paste: forward as a Pi-TUI paste sequence so remote
@@ -3403,10 +3456,19 @@ impl AppView {
                 return InputOutcome::Changed;
             }
             if let Some(key) = remote_key_event {
-                if key.code == KeyCode::Esc && key.kind != KeyEventKind::Release {
-                    // Prefer cancel over raw Esc input to avoid race with done().
+                if key.code == KeyCode::Esc
+                    && key.modifiers == (KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+                    && key.kind == KeyEventKind::Press
+                {
+                    // Explicit escape hatch; ordinary Esc belongs to the component
+                    // (back from details, cancel a split, then close the root).
                     self.pending_effects
                         .push(crate::app::actions::Effect::RemoteTuiCancel { id });
+                    self.external_ui.remote_tui_id = None;
+                    self.external_ui.remote_tui_layout = None;
+                    self.external_ui.remote_tui_overlays.clear();
+                    self.external_ui.widgets.remove("remote_tui");
+                    self.refresh_external_ui_surface();
                     return InputOutcome::Changed;
                 }
                 if let Some(data) = Self::remote_tui_key_sequence(key) {
@@ -3414,6 +3476,11 @@ impl AppView {
                         .push(crate::app::actions::Effect::RemoteTuiInput { id, data });
                     return InputOutcome::Changed;
                 }
+            }
+            // Even an unsupported key or mouse click must not edit the hidden
+            // composer. Resize/focus events still reach the normal host path.
+            if matches!(ev, Event::Key(_) | Event::Paste(_) | Event::Mouse(_)) {
+                return InputOutcome::Changed;
             }
         }
         if let Event::Resize(_, rows) = ev {

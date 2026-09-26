@@ -37,6 +37,7 @@ xai-grok-telemetry = { workspace = true }
 xai-grok-workspace = { workspace = true }
 xai-crash-handler = { path = "../xai-crash-handler" }
 xai-acp-lib = { workspace = true }
+agent-client-protocol = { workspace = true }
 
 # Async runtime + misc.
 tokio = { workspace = true, features = [

@@ -1,5 +1,42 @@
 # Grok Native TUI × Pi Verification Report
 
+## 2026-09-21 Remote TUI input ownership
+
+Follow-up modified-key regression: the encoder returned `None` for modified
+Press events, dropping Shift+S before it reached a component. Standalone
+`cargo test -p xai-grok-pager --test remote_tui_keys` reproduced two failures
+before the fix and passes all three tests after it. This integration target
+links the production library without compiling the stale lib-test fixtures.
+Coverage includes Shift+letter actions, Ctrl/Alt/Super presses, BackTab and
+repeat/release behavior. The product build passed. A PTY probe loaded the actual
+installed Shop `settingsPanel` with synthetic profiles: lower-case `s`, raw
+uppercase `S`, and Kitty Shift+S each returned `save`. The probe stops at that
+action and does not write any Shop configuration or call a model.
+
+- `bun test extensions/pi-grok-remote-tui`: 13 passed. Covers lifecycle before
+  the first frame, explicit child focus, letter/Escape delivery, shortcut
+  isolation, native Pi non-interference, stale input rejection and partial JSONL.
+- `cargo check -p xai-grok-pager-bin --bin grok-pi` through `cargo-shared.sh`:
+  passed (existing warnings only).
+- Focused Pager lib tests could not run: the test target has 110 unrelated
+  compile errors, including missing timeline helpers and stale TasksPane/AppView
+  test fixtures. No error in the newly added Remote TUI tests was reported.
+- Adapter transport regression and embedded-extension materialization test each
+  passed; `CARGO_MAINTENANCE=0 ./build.sh` passed.
+- PTY smoke with system Pi 0.86.1 and the installed Curator: opened settings,
+  changed language, saved with lower-case `s`, opened the model picker, searched
+  `deepseek`, returned with Escape, force-closed with Ctrl+Shift+Escape, then
+  typed into the restored composer. No model inference was requested.
+- The smoke exposed out-of-order keyfile records for rapid typing and a delayed
+  unread tail. Synchronous ACP enqueue plus ordered keyboard-notification
+  handling and periodic draining fixed both in the repeated PTY scenario.
+- The original user's exact third-party scene, live multi-terminal interaction,
+  and full native-dialog combinations still require acceptance; this is not a
+  claim that the entire Pager test suite or all plugin interactions pass.
+
+The renderer exception is limited to letting native dialogs appear above remote
+components in `agent_view/render.rs`; existing baseline hashes are unchanged.
+
 Verification date: 2026-07-26
 Delivered local main lineage: integration base `1a52f81af9d7f871f7067de35cc57756faf4bd31` (upstream merge `be91fe7`, upstream `47348d1`); restored WIP safety tip `3d4278d`
 

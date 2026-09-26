@@ -133,6 +133,17 @@ The integration has three boundaries:
 
 Pi source is not modified. The Remote TUI bridge connects capabilities unavailable in Pi RPC through the official extension API and projects them onto native Pager surfaces.
 
+Custom components own keyboard input until they close, including letter actions,
+paste, and ordinary `Esc` (handled by the component). Native Pi input/confirmation
+dialogs temporarily take priority. `Ctrl+Shift+Esc` force-closes a stuck remote
+component when the terminal reports that chord distinctly. Transport metadata is
+isolated per Grok-Pi process, and stale component input is discarded. Plugins
+should use Pi's key parsers for modified keys; raw string comparisons do not
+recognize every terminal encoding.
+Plain Shift+letter presses are forwarded as uppercase text (for example, `S`)
+for compatibility with literal Pi component actions. Other modified presses
+retain their modifiers; repeat and release events remain distinct.
+
 ## Configuration
 
 Bundled bridge extensions are enabled by default where stable. Experimental native commands are opt-in.

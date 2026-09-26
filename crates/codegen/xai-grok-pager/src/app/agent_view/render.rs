@@ -1158,6 +1158,16 @@ impl AgentView {
         (None, child_post_flush)
     }
     fn draw_remote_tui_overlay(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+        // A Pi input/confirm dialog may be opened from inside custom(). Keep
+        // its native surface visible while it temporarily owns the keyboard.
+        if self.active_modal.is_some()
+            || self
+                .question_view
+                .as_ref()
+                .is_some_and(|q| q.is_pi_extension_ui())
+        {
+            return;
+        }
         let Some(layout) = self.remote_tui_layout.clone() else {
             return;
         };

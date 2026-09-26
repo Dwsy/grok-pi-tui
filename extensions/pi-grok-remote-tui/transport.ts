@@ -10,7 +10,7 @@ import type { ActiveHost, RemoteTuiDemoUi, RemoteTuiLayout } from "./shared.ts";
 import { LAYOUT_WIDGET_KEY, META_NAME } from "./shared.ts";
 
 export function metaPath(): string {
-  return join(osTmpdir(), META_NAME);
+  return process.env.PI_GROK_REMOTE_TUI_META || join(osTmpdir(), META_NAME);
 }
 
 export function writeMeta(meta: { id: string; keysPath: string } | null): void {
@@ -47,17 +47,22 @@ export function drainKeys(host: ActiveHost): void {
     if (!existsSync(host.keysPath)) return;
     const buf = readFileSync(host.keysPath, "utf8");
     if (buf.length <= host.keyOffset) return;
-    const chunk = buf.slice(host.keyOffset);
-    host.keyOffset = buf.length;
+    // fs.watch can fire mid-write. Only consume complete JSONL records.
+    const end = buf.lastIndexOf("\n") + 1;
+    if (end <= host.keyOffset) return;
+    const chunk = buf.slice(host.keyOffset, end);
+    host.keyOffset = end;
     for (const line of chunk.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      let msg: { op?: string; data?: string };
+      let msg: { id?: string; op?: string; data?: string };
       try {
-        msg = JSON.parse(trimmed) as { op?: string; data?: string };
+        msg = JSON.parse(trimmed) as typeof msg;
       } catch {
         continue;
       }
+      if (host.closed) return;
+      if (msg.id !== host.id) continue;
       if (msg.op === "cancel") {
         host.close(undefined);
         return;

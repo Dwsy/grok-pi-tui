@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn remote_tui_transport_isolates_instances_and_rejects_stale_input() {
+    let dir = tempfile::tempdir().unwrap();
+    for id in ["first", "second"] {
+        let meta = dir.path().join(format!("{id}.json"));
+        let keys = dir.path().join(format!("{id}.jsonl"));
+        std::fs::write(&keys, "").unwrap();
+        std::fs::write(&meta, json!({"id": id, "keysPath": keys}).to_string()).unwrap();
+        append_remote_tui_key_event_at(&meta, json!({"id": "stale", "op": "cancel"})).unwrap();
+        append_remote_tui_key_event_at(&meta, json!({"op": "input", "data": "a"})).unwrap();
+        assert_eq!(std::fs::read_to_string(&keys).unwrap(), "");
+        append_remote_tui_key_event_at(&meta, json!({"id": id, "op": "input", "data": id}))
+            .unwrap();
+        let entry: Value = serde_json::from_str(&std::fs::read_to_string(keys).unwrap()).unwrap();
+        assert_eq!(entry["data"], id);
+    }
+}
+
+#[test]
 fn utc_now_ms_is_positive() {
     assert!(utc_now_ms() > 0);
 }

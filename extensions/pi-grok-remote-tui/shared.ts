@@ -10,6 +10,7 @@ import type { FSWatcher } from "node:fs";
 
 export const WIDGET_KEY = "remote_tui";
 export const LAYOUT_WIDGET_KEY = "__pi_grok_remote_tui_layout__";
+export const SESSION_WIDGET_KEY = "__pi_grok_remote_tui_session__";
 export const META_NAME = "pi-grok-remote-tui-active.json";
 
 export type UnknownRecord = Record<string, unknown>;

@@ -105,6 +105,14 @@ Status definitions: **Native** = implemented by a Grok Pager component; **Adapte
 | Native feature package conflicts | Host policy | Defaults: `assets/native_feature_conflicts.toml`. Runtime overlays (no rebuild): `$GROK_HOME/native-feature-conflicts.toml` then `$GROK_PROJECT_DIR/native-feature-conflicts.toml` (package union). Gated by F2/bridge: `pi_ask_user_question`, `pi_goal`, `pi_workflows`, `pi_subagents`, and `pi_btw`; disabling a feature admits its conflicting packages again. User `allow` still wins. |
 | `rpiv-btw` | Boundary | blocked when F2 `pi_btw` on; use native `/btw` + adapter `x.ai/btw` + `pi-grok-btw` extension (opt-in, default off) |
 
+Remote TUI input ownership is explicit and independent of frame updates.
+Component input precedes global extension shortcuts; native Pi dialogs can
+temporarily own input. Ordinary Escape is forwarded, Ctrl+Shift+Escape is host
+cancellation, and per-instance metadata plus component IDs reject stale input.
+Shift+letter presses preserve uppercase literal actions; other modified presses
+use terminal encodings instead of being silently dropped.
+See `docs/issues/20260921-remote-tui-input-ownership.md` for verification boundaries.
+
 ## Slash Commands
 
 ### Retained Grok Native Commands

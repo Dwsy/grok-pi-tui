@@ -14222,6 +14222,7 @@ dependencies = [
 name = "xai-grok-pager-bin"
 version = "1.0.24"
 dependencies = [
+ "agent-client-protocol",
  "anyhow",
  "clap",
  "crossterm",
