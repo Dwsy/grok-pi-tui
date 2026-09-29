@@ -96,7 +96,7 @@ grok-pi update --channel stable  # 切回 stable；默认即 stable
 |---|---|
 | Agent Runtime | Pi 模型、Provider、工具、扩展、skills、会话、重试和压缩 |
 | 模型管理 | `/pi-models` 提供原生 Provider → Model → Details 编辑器，含安全 `models.json` 事务、备份/恢复、Pi 热重载和 typed 激活；`/model` 保留为快速切换器 |
-| 浏览器配置台 | `/pi-config web` / `/pi-models web` 在浏览器打开同一套配置（含 F2 设置），由 `pi-grok-web-config` Pi 扩展以随机回环端口提供（一次性 token 校验，中/英界面自动切换） |
+| 浏览器配置工作台 | `/pi-config web` / `/pi-models web`：完整中英界面、全局搜索、模型/服务商复制与高级参数、四类资源路径管理、Grok/Pi 设置草稿与批量保存、外部修改冲突提示、深浅主题和手机布局。由 Pi 扩展提供带 token 的本地回环服务。 |
 | 终端 UI | Grok Pager 输入、斜杠补全、Markdown、工具卡片、diff、对话框和 scrollback |
 | 产品教程 | `/tutorial`（别名 `/tour`、`/onboarding`）展示 18 个 grok-pi 能力域：Pager 原生工作流、Pi Provider/模型/工具/会话、扩展/Skill/Package 生态、产品桥接、可选自动化与明确边界 |
 | **Remote TUI 桥接** | Pi `ctx.ui.custom` 组件通过 Grok Build 原生 Pager 渲染，不创建第二套 TUI |

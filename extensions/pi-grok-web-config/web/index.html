@@ -8,28 +8,36 @@
 		<style>__PI_GROK_WEB_CONFIG_STYLES__</style>
 	</head>
 	<body>
+		<!-- THESIS: A bilingual configuration workbench keeps connection state and pending edits visible.
+OWN-WORLD: Neutral graphite navigation, cool white work surfaces, blue actions, system UI type and compact ruled lists.
+STORY: Find a setting, inspect its scope, edit and explicitly save.
+FIRST VIEWPORT: Left navigation and search; active/default session strip; provider list beside model details.
+FORM: Operate workbench. Concept seed unavailable (host command timed out); grounded in the existing Pi configuration contracts.
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md -->
+		<a class="skip-link" href="#main-content" data-i18n="skip_content"></a>
 		<div class="app-shell">
-			<aside class="sidebar" aria-label="Pi config">
+			<aside class="sidebar" data-i18n-aria="app_title">
 				<div class="brand-block">
-					<div class="brand-mark" aria-hidden="true">Pi</div>
+					<div class="brand-mark" aria-hidden="true">π</div>
 					<div class="brand-copy">
-						<strong>Pi config</strong>
+						<strong data-i18n="app_title"></strong>
 						<span id="meta-model">grok-pi</span>
 					</div>
 				</div>
 
-				<nav class="section-nav" id="tabs" aria-label="Configuration sections">
+				<button class="search-trigger" id="btn-search" type="button"><span data-i18n="search_all"></span><kbd>⌘ K</kbd></button>
+				<nav class="section-nav" id="tabs" data-i18n-aria="app_title">
 					<button class="nav-item" type="button" data-tab="models">
-						<span data-i18n="tab_models"></span><span class="nav-count" id="nav-models-count">—</span>
+						<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg><span class="nav-label" data-i18n="tab_models"></span><span class="nav-count" id="nav-models-count">—</span>
 					</button>
 					<button class="nav-item" type="button" data-tab="resources">
-						<span data-i18n="tab_resources"></span><span class="nav-count" id="nav-resources-count">—</span>
+						<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h4l3 4h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg><span class="nav-label" data-i18n="tab_resources"></span><span class="nav-count" id="nav-resources-count">—</span>
 					</button>
 					<button class="nav-item" type="button" data-tab="host">
-						<span data-i18n="tab_host"></span><span class="nav-count" id="nav-host-count">—</span>
+						<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 21h8m-4-5v5"/></svg><span class="nav-label" data-i18n="tab_host"></span><span class="nav-count" id="nav-host-count">—</span>
 					</button>
 					<button class="nav-item" type="button" data-tab="settings">
-						<span data-i18n="tab_settings"></span><span class="nav-count" id="nav-settings-count">—</span>
+						<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="8" cy="18" r="2"/></svg><span class="nav-label" data-i18n="tab_settings"></span><span class="nav-count" id="nav-settings-count">—</span>
 					</button>
 				</nav>
 
@@ -54,7 +62,7 @@
 			<div class="workspace">
 				<header class="pagebar">
 					<div class="page-copy">
-						<p class="eyebrow" id="page-kicker"></p>
+						<span class="hidden" id="page-kicker"></span>
 						<h1 id="page-title"></h1>
 						<p class="page-description" id="page-description"></p>
 					</div>
@@ -66,7 +74,8 @@
 
 				<div class="status-banner hidden" id="global-status" role="status" aria-live="polite"></div>
 
-				<main id="main-content">
+				<main id="main-content" tabindex="-1">
+					<div class="session-summary" id="session-summary"></div>
 					<section class="panel hidden" id="panel-models" aria-labelledby="page-title">
 						<div id="models-banner" class="hidden"></div>
 						<div class="models-layout">
@@ -85,7 +94,7 @@
 							<section class="surface provider-detail-shell">
 								<header class="surface-header">
 									<div class="surface-title-group">
-										<p class="eyebrow" data-i18n="provider_details"></p>
+
 										<h2 id="provider-title">Provider</h2>
 									</div>
 									<div class="button-row" id="provider-actions"></div>
@@ -100,7 +109,7 @@
 						<div class="metric-grid" id="resource-stats"></div>
 						<div class="surface resource-browser">
 							<div class="surface-header resource-toolbar">
-								<div class="segmented" id="resource-kinds" aria-label="Resource type"></div>
+								<div class="segmented" id="resource-kinds" data-i18n-aria="tab_resources"></div>
 								<label class="search-field resource-search">
 									<span class="sr-only" data-i18n="res_filter"></span>
 									<input type="search" id="resource-filter" autocomplete="off" data-i18n-placeholder="res_filter" />
@@ -115,7 +124,7 @@
 						<div class="surface">
 							<div class="surface-header resource-toolbar">
 								<div class="surface-title-group">
-									<p class="eyebrow">config.toml</p>
+
 									<h2 data-i18n="host_registered_settings"></h2>
 								</div>
 								<label class="search-field resource-search">
@@ -123,24 +132,28 @@
 									<input type="search" id="host-filter" autocomplete="off" data-i18n-placeholder="host_filter" />
 								</label>
 							</div>
-							<div class="host-section-nav" id="host-section-nav"></div>
+							<div class="host-toolbar"><div class="host-section-nav" id="host-section-nav"></div><label class="filter-check"><input type="checkbox" id="host-customized"/><span data-i18n="changed_only"></span></label></div>
 						</div>
 						<div class="host-sections" id="host-body"></div>
+						<div class="savebar" id="host-savebar"><span id="host-draft-status" role="status"></span><div class="button-row"><button class="btn" id="btn-host-discard" type="button" data-i18n="discard"></button><button class="btn primary" id="btn-host-save" type="button" data-i18n="save_draft"></button></div></div>
 					</section>
 
 					<section class="panel hidden" id="panel-settings" aria-labelledby="page-title">
 						<div id="settings-banner" class="hidden"></div>
+						<p class="scope-note" data-i18n="settings_scope_hint"></p>
+						<label class="search-field settings-search"><span class="sr-only" data-i18n="settings_search"></span><input type="search" id="settings-filter" data-i18n-placeholder="settings_search"/></label>
 						<div class="settings-grid">
-							<section class="surface">
+							<section class="surface" id="quick-settings-card">
 								<header class="surface-header">
 									<div class="surface-title-group">
-										<p class="eyebrow" data-i18n="common_settings"></p>
+
 										<h2 data-i18n="quick_settings"></h2>
 									</div>
 								</header>
 								<div class="surface-body settings-toggles" id="settings-toggles"></div>
 							</section>
 
+							<div id="settings-groups"></div>
 							<section class="surface raw-settings-card">
 								<details id="raw-settings-details">
 									<summary class="raw-summary">
@@ -156,23 +169,29 @@
 											<code class="path" id="settings-path"></code>
 											<div class="button-row">
 												<button class="btn" type="button" id="btn-settings-validate" data-i18n="validate"></button>
-												<button class="btn primary" type="button" id="btn-settings-save" data-i18n="save_reload"></button>
+												<button class="btn" type="button" id="btn-settings-format" data-i18n="format_json"></button>
 											</div>
 										</div>
 									</div>
 								</details>
 							</section>
 						</div>
+						<div class="savebar" id="settings-savebar"><span id="settings-draft-status" role="status"></span><div class="button-row"><button class="btn" id="btn-settings-discard" type="button" data-i18n="discard"></button><button class="btn primary" id="btn-settings-save" type="button" data-i18n="save_reload"></button></div></div>
 					</section>
 				</main>
 			</div>
 		</div>
 
-		<dialog class="editor-dialog" id="editor-dialog">
+		<dialog class="search-dialog" id="search-dialog" aria-labelledby="search-title">
+			<div class="search-dialog-header"><h2 id="search-title" data-i18n="search_results"></h2><button id="search-close" class="icon-button" type="button" data-i18n-aria="close">×</button></div>
+			<label class="search-dialog-input"><span class="sr-only" data-i18n="search_all"></span><input id="global-search" type="search" autocomplete="off" data-i18n-placeholder="search_all"/></label>
+			<div id="search-results" class="search-results"></div><p id="search-limit"></p><p class="search-dialog-hint" data-i18n="search_hint"></p>
+		</dialog>
+		<dialog class="editor-dialog" id="editor-dialog" aria-labelledby="editor-title" aria-describedby="editor-description">
 			<form id="editor-form">
 				<header class="dialog-header">
 					<div>
-						<p class="eyebrow" data-i18n="edit_configuration"></p>
+
 						<h2 id="editor-title"></h2>
 						<p class="dialog-description" id="editor-description"></p>
 					</div>

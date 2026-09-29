@@ -1,3 +1,8 @@
+	function resourceEntries(kind) {
+		const configured = (Array.isArray(state.settings?.[kind]) ? state.settings[kind] : []).filter(path=>typeof path === "string").map(path=>({path,name:path.split(/[\\/]/).filter(Boolean).at(-1) || path,source:"settings"}));
+		const paths = new Set(configured.map(entry=>entry.path));
+		return [...configured, ...(state.resources?.[kind] || []).filter(entry=>!paths.has(entry.path))];
+	}
 	function filterEntries(entries, query) {
 		if (!query) return entries;
 		const needle = query.toLowerCase();
@@ -7,7 +12,7 @@
 	function renderResources() {
 		renderBanner("resources-banner", state.resources?.error ? t("res_scan_warning", { error: state.resources.error }) : null);
 		const stats = $("#resource-stats");
-		stats.replaceChildren(...RESOURCE_KEYS.map((key) => metric(t(RESOURCE_LABELS[key]), state.resources?.[key]?.length || 0)));
+		stats.replaceChildren(...RESOURCE_KEYS.map((key) => metric(t(RESOURCE_LABELS[key]), resourceEntries(key).length)));
 
 		const kinds = $("#resource-kinds");
 		kinds.replaceChildren();
@@ -20,13 +25,13 @@
 					view.resourcePage = 0;
 					renderResources();
 				},
-				text: `${t(RESOURCE_LABELS[key])} · ${state.resources?.[key]?.length || 0}`,
+				text: `${t(RESOURCE_LABELS[key])} · ${resourceEntries(key).length}`,
 			}));
 		}
 
 		const body = $("#resources-body");
 		body.replaceChildren();
-		const allEntries = state.resources?.[view.resourceKind] || [];
+		const allEntries = resourceEntries(view.resourceKind);
 		const entries = filterEntries(allEntries, view.resourceQuery.trim());
 		const pages = Math.max(1, Math.ceil(entries.length / RESOURCE_PAGE_SIZE));
 		view.resourcePage = Math.min(view.resourcePage, pages - 1);
@@ -36,11 +41,11 @@
 		const headerChildren = [
 			el("div", {}, [
 				el("h2", { text: t(RESOURCE_LABELS[view.resourceKind]) }),
-				el("p", { text: view.resourceKind === "extensions" ? t("res_extensions_hint") : t("res_readonly_hint") }),
+				el("p", { text: t("resource_manage_hint") }),
 				el("p", { text: t("res_visible", { visible: entries.length, total: allEntries.length }) }),
 			]),
 		];
-		if (view.resourceKind === "extensions") headerChildren.push(resourceAddControl());
+		headerChildren.push(resourceAddControl());
 		body.appendChild(el("div", { class: "resource-section-head" }, headerChildren));
 
 		if (visible.length === 0) {
@@ -59,7 +64,7 @@
 
 	function resourceAddControl() {
 		const input = el("input", { type: "text", placeholder: t("res_path_placeholder"), "aria-label": t("res_path_placeholder") });
-		const submit = () => addResourcePath("extensions", input.value);
+		const submit = () => addResourcePath(view.resourceKind, input.value);
 		input.addEventListener("keydown", (event) => {
 			if (event.key === "Enter") {
 				event.preventDefault();
@@ -83,10 +88,10 @@
 			entry.description ? el("p", { class: "resource-description", text: entry.description, title: entry.description }) : null,
 			el("code", { class: "path", text: entry.path, title: entry.path }),
 		]);
-		const action = key === "extensions" && entry.source === "settings"
-			? el("button", { class: "btn small danger", type: "button", onclick: () => removeResourcePath("extensions", entry.path), text: t("remove") })
+		const action = entry.source === "settings"
+			? el("button", { class: "btn small danger", type: "button", onclick: () => removeResourcePath(key, entry.path), text: t("remove") })
 			: null;
-		return el("article", { class: "resource-row" }, [main, action]);
+		return el("article", { class: "resource-row" }, [main, el("div",{class:"button-row"},[el("button",{type:"button",class:"btn small",text:t("inspect"),onclick:()=>inspectResource(entry)}),action])]);
 	}
 
 	function pagination(pages) {
@@ -122,6 +127,7 @@
 	}
 
 	async function removeResourcePath(key, path) {
+		if (!window.confirm(t("confirm_remove_resource",{path}))) return;
 		const current = Array.isArray(state.settings?.[key]) ? state.settings[key] : [];
 		try {
 			await putSettings({ ...state.settings, [key]: current.filter((entry) => entry !== path) });
@@ -129,4 +135,13 @@
 		} catch (error) {
 			notify(error.message, true);
 		}
+	}
+
+	function inspectResource(entry) {
+		openEditor({title:entry.name || t("resource_details"),description:t("resource_manage_hint"),fields:[
+			{key:"source",label:t("resource_source"),value:t(entry.source==="settings"?"source_settings":entry.source==="cli"?"source_cli":"source_discovered"),disabled:true,full:true},
+			{key:"path",label:t("resource_path"),type:"textarea",value:entry.path,full:true,disabled:true},
+			{key:"description",label:t("resource_details"),type:"textarea",value:entry.description || "",disabled:true,full:true}
+		],onSubmit:async()=>{}});
+		$("#editor-submit").classList.add("hidden");
 	}

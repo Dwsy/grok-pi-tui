@@ -102,7 +102,7 @@ Update channels are product-local and persisted in `~/.grok-pi/config.toml` unde
 |---|---|
 | Agent runtime | Pi models, providers, tools, extensions, skills, sessions, retries, and compaction |
 | Model management | `/pi-models` provides a native Provider → Model → Details editor with safe `models.json` transactions, backup/restore, live Pi reload, and typed activation; `/model` remains the fast switcher |
-| Web config surface | `/pi-config web` / `/pi-models web` open the same configuration — including F2 settings — in a browser, served by the `pi-grok-web-config` Pi extension on a random loopback port (token-gated, zh/en UI) |
+| Web config workbench | `/pi-config web` / `/pi-models web`: responsive zh/en workbench with global search, model/provider duplication and advanced options, four resource path lists, staged Grok/Pi settings, conflict feedback, and light/dark themes. Served by the Pi extension on a token-gated loopback port. |
 | Terminal UI | Grok Pager input, slash completion, Markdown, tool cards, diffs, dialogs, and scrollback |
 | Product tutorial | `/tutorial` (aliases `/tour`, `/onboarding`) opens 18 grok-pi capability areas: native Pager workflows, Pi providers/models/tools/sessions, the extension/Skill/Package ecosystem, product bridges, optional automation and explicit boundaries |
 | **Remote TUI bridge** | Pi `ctx.ui.custom` components rendered through Grok Build's native Pager, without a second TUI |

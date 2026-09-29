@@ -122,6 +122,9 @@ export function agentPaths(cwd: string): {
 function loadModelsDoc(path: string): { doc: ModelsDoc; error?: string } {
 	const file = readJsonFile(path);
 	if (file.error) return { doc: emptyModelsDoc(), error: file.error };
+	if (file.value === undefined) return { doc: emptyModelsDoc() };
+	const invalid = validateModelsDoc(file.value);
+	if (invalid) return { doc: emptyModelsDoc(), error: invalid };
 	return { doc: normalizeModelsDoc(file.value) };
 }
 
@@ -131,7 +134,7 @@ function normalizeModelsDoc(value: unknown): ModelsDoc {
 	for (const [id, provider] of Object.entries(value.providers)) {
 		if (isJsonObject(provider)) providers[id] = provider as ProviderEntry;
 	}
-	return { providers };
+	return { ...value, providers };
 }
 
 export function validateModelsDoc(value: unknown): string | undefined {
@@ -139,15 +142,46 @@ export function validateModelsDoc(value: unknown): string | undefined {
 	if (!isJsonObject(value.providers)) return "models.json needs a `providers` object";
 	for (const [id, provider] of Object.entries(value.providers)) {
 		if (!isJsonObject(provider)) return `provider "${id}" must be an object`;
+		const providerError = validateConnectionFields(provider);
+		if (providerError) return `provider "${id}": ${providerError}`;
 		if (provider.models !== undefined) {
 			if (!Array.isArray(provider.models)) return `provider "${id}": models must be an array`;
+			const ids = new Set<string>();
 			for (const model of provider.models) {
 				if (!isJsonObject(model) || typeof model.id !== "string" || model.id.length === 0) {
 					return `provider "${id}" has a model without a string id`;
 				}
+				if (ids.has(model.id)) return `provider "${id}" has duplicate model "${model.id}"`;
+				ids.add(model.id);
+				const modelError = validateConnectionFields(model);
+				if (modelError) return `model "${model.id}": ${modelError}`;
+				for (const key of ["contextWindow", "maxTokens"]) {
+					if (model[key] !== undefined && (!Number.isSafeInteger(model[key]) || Number(model[key]) <= 0)) return `model "${model.id}": ${key} must be a positive integer`;
+				}
+				if (model.reasoning !== undefined && typeof model.reasoning !== "boolean") return `model "${model.id}": reasoning must be boolean`;
+				if (model.input !== undefined && (!Array.isArray(model.input) || model.input.some(value => typeof value !== "string"))) return `model "${model.id}": input must be an array of strings`;
+				if (model.cost !== undefined) {
+					if (!isJsonObject(model.cost)) return `model "${model.id}": cost must be an object`;
+					for (const key of ["input", "output", "cacheRead", "cacheWrite"]) {
+						const value = model.cost[key];
+						if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) return `model "${model.id}": cost.${key} must be non-negative`;
+					}
+				}
 			}
 		}
 	}
+	return undefined;
+}
+
+function validateConnectionFields(value: JsonObject): string | undefined {
+	for (const key of ["name", "api", "baseUrl", "apiKey"]) {
+		if (value[key] !== undefined && typeof value[key] !== "string") return `${key} must be a string`;
+	}
+	for (const key of ["headers", "compat", "modelOverrides"]) {
+		if (value[key] !== undefined && !isJsonObject(value[key])) return `${key} must be an object`;
+	}
+	if (isJsonObject(value.headers) && Object.values(value.headers).some(item => typeof item !== "string")) return "headers must contain string values";
+	if (value.authHeader !== undefined && typeof value.authHeader !== "boolean") return "authHeader must be boolean";
 	return undefined;
 }
 
@@ -280,7 +314,7 @@ export async function collectState(
 		models: models.doc,
 		modelsError: models.error,
 		settings,
-		settingsError: settingsFile.error,
+		settingsError: settingsFile.error || (settingsFile.value !== undefined && !isJsonObject(settingsFile.value) ? "settings.json must be a JSON object" : undefined),
 		current: ctx?.model
 			? {
 					provider: ctx.model.provider,
@@ -335,8 +369,22 @@ function bracketsBalanced(text: string): boolean {
 	return depth <= 0 && !inString;
 }
 
+function stripTomlComment(line: string): string {
+	let quote = "", escaped = false;
+	for (let i = 0; i < line.length; i += 1) {
+		const char = line[i]!;
+		if (quote) {
+			if (quote === '"' && escaped) escaped = false;
+			else if (quote === '"' && char === "\\") escaped = true;
+			else if (char === quote) quote = "";
+		} else if (char === '"' || char === "'") quote = char;
+		else if (char === "#") return line.slice(0, i);
+	}
+	return line;
+}
+
 function parseTomlValue(raw: string): unknown {
-	const text = raw.trim();
+	const text = raw.split("\n").map(stripTomlComment).join("\n").trim();
 	if (text === "true") return true;
 	if (text === "false") return false;
 	if (text.length >= 2 && text.startsWith("'") && text.endsWith("'")) {
@@ -506,7 +554,7 @@ export function collectHostState(): HostConfigState {
 export function saveHostUi(configPath: string, updates: JsonObject): void {
 	for (const [key, value] of Object.entries(updates)) {
 		if (!/^[A-Za-z0-9_-]+$/.test(key)) throw new Error(`invalid setting key "${key}"`);
-		if (typeof value !== "boolean" && typeof value !== "number" && typeof value !== "string") {
+		if ((typeof value === "number" && !Number.isFinite(value)) || (typeof value !== "boolean" && typeof value !== "number" && typeof value !== "string")) {
 			throw new Error(`setting "${key}" must be a boolean, number or string`);
 		}
 	}

@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.10-beta.9] - 2026-09-29
+
+### Added
+
+- **Web Config workbench** — reworked `/pi-config web` and `/pi-models web` as a responsive bilingual configuration workspace with global search, session/default-model context, light/dark themes, provider/model duplication, advanced headers and compatibility fields, editable resource paths, translated Grok/F2 settings, grouped Pi settings, and explicit staged saving with conflict feedback. The existing loopback/authentication and product-isolated configuration boundaries remain in place.
+- **PR #10: Remote TUI input ownership** (kyrosle) — correctly deliver Shift/Ctrl/Alt/Super key presses, protect interactive component input from the chat composer and unrelated global shortcuts, preserve component focus/lifecycle, and serialize keyboard transport with instance-scoped identity. Include tests for modified keys and transport ordering.
+
+### Changed
+
+- Carries forward the `v0.1.10-beta.8` Eval v2 MCP integration (official TypeScript SDK, binding ID + URL secret, bounded image resources, optional npm `tokenizers` accounting). The `beta.8` build was cancelled before binaries were published; use this combined `beta.9` prerelease for all three changes.
+
 ## [0.1.10-beta.8] - 2026-09-29
 
 ### Added
