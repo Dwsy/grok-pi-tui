@@ -1725,6 +1725,9 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         "pi_eval_v2_only" => {
             let _ = dispatch(Action::SetPiEvalV2Only(true), app);
         }
+        "pi_eval_mcp" => {
+            let _ = dispatch(Action::SetPiEvalMcp(true), app);
+        }
         "pi_herdr" => {
             let _ = dispatch(
                 Action::SetHostFeatureBool {

@@ -1614,6 +1614,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "pi_eval_mcp" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_eval_mcp", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_eval_mcp(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
         "psm_resume_index" => {
             let SettingValue::Bool(b) = value else {
                 return Err(kind_mismatch("psm_resume_index", "Bool", &value));

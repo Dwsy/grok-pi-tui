@@ -1000,6 +1000,7 @@ pub(in crate::app::dispatch) fn action_for_reset(
             Some(Action::SetPiEvalV2DisplayMode((*s).to_string()))
         }
         ("pi_eval_v2_only", SettingValue::Bool(b)) => Some(Action::SetPiEvalV2Only(*b)),
+        ("pi_eval_mcp", SettingValue::Bool(b)) => Some(Action::SetPiEvalMcp(*b)),
         ("psm_resume_index", SettingValue::Bool(b)) => Some(Action::SetPsmResumeIndex(*b)),
         ("pi_tree_file_rollback", SettingValue::Bool(b)) => Some(Action::SetPiTreeFileRollback(*b)),
         ("pi_tree_skip_summary_prompt", SettingValue::Bool(b)) => {
@@ -1248,6 +1249,7 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             set_pi_eval_v2_display_mode_inner(app, s)
         }
         ("pi_eval_v2_only", SettingValue::Bool(b)) => app.current_ui.pi_eval_v2_only = *b,
+        ("pi_eval_mcp", SettingValue::Bool(b)) => app.current_ui.pi_eval_mcp = *b,
         ("psm_resume_index", SettingValue::Bool(b)) => app.current_ui.psm_resume_index = *b,
         ("pi_tree_file_rollback", SettingValue::Bool(b)) => {
             app.current_ui.pi_tree_file_rollback = *b

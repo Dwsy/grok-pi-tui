@@ -138,6 +138,20 @@ pub(super) fn eval_v2_only_enabled_from_config(config: Option<&toml::Value>) -> 
         .unwrap_or(false)
 }
 
+/// The MCP facade is explicitly opt-in and only works with Eval-v2-only.
+pub(super) fn eval_mcp_enabled() -> bool {
+    let config = xai_grok_shell::config::load_effective_config().ok();
+    eval_mcp_enabled_from_config(config.as_ref())
+}
+
+pub(super) fn eval_mcp_enabled_from_config(config: Option<&toml::Value>) -> bool {
+    config
+        .and_then(|root| root.get("ui"))
+        .and_then(|ui| ui.get("pi_eval_mcp"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false)
+}
+
 pub(super) fn eval_v2_only_tool_policy_applies(
     pi_args: &[String],
     bridge_extensions_enabled: bool,

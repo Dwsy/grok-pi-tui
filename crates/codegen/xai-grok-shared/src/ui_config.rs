@@ -59,6 +59,10 @@ pub struct UiConfig {
     /// the stored `pi_eval` or per-tool preferences underneath it.
     #[serde(default)]
     pub pi_eval_v2_only: bool,
+    /// Enable a private loopback MCP endpoint over the live Eval v2-only runtime.
+    /// Takes effect at process start, and requires pi_eval_v2_only.
+    #[serde(default)]
+    pub pi_eval_mcp: bool,
     /// Use Pi Session Manager for external Pi `/resume`: SQLite catalog,
     /// Ctrl+F full-text search, and message preview. Requires PSM running.
     /// Disabled by default; off → Pi JSONL list only (no PSM SQLite paths).
@@ -507,6 +511,7 @@ impl Default for UiConfig {
             pi_eval_v2_language: default_pi_eval_v2_language(),
             pi_eval_v2_display_mode: default_pi_eval_v2_display_mode(),
             pi_eval_v2_only: false,
+            pi_eval_mcp: false,
             psm_resume_index: false,
             pi_tree_file_rollback: false,
             pi_tree_skip_summary_prompt: false,

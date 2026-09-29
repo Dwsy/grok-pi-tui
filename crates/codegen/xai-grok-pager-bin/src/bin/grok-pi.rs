@@ -117,8 +117,8 @@ use remote_tui_extension::write_remote_tui_extension;
 use rpc_compat_extension::write_rpc_compat_extension;
 use runtime_config::{
     bash_bridge_enabled, bash_control_meta_for_adapter, env_flag_default_off, env_flag_default_on,
-    eval_v2_language, eval_v2_only_enabled, eval_v2_only_tool_policy_applies, eval_version,
-    host_terminal_size, normal_f2_tool_policy_applies, resolve_bash_max_wait_mins,
+    eval_mcp_enabled, eval_v2_language, eval_v2_only_enabled, eval_v2_only_tool_policy_applies,
+    eval_version, host_terminal_size, normal_f2_tool_policy_applies, resolve_bash_max_wait_mins,
 };
 use rust_tui_bridge_extension::write_rust_tui_bridge_extension;
 use session_paths::pi_session_dir;
@@ -939,6 +939,16 @@ async fn run(mut args: Args) -> Result<()> {
         }
         .to_string(),
     ));
+    // Only the host-applied isolation policy may expose a remotely controllable Eval.
+    env.push((
+        "PI_GROK_EVAL_MCP".to_string(),
+        if eval_v2_only_tool_policy_applied && eval_mcp_enabled() {
+            "1"
+        } else {
+            "0"
+        }
+        .to_string(),
+    ));
     if recap_extension.is_some() {
         env.push(("PI_GROK_RECAP".to_string(), "1".to_string()));
         // SAFETY: single-threaded startup; the adapter advertises this capability.
@@ -1301,7 +1311,8 @@ async fn run(mut args: Args) -> Result<()> {
 #[cfg(test)]
 mod env_flag_tests {
     use super::runtime_config::{
-        bash_bridge_enabled_from_config, eval_v2_only_enabled_from_config, eval_version_from_config,
+        bash_bridge_enabled_from_config, eval_mcp_enabled_from_config,
+        eval_v2_only_enabled_from_config, eval_version_from_config,
     };
     use super::{
         Args, PI_GROK_NATIVE_COMMANDS, bash_control_meta_for_adapter, bootstrap_with_deadline,
@@ -1375,6 +1386,22 @@ mod env_flag_tests {
         let invalid: toml::Value =
             toml::from_str("[ui]\npi_eval = \"both\"\n").expect("parse invalid config");
         assert_eq!(eval_version_from_config(Some(&invalid)), "v1");
+    }
+
+    #[test]
+    fn eval_mcp_is_opt_in_and_needs_host_isolation_policy() {
+        assert!(!eval_mcp_enabled_from_config(None));
+        let missing: toml::Value = toml::from_str("[ui]\n").unwrap();
+        assert!(!eval_mcp_enabled_from_config(Some(&missing)));
+        let configured: toml::Value = toml::from_str("[ui]\npi_eval_mcp = true\n").unwrap();
+        assert!(eval_mcp_enabled_from_config(Some(&configured)));
+        assert!(!eval_v2_only_tool_policy_applies(&[], true, false));
+        assert!(!eval_v2_only_tool_policy_applies(
+            &["--no-tools".into()],
+            true,
+            true
+        ));
+        assert!(eval_v2_only_tool_policy_applies(&[], true, true));
     }
 
     #[test]

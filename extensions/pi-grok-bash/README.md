@@ -7,6 +7,25 @@
 
 The extension is intentionally implemented at the Pi extension layer so Pager/native task UI stays authoritative while execution, cancellation, task lifetime, and model-facing tool semantics remain under one owner.
 
+## Eval v2-only MCP (opt-in)
+
+Enable **Eval v2 only** and **Eval MCP (local)** in grok-pi F2, then restart grok-pi. The equivalent TOML switches are `[ui].pi_eval_v2_only = true` and `[ui].pi_eval_mcp = true`. MCP is *not* activated by the standalone Eval v2 version selector and stays disabled when CLI tool restrictions override the host's Eval-v2-only policy. The official TypeScript `@modelcontextprotocol/sdk` exposes authenticated loopback Streamable HTTP; it does not replace or start another Pi agent.
+
+On each Pi `session_start`, an info notification displays a unique, never-reused `binding ID` and secret URL, for example `http://127.0.0.1:<port>/mcp?key=<secret>`. Give **both** values to a trusted agent on the same host (or via a separately managed private tunnel). Clients must include the exact `binding_id` on **every** `get_desc`, `get_context`, and `execute_eval` tool call. The independent URL secret is an authentication credential: sharing it grants access to the current Pi branch and Eval's registered nested tools. Session switching rotates the ID and secret, and shutdown closes the listener. An exclusive local `bindings.lock` and durable `$GROK_HOME/eval-pi-mcp/issued-ids.json` ensure IDs cannot be recycled between instances.
+
+Eval result images and native `read` ImageContent blocks (even without an explicit `display(image)`) are automatically published as opaque binding-scoped MCP Resource URIs. Read the `resource_link` with `resources/read`; 16 MiB per image and 64 MiB / 48 images overall are retained only for this binding. `get_desc` lists registered Pi tool schemas and Eval usage instructions; `get_context` returns a bounded active-branch transcript snapshot, not the exact LLM system prompt.
+
+For **real input/output Token counts**, install npm `tokenizers` into Pi's npm tree and supply the matching `tokenizer.json` before launching grok-pi:
+
+```sh
+npm install --prefix ~/.pi/agent/npm tokenizers
+export PI_GROK_EVAL_MCP_TOKENIZER_FILE=/absolute/path/to/tokenizer.json
+```
+
+The default JSON path is `$GROK_HOME/eval-pi-mcp/tokenizer.json`. MCP results include `structuredContent.token_usage` plus a text footer with input/output/total counts of **text payloads**; image binary, binding IDs, and URL keys are excluded. This is tokenizer-specific accounting, not provider-billed chat or image usage. Missing package, missing JSON, or encoding failures return `status: "unavailable"` and `null` counts rather than guessed values. The official SDK and Zod are also required in the Pi npm tree (`npm install --prefix ~/.pi/agent/npm @modelcontextprotocol/sdk zod` if absent).
+
+Focused integration checks: `node extensions/pi-grok-bash/test-eval-pi-mcp.mjs`; existing runtime regression: `node extensions/pi-grok-bash/test-v2.1.mjs`. Protocol and security contract: `docs/issues/grok-pi/20260929-eval-pi-mcp.md`.
+
 ## Current behavior at a glance
 
 | Capability | Eval v1 | Eval v2 |

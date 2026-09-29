@@ -2421,6 +2421,24 @@ pub(in crate::app::dispatch) fn set_pi_eval_v2_only(
     }]
 }
 
+pub(in crate::app::dispatch) fn set_pi_eval_mcp(app: &mut AppView, enabled: bool) -> Vec<Effect> {
+    let previous = app.current_ui.pi_eval_mcp;
+    if previous == enabled {
+        return vec![];
+    }
+    app.current_ui.pi_eval_mcp = enabled;
+    refresh_open_settings_modals(app);
+    let value = if enabled { "on" } else { "off" };
+    app.show_toast(&format!(
+        "Eval MCP: {value} — restart grok-pi to apply (requires Eval v2 only)"
+    ));
+    vec![Effect::PersistSetting {
+        key: "pi_eval_mcp",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
 pub(in crate::app::dispatch) fn set_psm_resume_index(
     app: &mut AppView,
     enabled: bool,

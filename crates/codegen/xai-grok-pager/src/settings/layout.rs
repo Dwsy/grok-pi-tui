@@ -102,6 +102,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
         | "pi_eval_v2_language"
         | "pi_eval_v2_display_mode"
         | "pi_eval_v2_only"
+        | "pi_eval_mcp"
         | "pi_cache_graph"
         | "pi_config_skill"
         | "pi_config"

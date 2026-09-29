@@ -2035,6 +2035,20 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
             external_only: true,
         },
+        SettingMeta {
+            key: "pi_eval_mcp",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Eval MCP (local)",
+            description: "Expose this Eval v2-only Pi session via authenticated loopback MCP. Requires Eval v2 only and restarting grok-pi. The URL permits Eval execution: share only with trusted agents.",
+            keywords: &["pi", "eval", "mcp", "binding", "local", "tokenizers"],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_eval_mcp,
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
         // External Pi profile resource manager. This is a Pager navigation row,
         // not a Grok-shell setting, so its Group form only supplies the native
         // chevron presentation; settings-modal input maps it to OpenPiConfig.

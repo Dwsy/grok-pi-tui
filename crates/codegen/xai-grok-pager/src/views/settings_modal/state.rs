@@ -1179,6 +1179,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         }),
         "pi_bash" => Some(Action::SetPiBash(new)),
         "pi_eval_v2_only" => Some(Action::SetPiEvalV2Only(new)),
+        "pi_eval_mcp" => Some(Action::SetPiEvalMcp(new)),
         "psm_resume_index" => Some(Action::SetPsmResumeIndex(new)),
         "pi_tree_file_rollback" => Some(Action::SetPiTreeFileRollback(new)),
         "pi_tree_skip_summary_prompt" => Some(Action::SetPiTreeSkipSummaryPrompt(new)),

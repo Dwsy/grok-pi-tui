@@ -83,6 +83,17 @@ pub(super) fn write_bash_extension() -> Result<BashExtension> {
         include_str!("../../../../../../extensions/pi-grok-bash/tool-bridge.ts"),
     )?;
 
+    write_source_file(
+        source_dir.path(),
+        "eval-pi-mcp.ts",
+        include_str!("../../../../../../extensions/pi-grok-bash/eval-pi-mcp.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "eval-token-count.ts",
+        include_str!("../../../../../../extensions/pi-grok-bash/eval-token-count.ts"),
+    )?;
+
     let control_meta = tempfile::Builder::new()
         .prefix("pi-grok-bash-control-")
         .suffix(".json")
@@ -116,6 +127,10 @@ mod tests {
             std::fs::read_to_string(source_dir.join("shared.ts")).expect("read shared module");
         let tool_bridge_source = std::fs::read_to_string(source_dir.join("tool-bridge.ts"))
             .expect("read tool bridge module");
+        let eval_mcp_source = std::fs::read_to_string(source_dir.join("eval-pi-mcp.ts"))
+            .expect("read Eval MCP module");
+        let token_count_source = std::fs::read_to_string(source_dir.join("eval-token-count.ts"))
+            .expect("read token counter module");
 
         assert!(source.contains("const nativeBash = createBashToolDefinition"));
         assert!(source.contains("pi.registerTool({"));
@@ -125,6 +140,10 @@ mod tests {
         assert!(source.contains("from \"./eval-tasks.ts\""));
         assert!(source.contains("from \"./prompts.ts\""));
         assert!(source.contains("from \"./tool-bridge.ts\""));
+        assert!(source.contains("from \"./eval-pi-mcp.ts\""));
+        assert!(eval_mcp_source.contains("startEvalPiMcp"));
+        assert!(eval_mcp_source.contains("from \"./eval-token-count.ts\""));
+        assert!(token_count_source.contains("class EvalTokenCounter"));
         assert!(source.contains("invokeEvalHostCall"));
         assert!(source.contains("is_background"));
         assert!(source.contains("name: \"get_task_output\""));

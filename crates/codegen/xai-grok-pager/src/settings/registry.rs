@@ -582,6 +582,7 @@ pub fn current_value_for(
             },
         )),
         "pi_eval_v2_only" => Some(SettingValue::Bool(ui.pi_eval_v2_only)),
+        "pi_eval_mcp" => Some(SettingValue::Bool(ui.pi_eval_mcp)),
         "psm_resume_index" => Some(SettingValue::Bool(ui.psm_resume_index)),
         "pi_tree_file_rollback" => Some(SettingValue::Bool(ui.pi_tree_file_rollback)),
         "pi_tree_skip_summary_prompt" => Some(SettingValue::Bool(ui.pi_tree_skip_summary_prompt)),
@@ -1018,6 +1019,9 @@ mod tests {
                 }
                 ("pi_eval_v2_only", SettingKind::Bool { default }) => {
                     assert_eq!(*default, ui.pi_eval_v2_only);
+                }
+                ("pi_eval_mcp", SettingKind::Bool { default }) => {
+                    assert_eq!(*default, ui.pi_eval_mcp);
                 }
                 ("page_flip_on_send", SettingKind::Bool { default }) => {
                     assert_eq!(

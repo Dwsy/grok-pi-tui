@@ -9,6 +9,18 @@
 
 ## [Unreleased]
 
+## [0.1.10-beta.8] - 2026-09-29
+
+### 新增
+
+- **Eval v2-only MCP（默认关闭）** — 在 F2 中同时开启 `[ui].pi_eval_v2_only` 和 `[ui].pi_eval_mcp` 并重启，使用官方 TypeScript MCP SDK 在本地回环地址上开放现有 Pi Eval v2 运行时；会话通知显示唯一绑定 ID 及独立密钥 URL。外部 Agent 每次调用 `get_context`、`get_desc`、`execute_eval` 均须提交绑定 ID。会话切换或关闭后旧地址失效。
+- 绑定 ID 由本地文件独占锁持久化分配且永不重复；Eval 结果以及内嵌 Pi `read` 生成的图片自动转换成绑定专属 MCP Resource，支持 `resources/list` 和 `resources/read`，不把图片 Base64 当作普通工具文本输出。
+- **可选 `tokenizers` 统计** — 配合匹配模型的 `tokenizer.json` 统计 MCP 文本输入、输出 Token；缺少依赖或模型文件时明确返回 `unavailable`/null，不估算或冒充模型计费数据。配置方法见 `extensions/pi-grok-bash/README.md`。
+
+### 验证
+
+- 官方 SDK MCP 端到端、30 个并发及跨进程绑定 ID、实际 Eval v2 嵌套 `read` 图片、URL 鉴权与绑定轮换，以及既有 Eval v2.1 回归、Cargo check 均通过。首次使用需根据说明安装可选 npm 依赖和分词器文件。
+
 ## [0.1.10-beta.4] - 2026-09-12
 
 ### 变更

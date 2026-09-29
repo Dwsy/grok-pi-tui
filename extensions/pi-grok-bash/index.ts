@@ -5,6 +5,7 @@
  * promote an active foreground tool call into its existing background-task UI
  * without rerunning the command. Pager still owns all visible task surfaces.
  */
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -52,6 +53,7 @@ import {
 import { buildBashPrompts, buildEvalPrompts } from "./prompts.ts";
 import { MAX_TIMEOUT_SECONDS, resolveMaxWaitMs } from "./shared.ts";
 import { EvalSessionToolBridge } from "./tool-bridge.ts";
+import { startEvalPiMcp, type EvalMcpToolResult } from "./eval-pi-mcp.ts";
 export { EvalSessionToolBridge } from "./tool-bridge.ts";
 
 const EVAL_V2_PARALLEL_HOST_CALL_LIMIT = 4;
@@ -119,9 +121,10 @@ export default async function (pi: ExtensionAPI) {
 		evalV2Language === "all" ? ["js", "py"] : [evalV2Language];
 	const evalV2Only = evalVersion === "v2" && process.env.PI_GROK_EVAL_V2_ONLY === "1";
 	let evalV2ToolsOverride: string[] | undefined;
+	let evalV2ToolsOverrideLoad: Promise<void> = Promise.resolve();
 	if (evalV2Only) {
 		pi.on("session_start", () => pi.setActiveTools(["eval"]));
-		void loadEvalV2ToolsOverride().then((names) => {
+		evalV2ToolsOverrideLoad = loadEvalV2ToolsOverride().then((names) => {
 			if (!names) return;
 			evalV2ToolsOverride = names;
 			evalToolBridge?.setAllowedTools(names);
@@ -235,7 +238,7 @@ export default async function (pi: ExtensionAPI) {
 			: {}),
 	});
 
-	pi.registerTool({
+	const evalToolDefinition = {
 		name: "eval",
 		label: "Eval",
 		description: evalPrompts.description,
@@ -243,10 +246,10 @@ export default async function (pi: ExtensionAPI) {
 		promptGuidelines: evalPrompts.promptGuidelines,
 		parameters: EvalParameters,
 		async execute(
-			toolCallId,
+			toolCallId: string,
 			params: EvalParams,
-			signal,
-			_onUpdate,
+			signal: AbortSignal | undefined,
+			_onUpdate: any,
 			ctx: ExtensionContext,
 		) {
 			if (!params.code.trim()) throw new Error("eval code must not be empty");
@@ -381,8 +384,57 @@ export default async function (pi: ExtensionAPI) {
 				},
 			};
 		},
-	});
+	};
+	pi.registerTool(evalToolDefinition);
 	if (evalToolBridge) await evalToolBridge.install("eval");
+
+	// MCP can only take over a host-authorized Eval-v2-only Pi child. It invokes
+	// precisely the same tool closure as Pi, including background-task and
+	// captured-tool behavior; it does not spawn another Pi agent.
+	let evalMcp: Awaited<ReturnType<typeof startEvalPiMcp>> | undefined;
+	let evalMcpGeneration = 0;
+	if (evalV2Only && process.env.PI_GROK_EVAL_MCP === "1") {
+		pi.on("session_start", async (_event, ctx) => {
+			const generation = ++evalMcpGeneration;
+			await evalMcp?.close();
+			evalMcp = undefined;
+			try {
+				// Do not expose the MCP endpoint before persisted nested-tool
+				// restrictions have been applied to both catalog and invoke.
+				await evalV2ToolsOverrideLoad;
+				if (generation !== evalMcpGeneration) return;
+				const started = await startEvalPiMcp({
+					context: ctx,
+					languages: evalV2Languages,
+					description: evalPrompts.description,
+					guidelines: evalPrompts.promptGuidelines,
+					catalog: () => evalToolBridge?.catalog() ?? [],
+					skills: () => evalSkills,
+					execute: (params, signal) =>
+						evalToolDefinition.execute(
+							`mcp-${randomUUID()}`, params, signal, undefined, ctx,
+						) as Promise<EvalMcpToolResult>,
+					notify: (message) => {
+						if (generation === evalMcpGeneration) ctx.ui.notify(message, "info");
+					},
+				});
+				if (generation !== evalMcpGeneration) {
+					await started.close();
+					return;
+				}
+				evalMcp = started;
+			} catch (error) {
+				if (generation === evalMcpGeneration) {
+					ctx.ui.notify(`eval-pi-mcp startup failed: ${String(error)}`, "error");
+				}
+			}
+		});
+		pi.on("session_before_switch", async () => {
+			evalMcpGeneration++;
+			await evalMcp?.close();
+			evalMcp = undefined;
+		});
+	}
 
 	const BashParameters = Type.Object({
 		command: Type.String({
@@ -637,6 +689,8 @@ export default async function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", () => {
+		evalMcpGeneration++;
+		void evalMcp?.close();
 		control.close();
 		evalToolBridge?.dispose();
 		for (const kernel of Object.values(evalKernels)) kernel.close();

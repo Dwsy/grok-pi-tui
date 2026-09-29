@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.10-beta.8] - 2026-09-29
+
+### Added
+
+- **Eval v2-only MCP (opt-in)** — enable `[ui].pi_eval_v2_only = true` and `[ui].pi_eval_mcp = true` (F2, restart required) to expose the *existing live Pi Eval v2 runtime* through the official TypeScript MCP SDK's authenticated, loopback-only Streamable HTTP endpoint. The session notification prints a unique binding ID and a separate secret URL; each `get_context`, `get_desc`, or `execute_eval` call requires that binding ID. Session switching and shutdown invalidate the endpoint.
+- **Binding and image safety** — issued IDs are persistently reserved with a local exclusive file lock and are never recycled. Eval v2 results and nested Pi `read` images are exposed as bounded binding-scoped MCP `resource_link` entries via `resources/list` and `resources/read`, rather than printing image base64 into tool output.
+- **Optional `tokenizers` accounting** — count MCP text-input and text-output payload tokens with a matching `tokenizer.json` using the npm `tokenizers` package. If the optional package or tokenizer file is unavailable, return explicit `unavailable`/null token counts rather than approximate or claim provider-billed usage.
+
+### Verification
+
+- Extended native F2 configuration and Rust extension injection, plus official MCP SDK end-to-end tests for resource reads, authentication, session rotation and thirty in-process/cross-process binding reservations. Existing Eval v2.1 production regression and grok-pi Cargo check passed.
+- **Beta setup**: to use MCP, install `@modelcontextprotocol/sdk` and `zod` into the Pi npm tree if missing; for token counts additionally install `tokenizers` and set `PI_GROK_EVAL_MCP_TOKENIZER_FILE` to a model-compatible `tokenizer.json`. See `extensions/pi-grok-bash/README.md` for the full setup and security guidance.
+
 ## [0.1.10-beta.7] - 2026-09-25
 
 ### Fixed

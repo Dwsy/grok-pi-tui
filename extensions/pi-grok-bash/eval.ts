@@ -85,6 +85,8 @@ type PendingEval = {
 	resolve: (result: EvalExecution) => void;
 	reject: (error: Error) => void;
 	output: Buffer;
+	/** Pi read-image blocks belong to this cell, not to adjacent or parallel cells. */
+	readImages: EvalDisplayImage[];
 	truncated: boolean;
 	outputSink?: (chunk: Buffer) => void;
 	timer?: ReturnType<typeof setTimeout>;
@@ -999,6 +1001,7 @@ export class PersistentEvalKernel {
 				resolve,
 				reject,
 				output: Buffer.alloc(0),
+				readImages: [],
 				truncated: false,
 				outputSink,
 				outerSignal: signal,
@@ -1154,6 +1157,21 @@ export class PersistentEvalKernel {
 		void this.hostCall(call, pending.runController.signal)
 			.then((value) => {
 				if (this.pending !== pending) return;
+				// A native Pi read tool can return ImageContent without the Eval code
+				// explicitly calling display(image). Preserve it on this exact cell
+				// so the MCP facade can expose the image as resources/read.
+				if (call.method === "tool" && call.tool === "read" &&
+					typeof value === "object" && value !== null && "content" in value &&
+					Array.isArray(value.content)) {
+					for (const item of value.content) {
+						if (pending.readImages.length >= 16) break;
+						if (item && item.type === "image" && typeof item.data === "string" &&
+							typeof item.mimeType === "string" && item.mimeType.startsWith("image/") &&
+							item.data.length <= 22_369_624) {
+							pending.readImages.push({ type: "image", data: item.data, mimeType: item.mimeType });
+						}
+					}
+				}
 				this.writeWorkerMessage({ type: "host_result", id: call.id, ok: true, value });
 			})
 			.catch((error) => {
@@ -1183,10 +1201,14 @@ export class PersistentEvalKernel {
 				? `[output truncated to ${MAX_OUTPUT_BYTES} bytes]\n${output}`
 				: output;
 		if (reply.ok) {
+			const allImages = [...pending.readImages, ...(extractDisplayImages(reply) ?? [])];
+			const deduplicated = allImages.filter((image, index) =>
+				allImages.findIndex((other) => other.mimeType === image.mimeType && other.data === image.data) === index,
+			);
 			pending.resolve({
 				output: rendered,
 				truncated: bounded?.truncated ?? pending.truncated,
-				images: extractDisplayImages(reply),
+				images: deduplicated.length > 0 ? deduplicated : undefined,
 			});
 			return;
 		}
