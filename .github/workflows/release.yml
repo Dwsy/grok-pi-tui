@@ -26,6 +26,9 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          # Manual dispatch must inspect the existing release tag, not main.
+          ref: ${{ env.GROK_PI_RELEASE_TAG }}
 
       - name: Require changelog section for release tags
         shell: bash
@@ -50,7 +53,7 @@ jobs:
     name: ${{ matrix.name }}
     needs: validate-changelog
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
@@ -58,12 +61,14 @@ jobs:
           # ── macOS ────────────────────────────────────────────────────────
           - name: macOS ARM64
             runner: macos-14
+            timeout: 150
             target: aarch64-apple-darwin
             asset: grok-pi-macos-aarch64.tar.gz
             bin: grok-pi
             cross: false
           - name: macOS Intel
             runner: macos-14
+            timeout: 150
             target: x86_64-apple-darwin
             asset: grok-pi-macos-x86_64.tar.gz
             bin: grok-pi
@@ -73,6 +78,7 @@ jobs:
           # ── Linux ────────────────────────────────────────────────────────
           - name: Linux x64
             runner: ubuntu-latest
+            timeout: 90
             target: x86_64-unknown-linux-gnu
             asset: grok-pi-linux-x86_64.tar.gz
             bin: grok-pi
@@ -82,6 +88,7 @@ jobs:
             # large release-dist profile (codegen-units=1 + thin LTO) from a
             # shared 16 GB x64 runner OOM-kills the job (exit 143).
             runner: ubuntu-24.04-arm
+            timeout: 90
             target: aarch64-unknown-linux-gnu
             asset: grok-pi-linux-aarch64.tar.gz
             bin: grok-pi
@@ -90,12 +97,14 @@ jobs:
           # ── Windows ──────────────────────────────────────────────────────
           - name: Windows x64
             runner: windows-latest
+            timeout: 90
             target: x86_64-pc-windows-msvc
             asset: grok-pi-windows-x86_64.zip
             bin: grok-pi.exe
             cross: false
           - name: Windows ARM64
             runner: windows-latest
+            timeout: 90
             target: aarch64-pc-windows-msvc
             asset: grok-pi-windows-aarch64.zip
             bin: grok-pi.exe
@@ -104,6 +113,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.GROK_PI_RELEASE_TAG }}
 
       - name: Install Rust 1.94.0
         uses: dtolnay/rust-toolchain@1.94.0
@@ -175,8 +186,20 @@ jobs:
           # Keep the grok-pi product version independent from Grok's
           # release-only GROK_VERSION stamp.
           GROK_PI_VERSION: ${{ steps.version.outputs.version }}
+          # beta.9 macOS ARM64/Intel hit the 90-minute job limit during
+          # codegen of the large xai-grok-pager crate. CGU=1 + Thin LTO
+          # + DWARF=1 costs 50+ minutes in that final library alone.
+          # Parallelize LLVM codegen and skip LTO/debug info on macOS only.
+          # Linux/Windows keep the original release-dist profile unchanged.
+          CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS: ${{ runner.os == 'macOS' && '16' || '1' }}
+          CARGO_PROFILE_RELEASE_DIST_LTO: ${{ runner.os == 'macOS' && 'off' || 'thin' }}
+          CARGO_PROFILE_RELEASE_DIST_DEBUG: ${{ runner.os == 'macOS' && '0' || '1' }}
         run: |
+          echo "Release tag: ${GROK_PI_RELEASE_TAG}; pinned source commit: $(git rev-parse HEAD)"
+          echo "Release target: ${{ matrix.target }}"
+          echo "Cargo profile: codegen-units=${CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS}, lto=${CARGO_PROFILE_RELEASE_DIST_LTO}, debug=${CARGO_PROFILE_RELEASE_DIST_DEBUG}"
           cargo build \
+            --locked \
             --profile release-dist \
             -p xai-grok-pager-bin \
             --bin grok-pi \
@@ -230,6 +253,14 @@ jobs:
     steps:
       - name: Check out release scripts
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.GROK_PI_RELEASE_TAG }}
+
+      - name: Resolve pinned release commit
+        id: source
+        shell: bash
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Download release binaries
         uses: actions/download-artifact@v4
@@ -298,7 +329,9 @@ jobs:
           generate_release_notes: false
           # Manual dispatch and tag pushes share the exact same release tag.
           tag_name: ${{ env.GROK_PI_RELEASE_TAG }}
-          target_commitish: ${{ github.sha }}
+          # On workflow_dispatch github.sha points to main's workflow fix,
+          # whereas the shipped binaries are built from the requested tag.
+          target_commitish: ${{ steps.source.outputs.sha }}
           # A beta tag ships the same six platform assets, but is not promoted
           # by GitHub's stable `releases/latest` pointer. Unsupported prerelease
           # suffixes are rejected before the build starts.
