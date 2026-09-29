@@ -103,12 +103,15 @@ jobs:
             bin: grok-pi.exe
             cross: false
           - name: Windows ARM64
-            runner: windows-latest
+            # Build natively on GitHub's Windows ARM64 image instead of spending
+            # an hour cross-compiling ARM64 on an x64 runner. Pin VS2026 while
+            # the windows-11-arm label is migrating to that image.
+            runner: windows-11-vs2026-arm
             timeout: 90
             target: aarch64-pc-windows-msvc
             asset: grok-pi-windows-aarch64.zip
             bin: grok-pi.exe
-            cross: true
+            cross: false
 
     steps:
       - name: Check out source
