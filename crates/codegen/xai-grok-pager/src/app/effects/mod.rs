@@ -92,6 +92,16 @@ fn apply_permission_mode_override(
     meta.insert("yoloMode".into(), serde_json::Value::Bool(mode.is_always_approve()));
     meta.insert("autoMode".into(), serde_json::Value::Bool(mode.is_auto()));
 }
+// Enqueue synchronously: spawning one task per key reorders rapid typing.
+fn enqueue_remote_tui(tx: &AcpAgentTx, method: &'static str, params: serde_json::Value) {
+    let request = acp::ExtNotification::new(method, serde_json::value::to_raw_value(&params)
+        .expect("serialize remote TUI notification").into());
+    let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+    if tx.send(xai_acp_lib::AcpArgs { request, response_tx }.into()).is_err() {
+        tracing::warn!(method, "Failed to enqueue remote TUI input");
+    }
+}
+
 pub(crate) fn execute(
     effect: Effect,
     tasks: &mut JoinSet<TaskResult>,
@@ -104,36 +114,10 @@ pub(crate) fn execute(
     let effect_is_send_now = matches!(effect, Effect::SendPromptNow { .. });
     match effect {
         Effect::RemoteTuiInput { id, data } => {
-            let tx = acp_tx.clone();
-            tasks.spawn(async move {
-                let params = serde_json::json!({ "id": id, "data": data });
-                let notification = acp::ExtNotification::new(
-                    "pi/ui/remote_tui/input",
-                    serde_json::value::to_raw_value(&params)
-                        .expect("serialize remote_tui input")
-                        .into(),
-                );
-                if let Err(e) = acp_send(notification, &tx).await {
-                    tracing::warn!(%e, "Failed to send remote_tui input");
-                }
-                TaskResult::CancelComplete
-            });
+            enqueue_remote_tui(acp_tx, "pi/ui/remote_tui/input", serde_json::json!({ "id": id, "data": data }));
         }
         Effect::RemoteTuiCancel { id } => {
-            let tx = acp_tx.clone();
-            tasks.spawn(async move {
-                let params = serde_json::json!({ "id": id });
-                let notification = acp::ExtNotification::new(
-                    "pi/ui/remote_tui/cancel",
-                    serde_json::value::to_raw_value(&params)
-                        .expect("serialize remote_tui cancel")
-                        .into(),
-                );
-                if let Err(e) = acp_send(notification, &tx).await {
-                    tracing::warn!(%e, "Failed to send remote_tui cancel");
-                }
-                TaskResult::CancelComplete
-            });
+            enqueue_remote_tui(acp_tx, "pi/ui/remote_tui/cancel", serde_json::json!({ "id": id }));
         }
         Effect::ShortcutDispatch { key } => {
             let tx = acp_tx.clone();

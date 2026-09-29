@@ -863,6 +863,7 @@ impl acp::Agent for PiAgent {
                     serde_json::from_str(arguments.params.get()).unwrap_or_default();
                 if let Some(data) = string(&params, &["data"]) {
                     if let Err(error) = append_remote_tui_key_event(json!({
+                        "id": params.get("id"),
                         "op": "input",
                         "data": data,
                     })) {
@@ -872,7 +873,11 @@ impl acp::Agent for PiAgent {
                 Ok(())
             }
             "pi/ui/remote_tui/cancel" => {
-                if let Err(error) = append_remote_tui_key_event(json!({ "op": "cancel" })) {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                if let Err(error) =
+                    append_remote_tui_key_event(json!({ "id": params.get("id"), "op": "cancel" }))
+                {
                     tracing::debug!(%error, "remote_tui keyfile cancel failed");
                 }
                 Ok(())

@@ -2719,6 +2719,7 @@
     "third_party/ordered_hashmap/src/lib.rs": "50d04cc67b74bd5ac4061b245ae00d0075806f6dcd15b4eaa7d339d725010809"
   },
   "allowedModifiedFiles": [
+    "crates/codegen/xai-grok-pager/src/app/agent_view/render.rs",
     "Cargo.lock",
     "Cargo.toml",
     "crates/codegen/xai-grok-pager-bin/Cargo.toml",
@@ -2786,6 +2787,7 @@
     "crates/codegen/pi-grok-adapter/"
   ],
   "allowedAddedFiles": [
+    "crates/codegen/xai-grok-pager/tests/remote_tui_keys.rs",
     "crates/codegen/xai-grok-pager-bin/src/bin/grok-pi.rs",
     "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/plan_mode_extension.rs",
     "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/model_manager_tests.rs",

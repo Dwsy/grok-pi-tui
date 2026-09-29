@@ -1,4 +1,8 @@
-import { expect, mock, test } from "bun:test";
+import { afterAll, beforeAll, expect, mock, test } from "bun:test";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { metaPath } from "./transport.ts";
 
 type SettingItem = {
   id: string;
@@ -73,7 +77,94 @@ const {
   createDemoSelector,
   applyDemoCapabilities,
 } = await import("./index.ts");
-const { dispatchComponentInput } = await import("./host.ts");
+const { dispatchComponentInput, installCustomPatch } = await import("./host.ts");
+const testDirectory = mkdtempSync(join(tmpdir(), "remote-tui-host-tests-"));
+const previousMetaPath = process.env.PI_GROK_REMOTE_TUI_META;
+beforeAll(() => { process.env.PI_GROK_REMOTE_TUI_META = join(testDirectory, "active.json"); });
+afterAll(async () => {
+  // Close the final test's host and watcher before releasing the isolated path.
+  const ui = { custom: async (..._args: any[]): Promise<any> => undefined, setWidget() {} };
+  installCustomPatch(ui);
+  await ui.custom((_tui: unknown, _theme: unknown, _kb: unknown, done: (result: unknown) => void) => {
+    done(undefined);
+    return { render: () => [], invalidate() {} };
+  });
+  if (previousMetaPath === undefined) delete process.env.PI_GROK_REMOTE_TUI_META;
+  else process.env.PI_GROK_REMOTE_TUI_META = previousMetaPath;
+  rmSync(testDirectory, { recursive: true });
+});
+
+test("focused custom child gets letters and Escape without global shortcut interception", async () => {
+  const inputs: string[] = [];
+  let rootFocus = false;
+  let childFocus = false;
+  const globals = globalThis as typeof globalThis & { __piGrokShortcutIntercept?: (data: string) => boolean };
+  const previous = globals.__piGrokShortcutIntercept;
+  let intercepted = 0;
+  globals.__piGrokShortcutIntercept = () => { intercepted++; return true; };
+  const ui = { custom: async (..._args: any[]): Promise<any> => undefined, setWidget() {} };
+  installCustomPatch(ui);
+  let finish!: (result: string) => void;
+  let showOverlay!: (component: any) => { hide(): void };
+  try {
+    const result = ui.custom((tui: any, _theme: unknown, _kb: unknown, done: typeof finish) => {
+      finish = done;
+      showOverlay = tui.showOverlay;
+      tui.setFocus({
+        invalidate() {}, render: () => [],
+        get focused() { return childFocus; },
+        set focused(value: boolean) { childFocus = value; },
+        handleInput(data: string) { inputs.push(data); if (data === "s") done("saved"); },
+      });
+      return {
+        invalidate() {}, render: () => ["frame"],
+        get focused() { return rootFocus; },
+        set focused(value: boolean) { rootFocus = value; },
+        handleInput() { throw new Error("root must not steal child focus"); },
+      };
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(childFocus).toBe(true);
+    expect(rootFocus).toBe(false);
+    const overlay = showOverlay({ invalidate() {}, render: () => ["nested"] });
+    expect(childFocus).toBe(false);
+    overlay.hide();
+    expect(childFocus).toBe(true);
+    const { id, keysPath } = JSON.parse(readFileSync(metaPath(), "utf8"));
+    appendFileSync(keysPath, ["a", "\x1b", "s"].map((data) => JSON.stringify({ id, op: "input", data }) + "\n").join(""));
+    expect(await result).toBe("saved");
+    expect(inputs).toEqual(["a", "\x1b", "s"]);
+    expect(intercepted).toBe(0);
+    expect(childFocus).toBe(false);
+  } finally {
+    finish?.("cancelled");
+    globals.__piGrokShortcutIntercept = previous;
+  }
+});
+
+test("async custom factories claim input before rendering and publish matching close", async () => {
+  const lifecycle: { op: string; id: string }[] = [];
+  const ui = {
+    custom: async (..._args: any[]): Promise<any> => undefined,
+    setWidget: (key: string, lines?: string[]) => {
+      if (key === "__pi_grok_remote_tui_session__" && lines?.[0]) {
+        lifecycle.push(JSON.parse(lines[0]));
+      }
+    },
+  };
+  installCustomPatch(ui);
+  let finish!: (result: string) => void;
+  const result = ui.custom((_tui: unknown, _theme: unknown, _kb: unknown, done: typeof finish) => {
+    finish = done;
+    return { render: () => ["frame"], invalidate() {} };
+  });
+  expect(lifecycle).toHaveLength(1);
+  expect(lifecycle[0]?.op).toBe("open");
+  await new Promise((resolve) => setImmediate(resolve));
+  finish("saved");
+  expect(await result).toBe("saved");
+  expect(lifecycle.at(-1)).toEqual({ op: "close", id: lifecycle[0]!.id });
+});
 
 test("remote host filters key release unless component opts in", () => {
   const regularInputs: string[] = [];

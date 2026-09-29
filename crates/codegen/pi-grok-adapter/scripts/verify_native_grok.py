@@ -229,6 +229,8 @@ def main() -> int:
     # TUI, input, slash, scrollback, minimal and Markdown files.
     renderer_manifest = json.loads(read(docs / "native_renderer_sha256.json"))
     renderer_declared_modified = {
+        # Remote TUI overlay visibility yields to native Pi dialogs; no renderer replacement.
+        "crates/codegen/xai-grok-pager/src/app/agent_view/render.rs",
         # EditTool hook/viewer seam: delegates to the sibling layout renderer
         # while retaining the native unified renderer and patch-copy behavior.
         "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/edit.rs",
@@ -278,6 +280,7 @@ def main() -> int:
     # Verify the files allowed to differ really are a narrow integration seam,
     # not a hidden second UI package.
     expected_modified = {
+        "crates/codegen/xai-grok-pager/src/app/agent_view/render.rs",
         "Cargo.lock",
         "Cargo.toml",
         "crates/codegen/xai-grok-pager-bin/Cargo.toml",
