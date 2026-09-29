@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Carries forward the `v0.1.10-beta.8` Eval v2 MCP integration (official TypeScript SDK, binding ID + URL secret, bounded image resources, optional npm `tokenizers` accounting). The `beta.8` build was cancelled before binaries were published; use this combined `beta.9` prerelease for all three changes.
 
+### Verification
+
+- The combined Grok-Pi Cargo check, 18 Web Config/Remote TUI Bun tests, 34 synthetic-browser workbench checks, and Eval/MCP regression checks passed.
+
 ## [0.1.10-beta.8] - 2026-09-29
 
 ### Added

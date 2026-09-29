@@ -20,6 +20,10 @@
 
 - 继承 `v0.1.10-beta.8` 的 Eval v2 MCP、绑定 ID + URL 密钥、图片 Resource 与可选 npm `tokenizers` 统计。`beta.8` 的二进制构建已经取消，三项功能统一由本 `beta.9` 预发布版本交付。
 
+### 验证
+
+- 联合 Rust Cargo check、Web Config / Remote TUI 的 18 项 Bun 测试、合成浏览器场景 34 项检查及 Eval / MCP 回归检查通过。
+
 ## [0.1.10-beta.8] - 2026-09-29
 
 ### 新增

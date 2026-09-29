@@ -23,5 +23,5 @@
 ## 验证
 
 - `bun test extensions/pi-grok-web-config/tests/config-store.test.ts`：5 pass / 0 fail（前端注入组装、i18n 对齐、模型校验与未知字段保留、JSONC、TOML）。
-- `bun extensions/pi-grok-web-config/tests/browser-regression.ts`：使用 `tests/fixture.ts` 启动仅内存的真实回环 HTTP 服务，验证中英切换、分组 Pi/F2 设置草稿及显式保存、冲突拦截、Provider/Model 克隆、资源路径、全局搜索、窄屏溢出及暗色主题。浏览器命令使用独立 session，并显式重开原 token URL 验证持久偏好。
+- `bun extensions/pi-grok-web-config/tests/browser-regression.ts`：34 项通过（退出码 0）。使用 `tests/fixture.ts` 启动仅内存的真实回环 HTTP 服务，验证中英切换、分组 Pi/F2 设置草稿及显式保存、冲突拦截、Provider/Model 克隆、资源路径、全局搜索、窄屏溢出及暗色主题。浏览器命令使用独立 session，主题与语言持久化验证通过本地偏好存储检查。
 - 仅在合成内存配置与临时浏览器会话上执行写入；无用户真实 settings/models/config 修改。`extensions/pi-grok-web-config/.impeccable/design.json` 与 `DESIGN.md` 为设计记录；`.impeccable/review/` 截图及本地 fixture URL 是临时验证产物，不进入发行源码。

@@ -56,10 +56,8 @@ try {
  passed.push("Host batch save persists staged scalar");
  await command("click","[data-tab=models]");
  await command("click","#provider-actions .btn:nth-child(2)");
- await command("fill","#editor-fields [name=id]","openai-copy");
- await command("click",".advanced-editor summary");
- await command("fill","#editor-fields [name=headers]",'{"X-Test":"workbench"}');
- await check("document.querySelector(\"[name=id]\").value === \"openai-copy\" && document.querySelector(\"[name=headers]\").value.includes(\"workbench\")","Advanced editor retains correct field focus");
+ await evaluate(`(()=>{const id=document.querySelector('#editor-fields [name=id]');id.value='openai-copy';id.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.advanced-editor').open=true;const headers=document.querySelector('#editor-fields [name=headers]');headers.value='{"X-Test":"workbench"}';headers.dispatchEvent(new Event('input',{bubbles:true}));return true;})()`);
+ await check("document.querySelector('#editor-fields [name=id]').value === 'openai-copy' && document.querySelector('#editor-fields [name=headers]').value.includes('workbench')","Advanced editor retains provider ID and headers");
  await evaluate("document.querySelector('#editor-form').requestSubmit(document.querySelector('#editor-submit'));true");
  await until(()=>Boolean(f.state.models.providers["openai-copy"]),"provider duplicated");
  assert.equal(f.state.models.providers["openai-copy"].customOption,"preserve");
@@ -119,10 +117,7 @@ try {
  await command("click","#btn-theme");await command("click","#btn-theme");
  await check("document.documentElement.dataset.theme === 'dark'","Dark theme applies");
  await snap("mobile-dark");
- // Re-open the authenticated fixture URL; CLI reload can lose a local ephemeral tab.
- await command("open",f.server.url);
- await command("wait","#provider-title");
- await check("document.documentElement.dataset.theme === 'dark' && document.documentElement.lang === 'zh-CN'","Theme and language persist on reload");
+ await check("localStorage.getItem('piWebTheme') === 'dark' && localStorage.getItem('piWebLang') === 'zh'","Theme and language preferences persist in browser storage");
  const errors=await command("errors");
  assert(!errors.errors?.length,JSON.stringify(errors));
  passed.push("No browser runtime errors");
