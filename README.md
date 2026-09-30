@@ -262,6 +262,8 @@ Pi Codemode is now available as an opt-in F2 built-in tool and loads Pi's offici
 
 `pi_eval_v2_display_mode` is presentation-only and applies immediately: `effects` keeps Eval v2 orchestration source out of the normal transcript and presents its effects/results, while `legacy` restores source + result rendering. Change it from **F2 → Agent → Eval v2 display**, edit `[ui].pi_eval_v2_display_mode`, or use `/eval-display [effects|legacy]`; `/eval-display` with no argument toggles the current mode. The selected mode is persisted for future sessions.
 
+Under `pi_eval_v2_only` the choice decides which card the top level gets: `effects` hides the `eval` card and renders only its nested tool effects, while `legacy` renders the source/result card itself (nested effects still project from the bridge entries). The adapter reads the same key so the live path and session replay agree; a restart-required `pi_eval` version change is unaffected.
+
 Turning Pi subagents off omits the bundled bridge, forces `PI_GROK_SUBAGENTS=0`, and admits conflicting third-party packages again for the next process.
 
 F2 descriptions for the opt-in rows append **When on, blocks: …** from the same table.

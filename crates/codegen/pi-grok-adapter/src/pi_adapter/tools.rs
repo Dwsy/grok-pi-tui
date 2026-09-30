@@ -1,13 +1,54 @@
 use super::*;
 use crate::model::EVAL_TOOL_UI_BRIDGE_TYPE;
 
-/// In Eval-v2-only mode the top-level `eval` call stays model-visible but is
-/// never rendered as a native tool card; only its nested effects are. Live
-/// handlers and history replay share this predicate so a resumed turn matches
-/// the live one instead of resurrecting an Eval card. Kept in one place so the
-/// two paths cannot drift again.
-pub(super) fn eval_v2_only_top_level_hidden(eval_v2_only: bool, name: &str) -> bool {
+/// Whether the top-level `eval` call must stay out of the native tool cards.
+///
+/// Eval-v2-only normally keeps the call model-visible but unrendered, showing
+/// only its nested effects. `legacy` presentation exists precisely to show that
+/// card, so it opts the same call back into rendering. Live handlers and
+/// history replay share this predicate so a resumed turn matches the live one
+/// instead of resurrecting an Eval card. Kept in one place so the two paths
+/// cannot drift again.
+pub(super) fn eval_top_level_hidden(eval_v2_only: bool, name: &str) -> bool {
+    // Guard before the config read: tool start/update/end all cross here, and
+    // only a top-level Eval call can ever be hidden.
+    if !eval_top_level_call(eval_v2_only, name) {
+        return false;
+    }
+    eval_card_hidden_for_mode(eval_legacy_display_selected())
+}
+
+/// Whether this tool event is the top-level `eval` call that Eval-v2-only owns.
+pub(super) fn eval_top_level_call(eval_v2_only: bool, name: &str) -> bool {
     eval_v2_only && name.eq_ignore_ascii_case("eval")
+}
+
+/// Whether the card is hidden for a known display mode. Split out so the
+/// override is testable without reading `[ui]` from disk.
+pub(super) fn eval_card_hidden_for_mode(legacy_display: bool) -> bool {
+    !legacy_display
+}
+
+/// Whether `[ui].pi_eval_v2_display_mode` selects the legacy source/result card.
+/// Owned by the Pager's appearance cache; the adapter reads the same config key
+/// because it decides whether the card may reach the Pager at all.
+fn eval_legacy_display_selected() -> bool {
+    // Read per call, not cached at startup: the mode is a live-applied setting,
+    // and a stale value would make a live turn disagree with its own replay.
+    // Disk-only, matching the Pager appearance cache that owns this key; the
+    // persisted F2 / `/eval-display` write lands on disk either way.
+    // ponytail: ~1 small config read per Eval tool_start/update/end; cache and
+    // push over its own ACP notification if that ever shows up in profiles.
+    xai_grok_shell::config::load_effective_config_disk_only()
+        .ok()
+        .and_then(|config| {
+            config
+                .get("ui")
+                .and_then(|ui| ui.get("pi_eval_v2_display_mode"))
+                .and_then(|value| value.as_str())
+                .map(|mode| mode == "legacy")
+        })
+        .unwrap_or(false)
 }
 
 /// Whether a Pi `tool_execution_*` event belongs to a call a codemode script
@@ -148,7 +189,7 @@ impl PiAgent {
             }
             return;
         }
-        if eval_v2_only_top_level_hidden(self.eval_v2_only, name) {
+        if eval_top_level_hidden(self.eval_v2_only, name) {
             return;
         }
         let args = normalize_tool_raw_input(
@@ -409,7 +450,7 @@ impl PiAgent {
             .cloned()
             .unwrap_or(Value::Null);
         let name = string(event, &["toolName", "name"]).unwrap_or_default();
-        if eval_v2_only_top_level_hidden(self.eval_v2_only, name) {
+        if eval_top_level_hidden(self.eval_v2_only, name) {
             return;
         }
         let args = normalize_tool_raw_input(
@@ -501,7 +542,7 @@ impl PiAgent {
             acp::ToolCallStatus::Completed
         };
         let name = string(event, &["toolName", "name"]).unwrap_or_default();
-        if eval_v2_only_top_level_hidden(self.eval_v2_only, name) {
+        if eval_top_level_hidden(self.eval_v2_only, name) {
             return;
         }
         let args = normalize_tool_raw_input(

@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Pi Codemode native rendering** — Pi `codemode` tool calls now render as a dedicated Grok Pager card (Pi-style): the syntax-highlighted script, the nested tool-call list with live status/duration/cost (including `models.*` classifier costs that produce no tool rows), and the header-stripped script output with a spilled full-output hint. The adapter suppresses the nested calls' separate native rows so live sessions and `/resume` replay show the same card.
 
+### Fixed
+
+- **`pi_eval_v2_display_mode = "legacy"` was a no-op under `pi_eval_v2_only`** — the adapter dropped the top-level `eval` card before the Pager ever saw it, so the legacy source/result renderer had nothing to render. The adapter now reads the same `[ui]` key as the Pager and keeps the card whenever `legacy` is selected; `effects` still hides it and shows only the nested effects. Live turns and `/resume` replay share one predicate, so a resumed session no longer disagrees with the live one.
+
 ## [0.1.10-beta.9] - 2026-09-30
 
 ### Added

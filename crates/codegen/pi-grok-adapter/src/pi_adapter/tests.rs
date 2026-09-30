@@ -609,13 +609,19 @@ fn compaction_events_project_to_native_session_updates() {
 }
 
 #[test]
-fn eval_v2_only_hides_only_the_top_level_eval_card() {
-    use super::tools::eval_v2_only_top_level_hidden;
-    assert!(eval_v2_only_top_level_hidden(true, "eval"));
-    assert!(eval_v2_only_top_level_hidden(true, "EVAL"));
-    assert!(!eval_v2_only_top_level_hidden(false, "eval"));
-    assert!(!eval_v2_only_top_level_hidden(true, "read"));
-    assert!(!eval_v2_only_top_level_hidden(true, "get_task_output"));
+fn eval_top_level_hidden_follows_the_display_mode() {
+    use super::tools::{eval_card_hidden_for_mode, eval_top_level_call};
+    // Eval-v2-only hides the card while effects-first is selected...
+    assert!(eval_card_hidden_for_mode(false));
+    // ...but legacy presentation exists to show exactly that card.
+    assert!(!eval_card_hidden_for_mode(true));
+    // The mode only ever governs the top-level Eval call, whatever its casing.
+    assert!(eval_top_level_call(true, "eval"));
+    assert!(eval_top_level_call(true, "EVAL"));
+    assert!(!eval_top_level_call(true, "read"));
+    assert!(!eval_top_level_call(true, "get_task_output"));
+    // Without Eval-v2-only the card is an ordinary tool card.
+    assert!(!eval_top_level_call(false, "eval"));
 }
 
 #[test]

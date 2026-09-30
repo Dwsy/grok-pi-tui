@@ -252,6 +252,8 @@ Pi Codemode 现已作为 F2「Built-in tools」中的可选工具提供，只有
 
 `pi_eval_v2_display_mode` 只控制展示并会立即生效：`effects` 会在普通会话记录中隐藏 Eval v2 的编排源码，重点展示其 effects/结果；`legacy` 恢复源码 + 结果的传统展示。可通过 **F2 → Agent → Eval v2 display**、`[ui].pi_eval_v2_display_mode`，或 `/eval-display [effects|legacy]` 修改；不带参数执行 `/eval-display` 会在两种模式间切换。所选模式会持久化到后续会话。
 
+开启 `pi_eval_v2_only` 时该选项决定顶层展示哪种卡片：`effects` 隐藏 `eval` 卡、只渲染其嵌套工具 effects；`legacy` 则渲染源码/结果卡片本身（嵌套 effects 仍由 bridge 条目投影）。Adapter 读取同一个配置键，保证 live 与 resume 重放一致；需要重启的 `pi_eval` 版本切换不受影响。
+
 关闭 Pi subagents 后，下次启动会省略内置桥接、强制 `PI_GROK_SUBAGENTS=0`，并重新放行与其冲突的第三方包。
 
 对应 F2 项的说明文案会附带 **When on, blocks: …**（与同一张表同步）。

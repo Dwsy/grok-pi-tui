@@ -13,6 +13,10 @@
 
 - **Pi Codemode 原生渲染** — Pi `codemode` 工具调用现在渲染为专属的 Grok Pager 卡片（Pi 风格）：语法高亮的脚本、嵌套工具调用列表（实时状态/耗时/费用，含不产生工具行的 `models.*` 分类调用费用）以及剥离 header 的脚本输出与完整输出落盘提示。adapter 会抑制嵌套调用的独立原生卡片行，使实时会话与 `/resume` 回放呈现一致的卡片。
 
+### 修复
+
+- **`pi_eval_v2_only` 下 `pi_eval_v2_display_mode = "legacy"` 完全无效** — adapter 在 Pager 拿到顶层 `eval` 卡之前就丢弃了它，legacy 的源码/结果渲染器因此无内容可渲染。现在 adapter 读取与 Pager 相同的 `[ui]` 配置键，`legacy` 时保留该卡片，`effects` 仍隐藏卡片、只显示嵌套 effects。live 与 `/resume` 回放共用同一判定，恢复会话不再与实时不一致。
+
 ## [0.1.10-beta.9] - 2026-09-30
 
 ### 新增

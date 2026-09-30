@@ -2009,7 +2009,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Agent,
             owner: SettingOwner::Shell,
             label: "Eval v2 display",
-            description: "Choose the live Eval v2 presentation: effects hides orchestration source; legacy shows source and results.",
+            description: "Choose the live Eval v2 presentation: effects hides orchestration source; legacy shows source and results. Under Eval v2 only, legacy is what keeps the top-level eval card visible.",
             keywords: &["pi", "eval", "v2", "display", "effects", "legacy", "source"],
             kind: SettingKind::Enum {
                 default: "effects",
