@@ -11,10 +11,10 @@ use crate::scrollback::blocks::tool::search::{
     SearchFileMatch, SearchInputMeta, SearchLineMatch, SearchOutputMode, SearchToolCallBlock,
 };
 use crate::scrollback::blocks::tool::{
-    DiscoveredTool, EditHighlightPhase, EditToolCallBlock, EvalToolCallBlock, ExecuteToolCallBlock,
-    IntegrationSearchToolCallBlock, LineRange, MemorySearchToolCallBlock, OtherToolCallBlock,
-    ReadMediaKind, ReadToolCallBlock, ToolCallBlock, UseToolCallBlock, WebFetchToolCallBlock,
-    WebSearchToolCallBlock,
+    CodemodeToolCallBlock, DiscoveredTool, EditHighlightPhase, EditToolCallBlock,
+    EvalToolCallBlock, ExecuteToolCallBlock, IntegrationSearchToolCallBlock, LineRange,
+    MemorySearchToolCallBlock, OtherToolCallBlock, ReadMediaKind, ReadToolCallBlock,
+    ToolCallBlock, UseToolCallBlock, WebFetchToolCallBlock, WebSearchToolCallBlock,
 };
 use crate::scrollback::entry::{EntryId, ScrollbackEntry, ToolTraceSnapshot};
 use crate::scrollback::state::ScrollbackState;
@@ -2243,6 +2243,29 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
                 block = block.with_error("Search failed");
             }
             RenderBlock::ToolCall(ToolCallBlock::IntegrationSearch(block))
+        }
+        _ if extract_variant(tc) == Some("Codemode") => {
+            // Pi codemode: the adapter projects a canonical Codemode raw output
+            // (nested calls, header-stripped script output, spilled full-output
+            // path); the script source itself stays in raw_input.code.
+            let code = extract_raw_field(tc, "code").unwrap_or_default();
+            let mut block = CodemodeToolCallBlock::new(code).with_raw_output(tc.raw_output.as_ref());
+            if block.output.is_none() {
+                // Older payload shapes carry the script body only as ACP text content.
+                let text = content_text(tc);
+                if !text.is_empty() {
+                    block = block.with_output(text);
+                }
+            }
+            if !success {
+                let text = block.output.take().unwrap_or_default();
+                block = block.with_error(if text.is_empty() {
+                    "Codemode script failed".to_string()
+                } else {
+                    text
+                });
+            }
+            RenderBlock::ToolCall(ToolCallBlock::Codemode(block))
         }
         _ if extract_raw_field(tc, "variant").as_deref() == Some("Eval") => {
             let language = extract_raw_field(tc, "language").unwrap_or_default();

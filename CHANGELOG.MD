@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Pi Codemode native rendering** — Pi `codemode` tool calls now render as a dedicated Grok Pager card (Pi-style): the syntax-highlighted script, the nested tool-call list with live status/duration/cost (including `models.*` classifier costs that produce no tool rows), and the header-stripped script output with a spilled full-output hint. The adapter suppresses the nested calls' separate native rows so live sessions and `/resume` replay show the same card.
+
 ## [0.1.10-beta.9] - 2026-09-30
 
 ### Added

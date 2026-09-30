@@ -145,6 +145,31 @@ for raw in sys.stdin:
               "args": {"path": "README.md"}, "partialResult": {"content": [{"type": "text", "text": "partial"}]}})
         emit({"type": "tool_execution_end", "toolCallId": "tool-1", "toolName": "read",
               "result": {"content": [{"type": "text", "text": "done"}]}, "isError": False})
+        emit({"type": "tool_execution_start", "toolCallId": "tool-2", "toolName": "codemode",
+              "args": {"code": "return await tools.read({ path: 'README.md' });"}})
+        emit({"type": "tool_execution_update", "toolCallId": "tool-2", "toolName": "codemode",
+              "args": {"code": "return await tools.read({ path: 'README.md' });"},
+              "partialResult": {"content": [], "details": {"calls": [
+                  {"id": "tool-2/1", "name": "read", "args": "{ \"path\": \"README.md\" }",
+                   "status": "running"}]}}})
+        emit({"type": "tool_execution_start", "toolCallId": "tool-2/1", "toolName": "read",
+              "args": {"path": "README.md"}, "parentToolCallId": "tool-2"})
+        emit({"type": "tool_execution_end", "toolCallId": "tool-2/1", "toolName": "read",
+              "result": {"content": [{"type": "text", "text": "README"}]}, "isError": False,
+              "parentToolCallId": "tool-2"})
+        emit({"type": "tool_execution_update", "toolCallId": "tool-2", "toolName": "codemode",
+              "args": {"code": "return await tools.read({ path: 'README.md' });"},
+              "partialResult": {"content": [], "details": {"calls": [
+                  {"id": "tool-2/1", "name": "read", "args": "{ \"path\": \"README.md\" }",
+                   "status": "ok", "durationMs": 12}]}}})
+        emit({"type": "tool_execution_end", "toolCallId": "tool-2", "toolName": "codemode",
+              "result": {"content": [
+                  {"type": "text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"},
+                  {"type": "text", "text": "README"}],
+                  "details": {"calls": [
+                      {"id": "tool-2/1", "name": "read", "args": "{ \"path\": \"README.md\" }",
+                       "status": "ok", "durationMs": 12}]}},
+              "isError": False})
         emit({"type": "message_update", "message": {"role": "assistant", "content": []},
               "assistantMessageEvent": {"type": "text_delta", "contentIndex": 1,
                                          "delta": "passed", "partial": {"role": "assistant", "content": []}}})

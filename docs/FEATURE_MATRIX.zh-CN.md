@@ -43,6 +43,7 @@
 | Text stream | 适配 | `message_update` → AgentMessageChunk |
 | Thinking/reasoning stream | 适配 | `message_update` → AgentThoughtChunk |
 | Tool start/update/end | 适配 | ACP ToolCall/ToolCallUpdate |
+| Pi Codemode 渲染 | 原生+适配 | 可选（F2 `pi_builtin_tools.codemode`）加载 Pi 的 `builtin:codemode` 扩展。adapter 给 `raw_input.variant="Codemode"` 打标，投影规范的 `Codemode` raw output（嵌套调用记录、剥离 header 的脚本输出、完整输出落盘路径），并抑制携带 codemode `parentToolCallId` 的嵌套调用原生行，使实时会话与回放渲染同一张专属 `CodemodeToolCallBlock`（脚本高亮、嵌套调用列表（状态/耗时/费用）、输出预览）。见 `docs/issues/adapter/20260930-Codemode-原生渲染支持.md`。 |
 | Eval v2 host-tool bridge | 适配 | `pi-grok-bash` 负责 Node/Python Eval worker、`HostCallGate`（上限 4）、`EvalSessionToolBridge`、显式 `store/load`、`parallel/pipeline` 和原生 task 投影；Eval 是嵌套 Pi 能力，不是第二个 Agent Core |
 | Eval v2-only MCP facade | 适配+边界 | 可选的认证回环 Streamable HTTP 允许外部 MCP client 调用当前 Eval v2；binding ID/secret、resource 图片、tokenizer 计数和 shutdown 由 `eval-pi-mcp` 负责，不属于 Pi 的出站 MCP client |
 | Eval v2 复用 Pi Codemode/MCP | 边界 | 目前仅有方案：grok-pi 启动时使用 `--no-extensions` 与显式 bridge allowlist，因此 Pi 内置 `mcp`/`codemode` 默认未加载。这些 built-in 需要受支持的 Pi 基线 `0.99.0+`；计划通过 `EvalSessionToolBridge` 复用 Pi MCP Tool Registry，不在 Eval Worker 内新增 MCP client，也不替换 Node/Python runtime。见 `docs/issues/adapter/20260930-Eval v2 学习 Pi Codemode 并复用 MCP.md`。

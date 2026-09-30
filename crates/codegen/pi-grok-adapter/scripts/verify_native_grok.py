@@ -245,6 +245,9 @@ def main() -> int:
     }
     renderer_declared_added = {
         "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/side_by_side_edit.rs",
+        # Pi codemode card: a Pi-owned tool presentation rendered with the
+        # native tool-block machinery; lives in its own added source file.
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/codemode.rs",
     }
     renderer_declared_seams = renderer_declared_modified | renderer_declared_added
     renderer_mismatches = [

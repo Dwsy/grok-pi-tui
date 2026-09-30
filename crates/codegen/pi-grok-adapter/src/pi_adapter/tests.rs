@@ -617,3 +617,35 @@ fn eval_v2_only_hides_only_the_top_level_eval_card() {
     assert!(!eval_v2_only_top_level_hidden(true, "read"));
     assert!(!eval_v2_only_top_level_hidden(true, "get_task_output"));
 }
+
+#[test]
+fn codemode_nested_calls_are_suppressed_by_known_parent_ids() {
+    use super::tools::is_codemode_nested_call;
+    let parents: HashSet<String> = ["call-1".to_string()].into_iter().collect();
+    // The codemode call itself and unrelated tools are never suppressed.
+    assert!(!is_codemode_nested_call(
+        &parents,
+        &json!({ "toolCallId": "call-1", "toolName": "codemode" })
+    ));
+    assert!(!is_codemode_nested_call(
+        &parents,
+        &json!({ "toolCallId": "call-9", "toolName": "read" })
+    ));
+    // Nested calls a script made carry the parent id and are suppressed.
+    assert!(is_codemode_nested_call(
+        &parents,
+        &json!({
+            "toolCallId": "call-1/1",
+            "toolName": "read",
+            "parentToolCallId": "call-1"
+        })
+    ));
+    assert!(!is_codemode_nested_call(
+        &parents,
+        &json!({
+            "toolCallId": "call-2/1",
+            "toolName": "read",
+            "parentToolCallId": "call-2"
+        })
+    ));
+}

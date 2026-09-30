@@ -1,3 +1,4 @@
+mod codemode;
 mod edit;
 mod eval;
 mod execute;
@@ -14,6 +15,7 @@ mod use_tool;
 mod web_fetch;
 mod web_search;
 
+pub use codemode::CodemodeToolCallBlock;
 pub use edit::{
     DiffLineOutput, DiffRenderConfig, EDIT_HL_MAX_BYTES, EDIT_HL_MAX_LINES, EditHighlightPhase,
     EditLineStyles, EditToolCallBlock, compute_file_scoped_styles, file_text_within_hl_caps,
@@ -151,6 +153,8 @@ impl VerbGroupKind {
 pub enum ToolCallBlock {
     Execute(ExecuteToolCallBlock),
     Eval(EvalToolCallBlock),
+    /// Pi codemode: a script that orchestrates nested tool calls.
+    Codemode(CodemodeToolCallBlock),
     Read(ReadToolCallBlock),
     /// Edit a file (with diff).
     Edit(EditToolCallBlock),
@@ -176,6 +180,7 @@ macro_rules! delegate_tool {
         match $self {
             ToolCallBlock::Execute(b) => b.$method($($arg),*),
             ToolCallBlock::Eval(b) => b.$method($($arg),*),
+            ToolCallBlock::Codemode(b) => b.$method($($arg),*),
             ToolCallBlock::Read(b) => b.$method($($arg),*),
             ToolCallBlock::Edit(b) => b.$method($($arg),*),
             ToolCallBlock::ListDir(b) => b.$method($($arg),*),
@@ -297,6 +302,9 @@ impl ToolCallBlock {
             (ToolCallBlock::Eval(new), ToolCallBlock::Eval(old)) => {
                 new.started_at = old.started_at;
             }
+            (ToolCallBlock::Codemode(new), ToolCallBlock::Codemode(old)) => {
+                new.started_at = old.started_at;
+            }
             (ToolCallBlock::Read(new), ToolCallBlock::Read(old)) => {
                 new.started_at = old.started_at;
             }
@@ -333,6 +341,7 @@ impl ToolCallBlock {
             (
                 ToolCallBlock::Execute(_)
                 | ToolCallBlock::Eval(_)
+                | ToolCallBlock::Codemode(_)
                 | ToolCallBlock::Read(_)
                 | ToolCallBlock::Edit(_)
                 | ToolCallBlock::ListDir(_)
@@ -355,6 +364,7 @@ impl ToolCallBlock {
         match self {
             ToolCallBlock::Execute(b) => b.is_success(),
             ToolCallBlock::Eval(b) => b.is_success(),
+            ToolCallBlock::Codemode(b) => b.is_success(),
             ToolCallBlock::Read(b) => b.is_success(),
             ToolCallBlock::Edit(b) => b.is_success(),
             ToolCallBlock::Search(b) => b.is_success(),
@@ -377,6 +387,7 @@ impl ToolCallBlock {
         match self {
             ToolCallBlock::Execute(b) => b.started_at = Some(instant),
             ToolCallBlock::Eval(b) => b.started_at = Some(instant),
+            ToolCallBlock::Codemode(b) => b.started_at = Some(instant),
             ToolCallBlock::Read(b) => b.started_at = Some(instant),
             ToolCallBlock::Edit(b) => b.started_at = Some(instant),
             ToolCallBlock::Search(b) => b.started_at = Some(instant),
@@ -402,6 +413,11 @@ impl ToolCallBlock {
                 }
             }
             ToolCallBlock::Eval(b) => {
+                if b.started_at.is_none() {
+                    b.started_at = Some(std::time::Instant::now());
+                }
+            }
+            ToolCallBlock::Codemode(b) => {
                 if b.started_at.is_none() {
                     b.started_at = Some(std::time::Instant::now());
                 }
@@ -515,6 +531,21 @@ impl ToolCallBlock {
                 b.output.clone(),
                 b.error.clone(),
             ]),
+            ToolCallBlock::Codemode(b) => {
+                let calls = join_searchable(b.calls.iter().flat_map(|call| {
+                    [
+                        Some(call.name.clone()),
+                        Some(call.args.clone()),
+                        call.error.clone(),
+                    ]
+                }));
+                join_searchable([
+                    Some(b.code.clone()),
+                    calls,
+                    b.output.clone(),
+                    b.error.clone(),
+                ])
+            }
             ToolCallBlock::Read(b) => {
                 join_searchable([Some(b.path.clone()), b.content.clone(), b.error.clone()])
             }
@@ -607,6 +638,7 @@ impl ToolCallBlock {
             ToolCallBlock::Edit(b) if b.is_memory_activity => Some(VerbGroupKind::MemorySearch),
             ToolCallBlock::Execute(_)
             | ToolCallBlock::Eval(_)
+            | ToolCallBlock::Codemode(_)
             | ToolCallBlock::Edit(_)
             | ToolCallBlock::UseTool(_)
             | ToolCallBlock::SentMessage(_)
@@ -620,6 +652,7 @@ impl ToolCallBlock {
         match self {
             ToolCallBlock::Execute(_) => Some(VerbGroupKind::Command),
             ToolCallBlock::Eval(_) => Some(VerbGroupKind::OtherTool),
+            ToolCallBlock::Codemode(_) => Some(VerbGroupKind::OtherTool),
             ToolCallBlock::Edit(b) if b.is_memory_activity => Some(VerbGroupKind::MemorySearch),
             ToolCallBlock::Edit(_) => Some(VerbGroupKind::EditFile),
             ToolCallBlock::UseTool(_) => Some(VerbGroupKind::McpCall),
@@ -699,6 +732,7 @@ mod tests {
         let blocks = [
             ToolCallBlock::Execute(ExecuteToolCallBlock::new("ls")),
             ToolCallBlock::Eval(EvalToolCallBlock::new("python", "1 + 1")),
+            ToolCallBlock::Codemode(CodemodeToolCallBlock::new("return 1;")),
             ToolCallBlock::Read(ReadToolCallBlock::new("src/main.rs")),
             ToolCallBlock::Read(ReadToolCallBlock::new("/x/skills/deploy/SKILL.md")),
             ToolCallBlock::Edit(EditToolCallBlock::new("src/main.rs", Vec::new())),
@@ -731,6 +765,7 @@ mod tests {
                 ToolCallBlock::Skill(_) => Some(VerbGroupKind::Skill),
                 ToolCallBlock::Execute(_)
                 | ToolCallBlock::Eval(_)
+                | ToolCallBlock::Codemode(_)
                 | ToolCallBlock::Edit(_)
                 | ToolCallBlock::UseTool(_)
                 | ToolCallBlock::SentMessage(_)

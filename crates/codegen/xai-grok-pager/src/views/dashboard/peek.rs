@@ -819,6 +819,7 @@ pub fn extract_last_response_type(agent: &AgentView) -> String {
                 let label = match tc {
                     ToolCallBlock::Execute(_) => Some("Bash"),
                     ToolCallBlock::Eval(_) => Some("Eval"),
+                    ToolCallBlock::Codemode(_) => Some("Codemode"),
                     ToolCallBlock::Read(_) => Some("Read"),
                     ToolCallBlock::Edit(_) => Some("Edit"),
                     ToolCallBlock::ListDir(_) => Some("List"),

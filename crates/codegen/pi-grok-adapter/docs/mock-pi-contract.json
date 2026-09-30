@@ -35,7 +35,7 @@
     "turn_end",
     "turn_start"
   ],
-  "receivedLines": 27,
+  "receivedLines": 33,
   "mockExitCode": 0,
   "mockStderr": ""
 }

@@ -10,6 +10,18 @@ pub(super) fn eval_v2_only_top_level_hidden(eval_v2_only: bool, name: &str) -> b
     eval_v2_only && name.eq_ignore_ascii_case("eval")
 }
 
+/// Whether a Pi `tool_execution_*` event belongs to a call a codemode script
+/// made (`parentToolCallId` names a known codemode call id). Those nested calls
+/// are projected by the Codemode card's own call list, never as separate native
+/// rows — matching Pi's TUI and keeping live projection consistent with replay,
+/// where nested calls have no history entries of their own. Parent ids stay in
+/// the set for the session, so nested end events that straggle past the
+/// script's own end cannot leak through either.
+pub(super) fn is_codemode_nested_call(codemode_parent_ids: &HashSet<String>, event: &Value) -> bool {
+    string(event, &["parentToolCallId"])
+        .is_some_and(|parent| codemode_parent_ids.contains(parent))
+}
+
 impl PiAgent {
     pub(super) async fn execute_bash(
         &self,
@@ -101,9 +113,41 @@ impl PiAgent {
         }
     }
 
+    /// Whether this event belongs to a tool call a codemode script made; see
+    /// [`is_codemode_nested_call`].
+    fn suppressed_codemode_nested_call(&self, event: &Value) -> bool {
+        is_codemode_nested_call(&self.state.borrow().codemode_parent_ids, event)
+    }
+
     pub(super) async fn handle_tool_start(&self, event: &Value) {
         let id = string(event, &["toolCallId", "id"]).unwrap_or("pi-tool");
         let name = string(event, &["toolName", "name"]).unwrap_or("Tool");
+        if name.eq_ignore_ascii_case("codemode") {
+            self.state
+                .borrow_mut()
+                .codemode_parent_ids
+                .insert(id.to_string());
+        }
+        if self.suppressed_codemode_nested_call(event) {
+            // A script may still call interactive tools. The question dialog
+            // runs outside card projection; suppression only removes the
+            // nested tool row, so the extension must not be left polling.
+            if name == "ask_user_question" {
+                let args = normalize_tool_raw_input(
+                    name,
+                    event
+                        .get("args")
+                        .or_else(|| event.get("input"))
+                        .cloned(),
+                );
+                let agent = self.clone();
+                let tool_call_id = id.to_string();
+                tokio::task::spawn_local(async move {
+                    agent.request_ask_user_question(&tool_call_id, args).await;
+                });
+            }
+            return;
+        }
         if eval_v2_only_top_level_hidden(self.eval_v2_only, name) {
             return;
         }
@@ -356,6 +400,9 @@ impl PiAgent {
 
     pub(super) async fn handle_tool_update(&self, event: &Value) {
         let id = string(event, &["toolCallId", "id"]).unwrap_or("pi-tool");
+        if self.suppressed_codemode_nested_call(event) {
+            return;
+        }
         let output = event
             .get("partialResult")
             .or_else(|| event.get("result"))
@@ -443,6 +490,9 @@ impl PiAgent {
 
     pub(super) async fn handle_tool_end(&self, event: &Value) {
         let id = string(event, &["toolCallId", "id"]).unwrap_or("pi-tool");
+        if self.suppressed_codemode_nested_call(event) {
+            return;
+        }
         let output = event.get("result").cloned().unwrap_or(Value::Null);
         let is_error = event.get("isError").and_then(Value::as_bool) == Some(true);
         let status = if is_error {

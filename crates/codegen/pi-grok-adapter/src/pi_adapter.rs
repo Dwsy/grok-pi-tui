@@ -229,6 +229,13 @@ struct AdapterState {
     /// Terminal state arrives on two independent channels, and the shells die
     /// silently with the Pi child — this resolves both into one final state.
     background_bash_tasks: HashMap<String, BackgroundBashTask>,
+    /// Tool-call ids of every codemode call seen this session. Nested calls a
+    /// codemode script made carry `parentToolCallId` in that set and are
+    /// suppressed from native ACP projection: the Codemode card renders the
+    /// nested-call list itself, and replay has no nested rows to stay
+    /// consistent with. Ids are kept for the session so stragglers that finish
+    /// after the script cannot leak through; one string per call is negligible.
+    codemode_parent_ids: HashSet<String>,
     /// Local timing only; Pi owns compaction itself and reports its token result.
     compaction_started_at: Option<Instant>,
     /// Pi steering / follow-up queue mirrored as Grok `x.ai/queue/changed`.
@@ -345,6 +352,7 @@ impl PiAgent {
                 live_prompt_id: None,
                 bash_stream_output: HashMap::new(),
                 background_bash_tasks: HashMap::new(),
+                codemode_parent_ids: HashSet::new(),
                 compaction_started_at: None,
                 queue_mirror: QueueMirror::default(),
                 subagent_bridge_sequences: HashMap::new(),

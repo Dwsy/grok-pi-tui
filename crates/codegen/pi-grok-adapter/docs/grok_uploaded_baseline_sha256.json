@@ -2824,6 +2824,7 @@
     "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/17-optional-automation.md",
     "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/18-operations-isolation-diagnostics.md",
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/side_by_side_edit.rs",
+    "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/codemode.rs",
     "crates/codegen/xai-grok-pager/src/views/settings_modal/state.rs"
   ]
 }

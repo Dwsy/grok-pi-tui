@@ -213,6 +213,23 @@ impl PiAgent {
                         raw = json!({ "content": [{ "type": "text", "text": text }] });
                     }
                 }
+                // Codemode history stores the tool `details` (nested calls) as
+                // raw_output with the script body in separate content blocks.
+                // Fold both into the payload shape `codemode_tool_output`
+                // expects so replay projects the same Codemode card as live.
+                if name.eq_ignore_ascii_case("codemode") && raw.get("content").is_none() {
+                    let items = content
+                        .iter()
+                        .filter_map(|item| match item {
+                            PiToolContent::Text(text) => {
+                                Some(json!({ "type": "text", "text": text }))
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    let details = raw;
+                    raw = json!({ "content": items, "details": details });
+                }
                 let args = self.state.borrow_mut().tool_args.remove(&id);
                 let normalized = normalize_tool_raw_output(&name, args.as_ref(), &raw, is_error);
                 let mut fields = acp::ToolCallUpdateFields::new()

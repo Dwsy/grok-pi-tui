@@ -363,6 +363,12 @@ pub(crate) fn normalize_tool_raw_input(name: &str, args: Option<Value>) -> Optio
         return Some(args);
     }
 
+    if lower == "codemode" {
+        obj.entry("variant".to_string())
+            .or_insert_with(|| json!("Codemode"));
+        return Some(args);
+    }
+
     if lower == "write" || lower.ends_with("_write") {
         obj.entry("variant".to_string())
             .or_insert_with(|| json!("Write"));
@@ -432,6 +438,9 @@ pub(crate) fn normalize_tool_raw_output(
     if name.eq_ignore_ascii_case("eval") {
         return result.clone();
     }
+    if name.eq_ignore_ascii_case("codemode") {
+        return codemode_tool_output(result);
+    }
     if is_ls_tool(name) {
         return ls_tool_output(args, result, is_error);
     }
@@ -458,6 +467,89 @@ pub(crate) fn normalize_tool_raw_output(
             }
         }
         _ => result.clone(),
+    }
+}
+
+/// Project Pi `codemode` results into the canonical `Codemode` raw output the
+/// native card deserializes: nested call records, header-stripped script output,
+/// and the spilled full-output path.
+///
+/// Shapes handled (Pi side, `extensions/codemode/execute.ts`):
+/// - live end: `{ content: [...], details: { calls, fullOutputPath? } }`
+/// - live update (partialResult): `{ content: [], details: { calls } }`
+/// - replay: history stores `details` alone as raw_output, so callers fold the
+///   persisted content blocks back in as `content` (see the adapter replay path).
+pub(crate) fn codemode_tool_output(result: &Value) -> Value {
+    let details = result.get("details").unwrap_or(result);
+    let calls = details
+        .get("calls")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    json!({
+        "type": "Codemode",
+        "calls": calls,
+        "output": strip_codemode_script_header(&codemode_output_text(result)),
+        "full_output_path": details
+            .get("fullOutputPath")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    })
+}
+
+/// Text items of a Pi tool result without falling back to JSON-dumping the whole
+/// payload: `codemode` replay raw_output is the `details` object itself, and
+/// serializing its `calls` would masquerade as output text.
+///
+/// The `Script completed|failed` header arrives as its own content item (or leads
+/// the merged truncated text); it is dropped like Pi's own renderer does, and the
+/// remainder is trimmed on both ends.
+fn codemode_output_text(result: &Value) -> String {
+    let Some(content) = result.get("content") else {
+        return String::new();
+    };
+    let items: Vec<&str> = match content {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .collect(),
+        Value::String(text) => vec![text.as_str()],
+        _ => Vec::new(),
+    };
+    let body = items
+        .into_iter()
+        .filter(|text| !is_standalone_script_header(text))
+        .collect::<Vec<_>>()
+        .join("\n");
+    strip_codemode_script_header(&body)
+        .trim()
+        .to_string()
+}
+
+/// Full standalone Pi script header: `Script completed|failed\nWall time N seconds\nOutput:\n`.
+/// A merged truncated item (header followed by real output) strips to non-empty and stays.
+fn is_standalone_script_header(text: &str) -> bool {
+    strip_codemode_script_header(text).is_empty()
+}
+
+/// Strip Pi's `Script completed|failed\nWall time N seconds\nOutput:\n` header
+/// from a codemode script result. Rejected input (invalid options) has no header.
+fn strip_codemode_script_header(text: &str) -> &str {
+    let mut lines = text.splitn(3, '\n');
+    let (Some(status), Some(wall), rest) = (lines.next(), lines.next(), lines.next()) else {
+        return text;
+    };
+    let header_status = status == "Script completed" || status == "Script failed";
+    let header_wall = wall
+        .strip_prefix("Wall time ")
+        .and_then(|value| value.strip_suffix(" seconds"))
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit() || b == b'.'));
+    if !header_status || !header_wall {
+        return text;
+    }
+    match rest.strip_prefix("Output:\n") {
+        Some(body) => body,
+        None if rest == "Output:" => "",
+        _ => text,
     }
 }
 

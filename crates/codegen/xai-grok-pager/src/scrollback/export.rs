@@ -85,6 +85,14 @@ fn tool_summary(tc: &ToolCallBlock) -> String {
             let label = eval.title.as_deref().unwrap_or(eval.language.as_str());
             format!("Eval: {label}")
         }
+        ToolCallBlock::Codemode(c) => {
+            let calls = if c.calls.is_empty() {
+                String::new()
+            } else {
+                format!(" ({} calls)", c.calls.len())
+            };
+            format!("Codemode{calls}")
+        }
         ToolCallBlock::ListDir(l) => format!("ListDir: {}", l.path),
         ToolCallBlock::Search(s) => format!("Search: {}", s.pattern),
         ToolCallBlock::WebFetch(w) => format!("WebFetch: {}", w.url),

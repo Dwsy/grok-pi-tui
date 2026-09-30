@@ -495,3 +495,119 @@ fn write_like_tools_do_not_get_write_variant_or_bash_description() {
         "fabric_exec must not be aliased to a bash description"
     );
 }
+
+#[test]
+fn codemode_raw_input_marks_dedicated_variant_and_keeps_code() {
+    let args = normalize_tool_raw_input(
+        "codemode",
+        Some(json!({ "code": "return await tools.read({ path: 'a.rs' });" })),
+    )
+    .unwrap();
+    assert_eq!(args.get("variant").and_then(Value::as_str), Some("Codemode"));
+    assert_eq!(
+        args.get("code").and_then(Value::as_str),
+        Some("return await tools.read({ path: 'a.rs' });")
+    );
+}
+
+#[test]
+fn codemode_end_result_projects_calls_and_strips_script_header() {
+    let raw = normalize_tool_raw_output(
+        "codemode",
+        Some(&json!({ "code": "return 1;" })),
+        &json!({
+            "content": [
+                { "type": "text", "text": "Script completed\nWall time 1.2 seconds\nOutput:\n" },
+                { "type": "text", "text": "a.rs: fn main() {}\nb.rs: fn helper() {}" }
+            ],
+            "details": {
+                "calls": [
+                    { "id": "call-1/1", "name": "read", "args": "{ \"path\": \"a.rs\" }", "status": "ok", "durationMs": 120 },
+                    { "id": "call-1/2", "name": "grep", "args": "{ \"pattern\": \"todo\" }", "status": "error", "durationMs": 210, "error": "boom" }
+                ],
+                "fullOutputPath": "/tmp/pi-codemode-abc.txt"
+            }
+        }),
+        false,
+    );
+    assert_eq!(raw.get("type").and_then(Value::as_str), Some("Codemode"));
+    let calls = raw.get("calls").and_then(Value::as_array).expect("calls");
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].get("name").and_then(Value::as_str), Some("read"));
+    assert_eq!(
+        calls[1].get("status").and_then(Value::as_str),
+        Some("error")
+    );
+    assert_eq!(
+        raw.get("output").and_then(Value::as_str),
+        Some("a.rs: fn main() {}\nb.rs: fn helper() {}")
+    );
+    assert_eq!(
+        raw.get("full_output_path").and_then(Value::as_str),
+        Some("/tmp/pi-codemode-abc.txt")
+    );
+}
+
+#[test]
+fn codemode_update_partial_result_keeps_calls_without_output() {
+    let raw = normalize_tool_raw_output(
+        "codemode",
+        None,
+        &json!({
+            "content": [],
+            "details": { "calls": [ { "id": "call-1/1", "name": "read", "args": "{}", "status": "running" } ] }
+        }),
+        false,
+    );
+    assert_eq!(raw.get("type").and_then(Value::as_str), Some("Codemode"));
+    let calls = raw.get("calls").and_then(Value::as_array).expect("calls");
+    assert_eq!(calls[0].get("status").and_then(Value::as_str), Some("running"));
+    assert_eq!(raw.get("output").and_then(Value::as_str), Some(""));
+    assert_eq!(raw.get("full_output_path").and_then(Value::as_str), Some(""));
+}
+
+#[test]
+fn codemode_replay_details_shape_projects_calls() {
+    // History replay stores the tool `details` alone as raw_output (the adapter
+    // replay path folds the persisted content blocks back in as `content`).
+    let raw = codemode_tool_output(&json!({
+        "calls": [ { "id": "call-1/1", "name": "read", "args": "{}", "status": "ok" } ],
+        "fullOutputPath": "/tmp/pi-codemode-abc.txt"
+    }));
+    assert_eq!(raw.get("type").and_then(Value::as_str), Some("Codemode"));
+    let calls = raw.get("calls").and_then(Value::as_array).expect("calls");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        raw.get("full_output_path").and_then(Value::as_str),
+        Some("/tmp/pi-codemode-abc.txt")
+    );
+    assert_eq!(raw.get("output").and_then(Value::as_str), Some(""));
+}
+
+#[test]
+fn codemode_merged_truncated_text_strips_leading_header() {
+    let raw = codemode_tool_output(&json!({
+        "content": [{
+            "type": "text",
+            "text": "Script failed\nWall time 3.4 seconds\nOutput:\nScript error:\nError: out of memory"
+        }],
+        "details": { "calls": [] }
+    }));
+    assert_eq!(
+        raw.get("output").and_then(Value::as_str),
+        Some("Script error:\nError: out of memory")
+    );
+}
+
+#[test]
+fn codemode_invalid_input_without_header_keeps_text() {
+    // Rejected input (invalid options) has no Script header — keep the text.
+    let raw = codemode_tool_output(&json!({
+        "content": [{ "type": "text", "text": "Script error:\ninvalid @options JSON" }],
+        "details": { "calls": [] }
+    }));
+    assert_eq!(
+        raw.get("output").and_then(Value::as_str),
+        Some("Script error:\ninvalid @options JSON")
+    );
+}
