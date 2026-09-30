@@ -26,12 +26,27 @@ The default JSON path is `$GROK_HOME/eval-pi-mcp/tokenizer.json`. MCP results in
 
 Focused integration checks: `node extensions/pi-grok-bash/test-eval-pi-mcp.mjs`; existing runtime regression: `node extensions/pi-grok-bash/test-v2.1.mjs`. Protocol and security contract: `docs/issues/grok-pi/20260929-eval-pi-mcp.md`.
 
+## Pi Codemode and MCP integration (planned)
+
+The current grok-pi startup intentionally uses `--no-extensions` plus an explicit bridge allowlist, so Pi's built-in `mcp` and `codemode` extensions are not loaded by default. Eval v2 therefore does **not** currently connect to external MCP servers through this extension. The planned integration raises grok-pi's supported Pi baseline to `0.99.0+`; no older-Pi compatibility branch or duplicate MCP Client is needed.
+
+The planned integration keeps Eval v2 as the runtime and reuses Pi's official MCP tool registry:
+
+```text
+MCP Server -> Pi MCP Extension -> Pi Tool Registry
+                                  -> EvalSessionToolBridge -> Eval v2 tool.*
+```
+
+Eval Worker will not contain a second MCP Client. Pi will own transport, authentication, server lifecycle, resources, permissions, and `mcp__<server>__<tool>` naming. Codemode semantics are used selectively for tool discovery, compact nested results, structured content, images/resources, cancellation, and batched orchestration; Pi QuickJS Codemode will not replace the existing Node/Python Eval Worker.
+
+This is separate from **Eval v2-only MCP** above: `eval-pi-mcp` lets an external MCP client call the current Eval session, while the planned Pi MCP bridge lets Eval call an external MCP server. See the implementation plan: [`docs/issues/adapter/20260930-Eval v2 学习 Pi Codemode 并复用 MCP.md`](../../docs/issues/adapter/20260930-Eval%20v2%20学习%20Pi%20Codemode%20并复用%20MCP.md).
+
 ## Current behavior at a glance
 
 | Capability | Eval v1 | Eval v2 |
 | --- | --- | --- |
 | JavaScript | yes | yes |
-| Python | yes | no |
+| Python | yes | yes |
 | Top-level `await` | yes | yes |
 | Bare-expression result | yes | yes |
 | Lexical bindings survive cells | yes | **no** |

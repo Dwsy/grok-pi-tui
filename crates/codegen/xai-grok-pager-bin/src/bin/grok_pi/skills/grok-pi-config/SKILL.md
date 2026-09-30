@@ -33,7 +33,7 @@ This embedded skill is the compact starting point for answering grok-pi configur
 ## Common F2 / `[ui]` keys
 
 - `pi_config_skill`: default-on embedded configuration skill.
-- `pi_builtin_tools.*`: enable/disable built-in `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, and `eval` tools.
+- `pi_builtin_tools.*`: enable/disable built-in `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, and `eval` tools, plus Pi's `codemode` extension tool (default off; selecting it loads `builtin:codemode` on the next session).
 - `pi_bash`, `pi_eval`, `pi_eval_v2_language`, `pi_eval_v2_only`: Bash/Eval bridge behavior; version/language/only changes apply on the next grok-pi session.
 - `pi_eval_v2_display_mode`: live Eval v2 presentation (`effects` default, `legacy` for source + results); F2 label **Eval v2 display** and `/eval-display [effects|legacy]` change it immediately and persist the choice.
 - `pi_subagents`, `pi_todo`, `pi_workflows`, `pi_goal`, `pi_loop`, `pi_btw`, `pi_ask_user_question`: native Pi/Grok features.

@@ -52,7 +52,7 @@ grok-pi --help   # original name
 pi-grok --help   # alias
 ```
 
-`grok-pi` requires [Pi](https://pi.dev) **0.84.3 or newer** (system `pi` / pi.dev installer):
+`grok-pi` requires [Pi](https://pi.dev) **0.99.0 or newer** (system `pi` / pi.dev installer):
 
 ```bash
 # recommended
@@ -213,6 +213,7 @@ See [VERIFICATION.md](docs/VERIFICATION.md) for the distinction between static c
 ## Documentation
 
 - [Feature matrix](docs/FEATURE_MATRIX.md) — supported behavior and intentional boundaries
+- [Eval v2 / Pi Codemode / MCP plan](docs/issues/adapter/20260930-Eval%20v2%20学习%20Pi%20Codemode%20并复用%20MCP.md) — planned tool-registry reuse and runtime boundaries
 - [Subagents V2 guide](docs/usage/subagents-v2.md) — opt-in team collaboration, stable paths, presets, queue semantics, rollback, and troubleshooting
 - [Architecture alignment](docs/NATIVE_GROK_TUI_ALIGNMENT.md) — component ownership, protocol mapping, and migration guidance
 - [Verification record](docs/VERIFICATION.md) — completed checks and known environment blockers
@@ -256,6 +257,8 @@ pi_eval_v2_display_mode = "effects" # "effects" (default) or "legacy"
 ```
 
 Use `pi_eval = "v1"` (or omit the key) for legacy Eval. Eval v1 keeps persistent Python and JavaScript kernels; Eval Bridge v2 uses isolated cells with explicit `store/load` persistence and the selected language set. Because `pi_eval` is a single version selector, v1 and v2 cannot run concurrently. `pi_eval` and `pi_eval_v2_language` are restart-required.
+
+Pi Codemode is now available as an opt-in F2 built-in tool and loads Pi's official `builtin:codemode` extension only when selected. Eval v2's outbound MCP integration is still planned: it will reuse Pi's official MCP extension and tool registry, without adding a second MCP client to the Eval Worker or replacing Eval's Node/Python runtime. Pi MCP remains disabled by default under grok-pi's explicit extension allowlist. See the [implementation plan](docs/issues/adapter/20260930-Eval%20v2%20学习%20Pi%20Codemode%20并复用%20MCP.md).
 
 `pi_eval_v2_display_mode` is presentation-only and applies immediately: `effects` keeps Eval v2 orchestration source out of the normal transcript and presents its effects/results, while `legacy` restores source + result rendering. Change it from **F2 → Agent → Eval v2 display**, edit `[ui].pi_eval_v2_display_mode`, or use `/eval-display [effects|legacy]`; `/eval-display` with no argument toggles the current mode. The selected mode is persisted for future sessions.
 

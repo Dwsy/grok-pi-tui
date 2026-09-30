@@ -45,7 +45,7 @@ export const docsEn = {
     ],
     labels: {
       install: "Install grok-pi",
-      ensurePi: "Ensure Pi ≥ 0.84.3",
+      ensurePi: "Ensure Pi ≥ 0.99.0",
       run: "Run",
     },
   },
@@ -289,7 +289,7 @@ export const docsEn = {
         name: "Pi Agent Core",
         role: "Agent loop, models, providers, tools, extensions, sessions",
         details: [
-          "Always started in --mode rpc (system pi ≥ 0.84.3)",
+          "Always started in --mode rpc (system pi ≥ 0.99.0)",
           "Local JSONL sessions; trust, settings, package lifecycle",
           "Extension ecosystem + skills + prompts",
           "Sub-agent child AgentSession; compaction; model providers",
@@ -935,8 +935,8 @@ export const docsEn = {
       },
       {
         step: "2",
-        title: "Ensure Pi ≥ 0.84.3",
-        desc: "grok-pi drives Pi as its agent core. Install or update Pi via npm.",
+        title: "Ensure Pi ≥ 0.99.0",
+        desc: "grok-pi drives Pi as its agent core and requires the built-in MCP/Codemode baseline. Install or update Pi via npm.",
         code: "npm install --global @earendil-works/pi-coding-agent",
       },
       {

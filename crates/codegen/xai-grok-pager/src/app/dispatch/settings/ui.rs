@@ -991,6 +991,10 @@ pub(in crate::app::dispatch) fn action_for_reset(
             tool: crate::app::actions::PiBuiltinTool::Eval,
             enabled: *b,
         }),
+        ("pi_builtin_tools.codemode", SettingValue::Bool(b)) => Some(Action::SetPiBuiltinTool {
+            tool: crate::app::actions::PiBuiltinTool::Codemode,
+            enabled: *b,
+        }),
         ("pi_bash", SettingValue::Bool(b)) => Some(Action::SetPiBash(*b)),
         ("pi_eval", SettingValue::Enum(s)) => Some(Action::SetPiEval((*s).to_string())),
         ("pi_eval_v2_language", SettingValue::Enum(s)) => {

@@ -9,16 +9,22 @@
 
 ## [Unreleased]
 
-## [0.1.10-beta.9] - 2026-09-29
+## [0.1.10-beta.9] - 2026-09-30
 
 ### 新增
 
 - **Web Config 配置工作台** — `/pi-config web` / `/pi-models web` 支持完整中英双语、响应式布局、全局搜索、当前/默认模型摘要、明暗主题、Provider/Model 复制与高级字段、资源路径编辑、翻译后的 Grok/F2 选项、分组 Pi 设置以及显式暂存/保存与冲突反馈；保留原回环鉴权和独立配置根。
 - **合入 PR #10（kyrosle）：Remote TUI 输入所有权** — 修复 Shift/Ctrl/Alt/Super 修改键事件丢失、输入误入聊天栏、组件焦点/生命周期以及键盘消息乱序；传输元数据按实例隔离，并补充测试。
+- **可选 Pi Codemode** — F2「Built-in tools」新增默认关闭的 `codemode` 开关；启用后，grok-pi 会在下一次会话显式加载 Pi 的 `builtin:codemode` 扩展，CLI 工具排除规则仍保持最高优先级。
 
 ### 变更
 
+- **Pi 基线** — grok-pi 现在要求 Pi `0.99.0+`，与内置 Codemode/MCP 基线一致；不再支持 Pi `0.84.3`。
 - 继承 `v0.1.10-beta.8` 的 Eval v2 MCP、绑定 ID + URL 密钥、图片 Resource 与可选 npm `tokenizers` 统计。`beta.8` 的二进制构建已经取消，三项功能统一由本 `beta.9` 预发布版本交付。
+
+### 修复
+
+- **手动发布已有 tag** — `workflow_dispatch` 重建已有 tag 时不再向 Releases API 传 `target_commitish`，避免触发 GitHub workflow-write 权限拒绝。
 
 ### 验证
 

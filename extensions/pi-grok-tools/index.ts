@@ -8,6 +8,7 @@ const BUILTIN_TOOLS = [
 	"find",
 	"ls",
 	"eval",
+	"codemode",
 ] as const;
 
 /**

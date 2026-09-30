@@ -595,6 +595,7 @@ const PI_BUILTIN_TOOLS_CHILDREN: &[&str] = &[
     "pi_builtin_tools.find",
     "pi_builtin_tools.ls",
     "pi_builtin_tools.eval",
+    "pi_builtin_tools.codemode",
 ];
 
 /// Build the catalog; called once at process start via `SettingsRegistry::defaults()`.
@@ -2212,6 +2213,29 @@ pub fn default_settings() -> Vec<SettingMeta> {
             ],
             kind: SettingKind::Bool {
                 default: ui_default.pi_builtin_tools.eval,
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
+        SettingMeta {
+            key: "pi_builtin_tools.codemode",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Codemode",
+            description: "Run model-written JavaScript in a QuickJS sandbox whose only capability is calling tools. Off by default: enabling it also registers Pi's codemode extension for the next grok-pi session.",
+            keywords: &[
+                "pi",
+                "tool",
+                "codemode",
+                "quickjs",
+                "javascript",
+                "script",
+                "sandbox",
+                "mcp",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_builtin_tools.codemode,
             },
             restart_required: true,
             hidden_in_minimal: false,

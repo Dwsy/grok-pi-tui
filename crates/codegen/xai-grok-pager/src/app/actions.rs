@@ -114,6 +114,7 @@ pub enum PiBuiltinTool {
     Find,
     Ls,
     Eval,
+    Codemode,
 }
 
 /// Synchronous, side-effect-free user intent.

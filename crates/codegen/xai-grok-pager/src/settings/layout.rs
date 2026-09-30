@@ -96,7 +96,8 @@ pub fn section_for(key: SettingKey) -> &'static str {
         | "pi_builtin_tools.grep"
         | "pi_builtin_tools.find"
         | "pi_builtin_tools.ls"
-        | "pi_builtin_tools.eval" => "Built-in tools",
+        | "pi_builtin_tools.eval"
+        | "pi_builtin_tools.codemode" => "Built-in tools",
         "pi_bash"
         | "pi_eval"
         | "pi_eval_v2_language"

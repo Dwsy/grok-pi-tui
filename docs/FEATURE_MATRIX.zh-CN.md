@@ -1,7 +1,7 @@
 # Grok Native TUI × Pi 功能矩阵
 
 
-**最小 Pi 版本：0.84.3**（系统 `pi` / `@earendil-works/pi-coding-agent`）。`pi-main` 为可选 git 子模块，非运行时必需。
+**最小 Pi 版本：0.99.0**（系统 `pi` / `@earendil-works/pi-coding-agent`）。`pi-main` 为可选 git 子模块，非运行时必需。
 
 状态定义：**原生**＝由 Grok Pager 组件实现；**适配**＝Pi 语义转换后进入 Grok 原生组件；**边界**＝Pi RPC 未暴露或与 Grok 产品后端绑定，刻意不实现。
 
@@ -43,6 +43,9 @@
 | Text stream | 适配 | `message_update` → AgentMessageChunk |
 | Thinking/reasoning stream | 适配 | `message_update` → AgentThoughtChunk |
 | Tool start/update/end | 适配 | ACP ToolCall/ToolCallUpdate |
+| Eval v2 host-tool bridge | 适配 | `pi-grok-bash` 负责 Node/Python Eval worker、`HostCallGate`（上限 4）、`EvalSessionToolBridge`、显式 `store/load`、`parallel/pipeline` 和原生 task 投影；Eval 是嵌套 Pi 能力，不是第二个 Agent Core |
+| Eval v2-only MCP facade | 适配+边界 | 可选的认证回环 Streamable HTTP 允许外部 MCP client 调用当前 Eval v2；binding ID/secret、resource 图片、tokenizer 计数和 shutdown 由 `eval-pi-mcp` 负责，不属于 Pi 的出站 MCP client |
+| Eval v2 复用 Pi Codemode/MCP | 边界 | 目前仅有方案：grok-pi 启动时使用 `--no-extensions` 与显式 bridge allowlist，因此 Pi 内置 `mcp`/`codemode` 默认未加载。这些 built-in 需要受支持的 Pi 基线 `0.99.0+`；计划通过 `EvalSessionToolBridge` 复用 Pi MCP Tool Registry，不在 Eval Worker 内新增 MCP client，也不替换 Node/Python runtime。见 `docs/issues/adapter/20260930-Eval v2 学习 Pi Codemode 并复用 MCP.md`。
 | Pi Bash 后台任务 / Send to Background | 原生+适配 | `grok-pi` 私有 Bash extension 持有前台与初始后台 Bash 子进程；前台仍复用 Pi `createBashToolDefinition` 的输出/渲染语义。Pager 原生 Send to Background 经 `x.ai/terminal/background` 以受控临时控制文件按 `toolCallId` 转交**同一**子进程，随后投影到既有 `x.ai/task_*` 卡片；原生任务卡 kill 经同一控制通道走 `x.ai/task/kill`（`op:kill` + 已发布 `runningTaskIds`）；`is_background` + `description`、`get_task_output` / `wait_tasks` / `kill_task` 保持可用。前台 Bash 达到共享可配置最大等待阈值后会自动转后台（默认 4.5 分钟）；每次阻塞式 task wait 也受同一阈值限制，让仍在运行的任务释放当前 agent turn，而不是持续占住 prompt cache 超过 TTL。最大等待配置为 `0` 或负数时同时关闭这两种行为。任务终态经私有 `__pi_grok_bash_task__` 状态通道带外发布，不受流式、ESC 取消与队列清空影响；对话侧 bridge 消息仍负责唤醒模型。适配器镜像任务生命周期，两条通道的同一终态只投影一次；Pi 子进程退出时对残留任务按 `signal: session_restart` 对账（行离开 running 过滤器，不新增失败块）。 |
 | Pi 子代理 | 原生+适配 | F2 `[ui].pi_subagents` 默认开、需重启。V1 保留 Pi child `AgentSession`、原生 `SubagentBlock`/Tasks Pane/child `AgentView` 投影、产品隔离 `.grok-pi/agents/*.md` + `~/.grok-pi/agents/*.md` 定义，以及 history/wait/cancel、主→子 follow-up/steer。可选 V2（F2 → Agent →「Pi subagents V2」开关，或 `PI_GROK_SUBAGENTS_V2=1`）增加在当前 root Pi session 内稳定的 Codex 风格 `/root/...` path、`spawn_team_agent`、不单独唤醒 idle recipient 的 `team_send_message`、触发新任务的 `team_followup_task`、`team_wait`、`team_list`、`team_interrupt`、nested spawn 和 `FINAL_ANSWER` 自动回传 parent。`spawn_team` 按项目 `.grok-pi/teams/*.json` > 全局 `~/.grok-pi/teams/*.json` > bundled `research`/`implementation`/`review` 发现 preset。V2 语义消息使用 `pi-grok-team-message/v2`；UI-only `pi-grok-subagent/v1` 仍只写有界 lifecycle，不承载 progress/child delta。完成后的 agent 进入 `IDLE`；重新激活会保留 Pi child session，但轮换 V1 run UUID 以兼容原生 terminal tombstone。后台并发上限 4，支持 cancellation-safe queue 与 atomic preset startup。产品指南：`docs/usage/subagents-v2.zh-CN.md`。模型驱动的手工端到端验收待执行。 |
 | Workflow（Rhai / `/workflow`） | 上游引擎 + Pi Spawn 接缝 | **会话宿主 + slash 表面：** 复用 `xai-workflow` + `ExternalWorkflowRuntime`；adapter `x.ai/workflow/{launch,pause,stop}` + `x.ai/workflows/list` + `workflow_updated`；注入 `/workflow`、`/workflows`、`/create-workflow`（及命名脚本）；隐藏 `__pi_workflow_*` 桥命令；Pager 本地处理 + F2 门控。deep-research 实机手测仍建议。`/create-workflow` 为 PassThrough 用户提示（非 Pi skill）。项目脚本目录默认 `<repo>/.grok-pi/workflows`。 |

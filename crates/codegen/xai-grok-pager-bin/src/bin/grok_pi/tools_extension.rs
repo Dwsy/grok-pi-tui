@@ -21,8 +21,13 @@ pub(super) fn write_tools_extension() -> Result<NamedTempFile> {
     Ok(file)
 }
 
+/// Selectable Pi tool names for the F2 group. Pi's own built-in tool
+/// registry owns everything except `codemode`, which a built-in *extension*
+/// registers: grok-pi must pass `--extension builtin:codemode` for the name to
+/// exist at all. `--exclude-tools` still removes it, so an unselected
+/// `codemode` is denied before registration.
 #[cfg(windows)]
-const BUILTIN_TOOL_NAMES: [&str; 9] = [
+const BUILTIN_TOOL_NAMES: [&str; 10] = [
     "read",
     "bash",
     "powershell",
@@ -32,10 +37,11 @@ const BUILTIN_TOOL_NAMES: [&str; 9] = [
     "find",
     "ls",
     "eval",
+    "codemode",
 ];
 #[cfg(not(windows))]
-const BUILTIN_TOOL_NAMES: [&str; 8] = [
-    "read", "bash", "edit", "write", "grep", "find", "ls", "eval",
+const BUILTIN_TOOL_NAMES: [&str; 9] = [
+    "read", "bash", "edit", "write", "grep", "find", "ls", "eval", "codemode",
 ];
 #[cfg(windows)]
 const DEFAULT_BUILTIN_TOOLS: [&str; 5] = ["read", "bash", "powershell", "edit", "write"];
@@ -212,9 +218,46 @@ pub(super) fn merge_tool_exclusions(args: &mut Vec<String>, additional: &str) ->
     exclusions.join(",")
 }
 
+/// Whether `codemode` should be registered for this Pi child.
+///
+/// `codemode` is registered by a Pi built-in *extension*, not the built-in
+/// tool registry: `--exclude-tools codemode` cannot create the name, and
+/// `--tools codemode` cannot activate a name that was never registered. The
+/// host must therefore pass `--extension builtin:codemode` whenever either
+/// gate asks for it — the F2 selection (normal mode) or an explicit `--tools`
+/// allowlist (which bypasses F2 entirely).
+///
+/// A user-supplied `--exclude-tools codemode` still wins: Pi drops the name
+/// from the registry after the extension registers it.
+pub(super) fn codemode_requested(args: &[String], selected: Option<&str>) -> bool {
+    if selected.is_some_and(|names| csv_contains(names, "codemode")) {
+        return true;
+    }
+    explicit_tools(args).is_some_and(|allowed| csv_contains(&allowed, "codemode"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codemode_extension_only_loads_when_requested() {
+        assert!(codemode_requested(&[], Some("read,codemode")));
+        assert!(codemode_requested(&[], Some(" codemode ")));
+        assert!(!codemode_requested(&[], Some("read,bash,edit,write")));
+        // `--tools` replaces the F2 selection, so it must be checked on its own.
+        assert!(codemode_requested(
+            &["--tools".into(), "read,codemode".into()],
+            None
+        ));
+        assert!(codemode_requested(&["--tools=read,codemode".into()], None));
+        assert!(!codemode_requested(
+            &["--tools".into(), "read,edit".into()],
+            None
+        ));
+        // No policy at all (--no-tools, eval-v2-only) keeps the extension unloaded.
+        assert!(!codemode_requested(&[], None));
+    }
 
     #[test]
     fn tools_extension_source_is_loadable_typescript_module() {
@@ -293,22 +336,22 @@ mod tests {
         #[cfg(windows)]
         assert_eq!(
             disabled_builtin_tools_from_selected("read,edit,write,grep,eval"),
-            "bash,powershell,find,ls"
+            "bash,powershell,find,ls,codemode"
         );
         #[cfg(not(windows))]
         assert_eq!(
             disabled_builtin_tools_from_selected("read,edit,write,grep,eval"),
-            "bash,find,ls"
+            "bash,find,ls,codemode"
         );
         #[cfg(windows)]
         assert_eq!(
             disabled_builtin_tools_from_selected("read,bash,powershell,edit,write"),
-            "grep,find,ls,eval"
+            "grep,find,ls,eval,codemode"
         );
         #[cfg(not(windows))]
         assert_eq!(
             disabled_builtin_tools_from_selected("read,bash,edit,write"),
-            "grep,find,ls,eval"
+            "grep,find,ls,eval,codemode"
         );
     }
 

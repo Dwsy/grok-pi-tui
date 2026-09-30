@@ -447,6 +447,10 @@ pub struct PiBuiltinTools {
     pub find: bool,
     pub ls: bool,
     pub eval: bool,
+    /// Pi's `codemode` tool. Registered by a built-in *extension* rather than
+    /// the built-in tool registry, so grok-pi must also pass
+    /// `--extension builtin:codemode` before this name can be activated.
+    pub codemode: bool,
 }
 
 impl PiBuiltinTools {
@@ -460,6 +464,7 @@ impl PiBuiltinTools {
             && !self.find
             && !self.ls
             && !self.eval
+            && !self.codemode
     }
 }
 
@@ -475,6 +480,7 @@ impl Default for PiBuiltinTools {
             find: false,
             ls: false,
             eval: false,
+            codemode: false,
         }
     }
 }

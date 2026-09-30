@@ -2253,6 +2253,7 @@ pub(in crate::app::dispatch) fn set_pi_builtin_tool(
         PiBuiltinTool::Find => &mut app.current_ui.pi_builtin_tools.find,
         PiBuiltinTool::Ls => &mut app.current_ui.pi_builtin_tools.ls,
         PiBuiltinTool::Eval => &mut app.current_ui.pi_builtin_tools.eval,
+        PiBuiltinTool::Codemode => &mut app.current_ui.pi_builtin_tools.codemode,
     };
     if *current == enabled {
         return vec![];
@@ -2272,6 +2273,7 @@ pub(in crate::app::dispatch) fn set_pi_builtin_tool(
             PiBuiltinTool::Find => "find",
             PiBuiltinTool::Ls => "ls",
             PiBuiltinTool::Eval => "eval",
+            PiBuiltinTool::Codemode => "codemode",
         },
         if enabled { "on" } else { "off" },
     ));

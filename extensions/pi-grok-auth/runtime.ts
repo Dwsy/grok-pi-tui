@@ -51,7 +51,7 @@ export function resolveRuntime(ctx: ExtensionCommandContext): ModelRuntimeLike {
 	if (!runtime || typeof runtime.login !== "function" || typeof runtime.getProviders !== "function") {
 		throw new Error(
 			"Pi ModelRuntime unavailable on ctx.modelRegistry.runtime. " +
-				"grok-pi requires Pi >= 0.84.3 (system `pi`).",
+				"grok-pi requires Pi >= 0.99.0 (system `pi`).",
 		);
 	}
 	return runtime;

@@ -126,8 +126,9 @@ use shortcut_manager_extension::write_shortcut_manager_extension;
 use subagent_extension::write_subagent_extension;
 use todo_extension::write_todo_extension;
 use tools_extension::{
-    cli_tool_exclusions, configured_builtin_tools, disabled_builtin_tools_from_selected,
-    has_no_tools_arg, merge_tool_exclusions, tool_name_allowed_by_cli, write_tools_extension,
+    cli_tool_exclusions, codemode_requested, configured_builtin_tools,
+    disabled_builtin_tools_from_selected, has_no_tools_arg, merge_tool_exclusions,
+    tool_name_allowed_by_cli, write_tools_extension,
 };
 use tree_bridge::write_navigate_tree_extension;
 use web_config_extension::write_web_config_extension;
@@ -259,7 +260,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let mut args = Args::parse_from(normalized_args);
-    // Default host is system `pi` (min 0.84.3). Override with --pi-bin or PI_BIN.
+    // Default host is system `pi` (min 0.99.0). Override with --pi-bin or PI_BIN.
     if args.pi_bin == "pi" {
         if let Ok(pi_bin) = std::env::var("PI_BIN") {
             if !pi_bin.trim().is_empty() {
@@ -695,6 +696,12 @@ async fn run(mut args: Args) -> Result<()> {
         .then(|| write_tools_extension())
         .transpose()
         .context("failed to create Pi tools extension")?;
+    // `codemode` lives in Pi's built-in *extension* registry, not its built-in
+    // tool registry. Merely naming it in the F2 selection cannot make it exist,
+    // so the host must load `builtin:codemode` explicitly — and only when the
+    // user selected it, which keeps the extension out of every default startup.
+    let codemode_extension_requested =
+        codemode_requested(&pi_args, selected_builtin_tools.as_deref());
     let bash_bridge_runtime_enabled =
         bash_bridge_enabled && tool_name_allowed_by_cli(&pi_args, "bash");
     // Tree file rollback checkpoint extension: injected last so it can verify
@@ -907,6 +914,8 @@ async fn run(mut args: Args) -> Result<()> {
         bash_extension
             .as_ref()
             .map(|extension| extension.source_path()),
+        // Pi's built-in codemode extension; `builtin:` is a Pi resource id, not a filesystem path.
+        codemode_extension_requested.then(|| std::path::Path::new("builtin:codemode")),
         tools_extension.as_ref().map(|extension| extension.path()),
         // Rollback extension observes the final built-in registrations.
         rollback_ext

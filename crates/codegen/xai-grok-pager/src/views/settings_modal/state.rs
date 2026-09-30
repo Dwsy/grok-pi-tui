@@ -1177,6 +1177,10 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
             tool: crate::app::actions::PiBuiltinTool::Eval,
             enabled: new,
         }),
+        "pi_builtin_tools.codemode" => Some(Action::SetPiBuiltinTool {
+            tool: crate::app::actions::PiBuiltinTool::Codemode,
+            enabled: new,
+        }),
         "pi_bash" => Some(Action::SetPiBash(new)),
         "pi_eval_v2_only" => Some(Action::SetPiEvalV2Only(new)),
         "pi_eval_mcp" => Some(Action::SetPiEvalMcp(new)),

@@ -565,6 +565,7 @@ pub fn current_value_for(
         "pi_builtin_tools.find" => Some(SettingValue::Bool(ui.pi_builtin_tools.find)),
         "pi_builtin_tools.ls" => Some(SettingValue::Bool(ui.pi_builtin_tools.ls)),
         "pi_builtin_tools.eval" => Some(SettingValue::Bool(ui.pi_builtin_tools.eval)),
+        "pi_builtin_tools.codemode" => Some(SettingValue::Bool(ui.pi_builtin_tools.codemode)),
         "pi_bash" => Some(SettingValue::Bool(ui.pi_bash)),
         "pi_eval" => Some(SettingValue::Enum(match ui.pi_eval.as_str() {
             "v2" => "v2",
@@ -993,6 +994,9 @@ mod tests {
                 }
                 ("pi_builtin_tools.eval", SettingKind::Bool { default }) => {
                     assert_eq!(*default, ui.pi_builtin_tools.eval);
+                }
+                ("pi_builtin_tools.codemode", SettingKind::Bool { default }) => {
+                    assert_eq!(*default, ui.pi_builtin_tools.codemode);
                 }
                 ("pi_bash", SettingKind::Bool { default }) => {
                     assert_eq!(*default, ui.pi_bash);

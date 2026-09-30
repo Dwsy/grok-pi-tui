@@ -45,7 +45,7 @@ const docsZh: DocsDictionary = {
     ],
     labels: {
       install: "安装 grok-pi",
-      ensurePi: "确保 Pi ≥ 0.84.3",
+      ensurePi: "确保 Pi ≥ 0.99.0",
       run: "运行",
     },
   },
@@ -287,7 +287,7 @@ const docsZh: DocsDictionary = {
         name: "Pi Agent Core",
         role: "Agent 循环、模型、Provider、工具、扩展、会话",
         details: [
-          "始终以 --mode rpc 启动（系统 pi ≥ 0.84.3）",
+          "始终以 --mode rpc 启动（系统 pi ≥ 0.99.0）",
           "本地 JSONL 会话；信任、设置、包生命周期",
           "扩展生态 + skills + prompts",
           "子代理子 AgentSession；压缩；模型 Provider",
@@ -931,8 +931,8 @@ const docsZh: DocsDictionary = {
       },
       {
         step: "2",
-        title: "确保 Pi ≥ 0.84.3",
-        desc: "grok-pi 以 Pi 为 agent 核心。用 npm 安装或更新 Pi。",
+        title: "确保 Pi ≥ 0.99.0",
+        desc: "grok-pi 以 Pi 为 agent 核心，并要求内置 MCP/Codemode 基线。用 npm 安装或更新 Pi。",
         code: "npm install --global @earendil-works/pi-coding-agent",
       },
       {

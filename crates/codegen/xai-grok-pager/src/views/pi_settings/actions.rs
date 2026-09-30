@@ -57,6 +57,10 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
             tool: PiBuiltinTool::Eval,
             enabled: new,
         },
+        "pi_builtin_tools.codemode" => Action::SetPiBuiltinTool {
+            tool: PiBuiltinTool::Codemode,
+            enabled: new,
+        },
         "pi_bash" => Action::SetPiBash(new),
         "pi_eval_v2_only" => Action::SetPiEvalV2Only(new),
         "pi_eval_mcp" => Action::SetPiEvalMcp(new),
