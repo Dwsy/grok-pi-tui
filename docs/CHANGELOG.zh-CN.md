@@ -29,6 +29,7 @@
 ### 验证
 
 - 联合 Rust Cargo check、Web Config / Remote TUI 的 18 项 Bun 测试、合成浏览器场景 34 项检查及 Eval / MCP 回归检查通过。
+- 本次发布刷新额外通过 96 个 `grok-pi` bin 测试、生产 `xai-grok-pager --lib` check、Pi `0.99.1` `builtin:codemode` RPC 烟测、带 `--locked` 的 `grok-pi` Cargo 构建、changelog 自测、shell 语法检查、rustfmt 与 `git diff --check`。宽泛 Pager lib-test 仍被与本次发布无关的既有陈旧测试 fixture 阻塞；本地 `build.sh` 也会先在可选 `pi-main` 0.82.1 TypeScript checkout 中停止，但与 release 等价的 Rust 构建已通过。
 
 ## [0.1.10-beta.8] - 2026-09-29
 

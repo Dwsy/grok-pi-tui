@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Verification
 
 - The combined Grok-Pi Cargo check, 18 Web Config/Remote TUI Bun tests, 34 synthetic-browser workbench checks, and Eval/MCP regression checks passed.
+- Release refresh verification passed the 96-test `grok-pi` bin suite, production `xai-grok-pager --lib` check, direct Pi `0.99.1` `builtin:codemode` RPC smoke test, locked `grok-pi` Cargo build, changelog self-test, shell syntax checks, rustfmt, and `git diff --check`. The broad Pager lib-test remains blocked by pre-existing stale test fixtures unrelated to this release; local `build.sh` also stops in the optional `pi-main` 0.82.1 TypeScript checkout before reaching Cargo, while the release-equivalent Rust build succeeds.
 
 ## [0.1.10-beta.8] - 2026-09-29
 
