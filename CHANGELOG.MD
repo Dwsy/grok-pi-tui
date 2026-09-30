@@ -4,6 +4,12 @@ All notable changes to **grok-pi** (Pi agent core in Grok Build's production TUI
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Quiet Eval cells always render** — an Eval v2 cell that never called a host tool now renders as a normal Eval card (source + output) regardless of the effects-first setting, and stays visible under Eval-v2-only instead of vanishing behind its absent effect rows. The extension records the per-cell host tool-call count in the result details; payloads from older extensions keep the previous behavior.
+
 ## [0.1.10-beta.10] - 2026-09-30
 
 ### Added

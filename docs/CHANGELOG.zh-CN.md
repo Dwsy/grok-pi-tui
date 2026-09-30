@@ -7,6 +7,12 @@
 
 ---
 
+## [Unreleased]
+
+### 修复
+
+- **无工具调用的 Eval cell 一律正常渲染** — 从未调用 host 工具的 Eval v2 cell 现在总是渲染为正常 Eval 卡（源码 + 输出），不受 effects-first 设置影响；在 Eval-v2-only 下也不再因没有 effect 行而整个消失。扩展在结果 details 中记录每 cell 的 host 工具调用数；旧扩展的 payload 保持原有行为。
+
 ## [0.1.10-beta.10] - 2026-09-30
 
 ### 新增

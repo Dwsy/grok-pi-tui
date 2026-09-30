@@ -625,6 +625,27 @@ fn eval_top_level_hidden_follows_the_display_mode() {
 }
 
 #[test]
+fn eval_result_without_tool_calls_needs_an_explicit_zero() {
+    use super::tools::eval_result_without_tool_calls;
+    // New extension payload: explicit zero marks a quiet cell.
+    assert!(eval_result_without_tool_calls(&json!({
+        "content": [{ "type": "text", "text": "4" }],
+        "details": { "toolCalls": 0, "bridgeVersion": "v2" }
+    })));
+    // Any counted call keeps the historical suppression.
+    assert!(!eval_result_without_tool_calls(&json!({
+        "details": { "toolCalls": 2 }
+    })));
+    // Replay shape stores details alone as raw_output.
+    assert!(eval_result_without_tool_calls(&json!({ "toolCalls": 0 })));
+    // Older payloads without the counter must not claim "without tools".
+    assert!(!eval_result_without_tool_calls(&json!({
+        "details": { "bridgeVersion": "v2" }
+    })));
+    assert!(!eval_result_without_tool_calls(&json!({ "content": [] })));
+}
+
+#[test]
 fn codemode_nested_calls_are_suppressed_by_known_parent_ids() {
     use super::tools::is_codemode_nested_call;
     let parents: HashSet<String> = ["call-1".to_string()].into_iter().collect();

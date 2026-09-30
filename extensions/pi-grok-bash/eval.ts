@@ -36,6 +36,8 @@ export type EvalExecution = {
 	output: string;
 	truncated: boolean;
 	images?: EvalDisplayImage[];
+	/** Host tools this cell invoked (`tool.*` calls). Skills and completion() do not count. */
+	toolCalls?: number;
 };
 
 type EvalWorkerReply = {
@@ -87,6 +89,8 @@ type PendingEval = {
 	output: Buffer;
 	/** Pi read-image blocks belong to this cell, not to adjacent or parallel cells. */
 	readImages: EvalDisplayImage[];
+	/** Host tool calls dispatched for this cell; skills and completion() excluded. */
+	toolCalls: number;
 	truncated: boolean;
 	outputSink?: (chunk: Buffer) => void;
 	timer?: ReturnType<typeof setTimeout>;
@@ -1002,6 +1006,7 @@ export class PersistentEvalKernel {
 				reject,
 				output: Buffer.alloc(0),
 				readImages: [],
+				toolCalls: 0,
 				truncated: false,
 				outputSink,
 				outerSignal: signal,
@@ -1153,6 +1158,9 @@ export class PersistentEvalKernel {
 			this.writeWorkerMessage({ type: "host_result", id: call.id, ok: false, error: "eval v2 host bridge unavailable" });
 			return;
 		}
+		// Only real host tool calls count: skills and completion() never project
+		// effect rows, so the renderer's "no tool calls" signal must exclude them.
+		if (call.method === "tool") pending.toolCalls += 1;
 
 		void this.hostCall(call, pending.runController.signal)
 			.then((value) => {
@@ -1209,6 +1217,7 @@ export class PersistentEvalKernel {
 				output: rendered,
 				truncated: bounded?.truncated ?? pending.truncated,
 				images: deduplicated.length > 0 ? deduplicated : undefined,
+				toolCalls: pending.toolCalls,
 			});
 			return;
 		}

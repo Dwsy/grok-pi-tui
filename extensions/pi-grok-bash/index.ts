@@ -380,6 +380,10 @@ export default async function (pi: ExtensionAPI) {
 						},
 					],
 					truncated: result.truncated,
+					// Lets the renderer tell "cell made no host tool calls" apart from
+					// unknown: such cells always render as a normal Eval card,
+					// regardless of the effects-first setting or v2-only hiding.
+					toolCalls: result.toolCalls ?? 0,
 					bridgeVersion: evalVersion,
 				},
 			};

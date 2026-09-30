@@ -16,6 +16,9 @@ pub struct EvalToolCallBlock {
     pub code: String,
     pub title: Option<String>,
     pub bridge_version: Option<String>,
+    /// Host-tool calls the cell made, from the eval result details. `None` when
+    /// the running extension predates the counter (or the payload lacks it).
+    pub tool_calls: Option<u64>,
     pub output: Option<String>,
     pub error: Option<String>,
     pub started_at: Option<std::time::Instant>,
@@ -29,6 +32,7 @@ impl EvalToolCallBlock {
             code: code.into(),
             title: None,
             bridge_version: None,
+            tool_calls: None,
             output: None,
             error: None,
             started_at: None,
@@ -48,8 +52,17 @@ impl EvalToolCallBlock {
         self
     }
 
+    pub fn with_tool_calls(mut self, count: u64) -> Self {
+        self.tool_calls = Some(count);
+        self
+    }
+
     pub fn effects_first(&self) -> bool {
+        // A cell that never called a host tool has no effect rows to show; the
+        // output alone would strand the source, so it always renders as a
+        // normal Eval card regardless of the effects-first setting.
         self.bridge_version.as_deref() == Some("v2")
+            && self.tool_calls != Some(0)
             && crate::appearance::cache::load_pi_eval_v2_effects_first()
     }
 
@@ -478,6 +491,35 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("1 + 1"));
+    }
+
+    #[test]
+    fn effects_first_yields_to_cells_without_host_tool_calls() {
+        crate::appearance::cache::set_pi_eval_v2_effects_first(true);
+        let quiet = EvalToolCallBlock::new("js", "2 + 2")
+            .with_bridge_version("v2")
+            .with_tool_calls(0)
+            .with_output("4");
+        let output = quiet.output(&ctx());
+        let text = output
+            .lines
+            .iter()
+            .map(|line| line.content.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("2 + 2"), "source must render for a no-tool cell");
+        assert!(text.contains("4"));
+
+        let loud = EvalToolCallBlock::new("js", "await tool.read({})")
+            .with_bridge_version("v2")
+            .with_tool_calls(3);
+        assert!(loud.effects_first());
+
+        // Payloads from extensions predating the counter keep the old behavior.
+        let legacy = EvalToolCallBlock::new("js", "1").with_bridge_version("v2");
+        assert!(legacy.effects_first());
+        crate::appearance::cache::set_pi_eval_v2_effects_first(false);
+        assert!(!loud.effects_first());
     }
 }
 

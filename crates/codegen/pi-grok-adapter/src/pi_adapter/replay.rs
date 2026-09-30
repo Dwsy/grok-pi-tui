@@ -162,14 +162,18 @@ impl PiAgent {
                 arguments,
                 usage,
             } => {
+                let arguments = normalize_tool_raw_input(&name, arguments);
+                // Store args even when the top-level card is withheld: an
+                // Eval-v2-only cell that never calls a host tool gets its card
+                // materialized at ToolEnd (see below) and still needs the
+                // code/title input.
+                if let Some(args) = arguments.clone() {
+                    self.state.borrow_mut().tool_args.insert(id.clone(), args);
+                }
                 // Suppress the top-level Eval card exactly like the live
                 // handlers, so resume shows only the replayed nested effects.
                 if eval_top_level_hidden(self.eval_v2_only, &name) {
                     return;
-                }
-                let arguments = normalize_tool_raw_input(&name, arguments);
-                if let Some(args) = arguments.clone() {
-                    self.state.borrow_mut().tool_args.insert(id.clone(), args);
                 }
                 let mut tool_call = acp::ToolCall::new(acp::ToolCallId::new(id), name.clone())
                     .kind(tool_kind(&name))
@@ -191,11 +195,6 @@ impl PiAgent {
                 raw_output,
                 is_error,
             } => {
-                // Suppress the top-level Eval card exactly like the live
-                // handlers, so resume shows only the replayed nested effects.
-                if eval_top_level_hidden(self.eval_v2_only, &name) {
-                    return;
-                }
                 let mut raw = raw_output.unwrap_or(Value::Null);
                 // History often stores `details` as raw_output and the body in
                 // separate content blocks. Fold text into the payload so bash/read
@@ -229,6 +228,29 @@ impl PiAgent {
                         .collect::<Vec<_>>();
                     let details = raw;
                     raw = json!({ "content": items, "details": details });
+                }
+                // Suppress the top-level Eval card exactly like the live
+                // handlers, so resume shows only the replayed nested effects.
+                // Exception: a cell that never called a host tool has no effect
+                // rows at all — emit the withheld start shell here so the cell
+                // renders instead of vanishing on resume.
+                if eval_top_level_hidden(self.eval_v2_only, &name) {
+                    if !eval_result_without_tool_calls(&raw) {
+                        self.state.borrow_mut().tool_args.remove(&id);
+                        return;
+                    }
+                    let args = self.state.borrow_mut().tool_args.remove(&id);
+                    let tool_call = acp::ToolCall::new(acp::ToolCallId::new(id.clone()), name.clone())
+                        .kind(tool_kind(&name))
+                        .status(acp::ToolCallStatus::InProgress)
+                        .content(Vec::new())
+                        .locations(Vec::new())
+                        .raw_input(args);
+                    self.send_replay_update(
+                        acp::SessionUpdate::ToolCall(tool_call),
+                        timestamp_ms,
+                    )
+                    .await;
                 }
                 let args = self.state.borrow_mut().tool_args.remove(&id);
                 let normalized = normalize_tool_raw_output(&name, args.as_ref(), &raw, is_error);

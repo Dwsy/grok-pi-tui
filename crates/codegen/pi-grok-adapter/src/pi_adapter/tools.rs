@@ -29,6 +29,17 @@ pub(super) fn eval_card_hidden_for_mode(legacy_display: bool) -> bool {
     !legacy_display
 }
 
+/// Whether an eval result proves the cell never called a host tool
+/// (`details.toolCalls == 0`). Unknown counts (extensions predating the
+/// counter) are not "without tools": the historical suppression stays.
+pub(super) fn eval_result_without_tool_calls(result: &Value) -> bool {
+    result
+        .pointer("/details/toolCalls")
+        .or_else(|| result.get("toolCalls"))
+        .and_then(Value::as_u64)
+        == Some(0)
+}
+
 /// Whether `[ui].pi_eval_v2_display_mode` selects the legacy source/result card.
 /// Owned by the Pager's appearance cache; the adapter reads the same config key
 /// because it decides whether the card may reach the Pager at all.
@@ -188,18 +199,21 @@ impl PiAgent {
             }
             return;
         }
-        if eval_top_level_hidden(self.eval_v2_only, name) {
-            return;
-        }
         let args = normalize_tool_raw_input(
             name,
             event.get("args").or_else(|| event.get("input")).cloned(),
         );
+        // Store args even when the top-level card is withheld: an Eval-v2-only
+        // cell that never calls a host tool gets its card materialized at end
+        // (see handle_tool_end) and still needs the code/title input.
         if let Some(args) = args.clone() {
             self.state
                 .borrow_mut()
                 .tool_args
                 .insert(id.to_string(), args);
+        }
+        if eval_top_level_hidden(self.eval_v2_only, name) {
+            return;
         }
         let content = edit_diff_content(name, args.as_ref(), None).unwrap_or_default();
         let usage = self.state.borrow_mut().tool_usage.remove(id);
@@ -542,7 +556,26 @@ impl PiAgent {
         };
         let name = string(event, &["toolName", "name"]).unwrap_or_default();
         if eval_top_level_hidden(self.eval_v2_only, name) {
-            return;
+            if !eval_result_without_tool_calls(&output) {
+                self.state.borrow_mut().tool_args.remove(id);
+                return;
+            }
+            // Eval-v2-only withheld the start card, but this cell never called
+            // a host tool: emit the shell now so the cell renders itself
+            // instead of disappearing behind its absent effects. The completed
+            // update below then fills in output and status.
+            let args = self.state.borrow_mut().tool_args.remove(id);
+            let tool_call = acp::ToolCall::new(
+                acp::ToolCallId::new(id.to_string()),
+                name.to_string(),
+            )
+            .kind(tool_kind(name))
+            .status(acp::ToolCallStatus::InProgress)
+            .content(Vec::new())
+            .locations(Vec::new())
+            .raw_input(args);
+            self.send_update(acp::SessionUpdate::ToolCall(tool_call))
+                .await;
         }
         let args = normalize_tool_raw_input(
             name,

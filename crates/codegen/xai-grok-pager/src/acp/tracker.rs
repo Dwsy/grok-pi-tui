@@ -2275,6 +2275,9 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
             if let Some(version) = extract_eval_bridge_version(tc) {
                 block = block.with_bridge_version(version);
             }
+            if let Some(count) = extract_eval_tool_calls(tc) {
+                block = block.with_tool_calls(count);
+            }
             if let Some(title) = extract_raw_field(tc, "title") {
                 block = block.with_title(title);
             }
@@ -2734,6 +2737,16 @@ fn extract_eval_bridge_version(tc: &acp::ToolCall) -> Option<String> {
         .or_else(|| raw.get("bridge_version"))
         .and_then(|v| v.as_str())
         .map(str::to_string)
+}
+
+/// Host-tool calls the eval cell made, recorded by the extension in the result
+/// details. `None` when the payload predates the counter, so historical
+/// effects-first behavior is preserved for old sessions.
+fn extract_eval_tool_calls(tc: &acp::ToolCall) -> Option<u64> {
+    let raw = tc.raw_output.as_ref()?;
+    raw.pointer("/details/toolCalls")
+        .or_else(|| raw.get("toolCalls"))
+        .and_then(|v| v.as_u64())
 }
 
 /// Extract a string field from raw_input JSON.
