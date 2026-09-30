@@ -25,6 +25,8 @@ compaction-results/
 .zed/
 .idea/
 .claude/
+.zcode/
+.impeccable/
 *.swp
 *.swo
 *~
