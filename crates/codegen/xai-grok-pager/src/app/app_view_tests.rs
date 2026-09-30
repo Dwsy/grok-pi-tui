@@ -375,11 +375,7 @@ pub(crate) fn attach_test_agent(app: &mut AppView) -> super::super::agent::Agent
     );
     agent.active_pane = crate::views::agent::ActivePane::Scrollback;
     app.agents.insert(id, agent);
-    super::super::dispatch::switch_to_agent(
-        app,
-        id,
-        super::super::dispatch::SwitchCause::Load,
-    );
+    super::super::dispatch::switch_to_agent(app, id, super::super::dispatch::SwitchCause::Load);
     id
 }
 

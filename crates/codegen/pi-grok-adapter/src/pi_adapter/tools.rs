@@ -58,9 +58,11 @@ fn eval_legacy_display_selected() -> bool {
 /// where nested calls have no history entries of their own. Parent ids stay in
 /// the set for the session, so nested end events that straggle past the
 /// script's own end cannot leak through either.
-pub(super) fn is_codemode_nested_call(codemode_parent_ids: &HashSet<String>, event: &Value) -> bool {
-    string(event, &["parentToolCallId"])
-        .is_some_and(|parent| codemode_parent_ids.contains(parent))
+pub(super) fn is_codemode_nested_call(
+    codemode_parent_ids: &HashSet<String>,
+    event: &Value,
+) -> bool {
+    string(event, &["parentToolCallId"]).is_some_and(|parent| codemode_parent_ids.contains(parent))
 }
 
 impl PiAgent {
@@ -176,10 +178,7 @@ impl PiAgent {
             if name == "ask_user_question" {
                 let args = normalize_tool_raw_input(
                     name,
-                    event
-                        .get("args")
-                        .or_else(|| event.get("input"))
-                        .cloned(),
+                    event.get("args").or_else(|| event.get("input")).cloned(),
                 );
                 let agent = self.clone();
                 let tool_call_id = id.to_string();

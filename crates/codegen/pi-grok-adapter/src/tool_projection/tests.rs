@@ -503,7 +503,10 @@ fn codemode_raw_input_marks_dedicated_variant_and_keeps_code() {
         Some(json!({ "code": "return await tools.read({ path: 'a.rs' });" })),
     )
     .unwrap();
-    assert_eq!(args.get("variant").and_then(Value::as_str), Some("Codemode"));
+    assert_eq!(
+        args.get("variant").and_then(Value::as_str),
+        Some("Codemode")
+    );
     assert_eq!(
         args.get("code").and_then(Value::as_str),
         Some("return await tools.read({ path: 'a.rs' });")
@@ -561,9 +564,15 @@ fn codemode_update_partial_result_keeps_calls_without_output() {
     );
     assert_eq!(raw.get("type").and_then(Value::as_str), Some("Codemode"));
     let calls = raw.get("calls").and_then(Value::as_array).expect("calls");
-    assert_eq!(calls[0].get("status").and_then(Value::as_str), Some("running"));
+    assert_eq!(
+        calls[0].get("status").and_then(Value::as_str),
+        Some("running")
+    );
     assert_eq!(raw.get("output").and_then(Value::as_str), Some(""));
-    assert_eq!(raw.get("full_output_path").and_then(Value::as_str), Some(""));
+    assert_eq!(
+        raw.get("full_output_path").and_then(Value::as_str),
+        Some("")
+    );
 }
 
 #[test]

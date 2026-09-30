@@ -13,8 +13,8 @@ use crate::scrollback::blocks::tool::search::{
 use crate::scrollback::blocks::tool::{
     CodemodeToolCallBlock, DiscoveredTool, EditHighlightPhase, EditToolCallBlock,
     EvalToolCallBlock, ExecuteToolCallBlock, IntegrationSearchToolCallBlock, LineRange,
-    MemorySearchToolCallBlock, OtherToolCallBlock, ReadMediaKind, ReadToolCallBlock,
-    ToolCallBlock, UseToolCallBlock, WebFetchToolCallBlock, WebSearchToolCallBlock,
+    MemorySearchToolCallBlock, OtherToolCallBlock, ReadMediaKind, ReadToolCallBlock, ToolCallBlock,
+    UseToolCallBlock, WebFetchToolCallBlock, WebSearchToolCallBlock,
 };
 use crate::scrollback::entry::{EntryId, ScrollbackEntry, ToolTraceSnapshot};
 use crate::scrollback::state::ScrollbackState;
@@ -2249,7 +2249,8 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
             // (nested calls, header-stripped script output, spilled full-output
             // path); the script source itself stays in raw_input.code.
             let code = extract_raw_field(tc, "code").unwrap_or_default();
-            let mut block = CodemodeToolCallBlock::new(code).with_raw_output(tc.raw_output.as_ref());
+            let mut block =
+                CodemodeToolCallBlock::new(code).with_raw_output(tc.raw_output.as_ref());
             if block.output.is_none() {
                 // Older payload shapes carry the script body only as ACP text content.
                 let text = content_text(tc);

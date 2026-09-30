@@ -481,10 +481,7 @@ pub(crate) fn normalize_tool_raw_output(
 ///   persisted content blocks back in as `content` (see the adapter replay path).
 pub(crate) fn codemode_tool_output(result: &Value) -> Value {
     let details = result.get("details").unwrap_or(result);
-    let calls = details
-        .get("calls")
-        .cloned()
-        .unwrap_or_else(|| json!([]));
+    let calls = details.get("calls").cloned().unwrap_or_else(|| json!([]));
     json!({
         "type": "Codemode",
         "calls": calls,
@@ -520,9 +517,7 @@ fn codemode_output_text(result: &Value) -> String {
         .filter(|text| !is_standalone_script_header(text))
         .collect::<Vec<_>>()
         .join("\n");
-    strip_codemode_script_header(&body)
-        .trim()
-        .to_string()
+    strip_codemode_script_header(&body).trim().to_string()
 }
 
 /// Full standalone Pi script header: `Script completed|failed\nWall time N seconds\nOutput:\n`.
@@ -535,14 +530,16 @@ fn is_standalone_script_header(text: &str) -> bool {
 /// from a codemode script result. Rejected input (invalid options) has no header.
 fn strip_codemode_script_header(text: &str) -> &str {
     let mut lines = text.splitn(3, '\n');
-    let (Some(status), Some(wall), rest) = (lines.next(), lines.next(), lines.next()) else {
+    let (Some(status), Some(wall), Some(rest)) = (lines.next(), lines.next(), lines.next()) else {
         return text;
     };
     let header_status = status == "Script completed" || status == "Script failed";
     let header_wall = wall
         .strip_prefix("Wall time ")
         .and_then(|value| value.strip_suffix(" seconds"))
-        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit() || b == b'.'));
+        .is_some_and(|digits| {
+            !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        });
     if !header_status || !header_wall {
         return text;
     }

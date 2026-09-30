@@ -74,9 +74,7 @@ impl CodemodeCallRow {
             .unwrap_or_default()
             .to_string();
         let status = CodemodeCallStatus::parse(value.get("status").and_then(Value::as_str));
-        let duration_ms = value
-            .get("durationMs")
-            .and_then(Value::as_u64);
+        let duration_ms = value.get("durationMs").and_then(Value::as_u64);
         let error = value
             .get("error")
             .and_then(Value::as_str)
@@ -130,7 +128,10 @@ impl CodemodeToolCallBlock {
             return self;
         }
         if let Some(calls) = raw.get("calls").and_then(Value::as_array) {
-            self.calls = calls.iter().filter_map(CodemodeCallRow::from_value).collect();
+            self.calls = calls
+                .iter()
+                .filter_map(CodemodeCallRow::from_value)
+                .collect();
         }
         if let Some(output) = raw.get("output").and_then(Value::as_str)
             && !output.is_empty()
@@ -148,6 +149,11 @@ impl CodemodeToolCallBlock {
     pub fn with_output(mut self, output: impl Into<String>) -> Self {
         let output = output.into();
         self.output = (!output.is_empty()).then_some(output);
+        self
+    }
+
+    pub fn with_error(mut self, error: impl Into<String>) -> Self {
+        self.error = Some(error.into());
         self
     }
 
@@ -193,7 +199,11 @@ impl CodemodeToolCallBlock {
     }
 
     fn header_line(&self, theme: &Theme, muted: bool) -> Line<'static> {
-        let style = if muted { theme.muted() } else { theme.primary() };
+        let style = if muted {
+            theme.muted()
+        } else {
+            theme.primary()
+        };
         let bold = style.add_modifier(ratatui::style::Modifier::BOLD);
         let mut spans = vec![Span::styled("Codemode".to_string(), bold)];
 
@@ -224,7 +234,12 @@ impl CodemodeToolCallBlock {
         (priced > 0.0).then_some(priced)
     }
 
-    fn call_row(&self, theme: &Theme, call: &CodemodeCallRow, expanded: bool) -> Vec<Line<'static>> {
+    fn call_row(
+        &self,
+        theme: &Theme,
+        call: &CodemodeCallRow,
+        expanded: bool,
+    ) -> Vec<Line<'static>> {
         let args = if !expanded && call.args.chars().count() > COLLAPSED_ARGS_CHARS {
             let cut: String = call.args.chars().take(COLLAPSED_ARGS_CHARS - 3).collect();
             format!("{cut}...")
@@ -243,15 +258,19 @@ impl CodemodeToolCallBlock {
             spans.push(Span::styled(format!(" {args}"), theme.muted()));
         }
         if let Some(ms) = call.duration_ms {
-            spans.push(Span::styled(format!(" {}", format_duration(ms)), theme.muted()));
+            spans.push(Span::styled(
+                format!(" {}", format_duration(ms)),
+                theme.muted(),
+            ));
         }
         if let Some(cost) = call.cost {
-            spans.push(Span::styled(format!(" {}", format_cost(cost)), theme.muted()));
+            spans.push(Span::styled(
+                format!(" {}", format_cost(cost)),
+                theme.muted(),
+            ));
         }
         let mut lines = vec![Line::from(spans)];
-        if expanded
-            && let Some(error) = &call.error
-        {
+        if expanded && let Some(error) = &call.error {
             for line in error.lines() {
                 lines.push(Line::from(Span::styled(
                     format!("    {line}"),
@@ -324,9 +343,7 @@ impl CodemodeToolCallBlock {
                 theme.muted(),
             )));
         }
-        if !expanded
-            && let Some(path) = &self.full_output_path
-        {
+        if !expanded && let Some(path) = &self.full_output_path {
             result.push(Line::from(Span::styled(
                 format!("Full output: {path}"),
                 theme.muted(),
@@ -339,9 +356,13 @@ impl CodemodeToolCallBlock {
         let theme = Theme::current();
         let expanded = Self::expanded(ctx);
         let width = ctx.content_width().max(20);
-        let mut lines: Vec<BlockLine> = vec![self
-            .header_line(&theme, ctx.mute_when_collapsed(ctx.appearance.scrollback.blocks.tool.muted_collapsed))
-            .into()];
+        let mut lines: Vec<BlockLine> = vec![
+            self.header_line(
+                &theme,
+                ctx.mute_when_collapsed(ctx.appearance.scrollback.blocks.tool.muted_collapsed),
+            )
+            .into(),
+        ];
 
         if !self.code.is_empty() {
             lines.push(Line::from("").into());
@@ -426,12 +447,15 @@ impl BlockContent for CodemodeToolCallBlock {
         let theme = Theme::current();
         match ctx.mode {
             DisplayMode::Collapsed => BlockOutput {
-                lines: vec![self
-                    .header_line(
+                lines: vec![
+                    self.header_line(
                         &theme,
-                        ctx.mute_when_collapsed(ctx.appearance.scrollback.blocks.tool.muted_collapsed),
+                        ctx.mute_when_collapsed(
+                            ctx.appearance.scrollback.blocks.tool.muted_collapsed,
+                        ),
                     )
-                    .into()],
+                    .into(),
+                ],
             },
             DisplayMode::Truncated | DisplayMode::Expanded => self.render_body(ctx),
         }
@@ -470,7 +494,10 @@ impl BlockContent for CodemodeToolCallBlock {
     }
 
     fn is_foldable(&self) -> bool {
-        !self.code.is_empty() || self.output.is_some() || self.error.is_some() || !self.calls.is_empty()
+        !self.code.is_empty()
+            || self.output.is_some()
+            || self.error.is_some()
+            || !self.calls.is_empty()
     }
 
     fn default_display_mode(&self) -> DisplayMode {
@@ -538,7 +565,10 @@ mod tests {
         assert_eq!(block.calls[0].duration_ms, Some(120));
         assert_eq!(block.calls[1].cost, Some(0.0012));
         assert_eq!(block.output.as_deref(), Some("a.rs: fn main() {}"));
-        assert_eq!(block.full_output_path.as_deref(), Some("/tmp/pi-codemode-abc.txt"));
+        assert_eq!(
+            block.full_output_path.as_deref(),
+            Some("/tmp/pi-codemode-abc.txt")
+        );
     }
 
     #[test]
