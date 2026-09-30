@@ -124,6 +124,12 @@ try {
   assert.match(notices.join("\n"), /eval-pi-mcp binding ID:/);
   assert.match(notices.join("\n"), /MCP URL \(secret\):/);
   assert.ok(server.url.startsWith("http://127.0.0.1:"));
+  const bindingFile = path.join(dir, "eval-pi-mcp", "binding.json");
+  const persisted = JSON.parse(await readFile(bindingFile, "utf8"));
+  assert.equal(persisted.bindingId, server.bindingId);
+  assert.equal(persisted.url, server.url);
+  assert.equal(persisted.pid, process.pid);
+  assert.match(notices.join("\n"), /Recoverable: .+binding\.json/);
   const client = new Client({ name: "external-agent-test", version: "1.0" }, { capabilities: {} });
   try {
     await client.connect(new StreamableHTTPClientTransport(new URL(server.url)));
@@ -190,7 +196,8 @@ try {
   assert.notEqual(again.bindingId, server.bindingId);
   assert.notEqual(again.url, server.url);
   await again.close();
-  console.log("PASS: session recreation rotates both binding ID and URL secret");
+  await assert.rejects(readFile(bindingFile, "utf8"), /ENOENT/);
+  console.log("PASS: session recreation rotates both binding ID and URL secret and clears the persisted binding record");
   let undisclosedUrl;
   await assert.rejects(startEvalPiMcp({
     ...options,
@@ -201,6 +208,7 @@ try {
   }), /notification surface unavailable/);
   assert.ok(undisclosedUrl);
   await assert.rejects(fetch(undisclosedUrl), /fetch failed/i);
+  await assert.rejects(readFile(bindingFile, "utf8"), /ENOENT/);
   console.log("PASS: notification failure closes an otherwise unreachable, unauthenticated-by-owner binding");
 } finally {
   if (oldHome === undefined) delete process.env.GROK_HOME;

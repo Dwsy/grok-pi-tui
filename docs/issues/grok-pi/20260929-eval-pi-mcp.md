@@ -26,8 +26,12 @@ transcript snapshot (not a claim to reproduce the exact private LLM prompt),
 metadata, and `execute_eval(binding_id, language, code, title?, timeout?,
 reset?, is_background?)` returns the real Eval result. A Pi `info` notification
 prints the binding ID, authenticated MCP URL, and delivery guidance on entry.
-Session shutdown closes the server and invalidates the URL. A session switch
-rotates the binding and secret; existing clients must be re-bound.
+Because that notification races the host's bootstrap window, the live binding is
+additionally persisted to `$GROK_HOME/eval-pi-mcp/binding.json` (`bindingId`,
+`url`, `pid`, `issuedAtMs`; 0600 in the 0700 binding dir) as the recoverable
+source of truth, and cleared when the binding closes. Session shutdown closes
+the server and invalidates the URL. A session switch rotates the binding and
+secret; existing clients must be re-bound.
 
 Any Eval image result, including ImageContent returned by nested Pi `read`
 **without an explicit `display(image)` call**, is collected on the active Eval

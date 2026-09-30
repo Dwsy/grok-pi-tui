@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`pi_eval_v2_display_mode = "legacy"` was a no-op under `pi_eval_v2_only`** — the adapter dropped the top-level `eval` card before the Pager ever saw it, so the legacy source/result renderer had nothing to render. The adapter now reads the same `[ui]` key as the Pager and keeps the card whenever `legacy` is selected; `effects` still hides it and shows only the nested effects. Live turns and `/resume` replay share one predicate, so a resumed session no longer disagrees with the live one.
 
+- **eval-pi-mcp URL was never surfaced** — the binding/URL notification fires during Pi's `session_start`, which races the host bootstrap window; the Pager silently dropped `info` notifications that arrived before any agent view existed, so the MCP ran (a binding ID was issued every launch) while the URL never appeared. The Pager now queues info notifications that land before the first agent view and flushes them into its scrollback as persistent system blocks; the extension additionally persists the live binding to `~/.grok-pi/eval-pi-mcp/binding.json` (0600, removed on close) and the notification points at that recovery path.
+
 ## [0.1.10-beta.9] - 2026-09-30
 
 ### Added

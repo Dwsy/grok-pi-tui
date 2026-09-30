@@ -121,6 +121,11 @@ pub struct ExternalUiState {
     /// Layout metadata for the active `ctx.ui.custom(..., { overlay: true })`.
     pub remote_tui_layout: Option<RemoteTuiLayout>,
     pub pending_toasts: std::collections::VecDeque<String>,
+    /// Info notifications that arrived before any agent view existed (Pi
+    /// extension `session_start` fires while the host is still bootstrapping).
+    /// `tick()` flushes them into the first active agent's scrollback so
+    /// content-bearing messages like the eval-pi-mcp URL are never dropped.
+    pub pending_system_messages: std::collections::VecDeque<String>,
     /// Session metadata from the external agent, rendered by the existing
     /// native SessionPicker rather than by an adapter-owned selector.
     pub session_catalog: Vec<SessionPickerEntry>,
@@ -2331,6 +2336,14 @@ impl AppView {
                 agent
                     .scrollback
                     .push_block(crate::scrollback::block::RenderBlock::system(message));
+            } else {
+                // No agent view yet (startup race: Pi's session_start fires
+                // while the host is still bootstrapping). Queue for `tick()`
+                // to flush into the first active agent's scrollback instead
+                // of silently dropping the message.
+                self.external_ui
+                    .pending_system_messages
+                    .push_back(message.to_string());
             }
             return;
         }
@@ -6578,11 +6591,21 @@ impl AppView {
         needs_redraw |= self.refresh_external_ui_surface();
         if let ActiveView::Agent(id) = self.active_view
             && let Some(agent) = self.agents.get_mut(&id)
-            && agent.toast.is_none()
-            && let Some(message) = self.external_ui.pending_toasts.pop_front()
         {
-            agent.show_toast(&message);
-            needs_redraw = true;
+            if agent.toast.is_none()
+                && let Some(message) = self.external_ui.pending_toasts.pop_front()
+            {
+                agent.show_toast(&message);
+                needs_redraw = true;
+            }
+            // Flush info notifications that arrived before this agent view
+            // existed; they render as persistent scrollback system blocks.
+            if let Some(message) = self.external_ui.pending_system_messages.pop_front() {
+                agent
+                    .scrollback
+                    .push_block(crate::scrollback::block::RenderBlock::system(message));
+                needs_redraw = true;
+            }
         }
         needs_redraw |= self.minimal_state.transcript.is_some();
         needs_redraw |= self.poll_clipboard_focus_tip();

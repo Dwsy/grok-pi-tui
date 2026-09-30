@@ -108,6 +108,41 @@ function sameSecret(provided: string, expected: string): boolean {
 	return timingSafeEqual(valid ? actual : target, target) && valid;
 }
 
+/**
+ * Durable record of the live binding. The startup notify races the host's
+ * bootstrap window and can be dropped before any UI surface exists; this file
+ * is the recoverable source of truth (`cat binding.json`). Contains the secret
+ * URL, so it lives in the 0700 binding dir at 0600 — same trust level as
+ * issued-ids.json. Best-effort: a failed write never blocks the binding.
+ */
+async function persistBinding(root: string, binding: {
+	bindingId: string;
+	url: string;
+}): Promise<string> {
+	const file = path.join(root, "binding.json");
+	try {
+		const next = path.join(root, `binding.${process.pid}.${randomUUID()}.tmp`);
+		try {
+			const handle = await open(next, "wx", 0o600);
+			try {
+				await handle.writeFile(
+					JSON.stringify({ ...binding, pid: process.pid, issuedAtMs: Date.now() }) + "\n",
+				);
+			} finally {
+				await handle.close();
+			}
+			await rename(next, file);
+		} finally {
+			await unlink(next).catch((error: NodeJS.ErrnoException) => {
+				if (error.code !== "ENOENT") throw error;
+			});
+		}
+	} catch {
+		// The notify chain and the MCP endpoint remain usable without the file.
+	}
+	return file;
+}
+
 function requireSdk(): { McpServer: new (...args: any[]) => any; ResourceTemplate: new (...args: any[]) => any; StreamableHTTPServerTransport: new (...args: any[]) => any; z: any } {
 	const candidates = [
 		process.env.PI_PACKAGE_DIR && path.join(process.env.PI_PACKAGE_DIR, "package.json"),
@@ -350,6 +385,12 @@ export async function startEvalPiMcp(options: EvalMcpOptions): Promise<{ binding
 		throw error;
 	}
 	const url = `http://127.0.0.1:${port}/mcp?key=${secret}`;
+	// Persist before notifying: the notify races the host's bootstrap window,
+	// so the file must already be on disk when the surface is unavailable.
+	const bindingFile = await persistBinding(path.join(homeDir(), "eval-pi-mcp"), {
+		bindingId,
+		url,
+	});
 	const close = async () => {
 		if (closed) return;
 		closed = true;
@@ -359,9 +400,19 @@ export async function startEvalPiMcp(options: EvalMcpOptions): Promise<{ binding
 			http.close(() => resolve());
 			http.closeAllConnections();
 		});
+		// Only clear the record while it still describes this binding; a newer
+		// generation may have overwritten it when generations overlap.
+		try {
+			const recorded = JSON.parse(await readFile(bindingFile, "utf8")) as {
+				bindingId?: string;
+			};
+			if (recorded.bindingId === bindingId) await unlink(bindingFile);
+		} catch {
+			// Nothing to clean up, or the record was replaced — leave it alone.
+		}
 	};
 	try {
-		options.notify(`eval-pi-mcp binding ID: ${bindingId}\nMCP URL (secret): ${url}\nSend both the binding ID and URL to the other agent. Pass binding_id on EVERY MCP tool call; start with get_desc. URL and ID expire when the session ends or switches. Tokenizer: ${tokenCounter.ready ? "ready" : tokenCounter.error}.`);
+		options.notify(`eval-pi-mcp binding ID: ${bindingId}\nMCP URL (secret): ${url}\nSend both the binding ID and URL to the other agent. Pass binding_id on EVERY MCP tool call; start with get_desc. URL and ID expire when the session ends or switches. Tokenizer: ${tokenCounter.ready ? "ready" : tokenCounter.error}. Recoverable: ${bindingFile}`);
 	} catch (error) {
 		// No owner can use a binding that never reached the notification surface.
 		await close();

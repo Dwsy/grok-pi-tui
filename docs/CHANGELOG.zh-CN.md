@@ -17,6 +17,8 @@
 
 - **`pi_eval_v2_only` 下 `pi_eval_v2_display_mode = "legacy"` 完全无效** — adapter 在 Pager 拿到顶层 `eval` 卡之前就丢弃了它，legacy 的源码/结果渲染器因此无内容可渲染。现在 adapter 读取与 Pager 相同的 `[ui]` 配置键，`legacy` 时保留该卡片，`effects` 仍隐藏卡片、只显示嵌套 effects。live 与 `/resume` 回放共用同一判定，恢复会话不再与实时不一致。
 
+- **eval-pi-mcp 的 URL 从未展示** — binding/URL 通知在 Pi `session_start` 时发出，与宿主 bootstrap 窗口竞争；Pager 会静默丢弃在任何 agent 视图出现之前到达的 `info` 通知，导致 MCP 实际已运行（每次启动都签发 binding ID）但用户始终看不到 URL。现在 Pager 会把先于首个 agent 视图到达的 info 通知排队，并在视图就绪后作为持久 system 块补投到 scrollback；扩展同时把活跃 binding 持久化到 `~/.grok-pi/eval-pi-mcp/binding.json`（0600，关闭时清除），通知文本也指向该恢复路径。
+
 ## [0.1.10-beta.9] - 2026-09-30
 
 ### 新增

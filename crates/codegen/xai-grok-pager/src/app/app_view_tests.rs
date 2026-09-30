@@ -330,8 +330,7 @@ pub(crate) fn test_app() -> AppView {
         welcome_prewarm_agent: None,
     }
 }
-pub(crate) fn test_app_with_agent() -> AppView {
-    let mut app = test_app();
+pub(crate) fn attach_test_agent(app: &mut AppView) -> super::super::agent::AgentId {
     let id = super::super::agent::AgentId(0);
     let mut agent = AgentView::new(
         AgentSession {
@@ -377,10 +376,16 @@ pub(crate) fn test_app_with_agent() -> AppView {
     agent.active_pane = crate::views::agent::ActivePane::Scrollback;
     app.agents.insert(id, agent);
     super::super::dispatch::switch_to_agent(
-        &mut app,
+        app,
         id,
         super::super::dispatch::SwitchCause::Load,
     );
+    id
+}
+
+pub(crate) fn test_app_with_agent() -> AppView {
+    let mut app = test_app();
+    attach_test_agent(&mut app);
     app
 }
 #[test]
@@ -430,6 +435,25 @@ fn multiline_info_notification_is_scrollback_only() {
 
     assert_eq!(app.agents[&id].scrollback.len(), 1);
     assert!(app.external_ui.pending_toasts.is_empty());
+}
+
+#[test]
+fn info_notification_before_first_agent_is_queued_then_flushed() {
+    // Startup race: Pi extension session_start fires while the host is still
+    // bootstrapping, so the info notification arrives with no agent view.
+    let mut app = test_app();
+    app.show_external_notification(
+        "eval-pi-mcp binding ID: x\nMCP URL (secret): http://127.0.0.1:1/mcp?key=y",
+        Some("info"),
+    );
+    assert_eq!(app.external_ui.pending_system_messages.len(), 1);
+    assert!(app.external_ui.pending_toasts.is_empty());
+
+    let id = attach_test_agent(&mut app);
+    assert!(app.tick());
+    assert!(app.external_ui.pending_system_messages.is_empty());
+    assert_eq!(app.agents[&id].scrollback.len(), 1);
+    assert!(app.agents[&id].toast.is_none());
 }
 
 #[test]
