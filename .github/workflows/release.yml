@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (vX.Y.Z or vX.Y.Z-beta.N)"
+        description: "Existing release tag (vX.Y.Z or vX.Y.Z-beta.N)"
         required: true
         type: string
 
@@ -259,12 +259,6 @@ jobs:
         with:
           ref: ${{ env.GROK_PI_RELEASE_TAG }}
 
-      - name: Resolve pinned release commit
-        id: source
-        shell: bash
-        run: |
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
       - name: Download release binaries
         uses: actions/download-artifact@v4
         with:
@@ -332,9 +326,10 @@ jobs:
           generate_release_notes: false
           # Manual dispatch and tag pushes share the exact same release tag.
           tag_name: ${{ env.GROK_PI_RELEASE_TAG }}
-          # On workflow_dispatch github.sha points to main's workflow fix,
-          # whereas the shipped binaries are built from the requested tag.
-          target_commitish: ${{ steps.source.outputs.sha }}
+          # The requested tag must already exist (checkout above enforces this).
+          # Do not pass target_commitish: GitHub requires workflow-write permission
+          # when that older commit differs from the default branch workflow files,
+          # and Actions' GITHUB_TOKEN cannot be granted that permission.
           # A beta tag ships the same six platform assets, but is not promoted
           # by GitHub's stable `releases/latest` pointer. Unsupported prerelease
           # suffixes are rejected before the build starts.
