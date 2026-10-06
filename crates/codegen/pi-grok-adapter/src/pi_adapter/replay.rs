@@ -1,6 +1,6 @@
 use super::*;
 use crate::btw_bridge::BtwHistoryEntry;
-use crate::pi_adapter::tools::eval_top_level_hidden;
+use crate::pi_adapter::tools::{eval_result_without_tool_calls, eval_top_level_hidden};
 
 impl PiAgent {
     /// Publish Pi-owned session metadata title. This is distinct from an
