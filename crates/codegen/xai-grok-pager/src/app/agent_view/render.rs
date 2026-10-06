@@ -835,6 +835,11 @@ impl AgentView {
         let thinking_label = self.scrollback.thinking_fold_label();
         let selected_is_user_prompt = selected_entry.is_some_and(|e| e.block.is_user_prompt());
         let selected_is_agent_message = selected_entry.is_some_and(|e| e.block.is_agent_message());
+        // Mirrors the Collapse router branch: ← on this entry opens the tool-trace modal.
+        let selected_has_trace = selected_entry.is_some_and(|e| {
+            e.display_mode == crate::scrollback::types::DisplayMode::Collapsed
+                && !e.tool_traces.is_empty()
+        });
         let mut hints = agent::build_hints(
             self.active_pane,
             self.parked_card()
@@ -875,6 +880,7 @@ impl AgentView {
             selected_is_agent_message,
             crate::terminal::terminal_context().shift_enter_unavailable(),
             self.scrollback_search.as_ref(),
+            selected_has_trace,
         );
         if (self.queue.is_visible() || !self.visible_queue_is_empty())
             && self.active_pane != ActivePane::Queue
