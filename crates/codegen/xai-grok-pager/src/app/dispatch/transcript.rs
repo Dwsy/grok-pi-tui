@@ -314,6 +314,9 @@ pub(super) fn dispatch_open_block_viewer(app: &mut AppView) {
             RenderBlock::ToolCall(ToolCallBlock::Eval(_)) => {
                 BlockViewerPane::for_eval(entry.id, entry)
             }
+            RenderBlock::ToolCall(ToolCallBlock::Codemode(_)) => {
+                BlockViewerPane::for_codemode(entry.id, entry)
+            }
             RenderBlock::ToolCall(ToolCallBlock::Edit(_)) => {
                 BlockViewerPane::for_edit(entry.id, entry)
             }

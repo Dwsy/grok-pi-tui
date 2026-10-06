@@ -74,7 +74,12 @@ impl CodemodeCallRow {
             .unwrap_or_default()
             .to_string();
         let status = CodemodeCallStatus::parse(value.get("status").and_then(Value::as_str));
-        let duration_ms = value.get("durationMs").and_then(Value::as_u64);
+        // Pi reports `performance.now()` deltas, so `durationMs` is fractional
+        // (e.g. 12.942792…); an integer-only parse would drop every row.
+        let duration_ms = value
+            .get("durationMs")
+            .and_then(Value::as_f64)
+            .map(|ms| ms.round() as u64);
         let error = value
             .get("error")
             .and_then(Value::as_str)
@@ -569,6 +574,18 @@ mod tests {
             block.full_output_path.as_deref(),
             Some("/tmp/pi-codemode-abc.txt")
         );
+    }
+
+    #[test]
+    fn fractional_nested_call_durations_round_to_millis() {
+        let block = CodemodeToolCallBlock::new("return 1;").with_raw_output(Some(&json!({
+            "type": "Codemode",
+            "calls": [
+                { "id": "c/1", "name": "ffind", "args": "{}", "status": "ok", "durationMs": 12.942792000001646 }
+            ],
+            "output": ""
+        })));
+        assert_eq!(block.calls[0].duration_ms, Some(13));
     }
 
     #[test]

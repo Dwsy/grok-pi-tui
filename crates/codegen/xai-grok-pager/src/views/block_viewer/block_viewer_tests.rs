@@ -23,6 +23,31 @@ fn running_markdown_pane(text: &str) -> BlockViewerPane {
 }
 
 #[test]
+fn codemode_viewer_shows_full_script_calls_and_output() {
+    let block = crate::scrollback::blocks::tool::CodemodeToolCallBlock::new("const a = 1;")
+        .with_raw_output(Some(&serde_json::json!({
+            "type": "Codemode",
+            "calls": [
+                { "id": "c/1", "name": "read", "args": "{ \"path\": \"a.rs\" }", "status": "ok", "durationMs": 12.9 }
+            ],
+            "output": "a.rs: fn main() {}",
+            "full_output_path": ""
+        })));
+    let entry = ScrollbackEntry::new(RenderBlock::ToolCall(ToolCallBlock::Codemode(block)));
+    let pane = BlockViewerPane::for_codemode(entry.id, &entry).expect("codemode viewer");
+    let text = pane
+        .items
+        .iter()
+        .map(|item| item.plain_text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("Codemode"));
+    assert!(text.contains("const a = 1;"));
+    assert!(text.contains("read"));
+    assert!(text.contains("a.rs: fn main() {}"));
+}
+
+#[test]
 fn format_blockquote_cases() {
     assert_eq!(format_blockquote(""), "");
     assert_eq!(format_blockquote("\n"), "");

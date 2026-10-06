@@ -37,6 +37,16 @@ fn utc_ms_to_local(ms: i64) -> DateTime<Local> {
         .map(|utc| utc.with_timezone(&Local))
         .unwrap_or_else(Local::now)
 }
+/// Real tool duration from agent-stamped wall times, for replayed completions.
+/// Replay batches the start and the completion into one pass, so a local
+/// `Instant` measures batching latency (~0ms) rather than the tool's wall time;
+/// the events' own `agentTimestampMs` values carry the true start and end.
+fn replay_elapsed_ms(start_ms: Option<i64>, end_ms: Option<i64>) -> Option<i64> {
+    match (start_ms, end_ms) {
+        (Some(start), Some(end)) if end >= start => Some(end - start),
+        _ => None,
+    }
+}
 fn tool_trace_from_call(tc: &acp::ToolCall, meta: &NotificationMeta) -> ToolTraceSnapshot {
     ToolTraceSnapshot {
         tool_call_id: tc.tool_call_id.0.to_string(),
@@ -488,6 +498,11 @@ struct PendingTool {
     /// `transfer_timing_from` can't cross variant boundaries (Other to Search, etc.), so refining to the real kind would silently drop the timing.
     /// This field preserves the instant so `set_started_at` can apply it to whatever variant the refined block becomes.
     started_at: Option<std::time::Instant>,
+    /// Agent-stamped start wall time (`agentTimestampMs` of the start event).
+    /// Replay delivers the start and the completion in one batch, so the `Instant`
+    /// above spans only batching latency; the real duration comes from this stamp
+    /// minus the completion event's stamp.
+    started_at_ms: Option<i64>,
 }
 /// Streaming UTF-8 decoder for incremental byte deltas. Without buffering, both halves would be replaced with
 /// U+FFFD by `from_utf8_lossy`, permanently corrupting the character. Only genuinely invalid sequences (not just
@@ -1358,6 +1373,7 @@ impl AcpUpdateTracker {
                     base: tc,
                     utf8_decoder: Utf8Decoder::default(),
                     started_at,
+                    started_at_ms: meta.agent_timestamp_ms,
                 },
             );
         }
@@ -1528,7 +1544,18 @@ impl AcpUpdateTracker {
         }
         if let Some(pending) = self.pending_tools.remove(&tc_id) {
             let merged = merge_tool_call_update(pending.base, tcu);
-            let block = tool_call_to_block(&merged, self.session_cwd.as_deref());
+            let mut block = tool_call_to_block(&merged, self.session_cwd.as_deref());
+            // Replay timing: the stashed `Instant` spans only the batching
+            // latency between the replayed start and completion, so the card
+            // would show 0ms. Prefer the agent-stamped start/end delta there;
+            // live completions keep the monotonic `Instant` measurement.
+            if is_replay
+                && let Some(elapsed_ms) =
+                    replay_elapsed_ms(pending.started_at_ms, meta.agent_timestamp_ms)
+                && let RenderBlock::ToolCall(tc) = &mut block
+            {
+                tc.set_elapsed_ms(elapsed_ms);
+            }
             if let Some(entry_id) = pending.entry_id {
                 refresh_tool_trace(scrollback, entry_id, &merged, meta);
                 if scrollback.replace_tool_block(entry_id, block, pending.started_at)

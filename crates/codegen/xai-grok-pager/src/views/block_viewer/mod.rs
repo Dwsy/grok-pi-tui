@@ -610,6 +610,21 @@ impl BlockViewerPane {
         ))
     }
 
+    /// Create a viewer for a codemode block: the full script, every nested call
+    /// with untruncated args/errors, and the complete script output.
+    pub fn for_codemode(entry_id: EntryId, entry: &ScrollbackEntry) -> Option<Self> {
+        let RenderBlock::ToolCall(ToolCallBlock::Codemode(codemode)) = &entry.block else {
+            return None;
+        };
+
+        let lines = Self::static_lines_from_block(entry, codemode);
+        Some(Self::for_static_content(
+            entry_id,
+            ViewerKind::PlainText,
+            lines,
+        ))
+    }
+
     pub fn for_grep(entry_id: EntryId, entry: &ScrollbackEntry) -> Option<Self> {
         let RenderBlock::ToolCall(ToolCallBlock::Search(search)) = &entry.block else {
             return None;

@@ -403,6 +403,31 @@ impl ToolCallBlock {
         }
     }
 
+    /// Freeze a measured elapsed time (ms) onto the inner variant block.
+    /// The replay completion path uses this: the local `Instant` there spans only
+    /// batching latency, so the real duration comes from the agent-stamped
+    /// start/end delta instead. A pre-set `elapsed_ms` wins — every variant's
+    /// `finish()` only fills it in when it is still `None`.
+    pub fn set_elapsed_ms(&mut self, elapsed_ms: i64) {
+        match self {
+            ToolCallBlock::Execute(b) => b.elapsed_ms = Some(elapsed_ms),
+            ToolCallBlock::Eval(b) => b.elapsed_ms = Some(elapsed_ms),
+            ToolCallBlock::Codemode(b) => b.elapsed_ms = Some(elapsed_ms),
+            ToolCallBlock::Read(b) => b.elapsed_ms = Some(elapsed_ms),
+            ToolCallBlock::Edit(b) => b.elapsed_ms = Some(elapsed_ms),
+            ToolCallBlock::Search(b) => b.elapsed_ms = Some(elapsed_ms),
+            ToolCallBlock::ListDir(b) => b.elapsed_ms = Some(elapsed_ms),
+            ToolCallBlock::WebFetch(b) => b.elapsed_ms = Some(elapsed_ms),
+            ToolCallBlock::WebSearch(b) => b.elapsed_ms = Some(elapsed_ms),
+            ToolCallBlock::IntegrationSearch(b) => b.elapsed_ms = Some(elapsed_ms),
+            ToolCallBlock::UseTool(b) => b.elapsed_ms = Some(elapsed_ms),
+            ToolCallBlock::MemorySearch(b) => b.elapsed_ms = Some(elapsed_ms),
+            ToolCallBlock::SentMessage(b) => b.elapsed_ms = Some(elapsed_ms),
+            ToolCallBlock::Skill(b) => b.elapsed_ms = Some(elapsed_ms),
+            ToolCallBlock::Other(b) => b.elapsed_ms = Some(elapsed_ms),
+        }
+    }
+
     /// Start timing for this block (sets `started_at = now`). Only blocks that actually run in the UI get meaningful
     /// timing.
     pub fn start_timing(&mut self) {

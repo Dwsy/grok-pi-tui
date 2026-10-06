@@ -942,6 +942,7 @@ impl RenderBlock {
             | RenderBlock::ToolCall(ToolCallBlock::WebSearch(_))
             | RenderBlock::ToolCall(ToolCallBlock::IntegrationSearch(_))
             | RenderBlock::ToolCall(ToolCallBlock::UseTool(_))
+            | RenderBlock::ToolCall(ToolCallBlock::Codemode(_))
             | RenderBlock::ToolCall(ToolCallBlock::Other(_))
             | RenderBlock::ToolCall(ToolCallBlock::Skill(_))
             | RenderBlock::BgTask(_) => true,
@@ -1304,6 +1305,16 @@ mod tests {
         crate::appearance::cache::set_pi_eval_v2_effects_first(false);
         assert!(block.has_normal_fullscreen_viewer());
         crate::appearance::cache::set_pi_eval_v2_effects_first(true);
+    }
+
+    #[test]
+    fn codemode_block_has_fullscreen_viewer() {
+        let block = RenderBlock::ToolCall(ToolCallBlock::Codemode(
+            crate::scrollback::blocks::tool::CodemodeToolCallBlock::new("return 1;")
+                .with_output("done"),
+        ));
+        assert!(block.has_normal_fullscreen_viewer());
+        assert!(block.supports_fullscreen());
     }
 
     #[test]
