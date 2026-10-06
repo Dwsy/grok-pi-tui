@@ -6,8 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-10-06
+
+### Added
+
+- **Tool trace shortcut hint** — the scrollback shortcuts bar now advertises `← trace` (vim mode: `h trace`) whenever the selected collapsed entry carries tool-call traces, matching the existing behavior where ← opens the tool-trace modal instead of folding. Entries without traces show no hint.
+
+### Changed
+
+- Promotes the 0.1.10 beta line (beta.1 through beta.10) to stable: the first stable 0.1.10 release ships the same six platform assets and installer scripts the beta tags used.
+
 ### Fixed
 
+- **Codemode cards now open the fullscreen viewer on Enter** — codemode tool cards were excluded from the block-viewer gate, so Enter (plus the selection ↗ button and the viewer's ←/→ card navigation) silently did nothing even though the card's own preview reads "press Enter to view". A dedicated viewer now shows the full script, every nested call with untruncated arguments and errors, and the complete script output.
+- **Resumed sessions showed 0ms on tool cards** — during session replay each tool call's start and completion arrive in one batch, so the wall-clock timer measured only the batching latency and every tool card displayed 0ms. Replayed completions now take their duration from the agent-stamped start/end timestamps (the same values the Tool trace viewer reports); live completions keep the monotonic timer.
+- **Codemode nested call durations were silently dropped** — Pi reports fractional `performance.now()` milliseconds (`durationMs: 12.94…`), which the integer-only parse discarded; nested call rows now round to the nearest millisecond.
 - **Quiet Eval cells always render** — an Eval v2 cell that never called a host tool now renders as a normal Eval card (source + output) regardless of the effects-first setting, and stays visible under Eval-v2-only instead of vanishing behind its absent effect rows. The extension records the per-cell host tool-call count in the result details; payloads from older extensions keep the previous behavior.
 
 ## [0.1.10-beta.10] - 2026-09-30
