@@ -93,6 +93,18 @@ pub(super) fn write_bash_extension() -> Result<BashExtension> {
         "eval-token-count.ts",
         include_str!("../../../../../../extensions/pi-grok-bash/eval-token-count.ts"),
     )?;
+    for (name, source) in [
+        ("mcpeval-daemon.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-daemon.ts")),
+        ("mcpeval-client.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-client.ts")),
+        ("mcpeval-protocol.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-protocol.ts")),
+        ("mcpeval-events.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-events.ts")),
+        ("mcpeval-registry.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-registry.ts")),
+        ("mcpeval-mcp-facade.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-mcp-facade.ts")),
+        ("mcpeval-web.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-web.ts")),
+        ("mcpeval-oauth.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-oauth.ts")),
+    ] {
+        write_source_file(source_dir.path(), name, source)?;
+    }
 
     let control_meta = tempfile::Builder::new()
         .prefix("pi-grok-bash-control-")
@@ -131,6 +143,18 @@ mod tests {
             .expect("read Eval MCP module");
         let token_count_source = std::fs::read_to_string(source_dir.join("eval-token-count.ts"))
             .expect("read token counter module");
+        for module in [
+            "mcpeval-daemon.ts",
+            "mcpeval-client.ts",
+            "mcpeval-protocol.ts",
+            "mcpeval-events.ts",
+            "mcpeval-registry.ts",
+            "mcpeval-mcp-facade.ts",
+            "mcpeval-web.ts",
+            "mcpeval-oauth.ts",
+        ] {
+            assert!(source_dir.join(module).is_file(), "missing embedded {module}");
+        }
 
         assert!(source.contains("const nativeBash = createBashToolDefinition"));
         assert!(source.contains("pi.registerTool({"));

@@ -7,15 +7,17 @@
 
 The extension is intentionally implemented at the Pi extension layer so Pager/native task UI stays authoritative while execution, cancellation, task lifetime, and model-facing tool semantics remain under one owner.
 
-## Eval v2-only MCP (opt-in)
+## Eval v2-only MCP (resident daemon)
 
-Enable **Eval v2 only** and **Eval MCP (local)** in grok-pi F2, then restart grok-pi. The equivalent TOML switches are `[ui].pi_eval_v2_only = true` and `[ui].pi_eval_mcp = true`. MCP is *not* activated by the standalone Eval v2 version selector and stays disabled when CLI tool restrictions override the host's Eval-v2-only policy. The official TypeScript `@modelcontextprotocol/sdk` exposes authenticated loopback Streamable HTTP; it does not replace or start another Pi agent.
+Enable **Eval v2 only** and **Eval MCP (local)** in grok-pi F2, then restart grok-pi. The equivalent TOML switches are `[ui].pi_eval_v2_only = true` and `[ui].pi_eval_mcp = true`. The production path is a single resident `mcpevald` endpoint: the first eligible Pi starts a detached daemon when necessary, then registers its live Eval session over a private Unix socket. Later Pi sessions register with the same daemon. The daemon forwards calls to the live Pi; it never creates a second Pi or Eval runtime.
 
-On each Pi `session_start`, an info notification displays a unique, never-reused `binding ID` and secret URL, for example `http://127.0.0.1:<port>/mcp?key=<secret>`. Give **both** values to a trusted agent on the same host (or via a separately managed private tunnel). Clients must include the exact `binding_id` on **every** `get_desc`, `get_context`, and `execute_eval` tool call. The independent URL secret is an authentication credential: sharing it grants access to the current Pi branch and Eval's registered nested tools. Session switching rotates the ID and secret, and shutdown closes the listener. An exclusive local `bindings.lock` and durable `$GROK_HOME/eval-pi-mcp/issued-ids.json` ensure IDs cannot be recycled between instances.
+The daemon state is under `$GROK_HOME/eval-pi-mcp/` (`daemon.json`, `daemon.lock`, `daemon.sock`, mode 0700/0600). Its authenticated Streamable HTTP endpoint is loopback-only. The Pi notification contains a binding ID and the daemon URL. `discover` lists live registrations; pass the selected `binding_id` to `get_desc`, `get_context`, and `execute_eval`. A Pi shutdown unregisters only that binding. The daemon remains available so Herdr or another supervisor can wake a new Pi and let it reconnect. Per-registration descriptors are retained under `$GROK_HOME/eval-pi-mcp/bindings/<binding-id>.json` until that Pi unregisters.
 
-Because the notification fires during Pi's `session_start`, it can race the host's bootstrap window; the live binding is therefore also persisted to `$GROK_HOME/eval-pi-mcp/binding.json` (`bindingId`, `url`, `pid`, `issuedAtMs`; 0600, cleared when the binding closes) so the URL stays recoverable even if the notification is missed. Check `pid` for liveness — a stale file means the owning Pi process exited without cleanup.
+The daemon also serves a key-protected local dashboard at the root URL from `daemon.json`; `/api/status` is a small JSON status surface for Herdr and local diagnostics. OAuth 2.1 is enabled by default alongside the bootstrap key: MCP clients can discover RFC 8414/RFC 9728 metadata, dynamically register, complete S256 PKCE, refresh, and revoke tokens through `/oauth/*`. OAuth state is persisted in `oauth.json`; set `PI_GROK_MCPEVAL_OAUTH=0` only for a deliberately key-only test environment. The implementation uses the current official MCP SDK provider contracts installed in Pi's npm tree (SDK 1.30.x in this build), while preserving the loopback key path for Pi startup and recovery.
 
-Eval result images and native `read` ImageContent blocks (even without an explicit `display(image)`) are automatically published as opaque binding-scoped MCP Resource URIs. Read the `resource_link` with `resources/read`; 16 MiB per image and 64 MiB / 48 images overall are retained only for this binding. `get_desc` lists registered Pi tool schemas and Eval usage instructions; `get_context` returns a bounded active-branch transcript snapshot, not the exact LLM system prompt.
+The daemon exposes `search` for registration discovery and `events_subscribe`, `events_poll`, and `events_unsubscribe` for event mode. Events use `runtime.changed` payloads with an event ID, timestamp, registration epoch, binding/instance ID, and optional service/thread/type filters. Queues are bounded (64 events per subscription, 256 globally); overflow emits `agenvo.resync_required`, after which the consumer should call `get_context` or `get_desc` again. There is no history replay or webhook delivery. The current official MCP SDK does not accept custom `events/*` request schemas, so Agenvo-shaped handlers are enabled only when the SDK supports them; the portable tools are always available.
+
+Eval result images and native `read` ImageContent blocks (even without an explicit `display(image)`) are published as opaque binding-scoped MCP Resource URIs. Read the `resource_link` with `resources/read`; 16 MiB per image and 64 MiB / 48 images overall are retained only for that binding. `get_context` returns a bounded active-branch transcript snapshot, not the exact LLM system prompt.
 
 For **real input/output Token counts**, install npm `tokenizers` into Pi's npm tree and supply the matching `tokenizer.json` before launching grok-pi:
 
@@ -26,7 +28,7 @@ export PI_GROK_EVAL_MCP_TOKENIZER_FILE=/absolute/path/to/tokenizer.json
 
 The default JSON path is `$GROK_HOME/eval-pi-mcp/tokenizer.json`. MCP results include `structuredContent.token_usage` plus a text footer with input/output/total counts of **text payloads**; image binary, binding IDs, and URL keys are excluded. This is tokenizer-specific accounting, not provider-billed chat or image usage. Missing package, missing JSON, or encoding failures return `status: "unavailable"` and `null` counts rather than guessed values. The official SDK and Zod are also required in the Pi npm tree (`npm install --prefix ~/.pi/agent/npm @modelcontextprotocol/sdk zod` if absent).
 
-Focused integration checks: `node extensions/pi-grok-bash/test-eval-pi-mcp.mjs`; existing runtime regression: `node extensions/pi-grok-bash/test-v2.1.mjs`. Protocol and security contract: `docs/issues/grok-pi/20260929-eval-pi-mcp.md`.
+Focused integration checks: `node extensions/pi-grok-bash/test-eval-pi-mcp.mjs` (compatibility facade), `node extensions/pi-grok-bash/test-mcpeval-daemon.mjs` (resident daemon, dashboard, OAuth discovery, registration, forwarding and events), `node extensions/pi-grok-bash/test-mcpeval-oauth.mjs` (DCR, PKCE, bearer verification, refresh, revocation and persistence), and `node extensions/pi-grok-bash/test-v2.1.mjs` (runtime regression). The daemon contract and lifecycle record is [`docs/issues/grok-pi/20261009-mcpeval-daemon-events.md`](../../docs/issues/grok-pi/20261009-mcpeval-daemon-events.md).
 
 ## Pi Codemode and MCP integration (planned)
 
@@ -73,6 +75,11 @@ Eval v1 is deliberately compatibility-oriented. Eval v2 is the production bridge
 - `bash-tasks.ts` — managed Bash process lifecycle, foreground-to-background promotion, output truncation, Pager status channel, Bash task results.
 - `shared.ts` — output and timeout limits plus process-tree termination.
 - `test-v2.1.mjs` — focused production regression suite for v1/v2 boundaries, host bridge behavior, cancellation, concurrency, task management, and fallback invocation paths.
+- `mcpeval-daemon.ts` / `mcpeval-client.ts` — resident relay transport and Pi registration lifecycle.
+- `mcpeval-protocol.ts` / `mcpeval-registry.ts` / `mcpeval-events.ts` — versioned Unix-socket frames, durable daemon descriptor and bounded event queues.
+- `mcpeval-mcp-facade.ts` — registration discovery, context/tool forwarding, Eval execution and portable event MCP tools.
+- `mcpeval-web.ts` — authenticated local dashboard and JSON status endpoint.
+- `mcpeval-oauth.ts` — MCP SDK 1.30 OAuth provider, PKCE/token endpoints and bearer verification.
 
 ## Prompt orchestration
 

@@ -15,6 +15,8 @@ import type { EvalParams, EvalSkillMetadata } from "./eval.ts";
 import type { EvalToolMetadata } from "./tool-bridge.ts";
 import { EvalTokenCounter } from "./eval-token-count.ts";
 
+import { registerEvalPi } from "./mcpeval-client.ts";
+
 const MAX_IMAGES = 48;
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const MAX_IMAGE_TOTAL_BYTES = 64 * 1024 * 1024;
@@ -39,7 +41,7 @@ export type EvalMcpOptions = {
 
 type ImageRecord = { uri: string; name: string; mimeType: string; blob: string; bytes: number };
 
-function homeDir(): string {
+export function homeDir(): string {
 	return process.env.GROK_HOME?.trim() || path.join(homedir(), ".grok-pi");
 }
 
@@ -100,7 +102,7 @@ export async function reserveEvalMcpBindingId(root = path.join(homeDir(), "eval-
 	}
 }
 
-function sameSecret(provided: string, expected: string): boolean {
+export function sameSecret(provided: string, expected: string): boolean {
 	const actual = Buffer.from(provided);
 	const target = Buffer.from(expected);
 	// A mismatched length still incurs a constant-time comparison.
@@ -115,12 +117,13 @@ function sameSecret(provided: string, expected: string): boolean {
  * URL, so it lives in the 0700 binding dir at 0600 — same trust level as
  * issued-ids.json. Best-effort: a failed write never blocks the binding.
  */
-async function persistBinding(root: string, binding: {
+export async function persistBinding(root: string, binding: {
 	bindingId: string;
 	url: string;
-}): Promise<string> {
-	const file = path.join(root, "binding.json");
+}, fileName = "binding.json"): Promise<string> {
+	const file = path.join(root, fileName);
 	try {
+		await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
 		const next = path.join(root, `binding.${process.pid}.${randomUUID()}.tmp`);
 		try {
 			const handle = await open(next, "wx", 0o600);
@@ -143,7 +146,7 @@ async function persistBinding(root: string, binding: {
 	return file;
 }
 
-function requireSdk(): { McpServer: new (...args: any[]) => any; ResourceTemplate: new (...args: any[]) => any; StreamableHTTPServerTransport: new (...args: any[]) => any; z: any } {
+export function requireSdk(): { McpServer: new (...args: any[]) => any; ResourceTemplate: new (...args: any[]) => any; StreamableHTTPServerTransport: new (...args: any[]) => any; z: any } {
 	const candidates = [
 		process.env.PI_PACKAGE_DIR && path.join(process.env.PI_PACKAGE_DIR, "package.json"),
 		path.join(homedir(), ".pi", "agent", "npm", "package.json"),
@@ -165,7 +168,7 @@ function requireSdk(): { McpServer: new (...args: any[]) => any; ResourceTemplat
 	throw new Error("eval-pi-mcp requires the official @modelcontextprotocol/sdk and zod in Pi's npm tree (npm install --prefix ~/.pi/agent/npm @modelcontextprotocol/sdk zod)");
 }
 
-function allowedOrigin(origin: string | undefined): boolean {
+export function allowedOrigin(origin: string | undefined): boolean {
 	if (!origin) return true;
 	try {
 		const url = new URL(origin);
@@ -175,7 +178,7 @@ function allowedOrigin(origin: string | undefined): boolean {
 	}
 }
 
-function sessionSnapshot(ctx: ExtensionContext, limit: number) {
+export function sessionSnapshot(ctx: ExtensionContext, limit: number) {
 	const branch = ctx.sessionManager.getBranch();
 	const entries = branch.filter((entry) =>
 		entry.type === "message" || entry.type === "compaction" || entry.type === "branch_summary"
@@ -218,6 +221,12 @@ function sessionSnapshot(ctx: ExtensionContext, limit: number) {
 }
 
 export async function startEvalPiMcp(options: EvalMcpOptions): Promise<{ bindingId: string; url: string; close: () => Promise<void> }> {
+	// The resident daemon is opt-in so existing callers keep the original
+	// per-Pi endpoint. The daemon must be started by the Pi/Herdr service
+	// supervisor; this call only registers the live Eval session with it.
+	if (process.env.PI_GROK_MCPEVAL_DAEMON === "1" || process.env.PI_GROK_EVAL_MCP_DAEMON === "1") {
+		return registerEvalPi(options);
+	}
 	const { McpServer, ResourceTemplate, StreamableHTTPServerTransport, z } = requireSdk();
 	const tokenCounter = await EvalTokenCounter.create();
 	const bindingId = await reserveEvalMcpBindingId();
@@ -420,3 +429,8 @@ export async function startEvalPiMcp(options: EvalMcpOptions): Promise<{ binding
 	}
 	return { bindingId, url, close };
 }
+
+
+export { startMcpevalDaemon, ensureMcpevalDaemon, discoverMcpevalDaemon } from "./mcpeval-daemon.ts";
+export { registerEvalPi } from "./mcpeval-client.ts";
+export type { McpevalDaemonOptions, McpevalPiOptions } from "./mcpeval-daemon.ts";
