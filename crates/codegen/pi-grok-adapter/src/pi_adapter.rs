@@ -479,7 +479,8 @@ fn build_model_catalog(
             meta.insert("reasoningEfforts".into(), Value::Array(reasoning_efforts));
         }
         let description = model_catalog_description(model);
-        let mut info = acp::ModelInfo::new(id.clone(), model.label.clone()).meta(Some(meta));
+        let label = model_display_label(model);
+        let mut info = acp::ModelInfo::new(id.clone(), label).meta(Some(meta));
         if !description.is_empty() {
             info = info.description(description);
         }
@@ -487,6 +488,27 @@ fn build_model_catalog(
     }
     let current = current.map(|model| acp::ModelId::new(model_key(model)));
     (available, current)
+}
+
+/// Display label for every model surface (prompt info line, picker, status line).
+///
+/// Pi's `name` is the model name only; the provider id is added as a `·` suffix so
+/// the active model is attributable at a glance. Providers that already bake the
+/// provider into `name` (the magpie router emits `MiMo-V2.6-Flash · Xiaomi MiMo`)
+/// keep their own richer label unchanged.
+fn model_display_label(model: &PiModel) -> String {
+    let label = model.label.trim();
+    let provider = model.provider.trim();
+    if provider.is_empty() || label.is_empty() {
+        return label.to_string();
+    }
+    // The two forms the label may already carry: a `· provider` suffix, or the
+    // `provider/id` fallback built when Pi sent no `name`. A bare substring match
+    // would wrongly suppress the suffix for `mimo` on `MiMo-V2.6-Flash`.
+    if label.ends_with(&format!("· {provider}")) || label.starts_with(&format!("{provider}/")) {
+        return label.to_string();
+    }
+    format!("{label} · {provider}")
 }
 
 /// Compact right-side detail for the native model picker.

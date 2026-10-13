@@ -179,7 +179,7 @@ fn model_catalog_includes_provider_and_detail_description() {
     assert!(current.is_some());
     let id = acp::ModelId::new("anthropic::claude-haiku-4-5");
     let info = available.get(&id).expect("catalog entry");
-    assert_eq!(info.name, "Claude Haiku 4.5");
+    assert_eq!(info.name, "Claude Haiku 4.5 · anthropic");
     let description = info.description.as_deref().unwrap_or("");
     assert!(
         !description.contains("[anthropic]"),
@@ -209,6 +209,41 @@ fn model_catalog_includes_provider_and_detail_description() {
         Some(200_000)
     );
     assert_eq!(meta.get("maxTokens").and_then(|v| v.as_u64()), Some(64_000));
+}
+
+#[test]
+fn model_display_label_appends_provider_once() {
+    let model = |provider: &str, id: &str, label: &str| PiModel {
+        provider: provider.into(),
+        id: id.into(),
+        label: label.into(),
+        ..PiModel::default()
+    };
+
+    assert_eq!(
+        model_display_label(&model("magpie", "xiaomi/mimo-v2.6-flash", "MiMo-V2.6-Flash")),
+        "MiMo-V2.6-Flash · magpie"
+    );
+    // Already carries the provider suffix: keep the richer label as-is.
+    assert_eq!(
+        model_display_label(&model(
+            "magpie",
+            "xiaomi/mimo-v2.6-flash",
+            "MiMo-V2.6-Flash · magpie"
+        )),
+        "MiMo-V2.6-Flash · magpie"
+    );
+    // `provider/id` fallback from `parse_model` needs no second provider.
+    assert_eq!(
+        model_display_label(&model("mimo", "mimo-v2.6-flash", "mimo/mimo-v2.6-flash")),
+        "mimo/mimo-v2.6-flash"
+    );
+    // `mimo` is a substring of the model name but not a suffix: still append.
+    assert_eq!(
+        model_display_label(&model("mimo", "mimo-v2.6-flash", "MiMo-V2.6-Flash")),
+        "MiMo-V2.6-Flash · mimo"
+    );
+    assert_eq!(model_display_label(&model("", "x", "Solo")), "Solo");
 }
 
 #[test]
